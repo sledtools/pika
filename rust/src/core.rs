@@ -582,7 +582,6 @@ impl AppCore {
                     // Include the full anyhow context chain; this is critical for diagnosing
                     // keyring/SQLCipher issues on iOS.
                     self.toast(format!("Create account failed: {e:#}"));
-                    return;
                 }
             }
             AppAction::Login { nsec } | AppAction::RestoreSession { nsec } => {
@@ -600,7 +599,6 @@ impl AppCore {
                 };
                 if let Err(e) = self.start_session(keys) {
                     self.toast(format!("Login failed: {e:#}"));
-                    return;
                 }
             }
             AppAction::Logout => {

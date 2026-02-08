@@ -113,9 +113,7 @@ async fn main() -> anyhow::Result<()> {
         Command::PublishKp => cmd_publish_kp(&cli).await,
         Command::Invite { peer, name } => cmd_invite(&cli, peer, name).await,
         Command::Welcomes => cmd_welcomes(&cli),
-        Command::AcceptWelcome { wrapper_event_id } => {
-            cmd_accept_welcome(&cli, wrapper_event_id)
-        }
+        Command::AcceptWelcome { wrapper_event_id } => cmd_accept_welcome(&cli, wrapper_event_id),
         Command::Groups => cmd_groups(&cli),
         Command::Send { group, content } => cmd_send(&cli, group, content).await,
         Command::Messages { group, limit } => cmd_messages(&cli, group, *limit),
@@ -197,14 +195,18 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
     let client = client(cli, &keys).await?;
     let relays = relay_util::parse_relay_urls(&cli.relay)?;
 
-    let peer_pubkey = PublicKey::parse(peer_str.trim())
-        .with_context(|| format!("parse peer key: {peer_str}"))?;
+    let peer_pubkey =
+        PublicKey::parse(peer_str.trim()).with_context(|| format!("parse peer key: {peer_str}"))?;
 
     // Fetch peer key package.
-    let peer_kp =
-        relay_util::fetch_latest_key_package(&client, &peer_pubkey, &relays, Duration::from_secs(10))
-            .await
-            .context("fetch peer key package — has the peer run `publish-kp`?")?;
+    let peer_kp = relay_util::fetch_latest_key_package(
+        &client,
+        &peer_pubkey,
+        &relays,
+        Duration::from_secs(10),
+    )
+    .await
+    .context("fetch peer key package — has the peer run `publish-kp`?")?;
 
     // Create group.
     let config = NostrGroupConfigData::new(
@@ -243,7 +245,9 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
 
 fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let pending = mdk.get_pending_welcomes(None).context("get pending welcomes")?;
+    let pending = mdk
+        .get_pending_welcomes(None)
+        .context("get pending welcomes")?;
     let out: Vec<serde_json::Value> = pending
         .iter()
         .map(|w| {
@@ -263,7 +267,9 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
     let (_keys, mdk) = open(cli)?;
     let wrapper_id = EventId::from_hex(wrapper_event_id_hex).context("parse wrapper event id")?;
 
-    let pending = mdk.get_pending_welcomes(None).context("get pending welcomes")?;
+    let pending = mdk
+        .get_pending_welcomes(None)
+        .context("get pending welcomes")?;
     let welcome = pending
         .into_iter()
         .find(|w| w.wrapper_event_id == wrapper_id)
@@ -453,20 +459,22 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
 
         // Group message.
         if event.kind == Kind::MlsGroupMessage && group_subs.contains_key(&subscription_id) {
-            if let Ok(MessageProcessingResult::ApplicationMessage(msg)) = mdk.process_message(&event) {
-                    let ngid = group_subs
-                        .get(&subscription_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    let line = json!({
-                        "type": "message",
-                        "nostr_group_id": ngid,
-                        "from_pubkey": msg.pubkey.to_hex(),
-                        "content": msg.content,
-                        "created_at": msg.created_at.as_secs(),
-                        "message_id": msg.id.to_hex(),
-                    });
-                    println!("{}", serde_json::to_string(&line).unwrap());
+            if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
+                mdk.process_message(&event)
+            {
+                let ngid = group_subs
+                    .get(&subscription_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let line = json!({
+                    "type": "message",
+                    "nostr_group_id": ngid,
+                    "from_pubkey": msg.pubkey.to_hex(),
+                    "content": msg.content,
+                    "created_at": msg.created_at.as_secs(),
+                    "message_id": msg.id.to_hex(),
+                });
+                println!("{}", serde_json::to_string(&line).unwrap());
             }
         }
     }

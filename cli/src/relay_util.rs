@@ -51,9 +51,7 @@ pub async fn publish_and_confirm(
         .with_context(|| format!("send_event_to failed ({label})"))?;
     if out.success.is_empty() {
         let reasons: Vec<String> = out.failed.values().cloned().collect();
-        return Err(anyhow!(
-            "no relay accepted event ({label}): {reasons:?}"
-        ));
+        return Err(anyhow!("no relay accepted event ({label}): {reasons:?}"));
     }
     Ok(())
 }
@@ -72,10 +70,7 @@ pub async fn fetch_latest_key_package(
         .fetch_events_from(relay_urls.to_vec(), filter, timeout)
         .await
         .context("fetch keypackage events")?;
-    let found = events
-        .iter()
-        .next()
-        .cloned();
+    let found = events.iter().next().cloned();
     found.ok_or_else(|| anyhow!("no keypackage found for {}", author.to_hex()))
 }
 

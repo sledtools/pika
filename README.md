@@ -126,3 +126,4 @@ latest Xcode under `/Applications` so this works:
 ```bash
 nix develop -c sh -lc './tools/agent-device --platform ios devices --json'
 ```
+

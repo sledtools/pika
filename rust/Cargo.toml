@@ -13,9 +13,9 @@ base64 = "0.22"
 flume = "0.11"
 hex = "0.4"
 libsqlite3-sys = { version = "0.30.1", features = ["bundled-sqlcipher-vendored-openssl"] }
-mdk-core = { path = "../../mdk/crates/mdk-core" }
-mdk-sqlite-storage = { path = "../../mdk/crates/mdk-sqlite-storage" }
-mdk-storage-traits = { path = "../../mdk/crates/mdk-storage-traits" }
+mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
+mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
+mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
 keyring-core = "0.7"
 nostr-sdk = { version = "0.44.1", features = ["nip59"] }
 rand = "0.8"

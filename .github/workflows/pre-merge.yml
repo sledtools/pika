@@ -5,20 +5,11 @@ on:
     branches: [master]
   workflow_dispatch:
 
-env:
-  MDK_REV: "1ad73229ab712018c078d5295e11ec38e10d6a24"
-
 jobs:
   check:
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
-
-      # Clone mdk to the relative path Cargo.toml expects (../../mdk)
-      - name: Clone mdk
-        run: |
-          git clone --no-checkout https://github.com/marmot-protocol/mdk.git ../../mdk
-          cd ../../mdk && git checkout $MDK_REV
 
       # Persistent Nix store cache
       - uses: useblacksmith/stickydisk@v1

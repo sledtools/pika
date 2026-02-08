@@ -29,14 +29,21 @@ jobs:
             ~/.cargo/git
             target
 
-      - name: Format
-        run: nix develop -c just fmt
-
-      - name: Clippy
-        run: nix develop -c cargo clippy -p pika_core --lib --tests -- -D warnings
-
-      - name: Test
-        run: nix develop -c cargo test -p pika_core --lib --tests
-
-      - name: Build CLI
-        run: nix develop -c cargo build -p pika-cli
+      # Single nix develop invocation to avoid repeated flake evaluation + shell setup
+      - name: pre-merge
+        run: |
+          nix develop -c bash -c '
+            set -euo pipefail
+            echo "::group::Format"
+            just fmt
+            echo "::endgroup::"
+            echo "::group::Clippy"
+            cargo clippy -p pika_core --lib --tests -- -D warnings
+            echo "::endgroup::"
+            echo "::group::Test"
+            cargo test -p pika_core --lib --tests
+            echo "::endgroup::"
+            echo "::group::Build CLI"
+            cargo build -p pika-cli
+            echo "::endgroup::"
+          '

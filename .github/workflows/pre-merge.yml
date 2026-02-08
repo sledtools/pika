@@ -10,7 +10,7 @@ env:
 
 jobs:
   check:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -20,27 +20,23 @@ jobs:
           git clone --no-checkout https://github.com/marmot-protocol/mdk.git ../../mdk
           cd ../../mdk && git checkout $MDK_REV
 
-      # Persistent Nix store cache
-      - uses: useblacksmith/stickydisk@v1
+      # Nix store cache
+      - uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: nix-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-keys: nix-v1-${{ runner.os }}-
           path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
-          fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      # Cargo build cache
-      - uses: useblacksmith/stickydisk@v1
+      # Cargo cache
+      - uses: actions/cache@v4
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
+          key: cargo-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-v1-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       - name: Format
         run: nix develop -c just fmt

@@ -171,6 +171,12 @@ async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {
         .create_key_package_for_event(&keys.public_key(), relays.clone())
         .context("create key package")?;
 
+    // Strip NIP-70 "protected" tag — many popular relays reject protected events.
+    let tags: Tags = tags
+        .into_iter()
+        .filter(|t| !matches!(t.kind(), TagKind::Protected))
+        .collect();
+
     let event = EventBuilder::new(Kind::MlsKeyPackage, content)
         .tags(tags)
         .sign_with_keys(&keys)

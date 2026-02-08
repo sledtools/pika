@@ -35,6 +35,85 @@ fi
 
 "$ADB" -s "$SERIAL" install -r "$APK" >/dev/null
 
+maybe_setup_adb_reverse() {
+  # Optional host->emulator port wiring to mimic "app can reach localhost services":
+  #   PIKA_ADB_REVERSE_PORTS="32820"               # device 32820 -> host 32820
+  #   PIKA_ADB_REVERSE_PORTS="18080:32820,9090"   # device 18080 -> host 32820; device 9090 -> host 9090
+  local ports="${PIKA_ADB_REVERSE_PORTS:-${PIKA_ADB_REVERSE:-}}"
+  if [ -z "${ports:-}" ]; then
+    return 0
+  fi
+
+  IFS=',' read -r -a items <<<"$ports"
+  for item in "${items[@]}"; do
+    item="$(echo "$item" | tr -d '[:space:]')"
+    if [ -z "$item" ]; then
+      continue
+    fi
+    local dev_port host_port
+    if echo "$item" | grep -q ':'; then
+      dev_port="${item%%:*}"
+      host_port="${item##*:}"
+    else
+      dev_port="$item"
+      host_port="$item"
+    fi
+    echo "adb reverse tcp:${dev_port} -> tcp:${host_port}"
+    "$ADB" -s "$SERIAL" reverse "tcp:${dev_port}" "tcp:${host_port}" >/dev/null
+  done
+}
+
+maybe_setup_adb_reverse
+
+maybe_write_config() {
+  # Optional dev-only relay override:
+  #   PIKA_RELAY_URLS="ws://10.0.2.2:18080" just run-android
+  # This writes `pika_config.json` into the app sandbox via `run-as` (debug builds only).
+  local relays="${PIKA_RELAY_URLS:-${PIKA_RELAY_URL:-}}"
+  if [ -z "${relays:-}" ]; then
+    return 0
+  fi
+
+  # Comma-separated list -> JSON array.
+  local json
+  json="$(
+    python3 - <<PY
+import json
+relays = "${relays}".strip()
+items = [x.strip() for x in relays.split(",") if x.strip()]
+print(json.dumps({"relay_urls": items, "key_package_relay_urls": items}))
+PY
+  )"
+
+  echo "writing relay override to app config (pika_config.json)"
+  "$ADB" -s "$SERIAL" shell am force-stop com.pika.app >/dev/null 2>&1 || true
+
+  # Write via /data/local/tmp then copy into the app sandbox. This avoids fragile quoting and
+  # ensures we write exactly `${filesDir}/pika_config.json` (Rust uses `data_dir/pika_config.json`,
+  # and Android passes `context.filesDir` as `data_dir`).
+  tmp_remote="/data/local/tmp/pika_config.json"
+  printf '%s' "$json" | "$ADB" -s "$SERIAL" shell "cat > '$tmp_remote'"
+
+  # Copy into the app's filesDir (debug builds allow `run-as`).
+  #
+  # Note: `run-as` does not reliably set `$HOME`; use absolute app paths instead.
+  "$ADB" -s "$SERIAL" shell "run-as com.pika.app sh -c '
+    set -e
+    if cp \"${tmp_remote}\" /data/user/0/com.pika.app/files/pika_config.json 2>/dev/null; then
+      cat /data/user/0/com.pika.app/files/pika_config.json >/dev/null
+      exit 0
+    fi
+    if cp \"${tmp_remote}\" /data/data/com.pika.app/files/pika_config.json 2>/dev/null; then
+      cat /data/data/com.pika.app/files/pika_config.json >/dev/null
+      exit 0
+    fi
+    echo \"error: could not write app config via run-as\" >&2
+    exit 1
+  '"
+}
+
+maybe_write_config
+
 echo "launching com.pika.app"
 # Prefer `am start` with a resolved launcher activity (more reliable than monkey).
 resolved="$("$ADB" -s "$SERIAL" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER com.pika.app 2>/dev/null | tr -d '\r' | tail -n 1 || true)"

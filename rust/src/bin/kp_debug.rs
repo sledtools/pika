@@ -6,6 +6,13 @@ use mdk_core::MDK;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
 
+fn looks_like_hex(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && (s.len() % 2 == 0)
+        && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -76,6 +83,9 @@ fn main() -> Result<()> {
             println!("  tag: {:?}", t.as_slice());
         }
         println!("content_len={}", ev.content.len());
+        let prefix = ev.content.chars().take(64).collect::<String>();
+        println!("content_prefix={:?}", prefix);
+        println!("content_looks_like_hex={}", looks_like_hex(&ev.content));
 
         // Open an MDK instance just to parse/validate the peer key package.
         let db_path = std::path::Path::new("/tmp")
@@ -176,4 +186,3 @@ fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
     out.tags = tags.into_iter().collect();
     out
 }
-

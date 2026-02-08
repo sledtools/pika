@@ -711,7 +711,11 @@ impl AppCore {
                     };
                     (sess.client.clone(), self.core_sender.clone())
                 };
+                // Fallback relays for discovering peer key packages:
+                // - key-package relays (protected kind 443 publishes for modern clients)
+                // - plus our "popular" relays to support peers that only publish key packages there.
                 let fallback_kp_relays = self.key_package_relays();
+                let fallback_popular_relays = self.default_relays();
                 self.runtime.spawn(async move {
                     // 1) Discover the peer's key-package relays (kind 10051), per NIP-104.
                     // These events are not protected, so they can live on "popular" relays.
@@ -742,7 +746,14 @@ impl AppCore {
                     }
 
                     if candidate_kp_relays.is_empty() {
-                        candidate_kp_relays = fallback_kp_relays;
+                        let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
+                        for r in fallback_kp_relays.iter().cloned() {
+                            s.insert(r);
+                        }
+                        for r in fallback_popular_relays.iter().cloned() {
+                            s.insert(r);
+                        }
+                        candidate_kp_relays = s.into_iter().collect();
                     }
 
                     // Ensure these relays exist in the pool and are connected before requesting from them.

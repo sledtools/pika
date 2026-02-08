@@ -9,8 +9,16 @@ fi
 
 # agent-device runs a long-lived daemon under ~/.agent-device. If it was started previously
 # under a different environment, it can keep failing even after DEVELOPER_DIR is fixed.
-rm -f "$HOME/.agent-device/daemon.json" 2>/dev/null || true
+#
+# IMPORTANT: Do NOT reset the daemon by default; we rely on sessions across commands
+# for manual QA scripts (open -> snapshot/find/click/...).
+#
+# If you hit issues like "simctl not found" after changing Xcode installs, you can
+# force a clean start:
+#   PIKA_AGENT_DEVICE_CLEAN_DAEMON=1 ./tools/agent-device ...
+if [ "${PIKA_AGENT_DEVICE_CLEAN_DAEMON:-0}" = "1" ]; then
+  rm -f "$HOME/.agent-device/daemon.json" 2>/dev/null || true
+fi
 
 # Pin a known-good version (older globally-installed versions can be picked up by npx).
 exec npx --yes "agent-device@0.2.4" "$@"
-

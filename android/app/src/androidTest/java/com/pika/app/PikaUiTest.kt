@@ -25,14 +25,24 @@ class PikaUiTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
 
+    private fun hardResetForeground() {
+        // Avoid doing anything that would background the current Activity: Compose tests depend on
+        // the Activity being in foreground so the semantics tree exists.
+        //
+        // If external tools (agent-device/uiautomator) are running concurrently, they can still
+        // interfere; run UI tests in isolation.
+    }
+
     @Test
     fun createAccount_noteToSelf_sendMessage_and_logout() {
+        hardResetForeground()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
-        // If we land on Login, create an account; otherwise we may have restored a prior session.
-        runCatching {
-            compose.onNodeWithTag(TestTags.LOGIN_CREATE_ACCOUNT).performClick()
-        }
+        // Ensure we start from a known state (tests run on a shared emulator).
+        runOnMain { AppManager.getInstance(ctx).logout() }
+
+        // Create an account deterministically.
+        compose.onNodeWithTag(TestTags.LOGIN_CREATE_ACCOUNT).performClick()
 
         compose.waitUntil(30_000) {
             runCatching {

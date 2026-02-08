@@ -12,6 +12,10 @@ fmt:
 clippy:
   cargo clippy -p pika_core --all-targets -- -D warnings
 
+pre-merge: fmt clippy test
+  cargo build -p pika-cli
+  @echo "pre-merge complete"
+
 qa: fmt clippy test android-assemble ios-build-sim
   @echo "QA complete"
 

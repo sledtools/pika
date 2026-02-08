@@ -1,0 +1,55 @@
+name: pre-merge
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  MDK_REV: "1ad73229ab712018c078d5295e11ec38e10d6a24"
+
+jobs:
+  check:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clone mdk to the relative path Cargo.toml expects (../../mdk)
+      - name: Clone mdk
+        run: |
+          git clone --no-checkout https://github.com/marmot-protocol/mdk.git ../../mdk
+          cd ../../mdk && git checkout $MDK_REV
+
+      # Persistent Nix store cache
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      # Cargo build cache
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - name: Format
+        run: nix develop -c just fmt
+
+      - name: Clippy
+        run: nix develop -c just clippy
+
+      - name: Test
+        run: nix develop -c just test
+
+      - name: Build CLI
+        run: nix develop -c cargo build -p pika-cli

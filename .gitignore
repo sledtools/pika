@@ -20,3 +20,7 @@ emulator.log
 
 .worktrees
 worktrees
+
+# Local dev artifacts
+.pika-cli-test-nsec
+.env

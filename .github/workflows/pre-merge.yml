@@ -33,10 +33,10 @@ jobs:
         run: nix develop -c just fmt
 
       - name: Clippy
-        run: nix develop -c just clippy
+        run: nix develop -c cargo clippy -p pika_core --lib --tests -- -D warnings
 
       - name: Test
-        run: nix develop -c just test
+        run: nix develop -c cargo test -p pika_core --lib --tests
 
       - name: Build CLI
         run: nix develop -c cargo build -p pika-cli

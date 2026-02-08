@@ -3,16 +3,19 @@ set shell := ["bash", "-lc"]
 default:
   @just --list
 
-test:
-  cargo test -p pika_core
+test *ARGS:
+  cargo test -p pika_core {{ARGS}}
 
 fmt:
   cargo fmt --all --check
 
-clippy:
-  cargo clippy -p pika_core --all-targets -- -D warnings
+clippy *ARGS:
+  cargo clippy -p pika_core {{ARGS}} -- -D warnings
 
-pre-merge: fmt clippy test
+# CI-safe pre-merge: skips cdylib/staticlib (OOM on 7GB GitHub runners).
+pre-merge: fmt
+  just clippy --lib --tests
+  just test --lib --tests
   cargo build -p pika-cli
   @echo "pre-merge complete"
 

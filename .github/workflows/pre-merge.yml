@@ -7,43 +7,30 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
 
-      # Nix store cache
-      - uses: actions/cache@v4
+      # Persistent Nix store cache
+      - uses: useblacksmith/stickydisk@v1
         with:
-          key: nix-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}
-          restore-keys: nix-v1-${{ runner.os }}-
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
           path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      # Cargo cache
-      - uses: actions/cache@v4
+      # Persistent Cargo cache
+      - uses: useblacksmith/stickydisk@v1
         with:
-          key: cargo-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-v1-${{ runner.os }}-
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
 
-      # Single nix develop invocation to avoid repeated flake evaluation + shell setup
-      - name: pre-merge
-        run: |
-          nix develop -c bash -c '
-            set -euo pipefail
-            echo "::group::Format"
-            just fmt
-            echo "::endgroup::"
-            echo "::group::Clippy"
-            cargo clippy -p pika_core --lib --tests -- -D warnings
-            echo "::endgroup::"
-            echo "::group::Test"
-            cargo test -p pika_core --lib --tests
-            echo "::endgroup::"
-            echo "::group::Build CLI"
-            cargo build -p pika-cli
-            echo "::endgroup::"
-          '
+      - run: nix develop -c just pre-merge

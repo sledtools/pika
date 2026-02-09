@@ -36,7 +36,8 @@ pub struct FfiApp {
 impl FfiApp {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Arc<Self> {
-        logging::init_logging();
+        logging::init_logging(&data_dir);
+        tracing::info!(data_dir = %data_dir, "FfiApp::new() starting");
 
         let (update_tx, update_rx) = flume::unbounded();
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();

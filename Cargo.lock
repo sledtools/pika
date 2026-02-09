@@ -1751,29 +1751,6 @@ dependencies = [
 [[package]]
 name = "mdk-core"
 version = "0.5.3"
-dependencies = [
- "blurhash",
- "chacha20poly1305",
- "hex",
- "hkdf",
- "image",
- "kamadak-exif",
- "mdk-storage-traits 0.5.1",
- "nostr",
- "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
- "openmls_traits",
- "serde",
- "sha2",
- "thiserror 2.0.18",
- "tls_codec",
- "tracing",
-]
-
-[[package]]
-name = "mdk-core"
-version = "0.5.3"
 source = "git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24#1ad73229ab712018c078d5295e11ec38e10d6a24"
 dependencies = [
  "blurhash",
@@ -1782,7 +1759,7 @@ dependencies = [
  "hkdf",
  "image",
  "kamadak-exif",
- "mdk-storage-traits 0.5.1 (git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24)",
+ "mdk-storage-traits",
  "nostr",
  "openmls",
  "openmls_basic_credential",
@@ -1798,32 +1775,12 @@ dependencies = [
 [[package]]
 name = "mdk-sqlite-storage"
 version = "0.5.1"
-dependencies = [
- "getrandom 0.3.4",
- "hex",
- "keyring-core",
- "mdk-storage-traits 0.5.1",
- "nostr",
- "openmls",
- "openmls_traits",
- "refinery",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "mdk-sqlite-storage"
-version = "0.5.1"
 source = "git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24#1ad73229ab712018c078d5295e11ec38e10d6a24"
 dependencies = [
  "getrandom 0.3.4",
  "hex",
  "keyring-core",
- "mdk-storage-traits 0.5.1 (git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24)",
+ "mdk-storage-traits",
  "nostr",
  "openmls",
  "openmls_traits",
@@ -1834,19 +1791,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "mdk-storage-traits"
-version = "0.5.1"
-dependencies = [
- "nostr",
- "openmls",
- "openmls_traits",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "zeroize",
 ]
 
 [[package]]
@@ -1926,6 +1870,15 @@ name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
+
+[[package]]
+name = "ndk-sys"
+version = "0.5.0+25.2.9519653"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c196769dd60fd4f363e11d948139556a344e79d451aeb2fa2fd040738ef7691"
+dependencies = [
+ "jni-sys",
+]
 
 [[package]]
 name = "negentropy"
@@ -2199,6 +2152,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "paranoid-android"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "101795d63d371b43e38d6e7254677657be82f17022f7f7893c268f33ac0caadc"
+dependencies = [
+ "lazy_static",
+ "ndk-sys",
+ "sharded-slab",
+ "smallvec",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2270,9 +2237,9 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
- "mdk-core 0.5.3",
- "mdk-sqlite-storage 0.5.1",
- "mdk-storage-traits 0.5.1",
+ "mdk-core",
+ "mdk-sqlite-storage",
+ "mdk-storage-traits",
  "nostr-sdk",
  "rand 0.8.5",
  "serde",
@@ -2296,17 +2263,19 @@ dependencies = [
  "jni",
  "keyring-core",
  "libsqlite3-sys",
- "mdk-core 0.5.3 (git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24)",
- "mdk-sqlite-storage 0.5.1 (git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24)",
- "mdk-storage-traits 0.5.1 (git+https://github.com/marmot-protocol/mdk?rev=1ad73229ab712018c078d5295e11ec38e10d6a24)",
+ "mdk-core",
+ "mdk-sqlite-storage",
+ "mdk-storage-traits",
  "ndk-context",
  "nostr-sdk",
+ "paranoid-android",
  "rand 0.8.5",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.27.0",
  "tracing",
+ "tracing-oslog",
  "tracing-subscriber",
  "uniffi",
 ]
@@ -3445,6 +3414,18 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-oslog"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d76902d2a8d5f9f55a81155c08971734071968c90f2d9bfe645fe700579b2950"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -317,7 +317,10 @@ impl AppCore {
 
     pub fn handle_message(&mut self, msg: CoreMsg) {
         match msg {
-            CoreMsg::Action(action) => self.handle_action(action),
+            CoreMsg::Action(ref action) => {
+                tracing::info!(?action, "dispatch");
+                self.handle_action(action.clone());
+            }
             CoreMsg::Internal(internal) => self.handle_internal(*internal),
             CoreMsg::Request(req) => self.handle_request(req),
         }
@@ -333,12 +336,17 @@ impl AppCore {
 
     fn handle_internal(&mut self, internal: InternalEvent) {
         match internal {
-            InternalEvent::Toast(msg) => self.toast(msg),
-            InternalEvent::KeyPackagePublished { ok, error } => {
+            InternalEvent::Toast(ref msg) => {
+                tracing::info!(msg, "toast");
+                self.toast(msg.clone());
+                return;
+            }
+            InternalEvent::KeyPackagePublished { ok, ref error } => {
+                tracing::info!(ok, ?error, "key_package_published");
                 if !ok {
                     self.toast(format!(
                         "Key package publish failed: {}",
-                        error.unwrap_or_else(|| "unknown error".into())
+                        error.clone().unwrap_or_else(|| "unknown error".into())
                     ));
                 }
             }
@@ -372,6 +380,13 @@ impl AppCore {
                 error,
             } => {
                 let network_enabled = self.network_enabled();
+                tracing::info!(
+                    peer = %peer_pubkey.to_hex(),
+                    kp_found = key_package_event.is_some(),
+                    ?error,
+                    kp_relays = ?candidate_kp_relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+                    "peer_key_package_fetched"
+                );
                 if let Some(err) = error {
                     self.toast(err);
                     return;
@@ -470,23 +485,38 @@ impl AppCore {
                 self.emit_router();
             }
             InternalEvent::GiftWrapReceived { wrapper, rumor } => {
+                tracing::info!(
+                    wrapper_id = %wrapper.id.to_hex(),
+                    rumor_kind = rumor.kind.as_u16(),
+                    "giftwrap_received"
+                );
                 let Some(sess) = self.session.as_mut() else {
+                    tracing::warn!("giftwrap_received but no session");
                     return;
                 };
 
                 if rumor.kind != Kind::MlsWelcome {
+                    tracing::debug!(kind = rumor.kind.as_u16(), "giftwrap ignored (not MlsWelcome)");
                     return;
                 }
 
                 let welcome = match sess.mdk.process_welcome(&wrapper.id, &rumor) {
                     Ok(w) => w,
                     Err(e) => {
+                        tracing::error!(%e, "process_welcome failed");
                         self.toast(format!("Welcome processing failed: {e}"));
                         return;
                     }
                 };
 
+                tracing::info!(
+                    nostr_group_id = %hex::encode(&welcome.nostr_group_id),
+                    group_name = %welcome.group_name,
+                    "welcome_accepted"
+                );
+
                 if let Err(e) = sess.mdk.accept_welcome(&welcome) {
+                    tracing::error!(%e, "accept_welcome failed");
                     self.toast(format!("Welcome accept failed: {e}"));
                     return;
                 }
@@ -502,12 +532,15 @@ impl AppCore {
                 self.refresh_all_from_storage();
             }
             InternalEvent::GroupMessageReceived { event } => {
+                tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
                 let Some(sess) = self.session.as_mut() else {
+                    tracing::warn!("group_message but no session");
                     return;
                 };
                 let result = match sess.mdk.process_message(&event) {
                     Ok(r) => r,
                     Err(e) => {
+                        tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
                         self.toast(format!("Message decrypt failed: {e}"));
                         return;
                     }
@@ -722,9 +755,11 @@ impl AppCore {
                 // - plus our "popular" relays to support peers that only publish key packages there.
                 let fallback_kp_relays = self.key_package_relays();
                 let fallback_popular_relays = self.default_relays();
+                tracing::info!(peer = %peer_pubkey.to_hex(), "create_chat: fetching peer key package");
                 self.runtime.spawn(async move {
                     // 1) Discover the peer's key-package relays (kind 10051), per NIP-104.
                     // These events are not protected, so they can live on "popular" relays.
+                    tracing::info!(peer = %peer_pubkey.to_hex(), "fetching kind 10051 (MlsKeyPackageRelays)");
                     let kp_relay_list_filter = Filter::new()
                         .author(peer_pubkey)
                         .kind(Kind::MlsKeyPackageRelays)
@@ -752,6 +787,7 @@ impl AppCore {
                     }
 
                     if candidate_kp_relays.is_empty() {
+                        tracing::info!("no kind 10051 found, using fallback relays");
                         let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
                         for r in fallback_kp_relays.iter().cloned() {
                             s.insert(r);
@@ -761,6 +797,11 @@ impl AppCore {
                         }
                         candidate_kp_relays = s.into_iter().collect();
                     }
+
+                    tracing::info!(
+                        kp_relays = ?candidate_kp_relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+                        "fetching kind 443 from relays"
+                    );
 
                     // Ensure these relays exist in the pool and are connected before requesting from them.
                     for r in candidate_kp_relays.iter().cloned() {
@@ -1144,13 +1185,17 @@ impl AppCore {
         let pubkey_hex = pubkey.to_hex();
         let npub = pubkey.to_bech32().unwrap_or(pubkey_hex.clone());
 
+        tracing::info!(pubkey = %pubkey_hex, npub = %npub, "start_session");
+
         // MDK per-identity encrypted sqlite DB.
         let mdk = open_mdk(&self.data_dir, &pubkey)?;
+        tracing::info!("mdk opened");
 
         let client = Client::new(keys.clone());
 
         if self.network_enabled() {
             let relays = self.all_session_relays();
+            tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let c = client.clone();
             self.runtime.block_on(async move {
                 for r in relays {
@@ -1158,6 +1203,7 @@ impl AppCore {
                 }
                 c.connect().await;
             });
+            tracing::info!("relays connected");
         }
 
         let sess = Session {

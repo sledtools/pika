@@ -73,4 +73,3 @@ pub enum InternalEvent {
         group_sub: Option<nostr_sdk::prelude::SubscriptionId>,
     },
 }
-

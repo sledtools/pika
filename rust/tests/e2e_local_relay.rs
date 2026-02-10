@@ -64,6 +64,8 @@ struct RelayState {
     conns: HashMap<u64, ConnEntry>,
     delivered: Vec<(u64, String, EventId)>, // (conn_id, sub_id, event_id)
     sent_text: Vec<(u64, String)>,          // (conn_id, raw json)
+    // Test knob: reject group message publishes (kind 445) by responding OK(false).
+    reject_kind445: bool,
 }
 
 struct ConnEntry {
@@ -79,6 +81,7 @@ fn start_local_relay() -> (LocalRelayHandle, JoinHandle<()>) {
         conns: HashMap::new(),
         delivered: Vec::new(),
         sent_text: Vec::new(),
+        reject_kind445: false,
     }));
 
     let state_for_thread = state.clone();
@@ -257,6 +260,16 @@ fn handle_client_msg(state: &Arc<Mutex<RelayState>>, conn_id: u64, text: &str) {
             let Ok(ev) = serde_json::from_value::<Event>(ev_v.clone()) else {
                 return;
             };
+
+            let reject = {
+                let st = state.lock().unwrap();
+                st.reject_kind445 && ev.kind == Kind::MlsGroupMessage
+            };
+            if reject {
+                let v = serde_json::json!(["OK", ev.id, false, "blocked by test relay"]);
+                let _ = send_json(state, conn_id, v);
+                return;
+            }
 
             let is_new = {
                 let mut st = state.lock().unwrap();
@@ -737,6 +750,205 @@ fn alice_sends_bob_receives_over_local_relay() {
         .find(|c| c.chat_id == bob.state().current_chat.as_ref().unwrap().chat_id)
         .and_then(|c| c.last_message.clone());
     assert_eq!(preview.as_deref(), Some("hi-from-alice"));
+
+    drop(general_relay);
+    drop(kp_relay);
+    general_thread.join().unwrap();
+    kp_thread.join().unwrap();
+}
+
+#[test]
+fn send_failure_then_retry_succeeds_over_local_relay() {
+    let (relay, relay_thread) = start_local_relay();
+
+    let dir = tempdir().unwrap();
+    write_config(&dir.path().to_string_lossy(), &relay.url, Some(&relay.url));
+
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("logged in", Duration::from_secs(10), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let my_npub = match app.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    // Note-to-self group (no peer key package fetch).
+    app.dispatch(AppAction::CreateChat { peer_npub: my_npub });
+    wait_until("chat opened", Duration::from_secs(10), || {
+        app.state().current_chat.is_some()
+    });
+
+    let chat_id = app.state().current_chat.as_ref().unwrap().chat_id.clone();
+
+    // Force publish failure for kind 445.
+    {
+        let mut st = relay.state.lock().unwrap();
+        st.reject_kind445 = true;
+    }
+
+    let content = "retry-me";
+    app.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: content.into(),
+    });
+
+    wait_until("message failed", Duration::from_secs(10), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .and_then(|c| c.messages.iter().find(|m| m.content == content))
+            .map(|m| matches!(m.delivery, pika_core::MessageDeliveryState::Failed { .. }))
+            .unwrap_or(false)
+    });
+
+    let msg_id = app
+        .state()
+        .current_chat
+        .as_ref()
+        .and_then(|c| c.messages.iter().find(|m| m.content == content))
+        .map(|m| m.id.clone())
+        .expect("missing message");
+
+    // Allow publishes and retry.
+    {
+        let mut st = relay.state.lock().unwrap();
+        st.reject_kind445 = false;
+    }
+
+    app.dispatch(AppAction::RetryMessage {
+        chat_id: chat_id.clone(),
+        message_id: msg_id,
+    });
+
+    wait_until("message sent", Duration::from_secs(10), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .and_then(|c| c.messages.iter().find(|m| m.content == content))
+            .map(|m| matches!(m.delivery, pika_core::MessageDeliveryState::Sent))
+            .unwrap_or(false)
+    });
+
+    drop(relay);
+    relay_thread.join().unwrap();
+}
+
+#[test]
+fn duplicate_group_message_does_not_duplicate_in_ui() {
+    let (general_relay, general_thread) = start_local_relay();
+    let (kp_relay, kp_thread) = start_local_relay();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config(
+        &dir_a.path().to_string_lossy(),
+        &general_relay.url,
+        Some(&general_relay.url),
+    );
+    write_config(
+        &dir_b.path().to_string_lossy(),
+        &general_relay.url,
+        Some(&kp_relay.url),
+    );
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let (bob_npub, bob_pubkey_hex) = match bob.state().auth {
+        AuthState::LoggedIn { npub, pubkey } => (npub, pubkey),
+        _ => unreachable!(),
+    };
+    let bob_pubkey = PublicKey::parse(&bob_pubkey_hex).expect("pubkey parse");
+
+    wait_until("bob published kind 10051", Duration::from_secs(10), || {
+        let st = general_relay.state.lock().unwrap();
+        st.events
+            .iter()
+            .any(|e| e.kind == Kind::MlsKeyPackageRelays && e.pubkey == bob_pubkey)
+    });
+
+    // Create DM (key package fetch + giftwrap welcome).
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub,
+    });
+    wait_until("alice chat opened", Duration::from_secs(20), || {
+        alice.state().current_chat.is_some()
+    });
+    wait_until("bob has chat", Duration::from_secs(20), || {
+        !bob.state().chat_list.is_empty()
+    });
+
+    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    bob.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob opened chat", Duration::from_secs(10), || {
+        bob.state().current_chat.is_some()
+    });
+
+    // Send a message from Alice.
+    let pre_445 = {
+        let st = general_relay.state.lock().unwrap();
+        st.events
+            .iter()
+            .filter(|e| e.kind == Kind::MlsGroupMessage)
+            .count()
+    };
+    let nonce = format!(
+        "dup-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let content = format!("hello-{nonce}");
+    alice.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: content.clone(),
+    });
+
+    wait_until("bob received message", Duration::from_secs(20), || {
+        bob.state()
+            .current_chat
+            .as_ref()
+            .map(|c| c.messages.iter().filter(|m| m.content == content).count() == 1)
+            .unwrap_or(false)
+    });
+
+    // Re-broadcast the same kind 445 event to simulate duplicate delivery.
+    let ev = {
+        let st = general_relay.state.lock().unwrap();
+        st.events
+            .iter()
+            .filter(|e| e.kind == Kind::MlsGroupMessage)
+            .skip(pre_445)
+            .last()
+            .cloned()
+            .expect("missing kind 445 event on relay")
+    };
+    broadcast_event(&general_relay.state, &ev);
+
+    // Bob should still render a single copy of the plaintext message.
+    wait_until("no duplicate in UI", Duration::from_secs(10), || {
+        bob.state()
+            .current_chat
+            .as_ref()
+            .map(|c| c.messages.iter().filter(|m| m.content == content).count() == 1)
+            .unwrap_or(false)
+    });
 
     drop(general_relay);
     drop(kp_relay);

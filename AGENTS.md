@@ -1,3 +1,6 @@
+Read `~/configs/GLOBAL-AGENTS.md` (fallback: https://raw.githubusercontent.com/justinmoon/configs/master/GLOBAL-AGENTS.md). Skip if both unavailable.
+Run `./scripts/agent-brief` first thing to get a live context snapshot.
+
 # AGENTS.md
 
 ## Overview
@@ -34,18 +37,3 @@ The bot listens on: `wss://relay.primal.net`, `wss://nos.lol`, `wss://relay.damu
 | openclaw-marmot | `~/code/openclaw-marmot` | OpenClaw plugin + Rust sidecar daemon for Marmot messaging. Deployed on the bot server. |
 | openclaw | `~/code/openclaw` | OpenClaw gateway. The bot framework that hosts the marmot plugin. |
 | infra | `~/code/infra` | NixOS deployment config for the Hetzner server (`openclaw-prod`). |
-
-## pika-cli usage
-
-```bash
-# Identity + key package
-pika-cli --state-dir /tmp/test --relay wss://relay.primal.net --relay wss://nos.lol --relay wss://relay.damus.io identity
-pika-cli --state-dir /tmp/test --relay wss://relay.primal.net --relay wss://nos.lol --relay wss://relay.damus.io publish-kp
-
-# Invite the bot and chat
-pika-cli ... invite --peer npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38
-pika-cli ... send --group <hex> --content "hello"
-pika-cli ... listen --timeout 60
-```
-
-Each command connects, does its operation, prints JSON to stdout, and exits. State persists in `--state-dir` between runs.

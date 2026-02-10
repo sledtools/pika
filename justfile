@@ -1,14 +1,18 @@
 set shell := ["bash", "-lc"]
 
+# List available recipes.
 default:
   @just --list
 
+# Run pika_core tests.
 test *ARGS:
   cargo test -p pika_core {{ARGS}}
 
+# Check formatting (cargo fmt).
 fmt:
   cargo fmt --all --check
 
+# Lint with clippy.
 clippy *ARGS:
   cargo clippy -p pika_core {{ARGS}} -- -D warnings
 
@@ -17,18 +21,20 @@ pre-merge: fmt
   just clippy --lib --tests
   just test --lib --tests
   cargo build -p pika-cli
+  npx -y @justinmoon/agent-tools check-docs
+  npx -y @justinmoon/agent-tools check-justfile
   @echo "pre-merge complete"
 
+# Full QA: fmt, clippy, test, android build, iOS sim build.
 qa: fmt clippy test android-assemble ios-build-sim
   @echo "QA complete"
 
-# End-to-end suites:
-# - local relay: deterministic docker relay + local Rust bot
-# - public relays: nondeterministic; for production debugging
+# Deterministic E2E: local docker relay + local Rust bot (iOS + Android).
 e2e-local-relay:
   just ios-ui-e2e-local
   just android-ui-e2e-local
 
+# E2E against public relays + deployed bot (nondeterministic).
 e2e-public-relays:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -47,16 +53,15 @@ e2e-public-relays:
   just ios-ui-e2e
   just android-ui-e2e
 
-# Manual-only nondeterministic smoke test using public relays.
-# Optional:
-#   PIKA_E2E_RELAYS="wss://relay.damus.io,wss://relay.primal.net" just e2e-public
-#   PIKA_E2E_KP_RELAYS="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,..." just e2e-public
+# Rust-level E2E smoke test against public relays (nondeterministic).
 e2e-public:
   PIKA_E2E_PUBLIC=1 cargo test -p pika_core --test e2e_public_relays -- --ignored --nocapture
 
+# Build Rust core for the host platform.
 rust-build-host:
   cargo build -p pika_core --release
 
+# Generate Kotlin bindings via UniFFI.
 gen-kotlin: rust-build-host
   mkdir -p android/app/src/main/java/com/pika/app/rust
   # Resolve the host cdylib extension (dylib on macOS, so on Linux).
@@ -69,35 +74,36 @@ gen-kotlin: rust-build-host
     --no-format \
     --config rust/uniffi.toml
 
+# Cross-compile Rust core for Android (arm64, armv7, x86_64).
 android-rust:
   mkdir -p android/app/src/main/jniLibs
   cargo ndk -o android/app/src/main/jniLibs \
     -t arm64-v8a -t armeabi-v7a -t x86_64 \
     build -p pika_core --release
 
+# Write android/local.properties with SDK path.
 android-local-properties:
   SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"; \
   if [ -z "$SDK" ]; then echo "ANDROID_HOME/ANDROID_SDK_ROOT not set (run inside nix develop)"; exit 1; fi; \
   printf "sdk.dir=%s\n" "$SDK" > android/local.properties
 
+# Build Android debug APK.
 android-assemble: gen-kotlin android-rust android-local-properties
   cd android && ./gradlew :app:assembleDebug
 
+# Build and install Android debug APK on connected device.
 android-install: gen-kotlin android-rust android-local-properties
   cd android && ./gradlew :app:installDebug
 
+# Run Android instrumentation tests (requires running emulator/device).
 android-ui-test: gen-kotlin android-rust android-local-properties
-  # Requires a running emulator/device (instrumentation tests).
   cd android && ./gradlew :app:connectedDebugAndroidTest
 
-# Deterministic local E2E: runs against a local docker relay + local Rust bot (marmot-interop-lab-rust).
-# Requires Docker and a running emulator/device.
+# Android E2E: local docker relay + local Rust bot. Requires Docker + emulator.
 android-ui-e2e-local:
   ./tools/ui-e2e-local --platform android
 
-# Opt-in E2E: runs against public relays + deployed OpenClaw rust marmot bot.
-# This is intentionally NOT part of `just qa` because it is nondeterministic by nature.
-# Opt-in E2E: requires a running emulator/device.
+# Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
 android-ui-e2e: gen-kotlin android-rust android-local-properties
   #!/usr/bin/env bash
   set -euo pipefail
@@ -130,7 +136,7 @@ android-ui-e2e: gen-kotlin android-rust android-local-properties
     -Pandroid.testInstrumentationRunnerArguments.pika_key_package_relay_urls="$kp_relays" \
     -Pandroid.testInstrumentationRunnerArguments.pika_nsec="$nsec"
 
-# iOS (Xcode build happens outside Nix; Nix helps with Rust + xcodegen).
+# Generate Swift bindings via UniFFI.
 ios-gen-swift: rust-build-host
   mkdir -p ios/Bindings
   cargo run -q -p uniffi-bindgen -- generate \
@@ -139,6 +145,7 @@ ios-gen-swift: rust-build-host
     --out-dir ios/Bindings \
     --config rust/uniffi.toml
 
+# Cross-compile Rust core for iOS (device + simulator).
 ios-rust:
   set -euo pipefail; \
   DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
@@ -147,6 +154,7 @@ ios-rust:
   env -u LIBRARY_PATH DEVELOPER_DIR="$DEV_DIR" RUSTFLAGS="-C link-arg=-mios-simulator-version-min=17.0" cargo build -p pika_core --release --lib --target aarch64-apple-ios-sim; \
   env -u LIBRARY_PATH DEVELOPER_DIR="$DEV_DIR" RUSTFLAGS="-C link-arg=-mios-simulator-version-min=17.0" cargo build -p pika_core --release --lib --target x86_64-apple-ios
 
+# Build PikaCore.xcframework (device + simulator slices).
 ios-xcframework: ios-gen-swift ios-rust
   rm -rf ios/Frameworks/PikaCore.xcframework ios/.build
   mkdir -p ios/.build/headers ios/Frameworks
@@ -163,14 +171,17 @@ ios-xcframework: ios-gen-swift ios-rust
     -library ios/.build/libpika_core_sim.a -headers ios/.build/headers \
     -output ios/Frameworks/PikaCore.xcframework
 
+# Generate Xcode project via xcodegen.
 ios-xcodeproj:
   cd ios && xcodegen generate
 
+# Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
   DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
   if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi; \
   env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild -project ios/Pika.xcodeproj -target Pika -configuration Debug -sdk iphonesimulator build CODE_SIGNING_ALLOWED=NO
 
+# Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj
   DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
   if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi; \
@@ -179,13 +190,11 @@ ios-ui-test: ios-xcframework ios-xcodeproj
   env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
     -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 
-# Deterministic local E2E: runs the XCUITest ping/pong against a local docker relay + local Rust bot.
-# Requires Docker.
+# iOS E2E: local docker relay + local Rust bot. Requires Docker.
 ios-ui-e2e-local:
   ./tools/ui-e2e-local --platform ios
 
-# Opt-in E2E: runs the XCUITest that hits public relays + deployed OpenClaw rust marmot bot.
-# Enable by setting PIKA_UI_E2E=1 (and optional overrides).
+# iOS E2E: public relays + deployed bot (nondeterministic). Requires PIKA_UI_E2E=1.
 ios-ui-e2e: ios-xcframework ios-xcodeproj
   #!/usr/bin/env bash
   set -euo pipefail
@@ -221,36 +230,43 @@ ios-ui-e2e: ios-xcframework ios-xcodeproj
 device:
   ./tools/agent-device --help
 
+# Show Android manual QA instructions.
 android-manual-qa:
   @echo "Manual QA prompt: prompts/android-agent-device-manual-qa.md"
   @echo "Tip: run `npx --yes agent-device --platform android open com.pika.app` then follow the prompt."
 
+# Show iOS manual QA instructions.
 ios-manual-qa:
   @echo "Manual QA prompt: prompts/ios-agent-device-manual-qa.md"
   @echo "Tip: run `./tools/agent-device --platform ios open com.pika.app` then follow the prompt."
 
+# Build, install, and launch Android app on connected device.
 run-android:
   ./tools/run-android
 
+# Build, install, and launch iOS app on simulator.
 run-ios:
   ./tools/run-ios
 
+# Check iOS dev environment (Xcode, simulators, runtimes).
 doctor-ios:
   ./tools/ios-runtime-doctor
 
-# Local-first interop baseline with the Rust OpenClaw-style bot (marmot-interop-lab-rust).
-# Opt-in: requires Docker and ~/code/marmot-interop-lab-rust (override with MARMOT_INTEROP_RUST_DIR).
+# Interop baseline: local Rust bot. Requires Docker + ~/code/marmot-interop-lab-rust.
 interop-rust-baseline:
   ./tools/interop-rust-baseline
 
+# Interactive interop test (manual send/receive with local bot).
 interop-rust-manual:
   ./tools/interop-rust-baseline --manual
 
 # ── pika-cli (Marmot protocol CLI) ──────────────────────────────────────────
 
+# Build pika-cli (debug).
 cli-build:
   cargo build -p pika-cli
 
+# Build pika-cli (release).
 cli-release:
   cargo build -p pika-cli --release
 

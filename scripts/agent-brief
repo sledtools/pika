@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -u -o pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+titles=()
+cmds=()
+descs=()
+
+# --- Commands ---
+
+titles+=("just commands")
+cmds+=("just --list")
+descs+=("Available tasks.")
+
+# --- Docs ---
+
+if [[ -d "${repo_root}/docs" ]]; then
+  titles+=("Docs")
+  cmds+=("npx -y @justinmoon/agent-tools list-docs")
+  descs+=("Project documentation index.")
+fi
+
+# --- CLI help ---
+
+titles+=("pika-cli help")
+cmds+=("cargo run -q -p pika-cli -- --help")
+descs+=("Marmot protocol CLI for testing and agent automation.")
+
+# --- Device automation ---
+
+titles+=("agent-device help")
+cmds+=("npx --yes agent-device --help")
+descs+=("Device automation for manual QA on iOS/Android.")
+
+# --- Run all in parallel ---
+
+outs=()
+pids=()
+for i in "${!cmds[@]}"; do
+  out="${tmpdir}/out_${i}"
+  outs+=("${out}")
+  bash -c "${cmds[$i]}" >"${out}" 2>&1 &
+  pids+=($!)
+done
+
+statuses=()
+for i in "${!pids[@]}"; do
+  status=0
+  if ! wait "${pids[$i]}"; then
+    status=$?
+  fi
+  statuses+=("${status}")
+done
+
+# --- Output ---
+
+printf "# Agent Brief\n\n"
+printf "Live context snapshot for AI agents.\n\n"
+printf "_Generated:_ %s\n\n" "$(date -u +"%Y-%m-%d %H:%M:%SZ")"
+
+for i in "${!cmds[@]}"; do
+  printf '## %s\n\n' "${titles[$i]}"
+  printf '_Command:_ `%s`\n\n' "${cmds[$i]}"
+  printf '_Purpose:_ %s\n\n' "${descs[$i]}"
+  if [[ "${statuses[$i]}" -ne 0 ]]; then
+    printf '_Status:_ failed (exit %s)\n\n' "${statuses[$i]}"
+  fi
+  printf '```\n'
+  cat "${outs[$i]}"
+  printf '\n```\n\n'
+done

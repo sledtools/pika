@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -66,6 +67,7 @@ struct Session {
     keys: Keys,
     mdk: PikaMdk,
     client: Client,
+    alive: Arc<AtomicBool>,
 
     giftwrap_sub: Option<SubscriptionId>,
     group_sub: Option<SubscriptionId>,
@@ -1254,6 +1256,7 @@ impl AppCore {
             keys: keys.clone(),
             mdk,
             client: client.clone(),
+            alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
             group_sub: None,
             groups: HashMap::new(),
@@ -1291,6 +1294,7 @@ impl AppCore {
         self.subs_recompute_dirty = false;
 
         if let Some(sess) = self.session.take() {
+            sess.alive.store(false, Ordering::SeqCst);
             if self.network_enabled() {
                 let client = sess.client.clone();
                 self.runtime.spawn(async move {
@@ -1526,13 +1530,25 @@ impl AppCore {
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
         let h_values: Vec<String> = sess.groups.keys().cloned().collect();
+        let alive = sess.alive.clone();
 
         self.runtime.spawn(async move {
+            // Session lifecycle guard: if the user logs out while this task is in-flight, avoid
+            // side effects like reconnecting or re-subscribing for a dead session.
+            if !alive.load(Ordering::SeqCst) {
+                return;
+            }
             for r in needed_relays {
                 let _ = client.add_relay(r).await;
             }
+            if !alive.load(Ordering::SeqCst) {
+                return;
+            }
             client.connect().await;
             client.wait_for_connection(Duration::from_secs(4)).await;
+            if !alive.load(Ordering::SeqCst) {
+                return;
+            }
 
             // Tear down previous subscriptions for a clean recompute.
             if let Some(id) = prev_giftwrap_sub {
@@ -1541,15 +1557,21 @@ impl AppCore {
             if let Some(id) = prev_group_sub {
                 let _ = client.unsubscribe(&id).await;
             }
+            if !alive.load(Ordering::SeqCst) {
+                return;
+            }
 
             // GiftWrap inbox subscription (kind GiftWrap, #p = me).
             // NOTE: Filter `pubkey` matches the event author; GiftWraps can be authored by anyone,
             // so we must filter by the recipient `p` tag (spec-v2).
-            let gift_filter = Filter::new().kind(Kind::GiftWrap).custom_tags(
-                SingleLetterTag::lowercase(Alphabet::P),
-                vec![my_hex],
-            );
-            let giftwrap_sub = client.subscribe(gift_filter, None).await.ok().map(|o| o.val);
+            let gift_filter = Filter::new()
+                .kind(Kind::GiftWrap)
+                .custom_tags(SingleLetterTag::lowercase(Alphabet::P), vec![my_hex]);
+            let giftwrap_sub = client
+                .subscribe(gift_filter, None)
+                .await
+                .ok()
+                .map(|o| o.val);
 
             // Group subscription: kind 445 filtered by #h for all joined groups.
             let group_sub = if h_values.is_empty() {
@@ -1558,7 +1580,11 @@ impl AppCore {
                 let group_filter = Filter::new()
                     .kind(Kind::MlsGroupMessage)
                     .custom_tags(SingleLetterTag::lowercase(Alphabet::H), h_values);
-                client.subscribe(group_filter, None).await.ok().map(|o| o.val)
+                client
+                    .subscribe(group_filter, None)
+                    .await
+                    .ok()
+                    .map(|o| o.val)
             };
 
             let _ = tx.send(CoreMsg::Internal(Box::new(

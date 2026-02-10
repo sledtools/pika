@@ -238,7 +238,7 @@ android-manual-qa:
 # Show iOS manual QA instructions.
 ios-manual-qa:
   @echo "Manual QA prompt: prompts/ios-agent-device-manual-qa.md"
-  @echo "Tip: run `./tools/agent-device --platform ios open com.justinmoon.pika` then follow the prompt."
+  @echo "Tip: run `./tools/agent-device --platform ios open com.pika.app` then follow the prompt."
 
 # Build, install, and launch Android app on connected device.
 run-android:

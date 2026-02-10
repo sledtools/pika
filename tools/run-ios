@@ -30,7 +30,8 @@ if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
   exec nix develop -c bash -lc "cd \"$ROOT\"; ./tools/run-ios ${qargs[*]}"
 fi
 
-IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika}"
+IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.pika.app}"
+IOS_TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:-}"
 MODE="sim"
 CONSOLE=0
 
@@ -40,6 +41,7 @@ usage: ./tools/run-ios [--sim|--device] [--console]
 
 Env:
   PIKA_IOS_BUNDLE_ID        (default: $IOS_BUNDLE_ID)
+  PIKA_IOS_DEVELOPMENT_TEAM (optional; recommended for --device)
   PIKA_IOS_DEVICE_UDID      (optional, for --device)
   PIKA_NO_RELAY_OVERRIDE=1  disable dev-friendly relay defaults
 EOF
@@ -132,6 +134,15 @@ if [ "$MODE" = "device" ]; then
   just ios-xcframework ios-xcodeproj
 
   # Build signed device .app (must unset LD/CC/CXX inside Nix shells).
+  signing_settings=()
+  signing_settings+=("PRODUCT_BUNDLE_IDENTIFIER=$IOS_BUNDLE_ID")
+  if [ -n "${IOS_TEAM_ID:-}" ]; then
+    signing_settings+=("DEVELOPMENT_TEAM=$IOS_TEAM_ID")
+    signing_settings+=("CODE_SIGN_STYLE=Automatic")
+  else
+    echo "note: PIKA_IOS_DEVELOPMENT_TEAM not set; device signing may fail (set it to your Apple Team ID)" >&2
+  fi
+
   env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild \
     -project ios/Pika.xcodeproj \
     -scheme Pika \
@@ -140,6 +151,7 @@ if [ "$MODE" = "device" ]; then
     -destination "id=$UDID" \
     -derivedDataPath ios/build-device \
     -allowProvisioningUpdates \
+    "${signing_settings[@]}" \
     build
 
   app_path="ios/build-device/Build/Products/Debug-iphoneos/Pika.app"

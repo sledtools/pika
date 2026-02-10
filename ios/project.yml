@@ -1,13 +1,15 @@
 name: Pika
 options:
-  bundleIdPrefix: com.pika
+  bundleIdPrefix: com.justinmoon
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
 
 settings:
   base:
-    PRODUCT_BUNDLE_IDENTIFIER: com.pika.app
+    PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika
+    DEVELOPMENT_TEAM: 4HFHA2C727
+    CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0

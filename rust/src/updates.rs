@@ -1,5 +1,3 @@
-use flume::Sender;
-
 use crate::state::{AppState, AuthState, ChatSummary, ChatViewState, Router};
 use crate::AppAction;
 
@@ -52,12 +50,6 @@ impl AppUpdate {
 pub enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
-    Request(CoreRequest),
-}
-
-#[derive(Debug)]
-pub enum CoreRequest {
-    GetState { reply: Sender<AppState> },
 }
 
 #[derive(Debug)]
@@ -94,5 +86,12 @@ pub enum InternalEvent {
         candidate_kp_relays: Vec<nostr_sdk::prelude::RelayUrl>,
         key_package_event: Option<nostr_sdk::prelude::Event>,
         error: Option<String>,
+    },
+
+    // Subscription recompute result. Kept internal because it carries nostr-sdk types.
+    SubscriptionsRecomputed {
+        token: u64,
+        giftwrap_sub: Option<nostr_sdk::prelude::SubscriptionId>,
+        group_sub: Option<nostr_sdk::prelude::SubscriptionId>,
     },
 }

@@ -43,4 +43,7 @@ pub enum AppAction {
 
     // UI
     ClearToast,
+
+    // Lifecycle
+    Foregrounded,
 }

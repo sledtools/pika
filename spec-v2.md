@@ -71,7 +71,7 @@ Examples:
 - `Internal::NostrEventReceived(Event)`
 - `Internal::GiftWrapReceived { wrapper: Event, rumor: UnsignedEvent }`
 - `Internal::PublishResult { event_id, outcome }`
-- `Internal::ForegroundResync`
+- Lifecycle is modeled as an `AppAction` (e.g., `AppAction::Foregrounded`) which may enqueue an internal resync event if needed.
 
 ## Storage: Encrypted SQLite + Keyring
 

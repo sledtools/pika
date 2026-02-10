@@ -9,6 +9,7 @@ android/local.properties
 # iOS
 ios/.build/
 ios/build/
+ios/build-device/
 ios/Frameworks/
 ios/**/xcuserdata/
 

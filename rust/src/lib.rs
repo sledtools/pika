@@ -9,7 +9,7 @@ mod updates;
 mod android_keyring;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
@@ -30,6 +30,7 @@ pub struct FfiApp {
     core_tx: Sender<CoreMsg>,
     update_rx: Receiver<AppUpdate>,
     listening: AtomicBool,
+    shared_state: Arc<RwLock<AppState>>,
 }
 
 #[uniffi::export]
@@ -41,11 +42,14 @@ impl FfiApp {
 
         let (update_tx, update_rx) = flume::unbounded();
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();
+        let shared_state = Arc::new(RwLock::new(AppState::empty()));
 
         // Actor loop thread (single threaded "app actor").
         let core_tx_for_core = core_tx.clone();
+        let shared_for_core = shared_state.clone();
         thread::spawn(move || {
-            let mut core = crate::core::AppCore::new(update_tx, core_tx_for_core, data_dir);
+            let mut core =
+                crate::core::AppCore::new(update_tx, core_tx_for_core, data_dir, shared_for_core);
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
             }
@@ -55,20 +59,15 @@ impl FfiApp {
             core_tx,
             update_rx,
             listening: AtomicBool::new(false),
+            shared_state,
         })
     }
 
     pub fn state(&self) -> AppState {
-        let (tx, rx) = flume::bounded(1);
-        if self
-            .core_tx
-            .send(CoreMsg::Request(CoreRequest::GetState { reply: tx }))
-            .is_err()
-        {
-            return AppState::empty();
+        match self.shared_state.read() {
+            Ok(g) => g.clone(),
+            Err(poison) => poison.into_inner().clone(),
         }
-        rx.recv_timeout(std::time::Duration::from_secs(1))
-            .unwrap_or_else(|_| AppState::empty())
     }
 
     pub fn dispatch(&self, action: AppAction) {

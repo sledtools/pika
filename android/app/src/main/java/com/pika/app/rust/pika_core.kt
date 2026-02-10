@@ -1821,6 +1821,9 @@ sealed class AppAction {
     object ClearToast : AppAction()
     
     
+    object Foregrounded : AppAction()
+    
+    
 
     
 
@@ -1871,6 +1874,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterUInt.read(buf),
                 )
             12 -> AppAction.ClearToast
+            13 -> AppAction.Foregrounded
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -1961,6 +1965,12 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
             )
         }
+        is AppAction.Foregrounded -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -2024,6 +2034,10 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             }
             is AppAction.ClearToast -> {
                 buf.putInt(12)
+                Unit
+            }
+            is AppAction.Foregrounded -> {
+                buf.putInt(13)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

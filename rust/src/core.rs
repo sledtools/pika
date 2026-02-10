@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -11,7 +12,7 @@ use crate::state::now_seconds;
 use crate::state::{
     AuthState, ChatMessage, ChatSummary, ChatViewState, MessageDeliveryState, Router, Screen,
 };
-use crate::updates::{AppUpdate, CoreMsg, CoreRequest, InternalEvent};
+use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
 use mdk_core::prelude::{GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
@@ -81,12 +82,17 @@ pub struct AppCore {
 
     update_sender: Sender<AppUpdate>,
     core_sender: Sender<CoreMsg>,
+    shared_state: Arc<RwLock<crate::state::AppState>>,
 
     data_dir: String,
     config: AppConfig,
     runtime: tokio::runtime::Runtime,
 
     session: Option<Session>,
+
+    subs_recompute_in_flight: bool,
+    subs_recompute_dirty: bool,
+    subs_recompute_token: u64,
 
     // Actor-internal UI bookkeeping (spec-v2 paging + delivery state).
     loaded_count: HashMap<String, usize>,
@@ -103,6 +109,7 @@ impl AppCore {
         update_sender: Sender<AppUpdate>,
         core_sender: Sender<CoreMsg>,
         data_dir: String,
+        shared_state: Arc<RwLock<crate::state::AppState>>,
     ) -> Self {
         let config = load_app_config(&data_dir);
         let router = Router {
@@ -125,23 +132,31 @@ impl AppCore {
             .build()
             .expect("tokio runtime");
 
-        Self {
+        let this = Self {
             state,
             rev: 0,
             outbox_seq: 0,
             last_outgoing_ts: 0,
             update_sender,
             core_sender,
+            shared_state,
             data_dir,
             config,
             runtime,
             session: None,
+            subs_recompute_in_flight: false,
+            subs_recompute_dirty: false,
+            subs_recompute_token: 0,
             loaded_count: HashMap::new(),
             unread_counts: HashMap::new(),
             delivery_overrides: HashMap::new(),
             pending_sends: HashMap::new(),
             local_outbox: HashMap::new(),
-        }
+        };
+
+        // Ensure FfiApp.state() has an immediately-available snapshot.
+        this.commit_state();
+        this
     }
 
     fn network_enabled(&self) -> bool {
@@ -220,7 +235,16 @@ impl AppCore {
     }
 
     fn emit(&mut self, update: AppUpdate) {
+        self.commit_state();
         let _ = self.update_sender.send(update);
+    }
+
+    fn commit_state(&self) {
+        let snapshot = self.state.clone();
+        match self.shared_state.write() {
+            Ok(mut g) => *g = snapshot,
+            Err(poison) => *poison.into_inner() = snapshot,
+        }
     }
 
     fn emit_auth(&mut self) {
@@ -322,20 +346,32 @@ impl AppCore {
                 self.handle_action(action.clone());
             }
             CoreMsg::Internal(internal) => self.handle_internal(*internal),
-            CoreMsg::Request(req) => self.handle_request(req),
-        }
-    }
-
-    fn handle_request(&mut self, req: CoreRequest) {
-        match req {
-            CoreRequest::GetState { reply } => {
-                let _ = reply.send(self.state.clone());
-            }
         }
     }
 
     fn handle_internal(&mut self, internal: InternalEvent) {
         match internal {
+            InternalEvent::SubscriptionsRecomputed {
+                token,
+                giftwrap_sub,
+                group_sub,
+            } => {
+                // Ignore stale results (e.g., logout/login during recompute).
+                if token != self.subs_recompute_token {
+                    return;
+                }
+
+                self.subs_recompute_in_flight = false;
+                if let Some(sess) = self.session.as_mut() {
+                    sess.giftwrap_sub = giftwrap_sub;
+                    sess.group_sub = group_sub;
+                }
+
+                if self.subs_recompute_dirty {
+                    self.subs_recompute_dirty = false;
+                    self.recompute_subscriptions();
+                }
+            }
             InternalEvent::Toast(ref msg) => {
                 tracing::info!(msg, "toast");
                 self.toast(msg.clone());
@@ -646,6 +682,12 @@ impl AppCore {
                 if self.state.toast.is_some() {
                     self.state.toast = None;
                     self.emit_toast();
+                }
+            }
+            AppAction::Foregrounded => {
+                // Native should send lifecycle signals as actions. Rust owns all state changes.
+                if self.is_logged_in() {
+                    self.refresh_all_from_storage();
                 }
             }
 
@@ -1199,7 +1241,7 @@ impl AppCore {
             let relays = self.all_session_relays();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let c = client.clone();
-            self.runtime.block_on(async move {
+            self.runtime.spawn(async move {
                 for r in relays {
                     let _ = c.add_relay(r).await;
                 }
@@ -1243,6 +1285,11 @@ impl AppCore {
     }
 
     fn stop_session(&mut self) {
+        // Invalidate/stop any in-flight subscription recompute tasks.
+        self.subs_recompute_token = self.subs_recompute_token.wrapping_add(1);
+        self.subs_recompute_in_flight = false;
+        self.subs_recompute_dirty = false;
+
         if let Some(sess) = self.session.take() {
             if self.network_enabled() {
                 let client = sess.client.clone();
@@ -1444,6 +1491,10 @@ impl AppCore {
         if !network_enabled {
             return;
         }
+        if self.subs_recompute_in_flight {
+            self.subs_recompute_dirty = true;
+            return;
+        }
         // Ensure the client is connected to all relays referenced by joined groups.
         // Without this, we may subscribe to #h filters but never actually see events because
         // the relay URLs were never added to the client pool.
@@ -1463,53 +1514,61 @@ impl AppCore {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
+
+        self.subs_recompute_in_flight = true;
+        self.subs_recompute_dirty = false;
+        self.subs_recompute_token = self.subs_recompute_token.wrapping_add(1);
+        let token = self.subs_recompute_token;
+
         let client = sess.client.clone();
-        self.runtime.block_on(async move {
+        let tx = self.core_sender.clone();
+        let my_hex = sess.keys.public_key().to_hex();
+        let prev_giftwrap_sub = sess.giftwrap_sub.clone();
+        let prev_group_sub = sess.group_sub.clone();
+        let h_values: Vec<String> = sess.groups.keys().cloned().collect();
+
+        self.runtime.spawn(async move {
             for r in needed_relays {
                 let _ = client.add_relay(r).await;
             }
             client.connect().await;
             client.wait_for_connection(Duration::from_secs(4)).await;
+
+            // Tear down previous subscriptions for a clean recompute.
+            if let Some(id) = prev_giftwrap_sub {
+                let _ = client.unsubscribe(&id).await;
+            }
+            if let Some(id) = prev_group_sub {
+                let _ = client.unsubscribe(&id).await;
+            }
+
+            // GiftWrap inbox subscription (kind GiftWrap, #p = me).
+            // NOTE: Filter `pubkey` matches the event author; GiftWraps can be authored by anyone,
+            // so we must filter by the recipient `p` tag (spec-v2).
+            let gift_filter = Filter::new().kind(Kind::GiftWrap).custom_tags(
+                SingleLetterTag::lowercase(Alphabet::P),
+                vec![my_hex],
+            );
+            let giftwrap_sub = client.subscribe(gift_filter, None).await.ok().map(|o| o.val);
+
+            // Group subscription: kind 445 filtered by #h for all joined groups.
+            let group_sub = if h_values.is_empty() {
+                None
+            } else {
+                let group_filter = Filter::new()
+                    .kind(Kind::MlsGroupMessage)
+                    .custom_tags(SingleLetterTag::lowercase(Alphabet::H), h_values);
+                client.subscribe(group_filter, None).await.ok().map(|o| o.val)
+            };
+
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::SubscriptionsRecomputed {
+                    token,
+                    giftwrap_sub,
+                    group_sub,
+                },
+            )));
         });
-
-        // GiftWrap inbox subscription (kind GiftWrap, #p = me).
-        if let Some(id) = &sess.giftwrap_sub {
-            let c = sess.client.clone();
-            let id = id.clone();
-            self.runtime
-                .block_on(async move { c.unsubscribe(&id).await });
-        }
-        // NOTE: Filter `pubkey` matches the event author; GiftWraps can be authored by anyone,
-        // so we must filter by the recipient `p` tag (spec-v2).
-        let gift_filter = Filter::new().kind(Kind::GiftWrap).custom_tags(
-            SingleLetterTag::lowercase(Alphabet::P),
-            vec![sess.keys.public_key().to_hex()],
-        );
-        let gift_out = self
-            .runtime
-            .block_on(async { sess.client.subscribe(gift_filter, None).await });
-        sess.giftwrap_sub = gift_out.ok().map(|o| o.val);
-
-        // Group subscription: kind 445 filtered by #h for all joined groups.
-        if let Some(id) = &sess.group_sub {
-            let c = sess.client.clone();
-            let id = id.clone();
-            self.runtime
-                .block_on(async move { c.unsubscribe(&id).await });
-        }
-
-        let h_values: Vec<String> = sess.groups.keys().cloned().collect();
-        if h_values.is_empty() {
-            sess.group_sub = None;
-            return;
-        }
-        let group_filter = Filter::new()
-            .kind(Kind::MlsGroupMessage)
-            .custom_tags(SingleLetterTag::lowercase(Alphabet::H), h_values);
-        let group_out = self
-            .runtime
-            .block_on(async { sess.client.subscribe(group_filter, None).await });
-        sess.group_sub = group_out.ok().map(|o| o.val);
     }
 
     fn publish_welcomes_to_peer(

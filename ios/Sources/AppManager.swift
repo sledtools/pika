@@ -7,6 +7,7 @@ final class AppManager: AppReconciler {
     let rust: FfiApp
     var state: AppState
     private var lastRevApplied: UInt64
+    private var resyncInFlight: Bool = false
 
     private let nsecStore = KeychainNsecStore()
 
@@ -78,17 +79,13 @@ final class AppManager: AppReconciler {
 
     private func apply(update: AppUpdate) {
         let updateRev = update.rev
-        if updateRev != lastRevApplied + 1 {
-            #if DEBUG
-            assertionFailure("Rev gap: expected \(lastRevApplied + 1), got \(updateRev)")
-            #endif
-            Task.detached(priority: .userInitiated) { [rust] in
-                let snapshot = rust.state()
-                await MainActor.run {
-                    self.state = snapshot
-                    self.lastRevApplied = snapshot.rev
-                }
-            }
+        // After a resync, older updates can still be in-flight on the MainActor queue.
+        // Drop them. Only treat *forward* gaps as a reason to resync.
+        if updateRev <= lastRevApplied {
+            return
+        }
+        if updateRev > lastRevApplied + 1 {
+            requestResync()
             return
         }
 
@@ -118,6 +115,19 @@ final class AppManager: AppReconciler {
         }
     }
 
+    private func requestResync() {
+        if resyncInFlight { return }
+        resyncInFlight = true
+        Task.detached(priority: .userInitiated) { [rust] in
+            let snapshot = rust.state()
+            await MainActor.run {
+                self.state = snapshot
+                self.lastRevApplied = snapshot.rev
+                self.resyncInFlight = false
+            }
+        }
+    }
+
     func dispatch(_ action: AppAction) {
         rust.dispatch(action: action)
     }
@@ -135,13 +145,8 @@ final class AppManager: AppReconciler {
     }
 
     func onForeground() {
-        Task.detached(priority: .userInitiated) { [rust] in
-            let snapshot = rust.state()
-            await MainActor.run {
-                self.state = snapshot
-                self.lastRevApplied = snapshot.rev
-            }
-        }
+        // Foreground is a lifecycle action; Rust owns state changes and side effects.
+        dispatch(.foregrounded)
     }
 }
 

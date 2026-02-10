@@ -19,6 +19,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
     private val rust: FfiApp
     private var lastRevApplied: ULong = 0UL
     private val listening = AtomicBoolean(false)
+    private val resyncing = AtomicBoolean(false)
 
     var state: AppState by mutableStateOf(
         AppState(
@@ -71,28 +72,18 @@ class AppManager private constructor(context: Context) : AppReconciler {
     }
 
     fun onForeground() {
-        // Belt-and-suspenders resync. Avoid blocking the main thread.
-        Thread {
-            val snapshot = rust.state()
-            mainHandler.post {
-                state = snapshot
-                lastRevApplied = snapshot.rev
-            }
-        }.start()
+        // Foreground is a lifecycle signal; Rust owns state changes and side effects.
+        rust.dispatch(AppAction.Foregrounded)
     }
 
     override fun reconcile(update: AppUpdate) {
         mainHandler.post {
             val updateRev = update.rev()
-            if (updateRev != lastRevApplied + 1UL) {
-                // Avoid blocking the main thread on resync.
-                Thread {
-                    val snapshot = rust.state()
-                    mainHandler.post {
-                        state = snapshot
-                        lastRevApplied = snapshot.rev
-                    }
-                }.start()
+            // After a resync, older updates can still be in-flight on the main handler queue.
+            // Drop them. Only treat *forward* gaps as a reason to resync.
+            if (updateRev <= lastRevApplied) return@post
+            if (updateRev > lastRevApplied + 1UL) {
+                requestResync()
                 return@post
             }
 
@@ -113,6 +104,18 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 }
             }
         }
+    }
+
+    private fun requestResync() {
+        if (!resyncing.compareAndSet(false, true)) return
+        Thread {
+            val snapshot = rust.state()
+            mainHandler.post {
+                state = snapshot
+                lastRevApplied = snapshot.rev
+                resyncing.set(false)
+            }
+        }.start()
     }
 
     private fun AppUpdate.rev(): ULong =

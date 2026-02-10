@@ -1035,6 +1035,7 @@ public enum AppAction: Equatable, Hashable {
     case loadOlderMessages(chatId: String, beforeMessageId: String, limit: UInt32
     )
     case clearToast
+    case foregrounded
 
 
 
@@ -1088,6 +1089,8 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         )
         
         case 12: return .clearToast
+        
+        case 13: return .foregrounded
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1156,6 +1159,10 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case .clearToast:
             writeInt(&buf, Int32(12))
+        
+        
+        case .foregrounded:
+            writeInt(&buf, Int32(13))
         
         }
     }

@@ -182,6 +182,12 @@ pub enum AppAction {
     RetryMessage { chat_id: String, message_id: String },
     OpenChat { chat_id: String },
     LoadOlderMessages { chat_id: String, before_message_id: String, limit: u32 },
+
+    // UI
+    ClearToast,
+
+    // Lifecycle
+    Foregrounded,
 }
 ```
 
@@ -218,12 +224,15 @@ For this MVP, the performance cost is negligible. A chat with 300 messages is ~6
 Rust maintains a monotonic `rev: u64` that increments on every state transition that affects view state. Every `AppUpdate` carries `rev`. `AppState` snapshots from `state()` also carry `rev`.
 
 Native maintains `last_rev_applied`. On each update:
+- If `update.rev <= last_rev_applied`: drop as stale (can occur after a resync snapshot is applied).
 - If `update.rev == last_rev_applied + 1`: apply normally.
-- Otherwise: **resync** — pull `state()`, replace all mirrored view state, set `last_rev_applied = snapshot.rev`.
+- If `update.rev > last_rev_applied + 1`: **forward gap** — resync by pulling `state()`, replacing mirrored view state, and setting `last_rev_applied = snapshot.rev`.
 
-Additionally, native pulls `state()` on foreground resume as belt-and-suspenders.
+Native should coalesce resync triggers (only one in flight at a time).
 
-In debug builds, a `rev` gap also triggers an assertion/crash to surface bugs early.
+In debug builds, a forward gap can optionally trigger an assertion/log to surface bugs early, but the app must still be able to recover via resync.
+
+Lifecycle events (foreground/background) are modeled as actions (`dispatch(...)`) rather than native pulling and overwriting state out-of-band.
 
 ## FFI Surface
 
@@ -244,7 +253,9 @@ impl FfiApp {
     pub fn new(data_dir: String) -> Arc<Self>;
 
     /// Get the full current state snapshot (with rev). Called at startup
-    /// and on rev gap / foreground resume for resync.
+    /// and on forward-gap resync. This method must be fast and must not
+    /// depend on the actor thread being idle (it should always return the
+    /// last committed snapshot).
     pub fn state(&self) -> AppState;
 
     /// Dispatch an action from the UI. Fire and forget. Must return immediately.

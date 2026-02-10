@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct ChatListView: View {
     let manager: AppManager
@@ -43,13 +42,8 @@ struct ChatListView: View {
                     }
                     .accessibilityLabel("My npub")
                     .accessibilityIdentifier(TestIds.chatListMyNpub)
-                    .alert("My npub", isPresented: $showMyNpub) {
-                        Button("Copy") {
-                            UIPasteboard.general.string = npub
-                        }
-                        Button("Close", role: .cancel) {}
-                    } message: {
-                        Text(npub).accessibilityIdentifier(TestIds.chatListMyNpubValue)
+                    .sheet(isPresented: $showMyNpub) {
+                        MyNpubQrSheet(npub: npub)
                     }
                 }
             }

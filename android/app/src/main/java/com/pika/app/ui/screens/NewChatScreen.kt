@@ -16,6 +16,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -24,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.pika.app.AppManager
@@ -31,6 +33,7 @@ import com.pika.app.rust.AppAction
 import com.pika.app.rust.Screen
 import com.pika.app.ui.TestTags
 import com.pika.app.ui.PeerKeyValidator
+import com.pika.app.ui.PeerKeyNormalizer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.MaterialTheme
@@ -38,8 +41,10 @@ import androidx.compose.material3.MaterialTheme
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
+    val clipboard = LocalClipboardManager.current
     var npub by remember { mutableStateOf("") }
-    val peer = npub.trim()
+    var showScanner by remember { mutableStateOf(false) }
+    val peer = PeerKeyNormalizer.normalize(npub)
     val isValidPeer = PeerKeyValidator.isValidPeer(peer)
     val isLoading = manager.state.busy.creatingChat
 
@@ -75,6 +80,25 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
                 isError = peer.isNotEmpty() && !isValidPeer,
                 modifier = Modifier.fillMaxWidth().testTag(TestTags.NEWCHAT_PEER_NPUB),
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(
+                    onClick = { showScanner = true },
+                    enabled = !isLoading,
+                    modifier = Modifier.testTag(TestTags.NEWCHAT_SCAN_QR),
+                ) {
+                    Text("Scan QR")
+                }
+                TextButton(
+                    onClick = {
+                        val raw = clipboard.getText()?.text.orEmpty()
+                        npub = PeerKeyNormalizer.normalize(raw)
+                    },
+                    enabled = !isLoading,
+                    modifier = Modifier.testTag(TestTags.NEWCHAT_PASTE),
+                ) {
+                    Text("Paste")
+                }
+            }
             if (peer.isNotEmpty() && !isValidPeer) {
                 Text(
                     "Enter a valid npub1… or 64-char hex pubkey.",
@@ -102,5 +126,15 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
                 }
             }
         }
+    }
+
+    if (showScanner) {
+        QrScannerDialog(
+            onDismiss = { showScanner = false },
+            onScanned = { scanned ->
+                npub = scanned
+                showScanner = false
+            },
+        )
     }
 }

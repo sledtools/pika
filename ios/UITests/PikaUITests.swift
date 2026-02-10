@@ -57,24 +57,23 @@ final class PikaUITests: XCTestCase {
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
 
-        // Fetch our npub from the "My npub" alert (avoid clipboard access from UI tests).
+        // Fetch our npub from the "My npub" sheet (avoid clipboard access from UI tests).
         let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
         XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
         myNpubBtn.tap()
 
-        let alert = app.alerts["My npub"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 5))
-        // SwiftUI alert accessibility identifiers can be unreliable across iOS versions; match by label.
-        let npubValue =
-            alert.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "npub1")).firstMatch
+        let myNpubNavBar = app.navigationBars["My npub"]
+        XCTAssertTrue(myNpubNavBar.waitForExistence(timeout: 5))
+
+        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
         XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
         let myNpub = npubValue.label
         XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
 
-        // Close the alert.
-        let close = alert.buttons["Close"]
+        // Close the sheet.
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
         if close.exists { close.tap() }
-        else { alert.buttons.element(boundBy: 0).tap() }
+        else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
 
         // New chat.
         let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch

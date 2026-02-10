@@ -31,11 +31,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.foundation.Image
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,6 +47,7 @@ import com.pika.app.rust.AuthState
 import com.pika.app.rust.ChatSummary
 import com.pika.app.rust.Screen
 import com.pika.app.ui.theme.PikaBlue
+import com.pika.app.ui.QrCode
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
@@ -100,10 +103,20 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     }
 
     if (showMyNpub && myNpub != null) {
+        val qr = remember(myNpub) { QrCode.encode(myNpub, 512).asImageBitmap() }
         AlertDialog(
             onDismissRequest = { setShowMyNpub(false) },
             title = { Text("My npub") },
-            text = { Text(myNpub) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Image(
+                        bitmap = qr,
+                        contentDescription = "My npub QR",
+                        modifier = Modifier.size(220.dp).clip(MaterialTheme.shapes.medium),
+                    )
+                    Text(myNpub)
+                }
+            },
             confirmButton = {
                 TextButton(
                     onClick = {

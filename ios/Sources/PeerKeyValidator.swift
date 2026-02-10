@@ -1,6 +1,15 @@
 import Foundation
 
 enum PeerKeyValidator {
+    static func normalize(_ input: String) -> String {
+        var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        s = s.lowercased()
+        if s.hasPrefix("nostr:") {
+            s.removeFirst("nostr:".count)
+        }
+        return s
+    }
+
     // Minimal UX validation. Real parsing happens in Rust, but this prevents common operator errors
     // like pasting the bech32 payload without the "npub1" prefix.
     static func isValidPeer(_ s: String) -> Bool {
@@ -32,4 +41,3 @@ enum PeerKeyValidator {
         return payload.allSatisfy { allowed.contains($0) }
     }
 }
-

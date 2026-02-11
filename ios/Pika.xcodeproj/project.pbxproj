@@ -23,6 +23,7 @@
 		EDAE180A5D3FEED3C801658F /* MyNpubQrSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */; };
 		F2A2C56251354A67641CA82F /* pika_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2510455883E1CDFB6D589F5C /* pika_core.swift */; };
 		F308786C219CC1D169ABFC50 /* PikaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF35ECCAE3B37C651F88A150 /* PikaApp.swift */; };
+		F69233C493C4DF364AB6B468 /* AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */; };
 		FE739725B724B1944145C8EF /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E962F7911EF0441F706C10 /* ContentView.swift */; };
 /* End PBXBuildFile section */
 
@@ -62,6 +63,7 @@
 		B2FE3F3E8BA33932B132B693 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PikaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerKeyValidator.swift; sourceTree = "<group>"; };
+		EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarView.swift; sourceTree = "<group>"; };
 		EF35ECCAE3B37C651F88A150 /* PikaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PikaApp.swift; sourceTree = "<group>"; };
 		F4FAE9ECBDFC0A976452024F /* TestIds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIds.swift; sourceTree = "<group>"; };
 		F8FB9846E26624B7638DDA90 /* Pika.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Pika.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -107,6 +109,7 @@
 		3020E60167D2F29F544518EE /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */,
 				366C05B721835967C3BE5418 /* ChatListView.swift */,
 				B2FE3F3E8BA33932B132B693 /* ChatView.swift */,
 				53159E06C561F50F6EC97A61 /* LoginView.swift */,
@@ -288,6 +291,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A15307C1B4692DC5925858CE /* AppManager.swift in Sources */,
+				F69233C493C4DF364AB6B468 /* AvatarView.swift in Sources */,
 				783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */,
 				5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */,
 				FE739725B724B1944145C8EF /* ContentView.swift in Sources */,

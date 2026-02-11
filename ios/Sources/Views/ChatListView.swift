@@ -6,13 +6,31 @@ struct ChatListView: View {
 
     var body: some View {
         List(manager.state.chatList, id: \.chatId) { chat in
-            let row = VStack(alignment: .leading, spacing: 4) {
-                Text(chat.peerName ?? chat.peerNpub)
-                    .font(.headline)
-                Text(chat.lastMessage ?? "No messages yet")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            let displayName = chat.peerName ?? truncatedNpub(chat.peerNpub)
+            let subtitle = chat.peerName != nil ? truncatedNpub(chat.peerNpub) : nil
+
+            let row = HStack(spacing: 12) {
+                AvatarView(
+                    name: chat.peerName,
+                    npub: chat.peerNpub,
+                    pictureUrl: chat.peerPictureUrl
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayName)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Text(chat.lastMessage ?? "No messages yet")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Group {
@@ -66,5 +84,10 @@ struct ChatListView: View {
         default:
             return nil
         }
+    }
+
+    private func truncatedNpub(_ npub: String) -> String {
+        if npub.count <= 16 { return npub }
+        return String(npub.prefix(12)) + "..."
     }
 }

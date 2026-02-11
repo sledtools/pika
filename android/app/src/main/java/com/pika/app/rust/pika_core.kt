@@ -1638,6 +1638,8 @@ data class ChatSummary (
     , 
     var `peerName`: kotlin.String?
     , 
+    var `peerPictureUrl`: kotlin.String?
+    , 
     var `lastMessage`: kotlin.String?
     , 
     var `lastMessageAt`: kotlin.Long?
@@ -1663,6 +1665,7 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterUInt.read(buf),
         )
@@ -1672,6 +1675,7 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
             FfiConverterString.allocationSize(value.`chatId`) +
             FfiConverterString.allocationSize(value.`peerNpub`) +
             FfiConverterOptionalString.allocationSize(value.`peerName`) +
+            FfiConverterOptionalString.allocationSize(value.`peerPictureUrl`) +
             FfiConverterOptionalString.allocationSize(value.`lastMessage`) +
             FfiConverterOptionalLong.allocationSize(value.`lastMessageAt`) +
             FfiConverterUInt.allocationSize(value.`unreadCount`)
@@ -1681,6 +1685,7 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
             FfiConverterString.write(value.`chatId`, buf)
             FfiConverterString.write(value.`peerNpub`, buf)
             FfiConverterOptionalString.write(value.`peerName`, buf)
+            FfiConverterOptionalString.write(value.`peerPictureUrl`, buf)
             FfiConverterOptionalString.write(value.`lastMessage`, buf)
             FfiConverterOptionalLong.write(value.`lastMessageAt`, buf)
             FfiConverterUInt.write(value.`unreadCount`, buf)
@@ -1695,6 +1700,8 @@ data class ChatViewState (
     var `peerNpub`: kotlin.String
     , 
     var `peerName`: kotlin.String?
+    , 
+    var `peerPictureUrl`: kotlin.String?
     , 
     var `messages`: List<ChatMessage>
     , 
@@ -1718,6 +1725,7 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterSequenceTypeChatMessage.read(buf),
             FfiConverterBoolean.read(buf),
         )
@@ -1727,6 +1735,7 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
             FfiConverterString.allocationSize(value.`chatId`) +
             FfiConverterString.allocationSize(value.`peerNpub`) +
             FfiConverterOptionalString.allocationSize(value.`peerName`) +
+            FfiConverterOptionalString.allocationSize(value.`peerPictureUrl`) +
             FfiConverterSequenceTypeChatMessage.allocationSize(value.`messages`) +
             FfiConverterBoolean.allocationSize(value.`canLoadOlder`)
     )
@@ -1735,6 +1744,7 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
             FfiConverterString.write(value.`chatId`, buf)
             FfiConverterString.write(value.`peerNpub`, buf)
             FfiConverterOptionalString.write(value.`peerName`, buf)
+            FfiConverterOptionalString.write(value.`peerPictureUrl`, buf)
             FfiConverterSequenceTypeChatMessage.write(value.`messages`, buf)
             FfiConverterBoolean.write(value.`canLoadOlder`, buf)
     }

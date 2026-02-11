@@ -893,16 +893,18 @@ public struct ChatSummary: Equatable, Hashable {
     public var chatId: String
     public var peerNpub: String
     public var peerName: String?
+    public var peerPictureUrl: String?
     public var lastMessage: String?
     public var lastMessageAt: Int64?
     public var unreadCount: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(chatId: String, peerNpub: String, peerName: String?, lastMessage: String?, lastMessageAt: Int64?, unreadCount: UInt32) {
+    public init(chatId: String, peerNpub: String, peerName: String?, peerPictureUrl: String?, lastMessage: String?, lastMessageAt: Int64?, unreadCount: UInt32) {
         self.chatId = chatId
         self.peerNpub = peerNpub
         self.peerName = peerName
+        self.peerPictureUrl = peerPictureUrl
         self.lastMessage = lastMessage
         self.lastMessageAt = lastMessageAt
         self.unreadCount = unreadCount
@@ -927,6 +929,7 @@ public struct FfiConverterTypeChatSummary: FfiConverterRustBuffer {
                 chatId: FfiConverterString.read(from: &buf), 
                 peerNpub: FfiConverterString.read(from: &buf), 
                 peerName: FfiConverterOptionString.read(from: &buf), 
+                peerPictureUrl: FfiConverterOptionString.read(from: &buf), 
                 lastMessage: FfiConverterOptionString.read(from: &buf), 
                 lastMessageAt: FfiConverterOptionInt64.read(from: &buf), 
                 unreadCount: FfiConverterUInt32.read(from: &buf)
@@ -937,6 +940,7 @@ public struct FfiConverterTypeChatSummary: FfiConverterRustBuffer {
         FfiConverterString.write(value.chatId, into: &buf)
         FfiConverterString.write(value.peerNpub, into: &buf)
         FfiConverterOptionString.write(value.peerName, into: &buf)
+        FfiConverterOptionString.write(value.peerPictureUrl, into: &buf)
         FfiConverterOptionString.write(value.lastMessage, into: &buf)
         FfiConverterOptionInt64.write(value.lastMessageAt, into: &buf)
         FfiConverterUInt32.write(value.unreadCount, into: &buf)
@@ -963,15 +967,17 @@ public struct ChatViewState: Equatable, Hashable {
     public var chatId: String
     public var peerNpub: String
     public var peerName: String?
+    public var peerPictureUrl: String?
     public var messages: [ChatMessage]
     public var canLoadOlder: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(chatId: String, peerNpub: String, peerName: String?, messages: [ChatMessage], canLoadOlder: Bool) {
+    public init(chatId: String, peerNpub: String, peerName: String?, peerPictureUrl: String?, messages: [ChatMessage], canLoadOlder: Bool) {
         self.chatId = chatId
         self.peerNpub = peerNpub
         self.peerName = peerName
+        self.peerPictureUrl = peerPictureUrl
         self.messages = messages
         self.canLoadOlder = canLoadOlder
     }
@@ -995,6 +1001,7 @@ public struct FfiConverterTypeChatViewState: FfiConverterRustBuffer {
                 chatId: FfiConverterString.read(from: &buf), 
                 peerNpub: FfiConverterString.read(from: &buf), 
                 peerName: FfiConverterOptionString.read(from: &buf), 
+                peerPictureUrl: FfiConverterOptionString.read(from: &buf), 
                 messages: FfiConverterSequenceTypeChatMessage.read(from: &buf), 
                 canLoadOlder: FfiConverterBool.read(from: &buf)
         )
@@ -1004,6 +1011,7 @@ public struct FfiConverterTypeChatViewState: FfiConverterRustBuffer {
         FfiConverterString.write(value.chatId, into: &buf)
         FfiConverterString.write(value.peerNpub, into: &buf)
         FfiConverterOptionString.write(value.peerName, into: &buf)
+        FfiConverterOptionString.write(value.peerPictureUrl, into: &buf)
         FfiConverterSequenceTypeChatMessage.write(value.messages, into: &buf)
         FfiConverterBool.write(value.canLoadOlder, into: &buf)
     }

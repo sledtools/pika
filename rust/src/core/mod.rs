@@ -37,6 +37,14 @@ struct GroupIndexEntry {
     mls_group_id: GroupId,
     peer_npub: String,
     peer_name: Option<String>,
+    peer_picture_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProfileCache {
+    name: Option<String>,
+    picture_url: Option<String>,
+    fetched_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +103,9 @@ pub struct AppCore {
     // When MDK storage is eventually consistent, keep a local optimistic outbox so UI can render
     // immediately and reliably (e.g., offline note-to-self).
     local_outbox: HashMap<String, HashMap<String, LocalOutgoing>>, // chat_id -> message_id -> message
+
+    // Nostr kind:0 profile cache (survives across session refreshes).
+    profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached profile
 }
 
 impl AppCore {
@@ -134,6 +145,7 @@ impl AppCore {
             delivery_overrides: HashMap::new(),
             pending_sends: HashMap::new(),
             local_outbox: HashMap::new(),
+            profiles: HashMap::new(),
         };
 
         // Ensure FfiApp.state() has an immediately-available snapshot.
@@ -261,6 +273,7 @@ impl AppCore {
             self.delivery_overrides.clear();
             self.pending_sends.clear();
             self.local_outbox.clear();
+            self.profiles.clear();
             self.last_outgoing_ts = 0;
             self.emit_router();
             self.emit_busy();
@@ -544,6 +557,24 @@ impl AppCore {
                 }
 
                 self.refresh_all_from_storage();
+            }
+            InternalEvent::ProfilesFetched { profiles } => {
+                let now = now_seconds();
+                for (hex_pubkey, name, picture_url) in profiles {
+                    self.profiles.insert(
+                        hex_pubkey,
+                        ProfileCache {
+                            name,
+                            picture_url,
+                            fetched_at: now,
+                        },
+                    );
+                }
+                self.refresh_chat_list_from_storage();
+                if let Some(chat) = self.state.current_chat.as_ref() {
+                    let chat_id = chat.chat_id.clone();
+                    self.refresh_current_chat(&chat_id);
+                }
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");

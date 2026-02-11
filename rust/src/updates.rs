@@ -2,6 +2,7 @@ use crate::state::AppState;
 use crate::AppAction;
 
 #[derive(uniffi::Enum, Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // uniffi enums cannot use Box<T> indirection
 pub enum AppUpdate {
     /// Primary update stream: always send a full state snapshot.
     ///
@@ -71,5 +72,10 @@ pub enum InternalEvent {
         token: u64,
         giftwrap_sub: Option<nostr_sdk::prelude::SubscriptionId>,
         group_sub: Option<nostr_sdk::prelude::SubscriptionId>,
+    },
+
+    // Nostr kind:0 profile metadata fetched for peers.
+    ProfilesFetched {
+        profiles: Vec<(String, Option<String>, Option<String>)>, // (hex_pubkey, name, picture_url)
     },
 }

@@ -73,6 +73,7 @@ pub struct ChatSummary {
     pub chat_id: String,
     pub peer_npub: String,
     pub peer_name: Option<String>,
+    pub peer_picture_url: Option<String>,
     pub last_message: Option<String>,
     pub last_message_at: Option<i64>,
     pub unread_count: u32,
@@ -83,6 +84,7 @@ pub struct ChatViewState {
     pub chat_id: String,
     pub peer_npub: String,
     pub peer_name: Option<String>,
+    pub peer_picture_url: Option<String>,
     pub messages: Vec<ChatMessage>,
     pub can_load_older: bool,
 }

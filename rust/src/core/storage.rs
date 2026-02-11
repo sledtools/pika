@@ -31,6 +31,7 @@ impl AppCore {
         let my_pubkey = sess.keys.public_key();
         let mut index: HashMap<String, GroupIndexEntry> = HashMap::new();
         let mut list: Vec<ChatSummary> = Vec::new();
+        let mut missing_profile_pubkeys: Vec<PublicKey> = Vec::new();
 
         for g in groups {
             // Map to chat_id = hex(nostr_group_id)
@@ -44,6 +45,29 @@ impl AppCore {
                 .as_ref()
                 .and_then(|p| p.to_bech32().ok())
                 .unwrap_or_else(|| my_pubkey.to_bech32().unwrap_or_else(|_| my_pubkey.to_hex()));
+
+            // Look up cached Nostr profile for peer.
+            let peer_hex = peer_pubkey
+                .as_ref()
+                .map(|p| p.to_hex())
+                .unwrap_or_else(|| my_pubkey.to_hex());
+            let cached_profile = self.profiles.get(&peer_hex);
+            let peer_name = cached_profile.and_then(|p| p.name.clone());
+            let peer_picture_url = cached_profile.and_then(|p| p.picture_url.clone());
+
+            // Track peers missing from cache (or stale > 1 hour) for async fetch.
+            let now = crate::state::now_seconds();
+            let needs_fetch = match cached_profile {
+                None => true,
+                Some(p) => (now - p.fetched_at) > 3600,
+            };
+            if needs_fetch {
+                if let Some(pk) = peer_pubkey.as_ref() {
+                    if !missing_profile_pubkeys.iter().any(|p| p == pk) {
+                        missing_profile_pubkeys.push(*pk);
+                    }
+                }
+            }
 
             // Do not rely on `last_message_id` being populated in all MDK flows.
             // For MVP scale, fetching the newest message per group is cheap and robust.
@@ -85,7 +109,8 @@ impl AppCore {
             list.push(ChatSummary {
                 chat_id: chat_id.clone(),
                 peer_npub: peer_npub.clone(),
-                peer_name: None,
+                peer_name: peer_name.clone(),
+                peer_picture_url: peer_picture_url.clone(),
                 last_message,
                 last_message_at,
                 unread_count,
@@ -96,7 +121,8 @@ impl AppCore {
                 GroupIndexEntry {
                     mls_group_id: g.mls_group_id,
                     peer_npub,
-                    peer_name: None,
+                    peer_name,
+                    peer_picture_url,
                 },
             );
         }
@@ -105,6 +131,84 @@ impl AppCore {
         sess.groups = index;
         self.state.chat_list = list;
         self.emit_chat_list();
+
+        // Fetch missing profiles asynchronously.
+        if !missing_profile_pubkeys.is_empty() && self.network_enabled() {
+            if let Some(sess) = self.session.as_ref() {
+                let client = sess.client.clone();
+                let tx = self.core_sender.clone();
+                let pubkeys = missing_profile_pubkeys;
+                self.runtime.spawn(async move {
+                    let filter = Filter::new()
+                        .authors(pubkeys.clone())
+                        .kind(Kind::Metadata)
+                        .limit(pubkeys.len());
+                    let events = match client.fetch_events(filter, Duration::from_secs(8)).await {
+                        Ok(evs) => evs,
+                        Err(e) => {
+                            tracing::debug!(%e, "profile fetch failed");
+                            return;
+                        }
+                    };
+
+                    // Keep only the newest event per author.
+                    let mut best: HashMap<String, Event> = HashMap::new();
+                    for ev in events.into_iter() {
+                        let author_hex = ev.pubkey.to_hex();
+                        let dominated = best
+                            .get(&author_hex)
+                            .map(|prev| ev.created_at > prev.created_at)
+                            .unwrap_or(true);
+                        if dominated {
+                            best.insert(author_hex, ev);
+                        }
+                    }
+
+                    let mut results: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+                    for (hex_pk, ev) in best {
+                        // Parse kind:0 content as JSON.
+                        let parsed: Option<(Option<String>, Option<String>)> =
+                            serde_json::from_str::<serde_json::Value>(&ev.content)
+                                .ok()
+                                .map(|v| {
+                                    let display_name = v
+                                        .get("display_name")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    let name = v
+                                        .get("name")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    let picture = v
+                                        .get("picture")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    // Priority: display_name > name > None
+                                    let best_name = display_name.or(name);
+                                    (best_name, picture)
+                                });
+                        let (name, picture) = parsed.unwrap_or((None, None));
+                        results.push((hex_pk, name, picture));
+                    }
+
+                    // Also record "no profile" for pubkeys with no kind:0 event, so we
+                    // don't keep re-fetching them.
+                    for pk in &pubkeys {
+                        let hex = pk.to_hex();
+                        if !results.iter().any(|(h, _, _)| h == &hex) {
+                            results.push((hex, None, None));
+                        }
+                    }
+
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::ProfilesFetched { profiles: results },
+                    )));
+                });
+            }
+        }
     }
 
     pub(super) fn chat_exists(&self, chat_id: &str) -> bool {
@@ -215,6 +319,7 @@ impl AppCore {
             chat_id: chat_id.to_string(),
             peer_npub: entry.peer_npub,
             peer_name: entry.peer_name,
+            peer_picture_url: entry.peer_picture_url,
             messages: msgs,
             can_load_older,
         });

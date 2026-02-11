@@ -120,6 +120,113 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pika"].waitForExistence(timeout: 10))
     }
 
+    func testSessionPersistsAcrossRelaunch() throws {
+        let app = XCUIApplication()
+
+        // --- First launch: clean slate, create account + chat ---
+        app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
+        app.launch()
+
+        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+        XCTAssertTrue(createAccount.waitForExistence(timeout: 5), "Login screen not shown on first launch")
+        createAccount.tap()
+
+        let chatsNavBar = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15), "Chat list not shown after account creation")
+
+        // Get our npub for note-to-self.
+        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
+        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
+        myNpubBtn.tap()
+
+        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
+        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
+        let myNpub = npubValue.label
+        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
+
+        // Close sheet.
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists { close.tap() }
+        else { app.navigationBars["My npub"].buttons.element(boundBy: 0).tap() }
+
+        // Create note-to-self chat.
+        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
+        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
+        newChat.tap()
+
+        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 10))
+
+        let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: 10))
+        peer.tap()
+        peer.typeText(myNpub)
+
+        let start = app.buttons.matching(identifier: "newchat_start").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+
+        // Send a message so we have something to verify after relaunch.
+        let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
+        let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch
+        let composer = msgField.exists ? msgField : msgFieldFallback
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText("persist-test")
+
+        let send = app.buttons.matching(identifier: "chat_send").firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+
+        XCTAssertTrue(app.staticTexts["persist-test"].waitForExistence(timeout: 10),
+                       "Message not visible before relaunch")
+
+        // Give the keychain write a moment to complete (it happens via async callback).
+        Thread.sleep(forTimeInterval: 1.0)
+
+        // --- Second launch: no reset, should restore session ---
+        app.terminate()
+
+        // Clear the reset flag so the second launch preserves keychain + data.
+        app.launchEnvironment.removeValue(forKey: "PIKA_UI_TEST_RESET")
+        app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
+        app.launch()
+
+        // We should land on the chat list, NOT the login screen.
+        let loginBtn = app.buttons.matching(identifier: "login_create_account").firstMatch
+        let chatsNavBar2 = app.navigationBars["Chats"]
+
+        // Wait for either chat list or login to appear.
+        let deadline = Date().addingTimeInterval(15)
+        var landedOnChatList = false
+        var landedOnLogin = false
+        while Date() < deadline {
+            if chatsNavBar2.exists {
+                landedOnChatList = true
+                break
+            }
+            if loginBtn.exists {
+                landedOnLogin = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        if landedOnLogin {
+            // Check for error toasts that might explain why we're logged out.
+            let toast = dismissPikaToastIfPresent(app, timeout: 2)
+            XCTFail("Session was NOT restored after relaunch — landed on login screen. Toast: \(toast ?? "none")")
+            return
+        }
+
+        XCTAssertTrue(landedOnChatList, "Neither chat list nor login appeared within 15s")
+
+        // Verify the chat is still there.
+        let chatCell = app.staticTexts["persist-test"]
+        XCTAssertTrue(chatCell.waitForExistence(timeout: 10),
+                       "Chat with 'persist-test' message not found after relaunch")
+    }
+
     func testE2E_deployedRustBot_pingPong() throws {
         // Opt-in test: run it explicitly via xcodebuild `-only-testing:`. This hits public relays,
         // so it is intentionally not part of the deterministic smoke suite.

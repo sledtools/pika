@@ -451,9 +451,19 @@ fn run_android(
 
     // Assemble debug APK.
     human_log(verbose, "gradle assembleDebug");
-    let status = Command::new("./gradlew")
-        .current_dir(root.join("android"))
-        .arg(":app:assembleDebug")
+    let ci = is_ci();
+    let mut cmd = Command::new("./gradlew");
+    cmd.current_dir(root.join("android"))
+        .arg(":app:assembleDebug");
+    if ci {
+        // CI stability + debuggability.
+        cmd.arg("--no-daemon")
+            .arg("--console=plain")
+            .arg("--stacktrace");
+    } else if verbose {
+        cmd.arg("--console=plain");
+    }
+    let status = cmd
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
@@ -716,6 +726,10 @@ fn android_allow_headless() -> bool {
     if std::env::var("RMP_ANDROID_ALLOW_HEADLESS").ok().as_deref() == Some("1") {
         return true;
     }
+    is_ci()
+}
+
+fn is_ci() -> bool {
     std::env::var("CI")
         .ok()
         .map(|v| !v.trim().is_empty())

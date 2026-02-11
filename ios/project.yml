@@ -35,6 +35,14 @@ targets:
       - framework: Frameworks/PikaCore.xcframework
         embed: false
 
+  PikaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Pika
+
   PikaUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -50,5 +58,7 @@ schemes:
         Pika: all
     test:
       targets:
+        - name: PikaTests
+          randomExecutionOrder: true
         - name: PikaUITests
           randomExecutionOrder: true

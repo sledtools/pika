@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		02D9A491B498E051D46EC648 /* KeychainNsecStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */; };
 		2A9B2872E6ADB03F5A8FA173 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53159E06C561F50F6EC97A61 /* LoginView.swift */; };
+		38BA65C125C5EE3586248416 /* KeychainNsecStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */; };
 		3B614972940C843FB662920B /* PikaCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CD38D8437B178B873D96238 /* PikaCore.xcframework */; };
 		502171B59272A56AB36AECCF /* PeerKeyValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */; };
 		5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FE3F3E8BA33932B132B693 /* ChatView.swift */; };
@@ -33,6 +34,13 @@
 			remoteGlobalIDString = 2D0071299F035AA1EAC2CE97;
 			remoteInfo = Pika;
 		};
+		BAEED11EFCDF192E0546F109 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B1881FA49A49A0E38D54E33D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2D0071299F035AA1EAC2CE97;
+			remoteInfo = Pika;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +48,7 @@
 		0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyNpubQrSheet.swift; sourceTree = "<group>"; };
 		2510455883E1CDFB6D589F5C /* pika_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pika_core.swift; sourceTree = "<group>"; };
 		276F120E43A9DF389448FE5C /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
+		28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStoreTests.swift; sourceTree = "<group>"; };
 		366C05B721835967C3BE5418 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
 		3CD38D8437B178B873D96238 /* PikaCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PikaCore.xcframework; path = Frameworks/PikaCore.xcframework; sourceTree = "<group>"; };
 		42E962F7911EF0441F706C10 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -51,6 +60,7 @@
 		A62170468ABECD8AAA8B6B6A /* NewChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatView.swift; sourceTree = "<group>"; };
 		B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerSheet.swift; sourceTree = "<group>"; };
 		B2FE3F3E8BA33932B132B693 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PikaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerKeyValidator.swift; sourceTree = "<group>"; };
 		EF35ECCAE3B37C651F88A150 /* PikaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PikaApp.swift; sourceTree = "<group>"; };
 		F4FAE9ECBDFC0A976452024F /* TestIds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIds.swift; sourceTree = "<group>"; };
@@ -88,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				F8FB9846E26624B7638DDA90 /* Pika.app */,
+				E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */,
 				4F340333EBF85C4097106B1C /* PikaUITests.xctest */,
 			);
 			name = Products;
@@ -119,10 +130,19 @@
 			children = (
 				BAA4EBAEE8697870859AE04F /* Bindings */,
 				0EABA8FCDA9629FB8AF736CE /* Sources */,
+				7057FD8757F4DE461D8A3C27 /* Tests */,
 				3ECF7FFD917DF02854E9843D /* UITests */,
 				B14ADF193CAEABB2B0D1CC72 /* Frameworks */,
 				15FBA42EAE7F72462927B6FC /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		7057FD8757F4DE461D8A3C27 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		B14ADF193CAEABB2B0D1CC72 /* Frameworks */ = {
@@ -182,6 +202,24 @@
 			productReference = 4F340333EBF85C4097106B1C /* PikaUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		B6D8ED6879409A76FCD25AD8 /* PikaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 70A4F2CE4633826C511B2B55 /* Build configuration list for PBXNativeTarget "PikaTests" */;
+			buildPhases = (
+				7E3D650FCF9955C047D2D9E7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4D4482F0E5D02BD1919A8640 /* PBXTargetDependency */,
+			);
+			name = PikaTests;
+			packageProductDependencies = (
+			);
+			productName = PikaTests;
+			productReference = E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -211,6 +249,7 @@
 			projectRoot = "";
 			targets = (
 				2D0071299F035AA1EAC2CE97 /* Pika */,
+				B6D8ED6879409A76FCD25AD8 /* PikaTests */,
 				AEA02C6ADF42DA084E4281FA /* PikaUITests */,
 			);
 		};
@@ -233,6 +272,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				77E9D3F87F29E747F53DD5F0 /* PikaUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7E3D650FCF9955C047D2D9E7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				38BA65C125C5EE3586248416 /* KeychainNsecStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -263,6 +310,11 @@
 			isa = PBXTargetDependency;
 			target = 2D0071299F035AA1EAC2CE97 /* Pika */;
 			targetProxy = A9FEB1E744F3D43539C6D78D /* PBXContainerItemProxy */;
+		};
+		4D4482F0E5D02BD1919A8640 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2D0071299F035AA1EAC2CE97 /* Pika */;
+			targetProxy = BAEED11EFCDF192E0546F109 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -382,6 +434,21 @@
 			};
 			name = Release;
 		};
+		A8BF38A644809A48AF3AAA5F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pika.app/Pika";
+			};
+			name = Debug;
+		};
 		BF2578637802091049530134 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -460,6 +527,21 @@
 			};
 			name = Debug;
 		};
+		D18F35409181D225BDE31F1A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pika.app/Pika";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -468,6 +550,15 @@
 			buildConfigurations = (
 				C89710F1EAB626E3BF0F8BF5 /* Debug */,
 				4A74CAEB00421F778BF1C026 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		70A4F2CE4633826C511B2B55 /* Build configuration list for PBXNativeTarget "PikaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A8BF38A644809A48AF3AAA5F /* Debug */,
+				D18F35409181D225BDE31F1A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

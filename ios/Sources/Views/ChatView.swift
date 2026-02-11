@@ -7,35 +7,17 @@ struct ChatView: View {
 
     var body: some View {
         if let chat = manager.state.currentChat, chat.chatId == chatId {
-            VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(chat.messages, id: \.id) { msg in
-                                MessageRow(message: msg)
-                            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(chat.messages, id: \.id) { msg in
+                            MessageRow(message: msg)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
-
-                Divider()
-
-                HStack(spacing: 10) {
-                    TextField("Message", text: $messageText, axis: .vertical)
-                        .lineLimit(1...4)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier(TestIds.chatMessageInput)
-
-                    Button("Send") {
-                        manager.dispatch(.sendMessage(chatId: chat.chatId, content: messageText))
-                        messageText = ""
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier(TestIds.chatSend)
-                }
-                .padding(12)
+                .modifier(FloatingInputBarModifier(content: { messageInputBar(chat: chat) }))
             }
             .navigationTitle(chat.peerName ?? chat.peerNpub)
             .navigationBarTitleDisplayMode(.inline)
@@ -44,6 +26,65 @@ struct ChatView: View {
                 ProgressView()
                 Text("Loading chat…")
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func sendMessage(chat: ChatViewState) {
+        let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        manager.dispatch(.sendMessage(chatId: chat.chatId, content: trimmed))
+        messageText = ""
+    }
+
+    @ViewBuilder
+    private func messageInputBar(chat: ChatViewState) -> some View {
+        HStack(spacing: 10) {
+            TextField("Message", text: $messageText)
+                .onSubmit { sendMessage(chat: chat) }
+                .accessibilityIdentifier(TestIds.chatMessageInput)
+
+            Button(action: { sendMessage(chat: chat) }) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+            }
+            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier(TestIds.chatSend)
+        }
+        .modifier(GlassInputModifier())
+    }
+}
+
+private struct GlassInputModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .padding(12)
+        } else {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(12)
+        }
+    }
+}
+
+private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
+    @ViewBuilder var content: Bar
+
+    func body(content view: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            view.safeAreaBar(edge: .bottom) { content }
+        } else {
+            view.safeAreaInset(edge: .bottom) {
+                VStack(spacing: 0) {
+                    Divider()
+                    content
+                }
             }
         }
     }

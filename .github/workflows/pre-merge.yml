@@ -125,7 +125,9 @@ jobs:
 
   nightly-macos-ios:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly' && github.event.inputs.run_macos_ios == 'true')
-    runs-on: warp-macos-15-arm64-6x
+    runs-on:
+      group: Default
+      labels: warp-macos-15-arm64-6x
     permissions:
       contents: read
       id-token: write

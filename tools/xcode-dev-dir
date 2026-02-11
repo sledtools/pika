@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Print the most recent Xcode Developer directory under /Applications.
+# Errors if not found.
+
+DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+if [ -z "${DEV_DIR:-}" ]; then
+  echo "error: Xcode not found under /Applications" >&2
+  exit 1
+fi
+echo "$DEV_DIR"
+

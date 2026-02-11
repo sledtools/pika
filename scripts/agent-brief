@@ -21,7 +21,7 @@ descs+=("Available tasks.")
 
 if [[ -d "${repo_root}/docs" ]]; then
   titles+=("Docs")
-  cmds+=("npx -y @justinmoon/agent-tools list-docs")
+  cmds+=("npx --yes @justinmoon/agent-tools list-docs")
   descs+=("Project documentation index.")
 fi
 
@@ -64,11 +64,11 @@ done
 
 statuses=()
 for i in "${!pids[@]}"; do
-  status=0
-  if ! wait "${pids[$i]}"; then
-    status=$?
+  if wait "${pids[$i]}"; then
+    statuses+=("0")
+  else
+    statuses+=("$?")
   fi
-  statuses+=("${status}")
 done
 
 # --- Output ---

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# UI E2E runner against public relays + deployed bot (nondeterministic).
+#
+# Replaces the long inline bash in `justfile` recipes:
+# - e2e-public-relays
+# - ios-ui-e2e
+# - android-ui-e2e
+#
+# Usage:
+#   ./tools/ui-e2e-public --platform all
+#   ./tools/ui-e2e-public --platform ios
+#   ./tools/ui-e2e-public --platform android
+#
+# Env (typically via .env / .env.local):
+#   PIKA_TEST_NSEC
+#   PIKA_UI_E2E_BOT_NPUB
+#   PIKA_UI_E2E_RELAYS
+#   PIKA_UI_E2E_KP_RELAYS
+# Optional:
+#   PIKA_UI_E2E_NSEC           (defaults to PIKA_TEST_NSEC)
+#   PIKA_UI_E2E_RUN_RUST=1     (run rust-level e2e-public first; default for --platform all)
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
+
+platform=""
+
+usage() {
+  cat >&2 <<EOF
+usage: ./tools/ui-e2e-public --platform ios|android|all
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --platform)
+      platform="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "${platform:-}" ]; then
+  usage
+  exit 2
+fi
+
+: "${PIKA_TEST_NSEC:?missing (put it in ./.env or ./.env.local)}"
+: "${PIKA_UI_E2E_BOT_NPUB:?missing (put it in ./.env or ./.env.local)}"
+: "${PIKA_UI_E2E_RELAYS:?missing (put it in ./.env or ./.env.local)}"
+: "${PIKA_UI_E2E_KP_RELAYS:?missing (put it in ./.env or ./.env.local)}"
+
+peer="${PIKA_UI_E2E_BOT_NPUB}"
+relays="${PIKA_UI_E2E_RELAYS}"
+kp_relays="${PIKA_UI_E2E_KP_RELAYS}"
+nsec="${PIKA_UI_E2E_NSEC:-${PIKA_TEST_NSEC}}"
+
+maybe_run_rust() {
+  if [ "${platform}" = "all" ] || [ "${PIKA_UI_E2E_RUN_RUST:-0}" = "1" ]; then
+    just e2e-public
+  fi
+}
+
+run_android() {
+  ./tools/android-emulator-ensure
+  just gen-kotlin android-rust android-local-properties >/dev/null
+
+  (cd android && ./gradlew :app:connectedDebugAndroidTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
+    -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
+    -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
+    -Pandroid.testInstrumentationRunnerArguments.pika_reset=1 \
+    -Pandroid.testInstrumentationRunnerArguments.pika_peer_npub="$peer" \
+    -Pandroid.testInstrumentationRunnerArguments.pika_relay_urls="$relays" \
+    -Pandroid.testInstrumentationRunnerArguments.pika_key_package_relay_urls="$kp_relays" \
+    -Pandroid.testInstrumentationRunnerArguments.pika_nsec="$nsec")
+}
+
+run_ios() {
+  just ios-xcframework ios-xcodeproj >/dev/null
+
+  # Ensure the simulator test runner can see this value (tools/ios-sim-ensure propagates it).
+  udid="$(
+    PIKA_UI_E2E_NSEC="$nsec" \
+      ./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p'
+  )"
+  if [ -z "${udid:-}" ]; then
+    echo "error: could not determine simulator udid" >&2
+    exit 1
+  fi
+
+  PIKA_UI_E2E=1 \
+    PIKA_UI_E2E_BOT_NPUB="$peer" \
+    PIKA_UI_E2E_RELAYS="$relays" \
+    PIKA_UI_E2E_KP_RELAYS="$kp_relays" \
+    PIKA_UI_E2E_NSEC="$nsec" \
+    ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
+      PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
+      -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+}
+
+maybe_run_rust
+
+case "$platform" in
+  all)
+    run_ios
+    run_android
+    ;;
+  ios)
+    run_ios
+    ;;
+  android)
+    run_android
+    ;;
+  *)
+    echo "error: invalid --platform: $platform" >&2
+    exit 2
+    ;;
+esac

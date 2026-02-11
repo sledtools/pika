@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Print a single Android device/emulator serial for running connected tests.
+# Prefers an emulator.
+#
+# Selection:
+# - If PIKA_ANDROID_SERIAL is set, use it (must exist).
+# - Else if exactly one emulator is connected, use it.
+# - Else error and list targets.
+
+ADB="${ADB:-adb}"
+SERIAL="${PIKA_ANDROID_SERIAL:-}"
+
+list_targets() {
+  "$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}'
+}
+
+serial_exists() {
+  list_targets | grep -Fxq "$1"
+}
+
+pick_emulators() {
+  list_targets | awk '$1 ~ /^emulator-/ {print $1}'
+}
+
+pick_one_or_empty() {
+  local items="$1"
+  local count
+  count="$(echo "$items" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+  if [ "${count:-0}" = "1" ]; then
+    echo "$items" | sed '/^$/d' | head -n 1
+  else
+    echo ""
+  fi
+}
+
+if [ -n "${SERIAL:-}" ]; then
+  if ! serial_exists "$SERIAL"; then
+    echo "error: requested android serial not connected: $SERIAL" >&2
+    echo "connected targets:" >&2
+    list_targets | sed '/^$/d' | sed 's/^/  /' >&2
+    exit 2
+  fi
+  echo "$SERIAL"
+  exit 0
+fi
+
+SERIAL="$(pick_one_or_empty "$(pick_emulators)")"
+if [ -n "${SERIAL:-}" ]; then
+  echo "$SERIAL"
+  exit 0
+fi
+
+echo "error: multiple (or zero) android emulators connected; set PIKA_ANDROID_SERIAL=<serial>" >&2
+echo "connected targets:" >&2
+list_targets | sed '/^$/d' | sed 's/^/  /' >&2
+exit 2
+

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Ensure iOS tooling works even when `xcode-select -p` points at CommandLineTools or a Nix SDK.
-DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_DIR="$("$ROOT/tools/xcode-dev-dir" 2>/dev/null || true)"
 if [ -n "${DEV_DIR:-}" ]; then
   export DEVELOPER_DIR="$DEV_DIR"
 fi

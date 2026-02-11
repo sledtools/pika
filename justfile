@@ -1,4 +1,4 @@
-set shell := ["bash", "-lc"]
+set shell := ["bash", "-c"]
 
 # List available recipes.
 default:
@@ -50,8 +50,8 @@ pre-merge: fmt
   just clippy --lib --tests
   just test --lib --tests
   cargo build -p pika-cli
-  npx -y @justinmoon/agent-tools check-docs
-  npx -y @justinmoon/agent-tools check-justfile
+  npx --yes @justinmoon/agent-tools check-docs
+  npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge complete"
 
 # Full QA: fmt, clippy, test, android build, iOS sim build.
@@ -65,22 +65,7 @@ e2e-local-relay:
 
 # E2E against public relays + deployed bot (nondeterministic).
 e2e-public-relays:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  # Load local secrets if present (gitignored).
-  if [ -f .env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . ./.env
-    set +a
-  fi
-  : "${PIKA_TEST_NSEC:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_BOT_NPUB:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_RELAYS:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_KP_RELAYS:?missing (put it in ./.env)}"
-  just e2e-public
-  just ios-ui-e2e
-  just android-ui-e2e
+  ./tools/ui-e2e-public --platform all
 
 # Rust-level E2E smoke test against public relays (nondeterministic).
 e2e-public:
@@ -126,44 +111,17 @@ android-install: gen-kotlin android-rust android-local-properties
 
 # Run Android instrumentation tests (requires running emulator/device).
 android-ui-test: gen-kotlin android-rust android-local-properties
-  cd android && ./gradlew :app:connectedDebugAndroidTest
+  ./tools/android-ensure-debug-installable
+  SERIAL="$(./tools/android-pick-serial)"; \
+  ANDROID_SERIAL="$SERIAL" cd android && ./gradlew :app:connectedDebugAndroidTest
 
 # Android E2E: local docker relay + local Rust bot. Requires Docker + emulator.
 android-ui-e2e-local:
   ./tools/ui-e2e-local --platform android
 
 # Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
-android-ui-e2e: gen-kotlin android-rust android-local-properties
-  #!/usr/bin/env bash
-  set -euo pipefail
-  # Load local secrets if present (gitignored).
-  if [ -f .env ]; then
-    set -a
-    . ./.env
-    set +a
-  fi
-
-  : "${PIKA_TEST_NSEC:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_BOT_NPUB:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_RELAYS:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_KP_RELAYS:?missing (put it in ./.env)}"
-
-  peer="${PIKA_UI_E2E_BOT_NPUB}"
-  relays="${PIKA_UI_E2E_RELAYS}"
-  kp_relays="${PIKA_UI_E2E_KP_RELAYS}"
-  nsec="${PIKA_UI_E2E_NSEC:-${PIKA_TEST_NSEC}}"
-
-  ./tools/android-emulator-ensure
-
-  cd android && ./gradlew :app:connectedDebugAndroidTest \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
-    -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
-    -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
-    -Pandroid.testInstrumentationRunnerArguments.pika_reset=1 \
-    -Pandroid.testInstrumentationRunnerArguments.pika_peer_npub="$peer" \
-    -Pandroid.testInstrumentationRunnerArguments.pika_relay_urls="$relays" \
-    -Pandroid.testInstrumentationRunnerArguments.pika_key_package_relay_urls="$kp_relays" \
-    -Pandroid.testInstrumentationRunnerArguments.pika_nsec="$nsec"
+android-ui-e2e:
+  ./tools/ui-e2e-public --platform android
 
 # Generate Swift bindings via UniFFI.
 ios-gen-swift: rust-build-host
@@ -176,12 +134,26 @@ ios-gen-swift: rust-build-host
 
 # Cross-compile Rust core for iOS (device + simulator).
 ios-rust:
+  # Nix shells often set CC/CXX/SDKROOT/MACOSX_DEPLOYMENT_TARGET for macOS builds.
+  # For iOS targets, force Xcode toolchain compilers + iOS SDK roots.
   set -euo pipefail; \
-  DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
-  if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications (needed for iOS SDK)"; exit 1; fi; \
-  env -u LIBRARY_PATH DEVELOPER_DIR="$DEV_DIR" RUSTFLAGS="-C link-arg=-miphoneos-version-min=17.0" cargo build -p pika_core --release --lib --target aarch64-apple-ios; \
-  env -u LIBRARY_PATH DEVELOPER_DIR="$DEV_DIR" RUSTFLAGS="-C link-arg=-mios-simulator-version-min=17.0" cargo build -p pika_core --release --lib --target aarch64-apple-ios-sim; \
-  env -u LIBRARY_PATH DEVELOPER_DIR="$DEV_DIR" RUSTFLAGS="-C link-arg=-mios-simulator-version-min=17.0" cargo build -p pika_core --release --lib --target x86_64-apple-ios
+  DEV_DIR="$(./tools/xcode-dev-dir)"; \
+  TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"; \
+  CC_BIN="$TOOLCHAIN_BIN/clang"; \
+  CXX_BIN="$TOOLCHAIN_BIN/clang++"; \
+  AR_BIN="$TOOLCHAIN_BIN/ar"; \
+  RANLIB_BIN="$TOOLCHAIN_BIN/ranlib"; \
+  IOS_MIN="17.0"; \
+  SDKROOT_IOS="$(DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk iphoneos --show-sdk-path)"; \
+  SDKROOT_SIM="$(DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path)"; \
+  base_env=(env -u LIBRARY_PATH -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u CC -u CXX -u AR -u RANLIB \
+    DEVELOPER_DIR="$DEV_DIR" CC="$CC_BIN" CXX="$CXX_BIN" AR="$AR_BIN" RANLIB="$RANLIB_BIN" IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN" \
+    CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$CC_BIN" \
+    CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$CC_BIN" \
+    CARGO_TARGET_X86_64_APPLE_IOS_LINKER="$CC_BIN"); \
+  "${base_env[@]}" SDKROOT="$SDKROOT_IOS" RUSTFLAGS="-C linker=$CC_BIN -C link-arg=-miphoneos-version-min=$IOS_MIN" cargo build -p pika_core --release --lib --target aarch64-apple-ios; \
+  "${base_env[@]}" SDKROOT="$SDKROOT_SIM" RUSTFLAGS="-C linker=$CC_BIN -C link-arg=-mios-simulator-version-min=$IOS_MIN" cargo build -p pika_core --release --lib --target aarch64-apple-ios-sim; \
+  "${base_env[@]}" SDKROOT="$SDKROOT_SIM" RUSTFLAGS="-C linker=$CC_BIN -C link-arg=-mios-simulator-version-min=$IOS_MIN" cargo build -p pika_core --release --lib --target x86_64-apple-ios
 
 # Build PikaCore.xcframework (device + simulator slices).
 ios-xcframework: ios-gen-swift ios-rust
@@ -189,13 +161,11 @@ ios-xcframework: ios-gen-swift ios-rust
   mkdir -p ios/.build/headers ios/Frameworks
   cp ios/Bindings/pika_coreFFI.h ios/.build/headers/pika_coreFFI.h
   cp ios/Bindings/pika_coreFFI.modulemap ios/.build/headers/module.modulemap
-  DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
-  if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi; \
-  DEVELOPER_DIR="$DEV_DIR" xcrun lipo -create \
+  ./tools/xcode-run xcrun lipo -create \
     target/aarch64-apple-ios-sim/release/libpika_core.a \
     target/x86_64-apple-ios/release/libpika_core.a \
     -output ios/.build/libpika_core_sim.a; \
-  DEVELOPER_DIR="$DEV_DIR" xcodebuild -create-xcframework \
+  ./tools/xcode-run xcodebuild -create-xcframework \
     -library target/aarch64-apple-ios/release/libpika_core.a -headers ios/.build/headers \
     -library ios/.build/libpika_core_sim.a -headers ios/.build/headers \
     -output ios/Frameworks/PikaCore.xcframework
@@ -206,17 +176,13 @@ ios-xcodeproj:
 
 # Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
-  DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
-  if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi; \
-  env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild -project ios/Pika.xcodeproj -target Pika -configuration Debug -sdk iphonesimulator build CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -target Pika -configuration Debug -sdk iphonesimulator build CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
 
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj
-  DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1); \
-  if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi; \
   udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"; \
   if [ -z "$udid" ]; then echo "error: could not determine simulator udid"; exit 1; fi; \
-  env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
+  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
     -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 
 # iOS E2E: local docker relay + local Rust bot. Requires Docker.
@@ -224,36 +190,8 @@ ios-ui-e2e-local:
   ./tools/ui-e2e-local --platform ios
 
 # iOS E2E: public relays + deployed bot (nondeterministic). Requires PIKA_UI_E2E=1.
-ios-ui-e2e: ios-xcframework ios-xcodeproj
-  #!/usr/bin/env bash
-  set -euo pipefail
-  # Load local secrets if present (gitignored).
-  if [ -f .env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . ./.env
-    set +a
-  fi
-  : "${PIKA_TEST_NSEC:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_BOT_NPUB:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_RELAYS:?missing (put it in ./.env)}"
-  : "${PIKA_UI_E2E_KP_RELAYS:?missing (put it in ./.env)}"
-
-  DEV_DIR=$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1)
-  if [ -z "$DEV_DIR" ]; then echo "Xcode not found under /Applications"; exit 1; fi
-
-  # Ensure the simulator test runner can see this value (tools/ios-sim-ensure propagates it).
-  nsec="${PIKA_UI_E2E_NSEC:-${PIKA_TEST_NSEC}}"
-  udid="$(PIKA_UI_E2E_NSEC="$nsec" ./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
-  if [ -z "$udid" ]; then echo "error: could not determine simulator udid"; exit 1; fi
-
-  PIKA_UI_E2E=1 \
-    PIKA_UI_E2E_BOT_NPUB="${PIKA_UI_E2E_BOT_NPUB}" \
-    PIKA_UI_E2E_RELAYS="${PIKA_UI_E2E_RELAYS}" \
-    PIKA_UI_E2E_KP_RELAYS="${PIKA_UI_E2E_KP_RELAYS}" \
-  PIKA_UI_E2E_NSEC="$nsec" \
-    env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
-      -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+ios-ui-e2e:
+  ./tools/ui-e2e-public --platform ios
 
 # Optional: device automation (npx). Not required for building.
 device:
@@ -306,43 +244,4 @@ cli-identity STATE_DIR=".pika-cli" RELAY="ws://127.0.0.1:7777":
 # Quick smoke test: two users, local relay, send+receive.
 # Requires a Nostr relay running at RELAY (e.g. `strfry` or `nostr-rs-relay`).
 cli-smoke RELAY="ws://127.0.0.1:7777":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  TMPDIR=$(mktemp -d)
-  trap 'rm -rf "$TMPDIR"' EXIT
-  CLI="cargo run -q -p pika-cli --"
-
-  echo "=== Alice: create identity ==="
-  ALICE=$($CLI --state-dir "$TMPDIR/alice" --relay {{RELAY}} identity)
-  ALICE_PK=$(echo "$ALICE" | python3 -c "import sys,json; print(json.load(sys.stdin)['pubkey'])")
-  echo "Alice pubkey: $ALICE_PK"
-
-  echo "=== Bob: create identity ==="
-  BOB=$($CLI --state-dir "$TMPDIR/bob" --relay {{RELAY}} identity)
-  BOB_PK=$(echo "$BOB" | python3 -c "import sys,json; print(json.load(sys.stdin)['pubkey'])")
-  echo "Bob pubkey: $BOB_PK"
-
-  echo "=== Both: publish key packages ==="
-  $CLI --state-dir "$TMPDIR/alice" --relay {{RELAY}} publish-kp
-  $CLI --state-dir "$TMPDIR/bob" --relay {{RELAY}} publish-kp
-
-  echo "=== Alice: invite Bob ==="
-  INVITE=$($CLI --state-dir "$TMPDIR/alice" --relay {{RELAY}} invite --peer "$BOB_PK")
-  GROUP=$(echo "$INVITE" | python3 -c "import sys,json; print(json.load(sys.stdin)['nostr_group_id'])")
-  echo "Group: $GROUP"
-
-  echo "=== Bob: check welcomes ==="
-  WELCOMES=$($CLI --state-dir "$TMPDIR/bob" --relay {{RELAY}} welcomes)
-  echo "$WELCOMES"
-  WRAPPER=$(echo "$WELCOMES" | python3 -c "import sys,json; print(json.load(sys.stdin)['welcomes'][0]['wrapper_event_id'])")
-
-  echo "=== Bob: accept welcome ==="
-  $CLI --state-dir "$TMPDIR/bob" --relay {{RELAY}} accept-welcome --wrapper-event-id "$WRAPPER"
-
-  echo "=== Alice: send message ==="
-  $CLI --state-dir "$TMPDIR/alice" --relay {{RELAY}} send --group "$GROUP" --content "hello from alice"
-
-  echo "=== Bob: read messages ==="
-  $CLI --state-dir "$TMPDIR/bob" --relay {{RELAY}} messages --group "$GROUP"
-
-  echo "=== SMOKE TEST PASSED ==="
+  ./tools/cli-smoke --relay {{RELAY}}

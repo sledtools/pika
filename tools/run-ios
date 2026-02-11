@@ -23,37 +23,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-load_dotenv() {
-  # Dev-only config. `.env` and `.env.local` are gitignored.
-  for f in .env .env.local; do
-    if [ -f "$f" ]; then
-      # Only set vars that aren't already present in the environment so callers can override via:
-      #   PIKA_IOS_DEVICE=0 ./tools/run-ios
-      while IFS= read -r line || [ -n "$line" ]; do
-        # Trim leading/trailing whitespace (basic).
-        line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        if [ -z "${line:-}" ] || echo "$line" | grep -q '^#'; then
-          continue
-        fi
-        if ! echo "$line" | grep -q '='; then
-          continue
-        fi
-        key="${line%%=*}"
-        val="${line#*=}"
-        key="$(echo "$key" | tr -d '[:space:]')"
-        if [ -z "${key:-}" ]; then
-          continue
-        fi
-        # Indirect expansion: if already set, do not override.
-        if eval "[ -z \"\${$key+x}\" ]"; then
-          export "$key=$val"
-        fi
-      done <"$f"
-    fi
-  done
-}
-
-load_dotenv
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
 
 # If the user isn't in the devShell, re-exec under Nix for a consistent toolchain.
 if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
@@ -87,12 +59,7 @@ EOF
 }
 
 list_connected_iphones() {
-  DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-  if [ -z "${DEV_DIR:-}" ]; then
-    echo "error: Xcode not found under /Applications" >&2
-    exit 1
-  fi
-  DEVELOPER_DIR="$DEV_DIR" xcrun xctrace list devices 2>/dev/null | awk '
+  ./tools/xcode-run xcrun xctrace list devices 2>/dev/null | awk '
     $0 == "== Devices ==" { in_devices = 1; next }
     $0 == "== Simulators ==" { in_devices = 0; next }
     in_devices && $0 ~ /iPhone/ {
@@ -183,11 +150,8 @@ PY
 
 # Fail fast if iOS Simulator runtimes/devices are missing.
 if [ "$MODE" = "device" ]; then
-  DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-  if [ -z "${DEV_DIR:-}" ]; then
-    echo "error: Xcode not found under /Applications" >&2
-    exit 1
-  fi
+  # Ensure Xcode is installed.
+  ./tools/xcode-dev-dir >/dev/null
 
   if [ -z "${IOS_TEAM_ID:-}" ]; then
     echo "error: PIKA_IOS_DEVELOPMENT_TEAM is required for --device" >&2
@@ -216,7 +180,7 @@ if [ "$MODE" = "device" ]; then
   signing_settings+=("DEVELOPMENT_TEAM=$IOS_TEAM_ID")
   signing_settings+=("CODE_SIGN_STYLE=Automatic")
 
-  env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" xcodebuild \
+  ./tools/xcode-run xcodebuild \
     -project ios/Pika.xcodeproj \
     -scheme Pika \
     -configuration Debug \
@@ -234,7 +198,7 @@ if [ "$MODE" = "device" ]; then
   fi
 
   echo "installing app to device: $UDID"
-  DEVELOPER_DIR="$DEV_DIR" xcrun devicectl device install app -d "$UDID" "$app_path"
+  ./tools/xcode-run xcrun devicectl device install app -d "$UDID" "$app_path"
 
   env_json="$(env_json_for_device)"
 
@@ -245,7 +209,7 @@ if [ "$MODE" = "device" ]; then
     tmp="$(mktemp)"
     for i in $(seq 1 120); do
       rm -f "$tmp" >/dev/null 2>&1 || true
-      if DEVELOPER_DIR="$DEV_DIR" xcrun devicectl device info lockState -d "$UDID" --json-output "$tmp" >/dev/null 2>&1; then
+      if ./tools/xcode-run xcrun devicectl device info lockState -d "$UDID" --json-output "$tmp" >/dev/null 2>&1; then
         locked="$(python3 - <<PY 2>/dev/null || true
 import json
 p="${tmp}"
@@ -292,14 +256,14 @@ PY
 
   if [ "$CONSOLE" = "1" ]; then
     echo "launching $IOS_BUNDLE_ID (console attached)"
-    DEVELOPER_DIR="$DEV_DIR" xcrun devicectl device process launch -d "$UDID" \
+    ./tools/xcode-run xcrun devicectl device process launch -d "$UDID" \
       --environment-variables "$env_json" \
       --terminate-existing \
       --console \
       "$IOS_BUNDLE_ID"
   else
     echo "launching $IOS_BUNDLE_ID"
-    DEVELOPER_DIR="$DEV_DIR" xcrun devicectl device process launch -d "$UDID" \
+    ./tools/xcode-run xcrun devicectl device process launch -d "$UDID" \
       --environment-variables "$env_json" \
       --terminate-existing \
       "$IOS_BUNDLE_ID" >/dev/null

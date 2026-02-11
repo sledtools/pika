@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fixes a common local failure for instrumentation tests:
+#   INSTALL_FAILED_UPDATE_INCOMPATIBLE (signature mismatch)
+#
+# By default, only uninstalls on emulators (serial starts with "emulator-").
+# For physical devices, require:
+#   PIKA_ANDROID_ALLOW_UNINSTALL_ON_DEVICE=1
+#
+# Serial selection:
+# - If PIKA_ANDROID_SERIAL is set, use it.
+# - Else if exactly one emulator is connected, use it.
+# - Else error (to avoid uninstalling the wrong device).
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+ADB="${ADB:-adb}"
+APP_ID="${PIKA_ANDROID_APP_ID:-com.justinmoon.pika.dev}"
+SERIAL="${PIKA_ANDROID_SERIAL:-}"
+
+pick_emulators() {
+  "$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" && $1 ~ /^emulator-/ {print $1}'
+}
+
+pick_one_or_empty() {
+  local items="$1"
+  local count
+  count="$(echo "$items" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+  if [ "${count:-0}" = "1" ]; then
+    echo "$items" | sed '/^$/d' | head -n 1
+  else
+    echo ""
+  fi
+}
+
+if [ -z "${SERIAL:-}" ]; then
+  SERIAL="$(pick_one_or_empty "$(pick_emulators)")"
+fi
+
+if [ -z "${SERIAL:-}" ]; then
+  echo "error: could not pick a single android emulator serial for uninstall step" >&2
+  echo "hint: set PIKA_ANDROID_SERIAL=<serial> (see: adb devices)" >&2
+  exit 2
+fi
+
+allow_uninstall=0
+if echo "$SERIAL" | grep -q '^emulator-'; then
+  allow_uninstall=1
+elif [ "${PIKA_ANDROID_ALLOW_UNINSTALL_ON_DEVICE:-0}" = "1" ]; then
+  allow_uninstall=1
+fi
+
+if [ "$allow_uninstall" != "1" ]; then
+  echo "error: refusing to uninstall $APP_ID on non-emulator target ($SERIAL)" >&2
+  echo "hint: set PIKA_ANDROID_ALLOW_UNINSTALL_ON_DEVICE=1 if you really want this" >&2
+  exit 2
+fi
+
+if "$ADB" -s "$SERIAL" shell pm path "$APP_ID" >/dev/null 2>&1; then
+  echo "uninstalling existing $APP_ID from $SERIAL (to avoid signature mismatch)"
+  "$ADB" -s "$SERIAL" uninstall "$APP_ID" >/dev/null 2>&1 || true
+fi
+

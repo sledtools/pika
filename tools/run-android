@@ -9,37 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-load_dotenv() {
-  # Dev-only config. `.env` and `.env.local` are gitignored.
-  for f in .env .env.local; do
-    if [ -f "$f" ]; then
-      # Only set vars that aren't already present in the environment so callers can override via:
-      #   PIKA_ANDROID_SERIAL=... ./tools/run-android
-      while IFS= read -r line || [ -n "$line" ]; do
-        # Trim leading/trailing whitespace (basic).
-        line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        if [ -z "${line:-}" ] || echo "$line" | grep -q '^#'; then
-          continue
-        fi
-        if ! echo "$line" | grep -q '='; then
-          continue
-        fi
-        key="${line%%=*}"
-        val="${line#*=}"
-        key="$(echo "$key" | tr -d '[:space:]')"
-        if [ -z "${key:-}" ]; then
-          continue
-        fi
-        # Indirect expansion: if already set, do not override.
-        if eval "[ -z \"\${$key+x}\" ]"; then
-          export "$key=$val"
-        fi
-      done <"$f"
-    fi
-  done
-}
-
-load_dotenv
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
 
 # If the user isn't in the devShell, re-exec under Nix for a consistent toolchain.
 if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_ANDROID_NO_NIX:-0}" != "1" ]; then

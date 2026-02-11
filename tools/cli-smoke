@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Quick smoke test: two users, local relay, send+receive.
+#
+# Replaces the long inline `cli-smoke` recipe in `justfile`.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+relay="ws://127.0.0.1:7777"
+
+usage() {
+  cat >&2 <<EOF
+usage: ./tools/cli-smoke [--relay <ws://...>]
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --relay)
+      relay="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+CLI="cargo run -q -p pika-cli --"
+
+json_get() {
+  local expr="$1"
+  python3 - <<PY
+import json,sys
+obj=json.load(sys.stdin)
+print($expr)
+PY
+}
+
+echo "=== Alice: create identity ==="
+ALICE="$($CLI --state-dir "$TMPDIR/alice" --relay "$relay" identity)"
+ALICE_PK="$(echo "$ALICE" | json_get "obj['pubkey']")"
+echo "Alice pubkey: $ALICE_PK"
+
+echo "=== Bob: create identity ==="
+BOB="$($CLI --state-dir "$TMPDIR/bob" --relay "$relay" identity)"
+BOB_PK="$(echo "$BOB" | json_get "obj['pubkey']")"
+echo "Bob pubkey: $BOB_PK"
+
+echo "=== Both: publish key packages ==="
+$CLI --state-dir "$TMPDIR/alice" --relay "$relay" publish-kp
+$CLI --state-dir "$TMPDIR/bob" --relay "$relay" publish-kp
+
+echo "=== Alice: invite Bob ==="
+INVITE="$($CLI --state-dir "$TMPDIR/alice" --relay "$relay" invite --peer "$BOB_PK")"
+GROUP="$(echo "$INVITE" | json_get "obj['nostr_group_id']")"
+echo "Group: $GROUP"
+
+echo "=== Bob: check welcomes ==="
+WELCOMES="$($CLI --state-dir "$TMPDIR/bob" --relay "$relay" welcomes)"
+echo "$WELCOMES"
+WRAPPER="$(echo "$WELCOMES" | json_get "obj['welcomes'][0]['wrapper_event_id']")"
+
+echo "=== Bob: accept welcome ==="
+$CLI --state-dir "$TMPDIR/bob" --relay "$relay" accept-welcome --wrapper-event-id "$WRAPPER"
+
+echo "=== Alice: send message ==="
+$CLI --state-dir "$TMPDIR/alice" --relay "$relay" send --group "$GROUP" --content "hello from alice"
+
+echo "=== Bob: read messages ==="
+$CLI --state-dir "$TMPDIR/bob" --relay "$relay" messages --group "$GROUP"
+
+echo "=== SMOKE TEST PASSED ==="
+

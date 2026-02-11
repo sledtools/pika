@@ -186,11 +186,6 @@ case "$platform" in
     ;;
   ios)
     just ios-xcframework ios-xcodeproj >/dev/null
-    DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1)"
-    if [ -z "${DEV_DIR:-}" ]; then
-      echo "error: Xcode not found under /Applications" >&2
-      exit 1
-    fi
     udid="$(
       PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
       PIKA_UI_E2E_BOT_NPUB="${BOT_NPUB}" \
@@ -207,8 +202,7 @@ case "$platform" in
       PIKA_UI_E2E_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_KP_RELAYS="${RELAY_URL}" \
       PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
-      env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" \
-        xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
+      ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
           -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
     ;;
   *)

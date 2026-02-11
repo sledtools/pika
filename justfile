@@ -47,6 +47,30 @@ info:
 rmp *ARGS:
   cargo run -p rmp-cli -- {{ARGS}}
 
+# Smoke test `rmp init` output locally (scaffold + doctor + core check).
+rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
+  set -euo pipefail; \
+  ROOT="$PWD"; \
+  BIN="$ROOT/target/debug/rmp"; \
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-smoke.XXXXXX")"; \
+  cargo build -p rmp-cli; \
+  "$BIN" init "$TMP/{{NAME}}" --yes --org "{{ORG}}"; \
+  cd "$TMP/{{NAME}}"; \
+  "$BIN" doctor --json >/dev/null; \
+  cargo check -p pika_core; \
+  echo "ok: rmp init smoke passed ($TMP/{{NAME}})"
+
+# End-to-end launch check for a freshly initialized project.
+rmp-init-run PLATFORM="android" NAME="rmp-e2e" ORG="com.example":
+  set -euo pipefail; \
+  ROOT="$PWD"; \
+  BIN="$ROOT/target/debug/rmp"; \
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-run.XXXXXX")"; \
+  cargo build -p rmp-cli; \
+  "$BIN" init "$TMP/{{NAME}}" --yes --org "{{ORG}}"; \
+  cd "$TMP/{{NAME}}"; \
+  "$BIN" run {{PLATFORM}}
+
 # Run pika_core tests.
 test *ARGS:
   cargo test -p pika_core {{ARGS}}

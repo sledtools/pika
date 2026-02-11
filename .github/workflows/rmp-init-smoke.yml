@@ -1,0 +1,34 @@
+name: rmp-init-smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scaffold-and-check:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      # Current stage: verify `rmp init` can scaffold a fresh project and compile its Rust core.
+      # Next stage: add macOS iOS-sim launch and Android emulator launch jobs.
+      - run: nix develop -c just rmp-init-smoke

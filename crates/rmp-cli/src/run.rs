@@ -681,7 +681,9 @@ fn emulator_is_headless_only(avd: &str) -> Result<bool, CliError> {
     cmd.arg("ax").arg("-o").arg("command=");
     let out = run_capture(cmd)?;
     if !out.status.success() {
-        return Err(CliError::operational("failed to inspect emulator processes"));
+        return Err(CliError::operational(
+            "failed to inspect emulator processes",
+        ));
     }
 
     let needle = format!("-avd {avd}");

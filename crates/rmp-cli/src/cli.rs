@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 #[derive(Parser, Debug)]
@@ -25,6 +25,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
+    /// Scaffold a new Rust + iOS + Android app repository.
+    Init(InitArgs),
+
     /// Fast diagnostics; must not build.
     Doctor,
 
@@ -39,6 +42,44 @@ pub enum Cmd {
 
     /// Build/install/launch on iOS/Android (debug).
     Run(RunArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct InitArgs {
+    /// Project directory name to create.
+    pub name: String,
+
+    /// Include iOS app scaffolding.
+    #[arg(long, conflicts_with = "no_ios")]
+    pub ios: bool,
+
+    /// Exclude iOS app scaffolding.
+    #[arg(long = "no-ios", action = ArgAction::SetTrue)]
+    pub no_ios: bool,
+
+    /// Include Android app scaffolding.
+    #[arg(long, conflicts_with = "no_android")]
+    pub android: bool,
+
+    /// Exclude Android app scaffolding.
+    #[arg(long = "no-android", action = ArgAction::SetTrue)]
+    pub no_android: bool,
+
+    /// Reverse-DNS org prefix (e.g. com.example).
+    #[arg(long)]
+    pub org: Option<String>,
+
+    /// iOS bundle identifier override.
+    #[arg(long)]
+    pub bundle_id: Option<String>,
+
+    /// Android application ID override.
+    #[arg(long)]
+    pub app_id: Option<String>,
+
+    /// Non-interactive mode.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Subcommand, Debug)]

@@ -45,6 +45,18 @@
             testExecutionOrdering = "random">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B6D8ED6879409A76FCD25AD8"
+               BuildableName = "PikaTests.xctest"
+               BlueprintName = "PikaTests"
+               ReferencedContainer = "container:Pika.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO"
+            testExecutionOrdering = "random">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "AEA02C6ADF42DA084E4281FA"
                BuildableName = "PikaUITests.xctest"
                BlueprintName = "PikaUITests"

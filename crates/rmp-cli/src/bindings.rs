@@ -409,7 +409,8 @@ fn build_ios_xcframework(
         return Err(CliError::operational("lipo failed"));
     }
 
-    let out_xcf = frameworks_dir.join("PikaCore.xcframework");
+    let xcf_name = pascal_case(core_lib);
+    let out_xcf = frameworks_dir.join(format!("{xcf_name}.xcframework"));
     let status = Command::new("/usr/bin/xcrun")
         .env("DEVELOPER_DIR", &dev_dir)
         .arg("xcodebuild")
@@ -622,4 +623,22 @@ fn build_android_so(
     let _ = android.app_id.as_str();
 
     Ok(())
+}
+
+/// Convert a snake_case lib name to PascalCase (e.g., "pika_core" → "PikaCore").
+fn pascal_case(s: &str) -> String {
+    s.split('_')
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| {
+            let mut c = seg.chars();
+            match c.next() {
+                Some(first) => {
+                    let mut part = first.to_uppercase().to_string();
+                    part.extend(c);
+                    part
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
 }

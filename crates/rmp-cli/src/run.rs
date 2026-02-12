@@ -60,6 +60,7 @@ fn run_ios(
     }
 
     let bundle_id = format!("{}.dev", ios.bundle_id);
+    let xcode_name = read_xcode_project_name(root).unwrap_or_else(|| "App".to_string());
 
     // Build simulator .app.
     human_log(verbose, "xcodebuild (Debug, iphonesimulator)");
@@ -70,9 +71,9 @@ fn run_ios(
         .env_remove("CXX")
         .arg("xcodebuild")
         .arg("-project")
-        .arg(root.join("ios/Pika.xcodeproj"))
+        .arg(root.join(format!("ios/{xcode_name}.xcodeproj")))
         .arg("-target")
-        .arg("Pika")
+        .arg(&xcode_name)
         .arg("-destination")
         .arg(format!("id={udid}"))
         .arg("-configuration")
@@ -92,7 +93,7 @@ fn run_ios(
         return Err(CliError::operational("xcodebuild failed"));
     }
 
-    let app_path = root.join("ios/build/Debug-iphonesimulator/Pika.app");
+    let app_path = root.join(format!("ios/build/Debug-iphonesimulator/{xcode_name}.app"));
     if !app_path.is_dir() {
         return Err(CliError::operational(format!(
             "missing built app at {}",
@@ -116,8 +117,10 @@ fn run_ios(
         return Err(CliError::operational("simctl install failed"));
     }
 
-    // Write relay config into app container.
-    maybe_write_ios_relay_config(&dev_dir, &udid, &bundle_id, verbose)?;
+    // Write relay config into app container (Pika-specific; skipped for generic apps).
+    if std::env::var("PIKA_RELAY_URLS").is_ok() || std::env::var("PIKA_RELAY_URL").is_ok() {
+        maybe_write_ios_relay_config(&dev_dir, &udid, &bundle_id, verbose)?;
+    }
 
     // Launch.
     let _ = Command::new("/usr/bin/xcrun")
@@ -226,7 +229,7 @@ fn ensure_ios_simulator(
 
     let device_type_id = pick_device_type_id(dev_dir, "iPhone 15")?;
 
-    let device_name = "Pika iPhone 15";
+    let device_name = "RMP iPhone 15";
     let udid = match find_simulator_udid_by_name(dev_dir, device_name)? {
         Some(u) => u,
         None => create_simulator(dev_dir, device_name, &device_type_id, &runtime_id)?,
@@ -523,7 +526,10 @@ fn run_android(
         setup_adb_reverse(&serial, &rev, verbose)?;
     }
 
-    maybe_write_android_relay_config(&serial, &pkg, verbose)?;
+    // Write relay config (Pika-specific; skipped for generic apps).
+    if std::env::var("PIKA_RELAY_URLS").is_ok() || std::env::var("PIKA_RELAY_URL").is_ok() {
+        maybe_write_android_relay_config(&serial, &pkg, verbose)?;
+    }
 
     launch_android(&serial, &pkg, verbose)?;
 
@@ -1005,4 +1011,22 @@ fn launch_android(serial: &str, pkg: &str, verbose: bool) -> Result<(), CliError
     Err(CliError::operational(format!(
         "app did not appear to start (pidof {pkg} empty)"
     )))
+}
+
+/// Read the `name:` field from `ios/project.yml` to derive the Xcode project/target/app name.
+fn read_xcode_project_name(root: &Path) -> Option<String> {
+    let yml_path = root.join("ios/project.yml");
+    let content = std::fs::read_to_string(&yml_path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name:") {
+            let name = trimmed.strip_prefix("name:")?.trim();
+            // Strip optional quotes.
+            let name = name.trim_matches('"').trim_matches('\'').trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }

@@ -47,7 +47,7 @@ pub struct RmpCore {
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct RmpIos {
     pub bundle_id: String,
-    pub scheme: String,
+    pub scheme: Option<String>,
 }
 
 #[allow(dead_code)]

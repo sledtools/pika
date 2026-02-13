@@ -981,6 +981,40 @@ fn call_invite_accept_end_flow_over_local_relay() {
         },
     );
 
+    // While Alice is in-call, a second invite should not replace the active call.
+    let second_invite_call_id = "550e8400-e29b-41d4-a716-446655440999";
+    let second_invite = serde_json::json!({
+        "v": 1,
+        "ns": "pika.call",
+        "type": "call.invite",
+        "call_id": second_invite_call_id,
+        "ts_ms": 1730000000000i64,
+        "body": {
+            "moq_url": "https://moq.local/anon",
+            "broadcast_base": format!("pika/calls/{second_invite_call_id}"),
+            "tracks": [{
+                "name": "audio0",
+                "codec": "opus",
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20
+            }]
+        }
+    })
+    .to_string();
+    bob.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: second_invite,
+    });
+    wait_until("alice keeps original active call id", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| c.call_id == call_id)
+            .unwrap_or(false)
+    });
+
     // Mute should pause local TX frame generation.
     let alice_tx_before_mute = alice
         .state()

@@ -5,7 +5,9 @@ import UIKit
 
 struct MyNpubQrSheet: View {
     let npub: String
+    let manager: AppManager
     @Environment(\.dismiss) private var dismiss
+    @State private var showNsec = false
 
     var body: some View {
         NavigationStack {
@@ -33,16 +35,56 @@ struct MyNpubQrSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityIdentifier(TestIds.chatListMyNpubValue)
 
-                Button("Copy") {
+                Button("Copy npub") {
                     UIPasteboard.general.string = npub
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier(TestIds.chatListMyNpubCopy)
 
+                if let nsec = manager.getNsec() {
+                    Divider()
+                        .padding(.vertical, 8)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Private Key (nsec)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        HStack {
+                            if showNsec {
+                                Text(nsec)
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .textSelection(.enabled)
+                            } else {
+                                Text(String(repeating: "•", count: 24))
+                                    .font(.system(.footnote, design: .monospaced))
+                            }
+                            Spacer()
+                            Button {
+                                showNsec.toggle()
+                            } label: {
+                                Image(systemName: showNsec ? "eye.slash" : "eye")
+                            }
+                            .accessibilityIdentifier(TestIds.myNpubNsecToggle)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(.thinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier(TestIds.myNpubNsecValue)
+
+                        Button("Copy nsec") {
+                            UIPasteboard.general.string = nsec
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier(TestIds.myNpubNsecCopy)
+                    }
+                }
+
                 Spacer()
             }
             .padding(16)
-            .navigationTitle("My npub")
+            .navigationTitle("My Profile")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Close") { dismiss() }

@@ -61,7 +61,7 @@ struct ChatListView: View {
                     .accessibilityLabel("My npub")
                     .accessibilityIdentifier(TestIds.chatListMyNpub)
                     .sheet(isPresented: $showMyNpub) {
-                        MyNpubQrSheet(npub: npub)
+                        MyNpubQrSheet(npub: npub, manager: manager)
                     }
                 }
             }

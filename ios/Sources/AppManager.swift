@@ -124,6 +124,10 @@ final class AppManager: AppReconciler {
         // Foreground is a lifecycle action; Rust owns state changes and side effects.
         dispatch(.foregrounded)
     }
+
+    func getNsec() -> String? {
+        nsecStore.getNsec()
+    }
 }
 
 private extension AppUpdate {

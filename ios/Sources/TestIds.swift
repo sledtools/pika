@@ -15,6 +15,11 @@ enum TestIds {
     static let chatListMyNpubCopy = "chatlist_my_npub_copy"
     static let chatListMyNpubClose = "chatlist_my_npub_close"
 
+    // My Profile (nsec export)
+    static let myNpubNsecValue = "my_npub_nsec_value"
+    static let myNpubNsecToggle = "my_npub_nsec_toggle"
+    static let myNpubNsecCopy = "my_npub_nsec_copy"
+
     // New chat
     static let newChatPeerNpub = "newchat_peer_npub"
     static let newChatStart = "newchat_start"

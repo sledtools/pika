@@ -932,14 +932,18 @@ fn call_invite_accept_end_flow_over_local_relay() {
             .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
             .unwrap_or(false)
     });
-    wait_until("alice connecting or active", Duration::from_secs(10), || {
-        alice
-            .state()
-            .active_call
-            .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
-            .unwrap_or(false)
-    });
+    wait_until(
+        "alice connecting or active",
+        Duration::from_secs(10),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
+                .unwrap_or(false)
+        },
+    );
 
     wait_until(
         "bob active with media stats",
@@ -976,6 +980,54 @@ fn call_invite_accept_end_flow_over_local_relay() {
                 .unwrap_or(false)
         },
     );
+
+    // Mute should pause local TX frame generation.
+    let alice_tx_before_mute = alice
+        .state()
+        .active_call
+        .as_ref()
+        .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+        .unwrap_or(0);
+    alice.dispatch(AppAction::ToggleMute);
+    wait_until("alice muted", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| c.is_muted)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    let alice_tx_while_muted = alice
+        .state()
+        .active_call
+        .as_ref()
+        .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+        .unwrap_or(0);
+    assert_eq!(
+        alice_tx_while_muted, alice_tx_before_mute,
+        "mute should pause tx frame counter"
+    );
+
+    // Unmute should resume TX frame generation.
+    alice.dispatch(AppAction::ToggleMute);
+    wait_until("alice unmuted", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| !c.is_muted)
+            .unwrap_or(false)
+    });
+    wait_until("alice tx resumes", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+            .map(|tx| tx > alice_tx_while_muted)
+            .unwrap_or(false)
+    });
 
     alice.dispatch(AppAction::EndCall);
     wait_until("alice ended", Duration::from_secs(10), || {

@@ -493,6 +493,7 @@ impl AppCore {
             return;
         }
         call.is_muted = !call.is_muted;
+        self.call_runtime.set_muted(&call.call_id, call.is_muted);
         self.emit_call_state();
     }
 

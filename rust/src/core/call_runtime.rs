@@ -18,6 +18,7 @@ use super::call_control::CallSessionParams;
 #[derive(Debug)]
 struct CallWorker {
     stop: Arc<AtomicBool>,
+    muted: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +76,8 @@ impl CallRuntime {
         let call_id_owned = call_id.to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
+        let muted = Arc::new(AtomicBool::new(false));
+        let muted_for_thread = muted.clone();
         let tx_for_thread = tx.clone();
         thread::spawn(move || {
             let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
@@ -87,17 +90,20 @@ impl CallRuntime {
             let mut tx_frames = 0u64;
             let mut rx_frames = 0u64;
             let mut jitter = JitterBuffer::new(8);
+            let mut tick = 0u64;
 
             while !stop_for_thread.load(Ordering::Relaxed) {
-                let frame = MediaFrame {
-                    seq,
-                    timestamp_us: seq.saturating_mul(20_000),
-                    keyframe: true,
-                    payload: vec![0u8; 64],
-                };
-                if media.publish(&publish_track, frame).is_ok() {
-                    tx_frames = tx_frames.saturating_add(1);
-                    seq = seq.saturating_add(1);
+                if !muted_for_thread.load(Ordering::Relaxed) {
+                    let frame = MediaFrame {
+                        seq,
+                        timestamp_us: seq.saturating_mul(20_000),
+                        keyframe: true,
+                        payload: vec![0u8; 64],
+                    };
+                    if media.publish(&publish_track, frame).is_ok() {
+                        tx_frames = tx_frames.saturating_add(1);
+                        seq = seq.saturating_add(1);
+                    }
                 }
 
                 while let Ok(inbound) = rx.try_recv() {
@@ -106,7 +112,8 @@ impl CallRuntime {
                 }
                 let _ = jitter.pop();
 
-                if tx_frames % 5 == 0 {
+                tick = tick.saturating_add(1);
+                if tick % 5 == 0 {
                     let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
                         InternalEvent::CallRuntimeStats {
                             call_id: call_id_owned.clone(),
@@ -125,8 +132,14 @@ impl CallRuntime {
         });
 
         self.workers
-            .insert(call_id.to_string(), CallWorker { stop });
+            .insert(call_id.to_string(), CallWorker { stop, muted });
         Ok(())
+    }
+
+    pub(super) fn set_muted(&mut self, call_id: &str, muted: bool) {
+        if let Some(worker) = self.workers.get(call_id) {
+            worker.muted.store(muted, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn on_call_ended(&mut self, call_id: &str) {

@@ -4,5 +4,6 @@ members = [
   "rust",
   "uniffi-bindgen",
   "cli",
+  "crates/pika-media",
   "crates/rmp-cli",
 ]

@@ -11,7 +11,7 @@ use nostr_sdk::nostr::{Event, EventId, Filter, Kind, PublicKey};
 use nostr_sdk::prelude::{
     Alphabet, Client, EventBuilder, RelayPoolNotification, SingleLetterTag, Tag,
 };
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, FfiApp};
+use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +22,8 @@ fn write_config(data_dir: &str, relay_url: &str, key_package_relay_url: Option<&
     let mut v = serde_json::json!({
         "disable_network": false,
         "relay_urls": [relay_url],
+        "call_moq_url": "https://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
     });
     if let Some(kp) = key_package_relay_url {
         v.as_object_mut().unwrap().insert(
@@ -831,6 +833,154 @@ fn send_failure_then_retry_succeeds_over_local_relay() {
             .map(|m| matches!(m.delivery, pika_core::MessageDeliveryState::Sent))
             .unwrap_or(false)
     });
+
+    drop(relay);
+    relay_thread.join().unwrap();
+}
+
+#[test]
+fn call_invite_accept_end_flow_over_local_relay() {
+    let (relay, relay_thread) = start_local_relay();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config(
+        &dir_a.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
+    write_config(
+        &dir_b.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub,
+    });
+    wait_until("alice chat opened", Duration::from_secs(20), || {
+        alice.state().current_chat.is_some()
+    });
+    wait_until("bob has chat", Duration::from_secs(20), || {
+        !bob.state().chat_list.is_empty()
+    });
+
+    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    wait_until("bob chat id matches", Duration::from_secs(20), || {
+        bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+
+    wait_until("alice offering", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Offering))
+            .unwrap_or(false)
+    });
+    wait_until("bob ringing", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ringing))
+            .unwrap_or(false)
+    });
+
+    let call_id = alice
+        .state()
+        .active_call
+        .as_ref()
+        .map(|c| c.call_id.clone())
+        .expect("alice call id");
+    wait_until("bob has same call id", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| c.call_id == call_id)
+            .unwrap_or(false)
+    });
+
+    bob.dispatch(AppAction::AcceptCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob connecting", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Connecting))
+            .unwrap_or(false)
+    });
+    wait_until("alice connecting", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Connecting))
+            .unwrap_or(false)
+    });
+
+    alice.dispatch(AppAction::EndCall);
+    wait_until("alice ended", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ended { .. }))
+            .unwrap_or(false)
+    });
+    wait_until("bob ended", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| {
+                matches!(
+                    c.status,
+                    CallStatus::Ended { ref reason } if reason == "user_hangup"
+                )
+            })
+            .unwrap_or(false)
+    });
+
+    // Call signals should not appear in chat previews.
+    assert_eq!(
+        alice
+            .state()
+            .chat_list
+            .iter()
+            .find(|c| c.chat_id == chat_id)
+            .and_then(|c| c.last_message.clone()),
+        None
+    );
+    assert_eq!(
+        bob.state()
+            .chat_list
+            .iter()
+            .find(|c| c.chat_id == chat_id)
+            .and_then(|c| c.last_message.clone()),
+        None
+    );
 
     drop(relay);
     relay_thread.join().unwrap();

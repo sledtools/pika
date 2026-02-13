@@ -35,6 +35,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             ),
             chatList = emptyList(),
             currentChat = null,
+            activeCall = null,
             toast = null,
         ),
     )

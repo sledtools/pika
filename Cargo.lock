@@ -2250,6 +2250,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-media"
+version = "0.1.0"
+
+[[package]]
 name = "pika_core"
 version = "0.1.0"
 dependencies = [
@@ -2279,6 +2283,7 @@ dependencies = [
  "tracing-oslog",
  "tracing-subscriber",
  "uniffi",
+ "uuid",
 ]
 
 [[package]]

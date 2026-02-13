@@ -29,6 +29,8 @@ pub(super) struct AppConfig {
     pub(super) disable_network: Option<bool>,
     pub(super) relay_urls: Option<Vec<String>>,
     pub(super) key_package_relay_urls: Option<Vec<String>>,
+    pub(super) call_moq_url: Option<String>,
+    pub(super) call_broadcast_prefix: Option<String>,
 }
 
 pub(super) fn load_app_config(data_dir: &str) -> AppConfig {

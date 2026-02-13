@@ -1,3 +1,5 @@
+mod call_control;
+mod call_runtime;
 mod config;
 mod interop;
 mod session;
@@ -106,6 +108,9 @@ pub struct AppCore {
 
     // Nostr kind:0 profile cache (survives across session refreshes).
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached profile
+
+    call_runtime: call_runtime::CallRuntime,
+    call_session_params: Option<call_control::CallSessionParams>,
 }
 
 impl AppCore {
@@ -146,6 +151,8 @@ impl AppCore {
             pending_sends: HashMap::new(),
             local_outbox: HashMap::new(),
             profiles: HashMap::new(),
+            call_runtime: call_runtime::CallRuntime::default(),
+            call_session_params: None,
         };
 
         // Ensure FfiApp.state() has an immediately-available snapshot.
@@ -214,6 +221,10 @@ impl AppCore {
         self.emit_state();
     }
 
+    fn emit_call_state(&mut self) {
+        self.emit_state();
+    }
+
     fn emit_account_created(&mut self, nsec: String, pubkey: String, npub: String) {
         let rev = self.next_rev();
         // Keep snapshot rev in sync with the update stream even though this is a side-effect update.
@@ -261,11 +272,14 @@ impl AppCore {
         if logged_in {
             self.state.router.default_screen = Screen::ChatList;
             self.state.router.screen_stack.clear();
+            self.state.active_call = None;
+            self.call_session_params = None;
             self.emit_router();
         } else {
             self.state.router.default_screen = Screen::Login;
             self.state.router.screen_stack.clear();
             self.state.current_chat = None;
+            self.state.active_call = None;
             self.state.chat_list = vec![];
             self.state.busy = BusyState::idle();
             self.loaded_count.clear();
@@ -274,11 +288,13 @@ impl AppCore {
             self.pending_sends.clear();
             self.local_outbox.clear();
             self.profiles.clear();
+            self.call_session_params = None;
             self.last_outgoing_ts = 0;
             self.emit_router();
             self.emit_busy();
             self.emit_chat_list();
             self.emit_current_chat();
+            self.emit_call_state();
         }
     }
 
@@ -578,23 +594,29 @@ impl AppCore {
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
-                let Some(sess) = self.session.as_mut() else {
-                    tracing::warn!("group_message but no session");
-                    return;
-                };
-                let result = match sess.mdk.process_message(&event) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
-                        self.toast(format!("Message decrypt failed: {e}"));
+                let result = {
+                    let Some(sess) = self.session.as_mut() else {
+                        tracing::warn!("group_message but no session");
                         return;
+                    };
+                    match sess.mdk.process_message(&event) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
+                            self.toast(format!("Message decrypt failed: {e}"));
+                            return;
+                        }
                     }
                 };
                 let is_app_message =
                     matches!(result, MessageProcessingResult::ApplicationMessage(_));
+                let mut app_sender: Option<PublicKey> = None;
+                let mut app_content: Option<String> = None;
 
                 let mls_group_id: Option<GroupId> = match &result {
                     MessageProcessingResult::ApplicationMessage(msg) => {
+                        app_sender = Some(msg.pubkey);
+                        app_content = Some(msg.content.clone());
                         Some(msg.mls_group_id.clone())
                     }
                     MessageProcessingResult::Proposal(update) => Some(update.mls_group_id.clone()),
@@ -615,12 +637,30 @@ impl AppCore {
                 };
 
                 if let Some(group_id) = mls_group_id {
-                    if let Ok(Some(group)) = sess.mdk.get_group(&group_id) {
-                        let chat_id = hex::encode(group.nostr_group_id);
+                    let chat_id = {
+                        let Some(sess) = self.session.as_mut() else {
+                            self.refresh_all_from_storage();
+                            return;
+                        };
+                        match sess.mdk.get_group(&group_id) {
+                            Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
+                            _ => None,
+                        }
+                    };
+                    if let Some(chat_id) = chat_id {
+                        let mut is_call_signal = false;
+                        if let (Some(sender), Some(content)) = (app_sender, app_content.as_deref())
+                        {
+                            if let Some(signal) = self.maybe_parse_call_signal(&sender, content) {
+                                self.handle_incoming_call_signal(&chat_id, &sender, signal);
+                                is_call_signal = true;
+                            }
+                        }
+
                         let current = self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                        if current != Some(chat_id.as_str()) {
+                        if current != Some(chat_id.as_str()) && !is_call_signal {
                             *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
-                        } else if is_app_message {
+                        } else if is_app_message && !is_call_signal {
                             self.loaded_count
                                 .entry(chat_id.clone())
                                 .and_modify(|n| *n += 1)
@@ -1209,6 +1249,21 @@ impl AppCore {
                         }
                     }
                 });
+            }
+            AppAction::StartCall { chat_id } => {
+                self.handle_start_call_action(&chat_id);
+            }
+            AppAction::AcceptCall { chat_id } => {
+                self.handle_accept_call_action(&chat_id);
+            }
+            AppAction::RejectCall { chat_id } => {
+                self.handle_reject_call_action(&chat_id);
+            }
+            AppAction::EndCall => {
+                self.handle_end_call_action();
+            }
+            AppAction::ToggleMute => {
+                self.handle_toggle_mute_action();
             }
             AppAction::LoadOlderMessages {
                 chat_id,

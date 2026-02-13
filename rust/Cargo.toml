@@ -29,6 +29,7 @@ tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "ti
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 uniffi = "0.31.0"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 futures-util = "0.3"

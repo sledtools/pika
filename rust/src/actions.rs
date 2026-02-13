@@ -40,6 +40,17 @@ pub enum AppAction {
         before_message_id: String,
         limit: u32,
     },
+    StartCall {
+        chat_id: String,
+    },
+    AcceptCall {
+        chat_id: String,
+    },
+    RejectCall {
+        chat_id: String,
+    },
+    EndCall,
+    ToggleMute,
 
     // UI
     ClearToast,
@@ -68,6 +79,11 @@ impl AppAction {
             AppAction::RetryMessage { .. } => "RetryMessage",
             AppAction::OpenChat { .. } => "OpenChat",
             AppAction::LoadOlderMessages { .. } => "LoadOlderMessages",
+            AppAction::StartCall { .. } => "StartCall",
+            AppAction::AcceptCall { .. } => "AcceptCall",
+            AppAction::RejectCall { .. } => "RejectCall",
+            AppAction::EndCall => "EndCall",
+            AppAction::ToggleMute => "ToggleMute",
 
             // UI
             AppAction::ClearToast => "ClearToast",

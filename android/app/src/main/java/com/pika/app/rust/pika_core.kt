@@ -1473,6 +1473,8 @@ data class AppState (
     , 
     var `currentChat`: ChatViewState?
     , 
+    var `activeCall`: CallState?
+    , 
     var `toast`: kotlin.String?
     
 ){
@@ -1496,6 +1498,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterTypeBusyState.read(buf),
             FfiConverterSequenceTypeChatSummary.read(buf),
             FfiConverterOptionalTypeChatViewState.read(buf),
+            FfiConverterOptionalTypeCallState.read(buf),
             FfiConverterOptionalString.read(buf),
         )
     }
@@ -1507,6 +1510,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterTypeBusyState.allocationSize(value.`busy`) +
             FfiConverterSequenceTypeChatSummary.allocationSize(value.`chatList`) +
             FfiConverterOptionalTypeChatViewState.allocationSize(value.`currentChat`) +
+            FfiConverterOptionalTypeCallState.allocationSize(value.`activeCall`) +
             FfiConverterOptionalString.allocationSize(value.`toast`)
     )
 
@@ -1517,6 +1521,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterTypeBusyState.write(value.`busy`, buf)
             FfiConverterSequenceTypeChatSummary.write(value.`chatList`, buf)
             FfiConverterOptionalTypeChatViewState.write(value.`currentChat`, buf)
+            FfiConverterOptionalTypeCallState.write(value.`activeCall`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
     }
 }
@@ -1568,6 +1573,122 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.write(value.`creatingAccount`, buf)
             FfiConverterBoolean.write(value.`loggingIn`, buf)
             FfiConverterBoolean.write(value.`creatingChat`, buf)
+    }
+}
+
+
+
+data class CallDebugStats (
+    var `txFrames`: kotlin.ULong
+    , 
+    var `rxFrames`: kotlin.ULong
+    , 
+    var `rxDropped`: kotlin.ULong
+    , 
+    var `jitterBufferMs`: kotlin.UInt
+    , 
+    var `lastRttMs`: kotlin.UInt?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugStats> {
+    override fun read(buf: ByteBuffer): CallDebugStats {
+        return CallDebugStats(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CallDebugStats) = (
+            FfiConverterULong.allocationSize(value.`txFrames`) +
+            FfiConverterULong.allocationSize(value.`rxFrames`) +
+            FfiConverterULong.allocationSize(value.`rxDropped`) +
+            FfiConverterUInt.allocationSize(value.`jitterBufferMs`) +
+            FfiConverterOptionalUInt.allocationSize(value.`lastRttMs`)
+    )
+
+    override fun write(value: CallDebugStats, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`txFrames`, buf)
+            FfiConverterULong.write(value.`rxFrames`, buf)
+            FfiConverterULong.write(value.`rxDropped`, buf)
+            FfiConverterUInt.write(value.`jitterBufferMs`, buf)
+            FfiConverterOptionalUInt.write(value.`lastRttMs`, buf)
+    }
+}
+
+
+
+data class CallState (
+    var `callId`: kotlin.String
+    , 
+    var `chatId`: kotlin.String
+    , 
+    var `peerNpub`: kotlin.String
+    , 
+    var `status`: CallStatus
+    , 
+    var `startedAt`: kotlin.Long?
+    , 
+    var `isMuted`: kotlin.Boolean
+    , 
+    var `debug`: CallDebugStats?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
+    override fun read(buf: ByteBuffer): CallState {
+        return CallState(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeCallStatus.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalTypeCallDebugStats.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CallState) = (
+            FfiConverterString.allocationSize(value.`callId`) +
+            FfiConverterString.allocationSize(value.`chatId`) +
+            FfiConverterString.allocationSize(value.`peerNpub`) +
+            FfiConverterTypeCallStatus.allocationSize(value.`status`) +
+            FfiConverterOptionalLong.allocationSize(value.`startedAt`) +
+            FfiConverterBoolean.allocationSize(value.`isMuted`) +
+            FfiConverterOptionalTypeCallDebugStats.allocationSize(value.`debug`)
+    )
+
+    override fun write(value: CallState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`callId`, buf)
+            FfiConverterString.write(value.`chatId`, buf)
+            FfiConverterString.write(value.`peerNpub`, buf)
+            FfiConverterTypeCallStatus.write(value.`status`, buf)
+            FfiConverterOptionalLong.write(value.`startedAt`, buf)
+            FfiConverterBoolean.write(value.`isMuted`, buf)
+            FfiConverterOptionalTypeCallDebugStats.write(value.`debug`, buf)
     }
 }
 
@@ -1883,6 +2004,39 @@ sealed class AppAction {
         companion object
     }
     
+    data class StartCall(
+        val `chatId`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class AcceptCall(
+        val `chatId`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RejectCall(
+        val `chatId`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    object EndCall : AppAction()
+    
+    
+    object ToggleMute : AppAction()
+    
+    
     object ClearToast : AppAction()
     
     
@@ -1938,8 +2092,19 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 FfiConverterUInt.read(buf),
                 )
-            12 -> AppAction.ClearToast
-            13 -> AppAction.Foregrounded
+            12 -> AppAction.StartCall(
+                FfiConverterString.read(buf),
+                )
+            13 -> AppAction.AcceptCall(
+                FfiConverterString.read(buf),
+                )
+            14 -> AppAction.RejectCall(
+                FfiConverterString.read(buf),
+                )
+            15 -> AppAction.EndCall
+            16 -> AppAction.ToggleMute
+            17 -> AppAction.ClearToast
+            18 -> AppAction.Foregrounded
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -2024,6 +2189,39 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterUInt.allocationSize(value.`limit`)
             )
         }
+        is AppAction.StartCall -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
+        is AppAction.AcceptCall -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
+        is AppAction.RejectCall -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
+        is AppAction.EndCall -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.ToggleMute -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
         is AppAction.ClearToast -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -2097,12 +2295,35 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterUInt.write(value.`limit`, buf)
                 Unit
             }
-            is AppAction.ClearToast -> {
+            is AppAction.StartCall -> {
                 buf.putInt(12)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.AcceptCall -> {
+                buf.putInt(13)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.RejectCall -> {
+                buf.putInt(14)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.EndCall -> {
+                buf.putInt(15)
+                Unit
+            }
+            is AppAction.ToggleMute -> {
+                buf.putInt(16)
+                Unit
+            }
+            is AppAction.ClearToast -> {
+                buf.putInt(17)
                 Unit
             }
             is AppAction.Foregrounded -> {
-                buf.putInt(13)
+                buf.putInt(18)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -2280,6 +2501,121 @@ public object FfiConverterTypeAuthState : FfiConverterRustBuffer<AuthState>{
                 buf.putInt(2)
                 FfiConverterString.write(value.`npub`, buf)
                 FfiConverterString.write(value.`pubkey`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+sealed class CallStatus {
+    
+    object Offering : CallStatus()
+    
+    
+    object Ringing : CallStatus()
+    
+    
+    object Connecting : CallStatus()
+    
+    
+    object Active : CallStatus()
+    
+    
+    data class Ended(
+        val `reason`: kotlin.String) : CallStatus()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallStatus : FfiConverterRustBuffer<CallStatus>{
+    override fun read(buf: ByteBuffer): CallStatus {
+        return when(buf.getInt()) {
+            1 -> CallStatus.Offering
+            2 -> CallStatus.Ringing
+            3 -> CallStatus.Connecting
+            4 -> CallStatus.Active
+            5 -> CallStatus.Ended(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: CallStatus) = when(value) {
+        is CallStatus.Offering -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Ringing -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Connecting -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Active -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Ended -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: CallStatus, buf: ByteBuffer) {
+        when(value) {
+            is CallStatus.Offering -> {
+                buf.putInt(1)
+                Unit
+            }
+            is CallStatus.Ringing -> {
+                buf.putInt(2)
+                Unit
+            }
+            is CallStatus.Connecting -> {
+                buf.putInt(3)
+                Unit
+            }
+            is CallStatus.Active -> {
+                buf.putInt(4)
+                Unit
+            }
+            is CallStatus.Ended -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -2542,6 +2878,38 @@ public object FfiConverterTypeAppReconciler: FfiConverterCallbackInterface<AppRe
 /**
  * @suppress
  */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
     override fun read(buf: ByteBuffer): kotlin.Long? {
         if (buf.get().toInt() == 0) {
@@ -2596,6 +2964,70 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
         } else {
             buf.put(1)
             FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeCallDebugStats: FfiConverterRustBuffer<CallDebugStats?> {
+    override fun read(buf: ByteBuffer): CallDebugStats? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeCallDebugStats.read(buf)
+    }
+
+    override fun allocationSize(value: CallDebugStats?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeCallDebugStats.allocationSize(value)
+        }
+    }
+
+    override fun write(value: CallDebugStats?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeCallDebugStats.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeCallState: FfiConverterRustBuffer<CallState?> {
+    override fun read(buf: ByteBuffer): CallState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeCallState.read(buf)
+    }
+
+    override fun allocationSize(value: CallState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeCallState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: CallState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeCallState.write(value, buf)
         }
     }
 }

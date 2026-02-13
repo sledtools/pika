@@ -687,17 +687,19 @@ public struct AppState: Equatable, Hashable {
     public var busy: BusyState
     public var chatList: [ChatSummary]
     public var currentChat: ChatViewState?
+    public var activeCall: CallState?
     public var toast: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, router: Router, auth: AuthState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, toast: String?) {
+    public init(rev: UInt64, router: Router, auth: AuthState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, activeCall: CallState?, toast: String?) {
         self.rev = rev
         self.router = router
         self.auth = auth
         self.busy = busy
         self.chatList = chatList
         self.currentChat = currentChat
+        self.activeCall = activeCall
         self.toast = toast
     }
 
@@ -723,6 +725,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 busy: FfiConverterTypeBusyState.read(from: &buf), 
                 chatList: FfiConverterSequenceTypeChatSummary.read(from: &buf), 
                 currentChat: FfiConverterOptionTypeChatViewState.read(from: &buf), 
+                activeCall: FfiConverterOptionTypeCallState.read(from: &buf), 
                 toast: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -734,6 +737,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterTypeBusyState.write(value.busy, into: &buf)
         FfiConverterSequenceTypeChatSummary.write(value.chatList, into: &buf)
         FfiConverterOptionTypeChatViewState.write(value.currentChat, into: &buf)
+        FfiConverterOptionTypeCallState.write(value.activeCall, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
     }
 }
@@ -816,6 +820,146 @@ public func FfiConverterTypeBusyState_lift(_ buf: RustBuffer) throws -> BusyStat
 #endif
 public func FfiConverterTypeBusyState_lower(_ value: BusyState) -> RustBuffer {
     return FfiConverterTypeBusyState.lower(value)
+}
+
+
+public struct CallDebugStats: Equatable, Hashable {
+    public var txFrames: UInt64
+    public var rxFrames: UInt64
+    public var rxDropped: UInt64
+    public var jitterBufferMs: UInt32
+    public var lastRttMs: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(txFrames: UInt64, rxFrames: UInt64, rxDropped: UInt64, jitterBufferMs: UInt32, lastRttMs: UInt32?) {
+        self.txFrames = txFrames
+        self.rxFrames = rxFrames
+        self.rxDropped = rxDropped
+        self.jitterBufferMs = jitterBufferMs
+        self.lastRttMs = lastRttMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CallDebugStats: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCallDebugStats: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CallDebugStats {
+        return
+            try CallDebugStats(
+                txFrames: FfiConverterUInt64.read(from: &buf), 
+                rxFrames: FfiConverterUInt64.read(from: &buf), 
+                rxDropped: FfiConverterUInt64.read(from: &buf), 
+                jitterBufferMs: FfiConverterUInt32.read(from: &buf), 
+                lastRttMs: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CallDebugStats, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.txFrames, into: &buf)
+        FfiConverterUInt64.write(value.rxFrames, into: &buf)
+        FfiConverterUInt64.write(value.rxDropped, into: &buf)
+        FfiConverterUInt32.write(value.jitterBufferMs, into: &buf)
+        FfiConverterOptionUInt32.write(value.lastRttMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallDebugStats_lift(_ buf: RustBuffer) throws -> CallDebugStats {
+    return try FfiConverterTypeCallDebugStats.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallDebugStats_lower(_ value: CallDebugStats) -> RustBuffer {
+    return FfiConverterTypeCallDebugStats.lower(value)
+}
+
+
+public struct CallState: Equatable, Hashable {
+    public var callId: String
+    public var chatId: String
+    public var peerNpub: String
+    public var status: CallStatus
+    public var startedAt: Int64?
+    public var isMuted: Bool
+    public var debug: CallDebugStats?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(callId: String, chatId: String, peerNpub: String, status: CallStatus, startedAt: Int64?, isMuted: Bool, debug: CallDebugStats?) {
+        self.callId = callId
+        self.chatId = chatId
+        self.peerNpub = peerNpub
+        self.status = status
+        self.startedAt = startedAt
+        self.isMuted = isMuted
+        self.debug = debug
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CallState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCallState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CallState {
+        return
+            try CallState(
+                callId: FfiConverterString.read(from: &buf), 
+                chatId: FfiConverterString.read(from: &buf), 
+                peerNpub: FfiConverterString.read(from: &buf), 
+                status: FfiConverterTypeCallStatus.read(from: &buf), 
+                startedAt: FfiConverterOptionInt64.read(from: &buf), 
+                isMuted: FfiConverterBool.read(from: &buf), 
+                debug: FfiConverterOptionTypeCallDebugStats.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CallState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.callId, into: &buf)
+        FfiConverterString.write(value.chatId, into: &buf)
+        FfiConverterString.write(value.peerNpub, into: &buf)
+        FfiConverterTypeCallStatus.write(value.status, into: &buf)
+        FfiConverterOptionInt64.write(value.startedAt, into: &buf)
+        FfiConverterBool.write(value.isMuted, into: &buf)
+        FfiConverterOptionTypeCallDebugStats.write(value.debug, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallState_lift(_ buf: RustBuffer) throws -> CallState {
+    return try FfiConverterTypeCallState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallState_lower(_ value: CallState) -> RustBuffer {
+    return FfiConverterTypeCallState.lower(value)
 }
 
 
@@ -1111,6 +1255,14 @@ public enum AppAction: Equatable, Hashable {
     )
     case loadOlderMessages(chatId: String, beforeMessageId: String, limit: UInt32
     )
+    case startCall(chatId: String
+    )
+    case acceptCall(chatId: String
+    )
+    case rejectCall(chatId: String
+    )
+    case endCall
+    case toggleMute
     case clearToast
     case foregrounded
 
@@ -1165,9 +1317,22 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 11: return .loadOlderMessages(chatId: try FfiConverterString.read(from: &buf), beforeMessageId: try FfiConverterString.read(from: &buf), limit: try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 12: return .clearToast
+        case 12: return .startCall(chatId: try FfiConverterString.read(from: &buf)
+        )
         
-        case 13: return .foregrounded
+        case 13: return .acceptCall(chatId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 14: return .rejectCall(chatId: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 15: return .endCall
+        
+        case 16: return .toggleMute
+        
+        case 17: return .clearToast
+        
+        case 18: return .foregrounded
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1234,12 +1399,35 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterUInt32.write(limit, into: &buf)
             
         
-        case .clearToast:
+        case let .startCall(chatId):
             writeInt(&buf, Int32(12))
+            FfiConverterString.write(chatId, into: &buf)
+            
+        
+        case let .acceptCall(chatId):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(chatId, into: &buf)
+            
+        
+        case let .rejectCall(chatId):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(chatId, into: &buf)
+            
+        
+        case .endCall:
+            writeInt(&buf, Int32(15))
+        
+        
+        case .toggleMute:
+            writeInt(&buf, Int32(16))
+        
+        
+        case .clearToast:
+            writeInt(&buf, Int32(17))
         
         
         case .foregrounded:
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(18))
         
         }
     }
@@ -1410,6 +1598,97 @@ public func FfiConverterTypeAuthState_lift(_ buf: RustBuffer) throws -> AuthStat
 #endif
 public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
     return FfiConverterTypeAuthState.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CallStatus: Equatable, Hashable {
+    
+    case offering
+    case ringing
+    case connecting
+    case active
+    case ended(reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CallStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCallStatus: FfiConverterRustBuffer {
+    typealias SwiftType = CallStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CallStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .offering
+        
+        case 2: return .ringing
+        
+        case 3: return .connecting
+        
+        case 4: return .active
+        
+        case 5: return .ended(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CallStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .offering:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .ringing:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .connecting:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .active:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .ended(reason):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallStatus_lift(_ buf: RustBuffer) throws -> CallStatus {
+    return try FfiConverterTypeCallStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallStatus_lower(_ value: CallStatus) -> RustBuffer {
+    return FfiConverterTypeCallStatus.lower(value)
 }
 
 
@@ -1701,6 +1980,30 @@ public func FfiConverterCallbackInterfaceAppReconciler_lower(_ v: AppReconciler)
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
     typealias SwiftType = Int64?
 
@@ -1741,6 +2044,54 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCallDebugStats: FfiConverterRustBuffer {
+    typealias SwiftType = CallDebugStats?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCallDebugStats.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCallDebugStats.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCallState: FfiConverterRustBuffer {
+    typealias SwiftType = CallState?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCallState.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCallState.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

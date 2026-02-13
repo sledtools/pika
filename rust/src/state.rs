@@ -6,6 +6,7 @@ pub struct AppState {
     pub busy: BusyState,
     pub chat_list: Vec<ChatSummary>,
     pub current_chat: Option<ChatViewState>,
+    pub active_call: Option<CallState>,
     pub toast: Option<String>,
 }
 
@@ -21,9 +22,39 @@ impl AppState {
             busy: BusyState::idle(),
             chat_list: vec![],
             current_chat: None,
+            active_call: None,
             toast: None,
         }
     }
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct CallState {
+    pub call_id: String,
+    pub chat_id: String,
+    pub peer_npub: String,
+    pub status: CallStatus,
+    pub started_at: Option<i64>,
+    pub is_muted: bool,
+    pub debug: Option<CallDebugStats>,
+}
+
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum CallStatus {
+    Offering,
+    Ringing,
+    Connecting,
+    Active,
+    Ended { reason: String },
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct CallDebugStats {
+    pub tx_frames: u64,
+    pub rx_frames: u64,
+    pub rx_dropped: u64,
+    pub jitter_buffer_ms: u32,
+    pub last_rtt_ms: Option<u32>,
 }
 
 /// "In flight" flags for long-ish operations that the UI should reflect.

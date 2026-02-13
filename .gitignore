@@ -28,3 +28,6 @@ worktrees
 .env
 .env.local
 .cargo/config.toml
+
+# macos lol
+.DS_Store

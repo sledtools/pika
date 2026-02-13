@@ -15,16 +15,18 @@ struct ChatView: View {
         if let chat = state.chat, chat.chatId == chatId {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(chat.messages, id: \.id) { msg in
-                            MessageRow(message: msg)
+                    VStack(spacing: 0) {
+                        LazyVStack(spacing: 8) {
+                            ForEach(chat.messages, id: \.id) { msg in
+                                MessageRow(message: msg)
+                            }
                         }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
 
-                    BottomAnchor()
-                        .id(Self.bottomAnchorId)
+                        BottomAnchor()
+                            .id(Self.bottomAnchorId)
+                    }
                 }
                 .coordinateSpace(name: "chat-scroll")
                 .background(

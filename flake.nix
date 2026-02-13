@@ -124,14 +124,10 @@
                 export LIBRARY_PATH="${pkgs.libiconv}/lib"
               fi
 
-              case "$DEVELOPER_DIR" in
-                ""|/nix/store/*|/Library/Developer/CommandLineTools*)
-                  DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-                  if [ -n "$DEV_DIR" ]; then
-                    export DEVELOPER_DIR="$DEV_DIR"
-                  fi
-                  ;;
-              esac
+              DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+              if [ -n "$DEV_DIR" ]; then
+                export DEVELOPER_DIR="$DEV_DIR"
+              fi
             fi
 
             # Help Gradle find the SDK/NDK without Android Studio.

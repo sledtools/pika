@@ -8,8 +8,10 @@ struct ChatView: View {
     @State private var scrollViewHeight: CGFloat = 0
     @State private var bottomMarkerMaxY: CGFloat = .infinity
     @State private var isAtBottom = true
+    @State private var pendingInitialScroll = false
 
     private static let bottomAnchorId = "chat-bottom-anchor"
+    private let scrollButtonBottomPadding: CGFloat = 28
 
     var body: some View {
         if let chat = state.chat, chat.chatId == chatId {
@@ -41,16 +43,21 @@ struct ChatView: View {
                     .onPreferenceChange(BottomMarkerKey.self) { newMaxY in
                         bottomMarkerMaxY = newMaxY
                         updateIsAtBottom()
+                        if pendingInitialScroll && newMaxY.isFinite {
+                            pendingInitialScroll = false
+                            scrollToBottom(proxy, animated: false)
+                        }
                     }
                     .onChange(of: chat.messages.count) { _, _ in
-                        if isAtBottom {
+                        if pendingInitialScroll {
+                            pendingInitialScroll = false
+                            scrollToBottom(proxy, animated: false)
+                        } else if isAtBottom {
                             scrollToBottom(proxy, animated: true)
                         }
                     }
                     .task(id: chat.chatId) {
-                        isAtBottom = true
-                        await Task.yield()
-                        scrollToBottom(proxy, animated: false)
+                        pendingInitialScroll = true
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if !isAtBottom {
@@ -65,7 +72,7 @@ struct ChatView: View {
                             .background(.ultraThinMaterial, in: Circle())
                             .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
                             .padding(.trailing, 16)
-                            .padding(.bottom, 76)
+                            .padding(.bottom, scrollButtonBottomPadding)
                             .accessibilityLabel("Scroll to bottom")
                         }
                     }

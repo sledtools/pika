@@ -57,19 +57,11 @@ struct ChatView: View {
 
 private struct GlassInputModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .padding(12)
-        } else {
-            content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(12)
-        }
+        content
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(12)
     }
 }
 
@@ -77,14 +69,10 @@ private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
     @ViewBuilder var content: Bar
 
     func body(content view: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            view.safeAreaBar(edge: .bottom) { content }
-        } else {
-            view.safeAreaInset(edge: .bottom) {
-                VStack(spacing: 0) {
-                    Divider()
-                    content
-                }
+        view.safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                Divider()
+                content
             }
         }
     }

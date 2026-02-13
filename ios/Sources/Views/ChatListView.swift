@@ -5,6 +5,7 @@ struct ChatListView: View {
     let onLogout: @MainActor () -> Void
     let onOpenChat: @MainActor (String) -> Void
     let onNewChat: @MainActor () -> Void
+    let nsecProvider: @MainActor () -> String?
     @State private var showMyNpub = false
 
     var body: some View {
@@ -64,7 +65,7 @@ struct ChatListView: View {
                     .accessibilityLabel("My npub")
                     .accessibilityIdentifier(TestIds.chatListMyNpub)
                     .sheet(isPresented: $showMyNpub) {
-                        MyNpubQrSheet(npub: npub, manager: manager)
+                        MyNpubQrSheet(npub: npub, nsecProvider: nsecProvider)
                     }
                 }
             }
@@ -96,7 +97,8 @@ struct ChatListView: View {
             ),
             onLogout: {},
             onOpenChat: { _ in },
-            onNewChat: {}
+            onNewChat: {},
+            nsecProvider: { nil }
         )
     }
 }
@@ -110,7 +112,8 @@ struct ChatListView: View {
             ),
             onLogout: {},
             onOpenChat: { _ in },
-            onNewChat: {}
+            onNewChat: {},
+            nsecProvider: { nil }
         )
     }
 }
@@ -124,7 +127,8 @@ struct ChatListView: View {
             ),
             onLogout: {},
             onOpenChat: { _ in },
-            onNewChat: {}
+            onNewChat: {},
+            nsecProvider: { nil }
         )
     }
 }

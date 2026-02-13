@@ -5,7 +5,7 @@ import UIKit
 
 struct MyNpubQrSheet: View {
     let npub: String
-    let manager: AppManager
+    let nsecProvider: @MainActor () -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var showNsec = false
 
@@ -41,7 +41,7 @@ struct MyNpubQrSheet: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier(TestIds.chatListMyNpubCopy)
 
-                if let nsec = manager.getNsec() {
+                if let nsec = nsecProvider() {
                     Divider()
                         .padding(.vertical, 8)
 
@@ -109,6 +109,9 @@ struct MyNpubQrSheet: View {
 
 #if DEBUG
 #Preview("My npub") {
-    MyNpubQrSheet(npub: "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y")
+    MyNpubQrSheet(
+        npub: PreviewAppState.sampleNpub,
+        nsecProvider: { nil }
+    )
 }
 #endif

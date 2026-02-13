@@ -9,17 +9,17 @@
 /* Begin PBXBuildFile section */
 		02D9A491B498E051D46EC648 /* KeychainNsecStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */; };
 		2A9B2872E6ADB03F5A8FA173 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53159E06C561F50F6EC97A61 /* LoginView.swift */; };
-		48227C63FEE2446E86780A71 /* AppManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDE3E31B10D46D4A5142532 /* AppManagerTests.swift */; };
 		38BA65C125C5EE3586248416 /* KeychainNsecStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */; };
 		3B614972940C843FB662920B /* PikaCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CD38D8437B178B873D96238 /* PikaCore.xcframework */; };
+		4E79E8EB78FF3FEB6FA4E4E4 /* AppManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B07F038CF3D6A3DC2F37122 /* AppManagerTests.swift */; };
 		502171B59272A56AB36AECCF /* PeerKeyValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */; };
 		5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FE3F3E8BA33932B132B693 /* ChatView.swift */; };
-		6CA37BFAFE0F4D90BBD99547 /* PreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BEB95C42BC143FDA2D84126 /* PreviewData.swift */; };
+		6BA056C64AC7135C3040F3C5 /* ViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD9687D9985059889C135D7 /* ViewState.swift */; };
 		77E9D3F87F29E747F53DD5F0 /* PikaUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8600EE3AFD44A8B726A64716 /* PikaUITests.swift */; };
 		783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366C05B721835967C3BE5418 /* ChatListView.swift */; };
 		8DE9696EA83BB0459D17C997 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 48C80C272FFE8C28F8E0A54E /* Assets.xcassets */; };
+		940959C521A572B47CCDC852 /* PreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3996F560F68B8003EFD45AC /* PreviewData.swift */; };
 		9581B9688EDC90BCBC177E47 /* TestIds.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FAE9ECBDFC0A976452024F /* TestIds.swift */; };
-		0E022FD1340F4505A59F6611 /* ViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2140314456884247AD9DEE25 /* ViewState.swift */; };
 		970D12403533E203A33FBEFC /* NewChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62170468ABECD8AAA8B6B6A /* NewChatView.swift */; };
 		A15307C1B4692DC5925858CE /* AppManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B2B1856254D8FE240BC93A /* AppManager.swift */; };
 		DE799DF1E97151C517647E61 /* QrScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */; };
@@ -50,26 +50,26 @@
 /* Begin PBXFileReference section */
 		05B2B1856254D8FE240BC93A /* AppManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManager.swift; sourceTree = "<group>"; };
 		0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyNpubQrSheet.swift; sourceTree = "<group>"; };
-		2140314456884247AD9DEE25 /* ViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewState.swift; sourceTree = "<group>"; };
 		2510455883E1CDFB6D589F5C /* pika_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pika_core.swift; sourceTree = "<group>"; };
 		276F120E43A9DF389448FE5C /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStoreTests.swift; sourceTree = "<group>"; };
 		366C05B721835967C3BE5418 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
-		3BEB95C42BC143FDA2D84126 /* PreviewData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewData.swift; sourceTree = "<group>"; };
+		3B07F038CF3D6A3DC2F37122 /* AppManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManagerTests.swift; sourceTree = "<group>"; };
 		3CD38D8437B178B873D96238 /* PikaCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PikaCore.xcframework; path = Frameworks/PikaCore.xcframework; sourceTree = "<group>"; };
 		42E962F7911EF0441F706C10 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		48C80C272FFE8C28F8E0A54E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F340333EBF85C4097106B1C /* PikaUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PikaUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		53159E06C561F50F6EC97A61 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStore.swift; sourceTree = "<group>"; };
+		6BD9687D9985059889C135D7 /* ViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewState.swift; sourceTree = "<group>"; };
 		8600EE3AFD44A8B726A64716 /* PikaUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PikaUITests.swift; sourceTree = "<group>"; };
 		A62170468ABECD8AAA8B6B6A /* NewChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatView.swift; sourceTree = "<group>"; };
 		B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerSheet.swift; sourceTree = "<group>"; };
 		B2FE3F3E8BA33932B132B693 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		B3996F560F68B8003EFD45AC /* PreviewData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewData.swift; sourceTree = "<group>"; };
 		E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PikaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerKeyValidator.swift; sourceTree = "<group>"; };
 		EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarView.swift; sourceTree = "<group>"; };
-		EFDE3E31B10D46D4A5142532 /* AppManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManagerTests.swift; sourceTree = "<group>"; };
 		EF35ECCAE3B37C651F88A150 /* PikaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PikaApp.swift; sourceTree = "<group>"; };
 		F4FAE9ECBDFC0A976452024F /* TestIds.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIds.swift; sourceTree = "<group>"; };
 		F8FB9846E26624B7638DDA90 /* Pika.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Pika.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -95,10 +95,10 @@
 				42E962F7911EF0441F706C10 /* ContentView.swift */,
 				5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */,
 				E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */,
-				3BEB95C42BC143FDA2D84126 /* PreviewData.swift */,
 				EF35ECCAE3B37C651F88A150 /* PikaApp.swift */,
+				B3996F560F68B8003EFD45AC /* PreviewData.swift */,
 				F4FAE9ECBDFC0A976452024F /* TestIds.swift */,
-				2140314456884247AD9DEE25 /* ViewState.swift */,
+				6BD9687D9985059889C135D7 /* ViewState.swift */,
 				3020E60167D2F29F544518EE /* Views */,
 			);
 			path = Sources;
@@ -151,7 +151,7 @@
 		7057FD8757F4DE461D8A3C27 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				EFDE3E31B10D46D4A5142532 /* AppManagerTests.swift */,
+				3B07F038CF3D6A3DC2F37122 /* AppManagerTests.swift */,
 				28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */,
 			);
 			path = Tests;
@@ -291,7 +291,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				48227C63FEE2446E86780A71 /* AppManagerTests.swift in Sources */,
+				4E79E8EB78FF3FEB6FA4E4E4 /* AppManagerTests.swift in Sources */,
 				38BA65C125C5EE3586248416 /* KeychainNsecStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -311,10 +311,10 @@
 				970D12403533E203A33FBEFC /* NewChatView.swift in Sources */,
 				502171B59272A56AB36AECCF /* PeerKeyValidator.swift in Sources */,
 				F308786C219CC1D169ABFC50 /* PikaApp.swift in Sources */,
-				6CA37BFAFE0F4D90BBD99547 /* PreviewData.swift in Sources */,
+				940959C521A572B47CCDC852 /* PreviewData.swift in Sources */,
 				DE799DF1E97151C517647E61 /* QrScannerSheet.swift in Sources */,
 				9581B9688EDC90BCBC177E47 /* TestIds.swift in Sources */,
-				0E022FD1340F4505A59F6611 /* ViewState.swift in Sources */,
+				6BA056C64AC7135C3040F3C5 /* ViewState.swift in Sources */,
 				F2A2C56251354A67641CA82F /* pika_core.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

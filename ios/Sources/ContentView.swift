@@ -91,7 +91,8 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             state: chatListState(from: state),
             onLogout: { manager.logout() },
             onOpenChat: { manager.dispatch(.openChat(chatId: $0)) },
-            onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) }
+            onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
+            nsecProvider: { manager.getNsec() }
         )
     case .newChat:
         NewChatView(

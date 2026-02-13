@@ -78,4 +78,17 @@ pub enum InternalEvent {
     ProfilesFetched {
         profiles: Vec<(String, Option<String>, Option<String>)>, // (hex_pubkey, name, picture_url)
     },
+
+    // Synthetic media runtime updates (Phase-1 plumbing).
+    CallRuntimeConnected {
+        call_id: String,
+    },
+    CallRuntimeStats {
+        call_id: String,
+        tx_frames: u64,
+        rx_frames: u64,
+        rx_dropped: u64,
+        jitter_buffer_ms: u32,
+        last_rtt_ms: Option<u32>,
+    },
 }

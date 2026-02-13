@@ -16,7 +16,8 @@ use crate::actions::AppAction;
 use crate::mdk_support::{open_mdk, PikaMdk};
 use crate::state::now_seconds;
 use crate::state::{
-    AuthState, BusyState, ChatMessage, ChatSummary, ChatViewState, MessageDeliveryState, Screen,
+    AuthState, BusyState, CallDebugStats, CallStatus, ChatMessage, ChatSummary, ChatViewState,
+    MessageDeliveryState, Screen,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
@@ -270,12 +271,14 @@ impl AppCore {
 
     fn handle_auth_transition(&mut self, logged_in: bool) {
         if logged_in {
+            self.call_runtime.stop_all();
             self.state.router.default_screen = Screen::ChatList;
             self.state.router.screen_stack.clear();
             self.state.active_call = None;
             self.call_session_params = None;
             self.emit_router();
         } else {
+            self.call_runtime.stop_all();
             self.state.router.default_screen = Screen::Login;
             self.state.router.screen_stack.clear();
             self.state.current_chat = None;
@@ -374,6 +377,44 @@ impl AppCore {
             InternalEvent::Toast(ref msg) => {
                 tracing::info!(msg, "toast");
                 self.toast(msg.clone());
+            }
+            InternalEvent::CallRuntimeConnected { call_id } => {
+                if let Some(call) = self.state.active_call.as_mut() {
+                    if call.call_id == call_id && matches!(call.status, CallStatus::Connecting) {
+                        call.status = CallStatus::Active;
+                        if call.started_at.is_none() {
+                            call.started_at = Some(now_seconds());
+                        }
+                        self.emit_call_state();
+                    }
+                }
+            }
+            InternalEvent::CallRuntimeStats {
+                call_id,
+                tx_frames,
+                rx_frames,
+                rx_dropped,
+                jitter_buffer_ms,
+                last_rtt_ms,
+            } => {
+                if let Some(call) = self.state.active_call.as_mut() {
+                    if call.call_id == call_id {
+                        if matches!(call.status, CallStatus::Connecting) {
+                            call.status = CallStatus::Active;
+                            if call.started_at.is_none() {
+                                call.started_at = Some(now_seconds());
+                            }
+                        }
+                        call.debug = Some(CallDebugStats {
+                            tx_frames,
+                            rx_frames,
+                            rx_dropped,
+                            jitter_buffer_ms,
+                            last_rtt_ms,
+                        });
+                        self.emit_call_state();
+                    }
+                }
             }
             InternalEvent::KeyPackagePublished { ok, ref error } => {
                 tracing::info!(ok, ?error, "key_package_published");

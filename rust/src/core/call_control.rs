@@ -215,6 +215,10 @@ impl AppCore {
             .map(|g| g.peer_npub.clone())
     }
 
+    fn current_pubkey_hex(&self) -> Option<String> {
+        self.session.as_ref().map(|s| s.keys.public_key().to_hex())
+    }
+
     fn publish_call_signal(
         &mut self,
         chat_id: &str,
@@ -388,7 +392,30 @@ impl AppCore {
             return;
         }
 
-        self.call_runtime.on_call_connecting(&active.call_id);
+        let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
+            self.toast("No local pubkey for call runtime");
+            self.end_call_local("runtime_error".to_string());
+            return;
+        };
+        let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
+            Ok(pk) => pk.to_hex(),
+            Err(e) => {
+                self.toast(format!("Peer pubkey parse failed: {e}"));
+                self.end_call_local("runtime_error".to_string());
+                return;
+            }
+        };
+        if let Err(e) = self.call_runtime.on_call_connecting(
+            &active.call_id,
+            &session,
+            &local_pubkey_hex,
+            &peer_pubkey_hex,
+            self.core_sender.clone(),
+        ) {
+            self.toast(format!("Call runtime start failed: {e}"));
+            self.end_call_local("runtime_error".to_string());
+            return;
+        }
         self.call_session_params = Some(session);
         self.update_call_status(CallStatus::Connecting);
     }
@@ -507,7 +534,7 @@ impl AppCore {
                 self.emit_call_state();
             }
             ParsedCallSignal::Accept { call_id, session } => {
-                let Some(active) = self.state.active_call.as_ref() else {
+                let Some(active) = self.state.active_call.clone() else {
                     return;
                 };
                 if active.call_id != call_id
@@ -517,7 +544,35 @@ impl AppCore {
                     return;
                 }
                 self.call_session_params = Some(session);
-                self.call_runtime.on_call_connecting(&call_id);
+                let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
+                    self.toast("No local pubkey for call runtime");
+                    self.end_call_local("runtime_error".to_string());
+                    return;
+                };
+                let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
+                    Ok(pk) => pk.to_hex(),
+                    Err(e) => {
+                        self.toast(format!("Peer pubkey parse failed: {e}"));
+                        self.end_call_local("runtime_error".to_string());
+                        return;
+                    }
+                };
+                let Some(params) = self.call_session_params.as_ref() else {
+                    self.toast("Missing call session parameters");
+                    self.end_call_local("runtime_error".to_string());
+                    return;
+                };
+                if let Err(e) = self.call_runtime.on_call_connecting(
+                    &call_id,
+                    params,
+                    &local_pubkey_hex,
+                    &peer_pubkey_hex,
+                    self.core_sender.clone(),
+                ) {
+                    self.toast(format!("Call runtime start failed: {e}"));
+                    self.end_call_local("runtime_error".to_string());
+                    return;
+                }
                 self.update_call_status(CallStatus::Connecting);
             }
             ParsedCallSignal::Reject { call_id, reason } => {

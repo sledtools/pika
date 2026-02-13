@@ -1,1 +1,2 @@
 - pika-cli and openclaw-marmot are doing some kind of nip-70 tag stripping
+- should we put all rust code in ./crates?

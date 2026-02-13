@@ -925,21 +925,57 @@ fn call_invite_accept_end_flow_over_local_relay() {
     bob.dispatch(AppAction::AcceptCall {
         chat_id: chat_id.clone(),
     });
-    wait_until("bob connecting", Duration::from_secs(10), || {
+    wait_until("bob connecting or active", Duration::from_secs(10), || {
         bob.state()
             .active_call
             .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Connecting))
+            .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
             .unwrap_or(false)
     });
-    wait_until("alice connecting", Duration::from_secs(10), || {
+    wait_until("alice connecting or active", Duration::from_secs(10), || {
         alice
             .state()
             .active_call
             .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Connecting))
+            .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
             .unwrap_or(false)
     });
+
+    wait_until(
+        "bob active with media stats",
+        Duration::from_secs(20),
+        || {
+            bob.state()
+                .active_call
+                .as_ref()
+                .map(|c| {
+                    matches!(c.status, CallStatus::Active)
+                        && c.debug
+                            .as_ref()
+                            .map(|d| d.tx_frames > 0 && d.rx_frames > 0)
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        },
+    );
+    wait_until(
+        "alice active with media stats",
+        Duration::from_secs(20),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .map(|c| {
+                    matches!(c.status, CallStatus::Active)
+                        && c.debug
+                            .as_ref()
+                            .map(|d| d.tx_frames > 0 && d.rx_frames > 0)
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        },
+    );
 
     alice.dispatch(AppAction::EndCall);
     wait_until("alice ended", Duration::from_secs(10), || {

@@ -71,3 +71,17 @@ struct NewChatView: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("New Chat") {
+    NavigationStack {
+        NewChatView(manager: PreviewFactory.manager(PreviewAppState.newChatIdle))
+    }
+}
+
+#Preview("New Chat - Creating") {
+    NavigationStack {
+        NewChatView(manager: PreviewFactory.manager(PreviewAppState.creatingChat))
+    }
+}
+#endif

@@ -36,3 +36,10 @@ struct AvatarView: View {
         return String(source.prefix(1)).uppercased()
     }
 }
+
+#if DEBUG
+#Preview("Avatar - Initials") {
+    AvatarView(name: "Pika", npub: "npub1example", pictureUrl: nil, size: 56)
+        .padding()
+}
+#endif

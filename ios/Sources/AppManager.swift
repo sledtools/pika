@@ -1,19 +1,50 @@
 import Foundation
 import Observation
 
+protocol AppCore: AnyObject, Sendable {
+    func dispatch(action: AppAction)
+    func listenForUpdates(reconciler: AppReconciler)
+    func state() -> AppState
+}
+
+extension FfiApp: AppCore {}
+
+protocol NsecStore: AnyObject {
+    func getNsec() -> String?
+    func setNsec(_ nsec: String)
+    func clearNsec()
+}
+
+extension KeychainNsecStore: NsecStore {}
+
 @MainActor
 @Observable
 final class AppManager: AppReconciler {
-    let rust: FfiApp
+    private let core: AppCore
     var state: AppState
     private var lastRevApplied: UInt64
+    private let nsecStore: NsecStore
 
-    private let nsecStore = KeychainNsecStore()
+    init(core: AppCore, nsecStore: NsecStore) {
+        self.core = core
+        self.nsecStore = nsecStore
 
-    init() {
+        let initial = core.state()
+        self.state = initial
+        self.lastRevApplied = initial.rev
+
+        core.listenForUpdates(reconciler: self)
+
+        if let nsec = nsecStore.getNsec(), !nsec.isEmpty {
+            core.dispatch(action: .restoreSession(nsec: nsec))
+        }
+    }
+
+    convenience init() {
         let fm = FileManager.default
         let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dataDir = dataDirUrl.path
+        let nsecStore = KeychainNsecStore()
 
         // UI tests need a clean slate and a way to inject relay overrides without relying on
         // external scripts.
@@ -56,18 +87,8 @@ final class AppManager: AppReconciler {
             }
         }
 
-        let rust = FfiApp(dataDir: dataDir)
-        self.rust = rust
-
-        let initial = rust.state()
-        self.state = initial
-        self.lastRevApplied = initial.rev
-
-        rust.listenForUpdates(reconciler: self)
-
-        if let nsec = nsecStore.getNsec(), !nsec.isEmpty {
-            rust.dispatch(action: .restoreSession(nsec: nsec))
-        }
+        let core = FfiApp(dataDir: dataDir)
+        self.init(core: core, nsecStore: nsecStore)
     }
 
     nonisolated func reconcile(update: AppUpdate) {
@@ -76,7 +97,7 @@ final class AppManager: AppReconciler {
         }
     }
 
-    private func apply(update: AppUpdate) {
+    func apply(update: AppUpdate) {
         let updateRev = update.rev
 
         // Side-effect updates must not be lost: `AccountCreated` carries an `nsec` that isn't in
@@ -105,7 +126,7 @@ final class AppManager: AppReconciler {
     }
 
     func dispatch(_ action: AppAction) {
-        rust.dispatch(action: action)
+        core.dispatch(action: action)
     }
 
     func login(nsec: String) {

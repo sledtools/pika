@@ -129,3 +129,17 @@ private struct MessageRow: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("Chat") {
+    NavigationStack {
+        ChatView(manager: PreviewFactory.manager(PreviewAppState.chatDetail), chatId: "chat-1")
+    }
+}
+
+#Preview("Chat - Failed") {
+    NavigationStack {
+        ChatView(manager: PreviewFactory.manager(PreviewAppState.chatDetailFailed), chatId: "chat-1")
+    }
+}
+#endif

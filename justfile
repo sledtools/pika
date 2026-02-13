@@ -43,6 +43,7 @@ info:
   @echo "  Generate bindings:"
   @echo "    just rmp bindings all"
 
+
 # Run the new Rust `rmp` CLI.
 rmp *ARGS:
   cargo run -p rmp-cli -- {{ARGS}}

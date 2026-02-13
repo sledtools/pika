@@ -91,3 +91,17 @@ struct ChatListView: View {
         return String(npub.prefix(12)) + "..."
     }
 }
+
+#if DEBUG
+#Preview("Chat List - Empty") {
+    NavigationStack {
+        ChatListView(manager: PreviewFactory.manager(PreviewAppState.chatListEmpty))
+    }
+}
+
+#Preview("Chat List - Populated") {
+    NavigationStack {
+        ChatListView(manager: PreviewFactory.manager(PreviewAppState.chatListPopulated))
+    }
+}
+#endif

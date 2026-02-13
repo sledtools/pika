@@ -53,3 +53,13 @@ struct LoginView: View {
         .padding(20)
     }
 }
+
+#if DEBUG
+#Preview("Login") {
+    LoginView(manager: PreviewFactory.manager(PreviewAppState.loggedOut))
+}
+
+#Preview("Login - Busy") {
+    LoginView(manager: PreviewFactory.manager(PreviewAppState.loggingIn))
+}
+#endif

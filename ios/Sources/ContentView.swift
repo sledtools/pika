@@ -85,3 +85,13 @@ private func screenView(manager: AppManager, screen: Screen) -> some View {
         ChatView(manager: manager, chatId: chatId)
     }
 }
+
+#if DEBUG
+#Preview("Logged Out") {
+    ContentView(manager: PreviewFactory.manager(PreviewAppState.loggedOut))
+}
+
+#Preview("Chat List") {
+    ContentView(manager: PreviewFactory.manager(PreviewAppState.chatListPopulated))
+}
+#endif

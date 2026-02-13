@@ -65,3 +65,8 @@ struct MyNpubQrSheet: View {
     }
 }
 
+#if DEBUG
+#Preview("My npub") {
+    MyNpubQrSheet(npub: "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y")
+}
+#endif

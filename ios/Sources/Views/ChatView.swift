@@ -19,12 +19,12 @@ struct ChatView: View {
                         ForEach(chat.messages, id: \.id) { msg in
                             MessageRow(message: msg)
                         }
-
-                        BottomAnchor()
-                            .id(Self.bottomAnchorId)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
+
+                    BottomAnchor()
+                        .id(Self.bottomAnchorId)
                 }
                 .coordinateSpace(name: "chat-scroll")
                 .background(
@@ -40,13 +40,14 @@ struct ChatView: View {
                     bottomMarkerMaxY = newMaxY
                     updateIsAtBottom()
                 }
-                .onChange(of: chat.messages.last?.id) { _, _ in
+                .onChange(of: chat.messages.count) { _, _ in
                     if isAtBottom {
                         scrollToBottom(proxy, animated: true)
                     }
                 }
                 .task(id: chat.chatId) {
                     isAtBottom = true
+                    await Task.yield()
                     scrollToBottom(proxy, animated: false)
                 }
                 .overlay(alignment: .bottomTrailing) {

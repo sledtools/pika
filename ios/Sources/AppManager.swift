@@ -32,7 +32,7 @@ final class AppManager: AppReconciler {
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedCallMoqUrl = callMoqUrl.isEmpty ? "https://moq.justinmoon.com/anon" : callMoqUrl
         let resolvedCallBroadcastPrefix = callBroadcastPrefix.isEmpty ? "pika/calls" : callBroadcastPrefix
-        if !relays.isEmpty || !kpRelays.isEmpty {
+        do {
             let relayItems = relays
                 .split(separator: ",")
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -42,21 +42,19 @@ final class AppManager: AppReconciler {
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
 
-            // Default key-package relays to the general relay list if not specified.
             if kpItems.isEmpty {
                 kpItems = relayItems
             }
 
-            let obj: [String: Any] = [
-                // Ensure tests/dev overrides can re-enable networking even if a prior run wrote
-                // `disable_network=true` into `pika_config.json`.
+            var obj: [String: Any] = [
                 "disable_network": false,
-                "relay_urls": relayItems,
-                "key_package_relay_urls": kpItems,
-                // Keep voice-call controls usable by default in launcher-driven dev runs.
                 "call_moq_url": resolvedCallMoqUrl,
                 "call_broadcast_prefix": resolvedCallBroadcastPrefix,
             ]
+            if !relayItems.isEmpty {
+                obj["relay_urls"] = relayItems
+                obj["key_package_relay_urls"] = kpItems
+            }
 
             if let data = try? JSONSerialization.data(withJSONObject: obj, options: []) {
                 let path = dataDirUrl.appendingPathComponent("pika_config.json")

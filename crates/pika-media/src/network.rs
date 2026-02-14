@@ -240,17 +240,22 @@ impl NetworkRelayState {
         let sub_origin = self.sub_origin.clone();
 
         let session = self.rt.block_on(async {
+            tracing::info!("connect: initiating QUIC to {url}");
             let client_config = moq_native::ClientConfig::default();
             let client = client_config.init().map_err(|e| {
+                tracing::error!("moq client init failed: {e:#}");
                 MediaSessionError::Unauthorized(format!("moq client init failed: {e}"))
             })?;
 
             client
                 .with_publish(origin_cons)
                 .with_consume(sub_origin)
-                .connect(url)
+                .connect(url.clone())
                 .await
-                .map_err(|_| MediaSessionError::NotConnected)
+                .map_err(|e| {
+                    tracing::error!("QUIC connect to {url} failed: {e:#}");
+                    MediaSessionError::NotConnected
+                })
         })?;
 
         self.session = Some(session);

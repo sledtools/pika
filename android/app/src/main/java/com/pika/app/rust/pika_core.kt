@@ -1528,6 +1528,13 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
 
 
 
+/**
+ * "In flight" flags for long-ish operations that the UI should reflect.
+ *
+ * Spec-v1 allows ephemeral UI state to remain native (scroll position, focus, etc),
+ * but UX-relevant async operation state should live in Rust to avoid native-side
+ * heuristics (e.g., resetting spinners on toast).
+ */
 data class BusyState (
     var `creatingAccount`: kotlin.Boolean
     , 
@@ -3114,4 +3121,3 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
         }
     }
 }
-

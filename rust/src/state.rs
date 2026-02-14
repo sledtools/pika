@@ -7,6 +7,7 @@ pub struct AppState {
     pub busy: BusyState,
     pub chat_list: Vec<ChatSummary>,
     pub current_chat: Option<ChatViewState>,
+    pub follow_list: Vec<FollowListEntry>,
     pub toast: Option<String>,
 }
 
@@ -23,6 +24,7 @@ impl AppState {
             busy: BusyState::idle(),
             chat_list: vec![],
             current_chat: None,
+            follow_list: vec![],
             toast: None,
         }
     }
@@ -33,6 +35,7 @@ pub struct BusyState {
     pub creating_account: bool,
     pub logging_in: bool,
     pub creating_chat: bool,
+    pub fetching_follow_list: bool,
 }
 
 impl BusyState {
@@ -41,6 +44,7 @@ impl BusyState {
             creating_account: false,
             logging_in: false,
             creating_chat: false,
+            fetching_follow_list: false,
         }
     }
 }
@@ -86,6 +90,14 @@ impl MyProfileState {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct MemberInfo {
+    pub pubkey: String,
+    pub npub: String,
+    pub name: Option<String>,
+    pub picture_url: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct FollowListEntry {
     pub pubkey: String,
     pub npub: String,
     pub name: Option<String>,

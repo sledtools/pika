@@ -8,9 +8,10 @@ final class AppManagerTests: XCTestCase {
             router: Router(defaultScreen: .chatList, screenStack: []),
             auth: .loggedOut,
             myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
-            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: false),
+            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
             chatList: [],
             currentChat: nil,
+            followList: [],
             toast: toast
         )
     }

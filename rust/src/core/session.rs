@@ -60,6 +60,7 @@ impl AppCore {
 
         self.refresh_all_from_storage();
         self.refresh_my_profile(false);
+        self.refresh_follow_list();
 
         if self.network_enabled() {
             self.publish_key_package_relays_best_effort();
@@ -431,6 +432,165 @@ impl AppCore {
                     .gift_wrap_to(relays.clone(), &peer_pubkey, rumor, tags.clone())
                     .await;
             }
+        });
+    }
+
+    pub(super) fn refresh_follow_list(&mut self) {
+        if !self.is_logged_in() || !self.network_enabled() {
+            return;
+        }
+        // Don't double-fetch.
+        if self.state.busy.fetching_follow_list {
+            return;
+        }
+        self.set_busy(|b| b.fetching_follow_list = true);
+
+        let Some(sess) = self.session.as_ref() else {
+            self.set_busy(|b| b.fetching_follow_list = false);
+            return;
+        };
+
+        let my_pubkey = sess.keys.public_key();
+        let client = sess.client.clone();
+        let tx = self.core_sender.clone();
+        let existing_profiles = self.profiles.clone();
+
+        self.runtime.spawn(async move {
+            // 1) Fetch kind 3 (ContactList) for the user's own pubkey.
+            let contact_filter = Filter::new()
+                .author(my_pubkey)
+                .kind(Kind::ContactList)
+                .limit(1);
+
+            let contact_events = match client
+                .fetch_events(contact_filter, Duration::from_secs(8))
+                .await
+            {
+                Ok(evs) => evs,
+                Err(e) => {
+                    tracing::debug!(%e, "follow list fetch failed");
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::FollowListFetched { entries: vec![] },
+                    )));
+                    return;
+                }
+            };
+
+            // Pick the newest kind 3 event.
+            let newest = contact_events.into_iter().max_by_key(|e| e.created_at);
+            let Some(contact_event) = newest else {
+                // No contact list published yet.
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::FollowListFetched { entries: vec![] },
+                )));
+                return;
+            };
+
+            // 2) Extract all `p` tags -> list of PublicKey.
+            let followed_pubkeys: Vec<PublicKey> = contact_event
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    let values = tag.as_slice();
+                    if values.first().map(|s| s.as_str()) == Some("p") {
+                        values.get(1).and_then(|hex| PublicKey::from_hex(hex).ok())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if followed_pubkeys.is_empty() {
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::FollowListFetched { entries: vec![] },
+                )));
+                return;
+            }
+
+            // 3) Determine which profiles need fetching.
+            let now = crate::state::now_seconds();
+            let needs_fetch: Vec<PublicKey> = followed_pubkeys
+                .iter()
+                .filter(|pk| {
+                    let hex = pk.to_hex();
+                    match existing_profiles.get(&hex) {
+                        None => true,
+                        Some(p) => (now - p.fetched_at) > 3600,
+                    }
+                })
+                .cloned()
+                .collect();
+
+            // 4) Batch-fetch kind 0 (Metadata) for missing profiles.
+            let mut fetched_profiles: HashMap<String, (Option<String>, Option<String>)> =
+                HashMap::new();
+            if !needs_fetch.is_empty() {
+                let profile_filter = Filter::new()
+                    .authors(needs_fetch.clone())
+                    .kind(Kind::Metadata)
+                    .limit(needs_fetch.len());
+                if let Ok(events) = client
+                    .fetch_events(profile_filter, Duration::from_secs(10))
+                    .await
+                {
+                    // Keep only newest per author.
+                    let mut best: HashMap<String, Event> = HashMap::new();
+                    for ev in events.into_iter() {
+                        let author_hex = ev.pubkey.to_hex();
+                        let dominated = best
+                            .get(&author_hex)
+                            .map(|prev| ev.created_at > prev.created_at)
+                            .unwrap_or(true);
+                        if dominated {
+                            best.insert(author_hex, ev);
+                        }
+                    }
+                    for (hex_pk, ev) in best {
+                        let parsed: Option<(Option<String>, Option<String>)> =
+                            serde_json::from_str::<serde_json::Value>(&ev.content)
+                                .ok()
+                                .map(|v| {
+                                    let display_name = v
+                                        .get("display_name")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    let name = v
+                                        .get("name")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    let picture = v
+                                        .get("picture")
+                                        .and_then(|s| s.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(String::from);
+                                    (display_name.or(name), picture)
+                                });
+                        let (name, picture) = parsed.unwrap_or((None, None));
+                        fetched_profiles.insert(hex_pk, (name, picture));
+                    }
+                }
+            }
+
+            // 5) Build result entries combining cached + freshly fetched profiles.
+            let entries: Vec<(String, Option<String>, Option<String>)> = followed_pubkeys
+                .iter()
+                .map(|pk| {
+                    let hex = pk.to_hex();
+                    if let Some((name, picture)) = fetched_profiles.get(&hex) {
+                        (hex, name.clone(), picture.clone())
+                    } else if let Some(cached) = existing_profiles.get(&hex) {
+                        (hex, cached.name.clone(), cached.picture_url.clone())
+                    } else {
+                        (hex, None, None)
+                    }
+                })
+                .collect();
+
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::FollowListFetched { entries },
+            )));
         });
     }
 

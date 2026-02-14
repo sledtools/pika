@@ -105,4 +105,9 @@ pub enum InternalEvent {
         message: String,
         toast: bool,
     },
+
+    // Follow list (NIP-02 kind 3)
+    FollowListFetched {
+        entries: Vec<(String, Option<String>, Option<String>)>, // (hex_pubkey, name, picture_url)
+    },
 }

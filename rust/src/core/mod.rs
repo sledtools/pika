@@ -285,6 +285,7 @@ impl AppCore {
             self.profiles.clear();
             self.my_metadata = None;
             self.state.my_profile = MyProfileState::empty();
+            self.state.follow_list = vec![];
             self.last_outgoing_ts = 0;
             self.emit_router();
             self.emit_busy();
@@ -813,6 +814,53 @@ impl AppCore {
                 self.set_busy(|b| b.creating_chat = false);
                 self.refresh_all_from_storage();
             }
+            InternalEvent::FollowListFetched { entries } => {
+                let now = now_seconds();
+                // Update profile cache with newly fetched data.
+                for (hex_pubkey, name, picture_url) in &entries {
+                    self.profiles.insert(
+                        hex_pubkey.clone(),
+                        ProfileCache {
+                            name: name.clone(),
+                            picture_url: picture_url.clone(),
+                            fetched_at: now,
+                        },
+                    );
+                }
+                // Build follow list entries.
+                let mut follow_list: Vec<crate::state::FollowListEntry> = entries
+                    .into_iter()
+                    .map(|(hex_pubkey, name, picture_url)| {
+                        let npub = PublicKey::from_hex(&hex_pubkey)
+                            .ok()
+                            .and_then(|pk| pk.to_bech32().ok())
+                            .unwrap_or_else(|| hex_pubkey.clone());
+                        crate::state::FollowListEntry {
+                            pubkey: hex_pubkey,
+                            npub,
+                            name,
+                            picture_url,
+                        }
+                    })
+                    .collect();
+                // Sort: names first (alphabetical), then npub-only entries.
+                follow_list.sort_by(|a, b| {
+                    match (&a.name, &b.name) {
+                        (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => a.npub.cmp(&b.npub),
+                    }
+                });
+                self.state.follow_list = follow_list;
+                self.set_busy(|b| b.fetching_follow_list = false);
+                // Refresh chat list too since profiles were updated.
+                self.refresh_chat_list_from_storage();
+                if let Some(chat) = self.state.current_chat.as_ref() {
+                    let chat_id = chat.chat_id.clone();
+                    self.refresh_current_chat(&chat_id);
+                }
+            }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
                 let Some(sess) = self.session.as_mut() else {
@@ -956,7 +1004,14 @@ impl AppCore {
                 if self.is_logged_in() {
                     self.refresh_all_from_storage();
                     self.refresh_my_profile(false);
+                    self.refresh_follow_list();
                 }
+            }
+            AppAction::RefreshFollowList => {
+                if !self.is_logged_in() {
+                    return;
+                }
+                self.refresh_follow_list();
             }
             AppAction::RefreshMyProfile => {
                 if !self.is_logged_in() {

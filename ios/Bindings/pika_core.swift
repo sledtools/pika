@@ -688,11 +688,12 @@ public struct AppState: Equatable, Hashable {
     public var busy: BusyState
     public var chatList: [ChatSummary]
     public var currentChat: ChatViewState?
+    public var followList: [FollowListEntry]
     public var toast: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, toast: String?) {
+    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, followList: [FollowListEntry], toast: String?) {
         self.rev = rev
         self.router = router
         self.auth = auth
@@ -700,6 +701,7 @@ public struct AppState: Equatable, Hashable {
         self.busy = busy
         self.chatList = chatList
         self.currentChat = currentChat
+        self.followList = followList
         self.toast = toast
     }
 
@@ -726,6 +728,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 busy: FfiConverterTypeBusyState.read(from: &buf), 
                 chatList: FfiConverterSequenceTypeChatSummary.read(from: &buf), 
                 currentChat: FfiConverterOptionTypeChatViewState.read(from: &buf), 
+                followList: FfiConverterSequenceTypeFollowListEntry.read(from: &buf), 
                 toast: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -738,6 +741,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterTypeBusyState.write(value.busy, into: &buf)
         FfiConverterSequenceTypeChatSummary.write(value.chatList, into: &buf)
         FfiConverterOptionTypeChatViewState.write(value.currentChat, into: &buf)
+        FfiConverterSequenceTypeFollowListEntry.write(value.followList, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
     }
 }
@@ -762,13 +766,15 @@ public struct BusyState: Equatable, Hashable {
     public var creatingAccount: Bool
     public var loggingIn: Bool
     public var creatingChat: Bool
+    public var fetchingFollowList: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(creatingAccount: Bool, loggingIn: Bool, creatingChat: Bool) {
+    public init(creatingAccount: Bool, loggingIn: Bool, creatingChat: Bool, fetchingFollowList: Bool) {
         self.creatingAccount = creatingAccount
         self.loggingIn = loggingIn
         self.creatingChat = creatingChat
+        self.fetchingFollowList = fetchingFollowList
     }
 
     
@@ -789,7 +795,8 @@ public struct FfiConverterTypeBusyState: FfiConverterRustBuffer {
             try BusyState(
                 creatingAccount: FfiConverterBool.read(from: &buf), 
                 loggingIn: FfiConverterBool.read(from: &buf), 
-                creatingChat: FfiConverterBool.read(from: &buf)
+                creatingChat: FfiConverterBool.read(from: &buf), 
+                fetchingFollowList: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -797,6 +804,7 @@ public struct FfiConverterTypeBusyState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.creatingAccount, into: &buf)
         FfiConverterBool.write(value.loggingIn, into: &buf)
         FfiConverterBool.write(value.creatingChat, into: &buf)
+        FfiConverterBool.write(value.fetchingFollowList, into: &buf)
     }
 }
 
@@ -1043,6 +1051,68 @@ public func FfiConverterTypeChatViewState_lift(_ buf: RustBuffer) throws -> Chat
 #endif
 public func FfiConverterTypeChatViewState_lower(_ value: ChatViewState) -> RustBuffer {
     return FfiConverterTypeChatViewState.lower(value)
+}
+
+
+public struct FollowListEntry: Equatable, Hashable {
+    public var pubkey: String
+    public var npub: String
+    public var name: String?
+    public var pictureUrl: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(pubkey: String, npub: String, name: String?, pictureUrl: String?) {
+        self.pubkey = pubkey
+        self.npub = npub
+        self.name = name
+        self.pictureUrl = pictureUrl
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FollowListEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFollowListEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FollowListEntry {
+        return
+            try FollowListEntry(
+                pubkey: FfiConverterString.read(from: &buf), 
+                npub: FfiConverterString.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf), 
+                pictureUrl: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FollowListEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.pubkey, into: &buf)
+        FfiConverterString.write(value.npub, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.pictureUrl, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFollowListEntry_lift(_ buf: RustBuffer) throws -> FollowListEntry {
+    return try FfiConverterTypeFollowListEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFollowListEntry_lower(_ value: FollowListEntry) -> RustBuffer {
+    return FfiConverterTypeFollowListEntry.lower(value)
 }
 
 
@@ -1323,6 +1393,7 @@ public enum AppAction: Equatable, Hashable {
     )
     case clearToast
     case foregrounded
+    case refreshFollowList
 
 
 
@@ -1401,6 +1472,8 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 20: return .clearToast
         
         case 21: return .foregrounded
+        
+        case 22: return .refreshFollowList
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1518,6 +1591,10 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         
         case .foregrounded:
             writeInt(&buf, Int32(21))
+        
+        
+        case .refreshFollowList:
+            writeInt(&buf, Int32(22))
         
         }
     }
@@ -2135,6 +2212,31 @@ fileprivate struct FfiConverterSequenceTypeChatSummary: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeChatSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFollowListEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [FollowListEntry]
+
+    public static func write(_ value: [FollowListEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFollowListEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FollowListEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FollowListEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFollowListEntry.read(from: &buf))
         }
         return seq
     }

@@ -44,7 +44,7 @@ enum PreviewAppState {
             rev: 2,
             router: Router(defaultScreen: .login, screenStack: []),
             auth: .loggedOut,
-            busy: BusyState(creatingAccount: false, loggingIn: true, creatingChat: false)
+            busy: BusyState(creatingAccount: false, loggingIn: true, creatingChat: false, fetchingFollowList: false)
         )
     }
 
@@ -116,7 +116,7 @@ enum PreviewAppState {
             router: Router(defaultScreen: .newChat, screenStack: [.newChat]),
             auth: .loggedIn(npub: sampleNpub, pubkey: samplePubkey),
             myProfile: sampleProfile,
-            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: true)
+            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: true, fetchingFollowList: false)
         )
     }
 
@@ -198,14 +198,21 @@ enum PreviewAppState {
         )
     }
 
+    static let sampleFollowList: [FollowListEntry] = [
+        FollowListEntry(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Justin", pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce"),
+        FollowListEntry(pubkey: sampleThirdPubkey, npub: sampleThirdNpub, name: "benthecarman", pictureUrl: nil),
+        FollowListEntry(pubkey: "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233", npub: "npub14wavxd9qqpy3x64hkvajjrf9s67qfze2gs3a2pxhzu3fjlf90xesqa2haj", name: nil, pictureUrl: nil),
+    ]
+
     private static func base(
         rev: UInt64,
         router: Router,
         auth: AuthState,
         myProfile: MyProfileState = .init(name: "", about: "", pictureUrl: nil),
-        busy: BusyState = BusyState(creatingAccount: false, loggingIn: false, creatingChat: false),
+        busy: BusyState = BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
         chatList: [ChatSummary] = [],
         currentChat: ChatViewState? = nil,
+        followList: [FollowListEntry] = [],
         toast: String? = nil
     ) -> AppState {
         AppState(
@@ -216,6 +223,7 @@ enum PreviewAppState {
             busy: busy,
             chatList: chatList,
             currentChat: currentChat,
+            followList: followList,
             toast: toast
         )
     }

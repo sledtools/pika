@@ -76,6 +76,9 @@ pub enum AppAction {
 
     // Lifecycle
     Foregrounded,
+
+    // Follow list
+    RefreshFollowList,
 }
 
 impl AppAction {
@@ -114,6 +117,9 @@ impl AppAction {
 
             // Lifecycle
             AppAction::Foregrounded => "Foregrounded",
+
+            // Follow list
+            AppAction::RefreshFollowList => "RefreshFollowList",
         }
     }
 }

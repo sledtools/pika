@@ -105,14 +105,16 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
     case .newChat:
         NewChatView(
             state: newChatState(from: state),
-            onCreateChat: { manager.dispatch(.createChat(peerNpub: $0)) }
+            onCreateChat: { manager.dispatch(.createChat(peerNpub: $0)) },
+            onRefreshFollowList: { manager.dispatch(.refreshFollowList) }
         )
     case .newGroupChat:
         NewGroupChatView(
             state: newGroupChatState(from: state),
             onCreateGroup: { name, npubs in
                 manager.dispatch(.createGroupChat(peerNpubs: npubs, groupName: name))
-            }
+            },
+            onRefreshFollowList: { manager.dispatch(.refreshFollowList) }
         )
     case .chat(let chatId):
         ChatView(
@@ -158,11 +160,19 @@ private func chatListState(from state: AppState) -> ChatListViewState {
 }
 
 private func newChatState(from state: AppState) -> NewChatViewState {
-    NewChatViewState(isCreatingChat: state.busy.creatingChat)
+    NewChatViewState(
+        isCreatingChat: state.busy.creatingChat,
+        isFetchingFollowList: state.busy.fetchingFollowList,
+        followList: state.followList
+    )
 }
 
 private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
-    NewGroupChatViewState(isCreatingChat: state.busy.creatingChat)
+    NewGroupChatViewState(
+        isCreatingChat: state.busy.creatingChat,
+        isFetchingFollowList: state.busy.fetchingFollowList,
+        followList: state.followList
+    )
 }
 
 private func chatScreenState(from state: AppState) -> ChatScreenState {

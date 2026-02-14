@@ -8,7 +8,7 @@ struct AvatarView: View {
 
     var body: some View {
         if let url = pictureUrl.flatMap({ URL(string: $0) }) {
-            AsyncImage(url: url) { image in
+            CachedAsyncImage(url: url) { image in
                 image.resizable().scaledToFill()
             } placeholder: {
                 initialsCircle
@@ -34,6 +34,74 @@ struct AvatarView: View {
     private var initials: String {
         let source = name ?? npub
         return String(source.prefix(1)).uppercased()
+    }
+}
+
+// MARK: - Cached image loader
+
+private final class ImageCache: @unchecked Sendable {
+    static let shared = ImageCache()
+    private let cache = NSCache<NSURL, UIImage>()
+
+    init() {
+        cache.countLimit = 200
+    }
+
+    func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func setImage(_ image: UIImage, for url: URL) {
+        cache.setObject(image, forKey: url as NSURL)
+    }
+}
+
+@MainActor
+private final class ImageLoader: ObservableObject {
+    @Published var image: UIImage?
+    private var url: URL?
+    private var task: Task<Void, Never>?
+
+    func load(url: URL) {
+        guard self.url != url else { return }
+        self.url = url
+        task?.cancel()
+
+        if let cached = ImageCache.shared.image(for: url) {
+            self.image = cached
+            return
+        }
+
+        task = Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                guard !Task.isCancelled, let uiImage = UIImage(data: data) else { return }
+                ImageCache.shared.setImage(uiImage, for: url)
+                self.image = uiImage
+            } catch {
+                // Keep showing placeholder on failure
+            }
+        }
+    }
+}
+
+private struct CachedAsyncImage<Content: View, Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder let content: (Image) -> Content
+    @ViewBuilder let placeholder: () -> Placeholder
+
+    @StateObject private var loader = ImageLoader()
+
+    var body: some View {
+        Group {
+            if let uiImage = loader.image {
+                content(Image(uiImage: uiImage))
+            } else {
+                placeholder()
+            }
+        }
+        .onAppear { loader.load(url: url) }
+        .onChange(of: url) { _, newUrl in loader.load(url: newUrl) }
     }
 }
 

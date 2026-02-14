@@ -217,6 +217,7 @@ enum PreviewAppState {
                 senderPubkey: samplePubkey,
                 senderName: nil,
                 content: "Hey! Are we still on for today?",
+                markdownAstJson: nil,
                 timestamp: 1_709_000_001,
                 isMine: true,
                 delivery: .sent
@@ -226,6 +227,7 @@ enum PreviewAppState {
                 senderPubkey: samplePeerPubkey,
                 senderName: name,
                 content: "Yep. See you at the relay.",
+                markdownAstJson: nil,
                 timestamp: 1_709_000_050,
                 isMine: false,
                 delivery: .sent
@@ -235,6 +237,7 @@ enum PreviewAppState {
                 senderPubkey: samplePubkey,
                 senderName: nil,
                 content: failed ? "This one failed to send." : "On my way.",
+                markdownAstJson: nil,
                 timestamp: 1_709_000_100,
                 isMine: true,
                 delivery: failed ? .failed(reason: "Network timeout") : .pending
@@ -261,6 +264,7 @@ enum PreviewAppState {
                 content: idx.isMultiple(of: 3)
                     ? "A long message intended to wrap across multiple lines for layout validation."
                     : "Message \(idx + 1)",
+                markdownAstJson: nil,
                 timestamp: Int64(1_709_000_200 + idx),
                 isMine: idx.isMultiple(of: 2),
                 delivery: .sent

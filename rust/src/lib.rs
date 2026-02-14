@@ -1,6 +1,7 @@
 mod actions;
 mod core;
 mod logging;
+mod markdown;
 mod mdk_support;
 mod state;
 mod updates;

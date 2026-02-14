@@ -290,11 +290,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let content = m.content;
+                let markdown_ast_json = crate::markdown::parse_markdown_json(&content).ok();
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,
                     sender_name,
-                    content: m.content,
+                    content,
+                    markdown_ast_json,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,
@@ -319,11 +322,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Pending);
+                let content = lm.content;
+                let markdown_ast_json = crate::markdown::parse_markdown_json(&content).ok();
                 msgs.push(ChatMessage {
                     id,
                     sender_pubkey: lm.sender_pubkey,
                     sender_name: None,
-                    content: lm.content,
+                    content,
+                    markdown_ast_json,
                     timestamp: lm.timestamp,
                     is_mine: true,
                     delivery,
@@ -420,11 +426,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let content = m.content;
+                let markdown_ast_json = crate::markdown::parse_markdown_json(&content).ok();
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,
                     sender_name,
-                    content: m.content,
+                    content,
+                    markdown_ast_json,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,

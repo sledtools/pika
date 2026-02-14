@@ -78,6 +78,7 @@
           packages = [
             rustToolchain
             androidSdk
+            pkgs.zig
             pkgs.jdk17_headless
             pkgs.just
             pkgs.nodejs_22

@@ -22,8 +22,10 @@
 		9581B9688EDC90BCBC177E47 /* TestIds.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FAE9ECBDFC0A976452024F /* TestIds.swift */; };
 		970D12403533E203A33FBEFC /* NewChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62170468ABECD8AAA8B6B6A /* NewChatView.swift */; };
 		A15307C1B4692DC5925858CE /* AppManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B2B1856254D8FE240BC93A /* AppManager.swift */; };
+		B5F90A17C2DF56BF2B42736E /* NewGroupChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BE97F6BA133265DB078F8A /* NewGroupChatView.swift */; };
 		DE799DF1E97151C517647E61 /* QrScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */; };
 		EDAE180A5D3FEED3C801658F /* MyNpubQrSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */; };
+		EEE2F54DC181C7C91E5F7848 /* GroupInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04278E7A5E984011D10BE79F /* GroupInfoView.swift */; };
 		F2A2C56251354A67641CA82F /* pika_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2510455883E1CDFB6D589F5C /* pika_core.swift */; };
 		F308786C219CC1D169ABFC50 /* PikaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF35ECCAE3B37C651F88A150 /* PikaApp.swift */; };
 		F69233C493C4DF364AB6B468 /* AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */; };
@@ -48,8 +50,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		04278E7A5E984011D10BE79F /* GroupInfoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupInfoView.swift; sourceTree = "<group>"; };
 		05B2B1856254D8FE240BC93A /* AppManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManager.swift; sourceTree = "<group>"; };
 		0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyNpubQrSheet.swift; sourceTree = "<group>"; };
+		09BE97F6BA133265DB078F8A /* NewGroupChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewGroupChatView.swift; sourceTree = "<group>"; };
 		2510455883E1CDFB6D589F5C /* pika_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pika_core.swift; sourceTree = "<group>"; };
 		276F120E43A9DF389448FE5C /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStoreTests.swift; sourceTree = "<group>"; };
@@ -120,9 +124,11 @@
 				EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */,
 				366C05B721835967C3BE5418 /* ChatListView.swift */,
 				B2FE3F3E8BA33932B132B693 /* ChatView.swift */,
+				04278E7A5E984011D10BE79F /* GroupInfoView.swift */,
 				53159E06C561F50F6EC97A61 /* LoginView.swift */,
 				0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */,
 				A62170468ABECD8AAA8B6B6A /* NewChatView.swift */,
+				09BE97F6BA133265DB078F8A /* NewGroupChatView.swift */,
 				B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */,
 			);
 			path = Views;
@@ -305,10 +311,12 @@
 				783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */,
 				5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */,
 				FE739725B724B1944145C8EF /* ContentView.swift in Sources */,
+				EEE2F54DC181C7C91E5F7848 /* GroupInfoView.swift in Sources */,
 				02D9A491B498E051D46EC648 /* KeychainNsecStore.swift in Sources */,
 				2A9B2872E6ADB03F5A8FA173 /* LoginView.swift in Sources */,
 				EDAE180A5D3FEED3C801658F /* MyNpubQrSheet.swift in Sources */,
 				970D12403533E203A33FBEFC /* NewChatView.swift in Sources */,
+				B5F90A17C2DF56BF2B42736E /* NewGroupChatView.swift in Sources */,
 				502171B59272A56AB36AECCF /* PeerKeyValidator.swift in Sources */,
 				F308786C219CC1D169ABFC50 /* PikaApp.swift in Sources */,
 				940959C521A572B47CCDC852 /* PreviewData.swift in Sources */,

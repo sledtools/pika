@@ -817,17 +817,19 @@ public struct ChatMessage: Equatable, Hashable {
     public var senderPubkey: String
     public var senderName: String?
     public var content: String
+    public var markdownAstJson: String?
     public var timestamp: Int64
     public var isMine: Bool
     public var delivery: MessageDeliveryState
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, senderPubkey: String, senderName: String?, content: String, timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState) {
+    public init(id: String, senderPubkey: String, senderName: String?, content: String, markdownAstJson: String?, timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState) {
         self.id = id
         self.senderPubkey = senderPubkey
         self.senderName = senderName
         self.content = content
+        self.markdownAstJson = markdownAstJson
         self.timestamp = timestamp
         self.isMine = isMine
         self.delivery = delivery
@@ -853,6 +855,7 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
                 senderPubkey: FfiConverterString.read(from: &buf), 
                 senderName: FfiConverterOptionString.read(from: &buf), 
                 content: FfiConverterString.read(from: &buf), 
+                markdownAstJson: FfiConverterOptionString.read(from: &buf), 
                 timestamp: FfiConverterInt64.read(from: &buf), 
                 isMine: FfiConverterBool.read(from: &buf), 
                 delivery: FfiConverterTypeMessageDeliveryState.read(from: &buf)
@@ -864,6 +867,7 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
         FfiConverterString.write(value.senderPubkey, into: &buf)
         FfiConverterOptionString.write(value.senderName, into: &buf)
         FfiConverterString.write(value.content, into: &buf)
+        FfiConverterOptionString.write(value.markdownAstJson, into: &buf)
         FfiConverterInt64.write(value.timestamp, into: &buf)
         FfiConverterBool.write(value.isMine, into: &buf)
         FfiConverterTypeMessageDeliveryState.write(value.delivery, into: &buf)

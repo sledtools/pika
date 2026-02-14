@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct ChatView: View {
@@ -153,7 +154,7 @@ private struct MessageRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text(message.content)
+                MarkdownMessageContent(message: message, isMine: message.isMine)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
@@ -183,6 +184,162 @@ private struct MessageRow: View {
         case .sent: return "Sent"
         case .failed(let reason): return "Failed: \(reason)"
         }
+    }
+}
+
+private struct MarkdownAstDocument: Decodable {
+    let type: String
+    let children: [MarkdownAstNode]
+
+    static func decode(_ json: String?) -> MarkdownAstDocument? {
+        guard let json, !json.isEmpty else {
+            return nil
+        }
+        return try? JSONDecoder().decode(MarkdownAstDocument.self, from: Data(json.utf8))
+    }
+}
+
+private struct MarkdownAstNode: Decodable {
+    let type: String
+    let value: String?
+    let children: [MarkdownAstNode]?
+}
+
+private struct MarkdownMessageContent: View {
+    let message: ChatMessage
+    let isMine: Bool
+
+    var body: some View {
+        if let doc = MarkdownAstDocument.decode(message.markdownAstJson), !doc.children.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(doc.children.enumerated()), id: \.offset) { _, node in
+                    blockView(node)
+                }
+            }
+        } else {
+            Text(message.content)
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ node: MarkdownAstNode) -> some View {
+        switch node.type {
+        case "paragraph":
+            inlineText(nodes: node.children ?? [])
+        case "code_block":
+            codeBlock(node.value ?? "")
+        case "text", "strong":
+            inlineText(nodes: [node])
+        default:
+            if let children = node.children, !children.isEmpty {
+                inlineText(nodes: children)
+            } else if let value = node.value, !value.isEmpty {
+                Text(value)
+            }
+        }
+    }
+
+    private func inlineText(nodes: [MarkdownAstNode]) -> Text {
+        var rendered = Text("")
+        for index in nodes.indices {
+            let node = nodes[index]
+            if index > 0, shouldInsertLineBreak(before: node, previous: nodes[index - 1]) {
+                rendered = rendered + Text("\n")
+            }
+            rendered = rendered + inlineText(node)
+            if index + 1 < nodes.count, shouldInsertLineBreak(after: node, next: nodes[index + 1]) {
+                rendered = rendered + Text("\n")
+            }
+        }
+        return rendered
+    }
+
+    private func shouldInsertLineBreak(before node: MarkdownAstNode, previous: MarkdownAstNode) -> Bool {
+        if node.type == "hard_break" || previous.type == "hard_break" {
+            return false
+        }
+        guard isLabelStrongNode(node) else {
+            return false
+        }
+        let previousText = flattenedText(previous)
+        guard let last = previousText.last else {
+            return false
+        }
+        return !last.isWhitespace
+    }
+
+    private func shouldInsertLineBreak(after node: MarkdownAstNode, next: MarkdownAstNode) -> Bool {
+        if node.type == "hard_break" || next.type == "hard_break" {
+            return false
+        }
+        guard isLabelStrongNode(node) else {
+            return false
+        }
+        let nextText = flattenedText(next)
+        guard let first = nextText.first else {
+            return false
+        }
+        return !first.isWhitespace
+    }
+
+    private func isLabelStrongNode(_ node: MarkdownAstNode) -> Bool {
+        guard node.type == "strong" else {
+            return false
+        }
+        let label = flattenedText(node).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else {
+            return false
+        }
+        guard label.hasSuffix(":") else {
+            return false
+        }
+        return label.count <= 64
+    }
+
+    private func flattenedText(_ node: MarkdownAstNode) -> String {
+        switch node.type {
+        case "text":
+            return node.value ?? ""
+        case "hard_break":
+            return "\n"
+        default:
+            if let value = node.value {
+                return value
+            }
+            if let children = node.children {
+                return children.map(flattenedText).joined()
+            }
+            return ""
+        }
+    }
+
+    private func inlineText(_ node: MarkdownAstNode) -> Text {
+        switch node.type {
+        case "text":
+            return Text(node.value ?? "")
+        case "strong":
+            return inlineText(nodes: node.children ?? []).bold()
+        case "hard_break":
+            return Text("\n")
+        default:
+            if let children = node.children, !children.isEmpty {
+                return inlineText(nodes: children)
+            }
+            return Text(node.value ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func codeBlock(_ value: String) -> some View {
+        Text(value)
+            .font(.system(.callout, design: .monospaced))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                isMine ? Color.white.opacity(0.2) : Color.black.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
     }
 }
 

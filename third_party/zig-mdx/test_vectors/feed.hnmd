@@ -1,0 +1,24 @@
+---
+filters:
+  feed:
+    kinds: [1]
+    limit: 5
+
+state:
+  title: "Nostr Feed Viewer"
+---
+
+# {state.title}
+
+## Recent Notes
+
+<json value={queries.feed} />
+
+## Individual Notes
+
+<each from={queries.feed} as="note">
+  <vstack>
+    ---
+    <json value={note} />
+  </vstack>
+</each>

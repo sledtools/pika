@@ -101,6 +101,7 @@ pub struct ChatMessage {
     pub sender_pubkey: String,
     pub sender_name: Option<String>,
     pub content: String,
+    pub markdown_ast_json: Option<String>,
     pub timestamp: i64,
     pub is_mine: bool,
     pub delivery: MessageDeliveryState,

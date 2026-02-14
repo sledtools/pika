@@ -68,7 +68,7 @@ fun LoginScreen(manager: AppManager, padding: PaddingValues) {
             onValueChange = { nsec = it },
             singleLine = true,
             enabled = !anyBusy,
-            label = { Text("nsec (mock)") },
+            label = { Text("nsec") },
             modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_NSEC),
         )
 

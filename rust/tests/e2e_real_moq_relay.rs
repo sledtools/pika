@@ -175,11 +175,7 @@ fn handle_client_msg(state: &Arc<Mutex<RelayState>>, conn_id: u64, text: &str) {
                     .iter()
                     .any(|f| f.match_event(&ev, MatchEventOptions::new()))
                 {
-                    let _ = send_json(
-                        state,
-                        conn_id,
-                        serde_json::json!(["EVENT", sub_id, ev]),
-                    );
+                    let _ = send_json(state, conn_id, serde_json::json!(["EVENT", sub_id, ev]));
                 }
             }
             let _ = send_json(state, conn_id, serde_json::json!(["EOSE", sub_id]));
@@ -287,8 +283,16 @@ fn call_over_real_moq_relay() {
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(&dir_a.path().to_string_lossy(), &relay.url, Some(&relay.url));
-    write_config(&dir_b.path().to_string_lossy(), &relay.url, Some(&relay.url));
+    write_config(
+        &dir_a.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
+    write_config(
+        &dir_b.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -353,17 +357,13 @@ fn call_over_real_moq_relay() {
 
     // Both sides should reach Connecting or Active.
     // NetworkRelay.connect() does a real QUIC handshake, so give more time.
-    wait_until(
-        "bob connecting or active",
-        Duration::from_secs(30),
-        || {
-            bob.state()
-                .active_call
-                .as_ref()
-                .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
-                .unwrap_or(false)
-        },
-    );
+    wait_until("bob connecting or active", Duration::from_secs(30), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
+            .unwrap_or(false)
+    });
     wait_until(
         "alice connecting or active",
         Duration::from_secs(30),

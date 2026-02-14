@@ -73,7 +73,11 @@ fn parse_csv_env(key: &str) -> Option<Vec<String>> {
         .filter(|x| !x.is_empty())
         .map(|x| x.to_string())
         .collect();
-    if v.is_empty() { None } else { Some(v) }
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 fn dedup_preserve_order(xs: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -111,7 +115,10 @@ fn kp_relays() -> Vec<String> {
 }
 
 fn call_moq_url() -> String {
-    std::env::var("PIKA_CALL_MOQ_URL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_MOQ_URL.to_string())
+    std::env::var("PIKA_CALL_MOQ_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_MOQ_URL.to_string())
 }
 
 fn call_broadcast_prefix() -> String {
@@ -167,7 +174,9 @@ fn read_env_var_from_file(path: &Path, key: &str) -> Option<String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         if k.trim() != key {
             continue;
         }
@@ -243,15 +252,10 @@ impl Collector {
     }
 
     fn last_toast(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find_map(|u| match u {
-                AppUpdate::FullState(s) => s.toast.clone(),
-                _ => None,
-            })
+        self.0.lock().unwrap().iter().rev().find_map(|u| match u {
+            AppUpdate::FullState(s) => s.toast.clone(),
+            _ => None,
+        })
     }
 }
 
@@ -343,7 +347,8 @@ fn main() {
     };
 
     // Unique state dir (keep it around on failure for inspection).
-    let data_dir = std::env::temp_dir().join(format!("pika-interop-openclaw-{}", uuid::Uuid::new_v4()));
+    let data_dir =
+        std::env::temp_dir().join(format!("pika-interop-openclaw-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&data_dir).expect("create data dir");
     write_config(&data_dir, &relays, &kp_relays, &moq_url, &broadcast_prefix);
 
@@ -381,7 +386,9 @@ fn main() {
     app.dispatch(AppAction::CreateChat {
         peer_npub: bot_npub.clone(),
     });
-    wait_until("chat opened", Duration::from_secs(120), || app.state().current_chat.is_some());
+    wait_until("chat opened", Duration::from_secs(120), || {
+        app.state().current_chat.is_some()
+    });
 
     let chat_id = app.state().current_chat.as_ref().unwrap().chat_id.clone();
     eprintln!("chat_id={chat_id}");
@@ -600,7 +607,12 @@ fn main() {
                 last_toast = Some(t);
             }
         }
-        if let Some(dbg) = app.state().active_call.as_ref().and_then(|c| c.debug.as_ref()) {
+        if let Some(dbg) = app
+            .state()
+            .active_call
+            .as_ref()
+            .and_then(|c| c.debug.as_ref())
+        {
             eprintln!(
                 "call_debug tx={} rx={} drop={} jitter={}ms rtt={:?}",
                 dbg.tx_frames, dbg.rx_frames, dbg.rx_dropped, dbg.jitter_buffer_ms, dbg.last_rtt_ms
@@ -654,7 +666,9 @@ fn main() {
         std::process::exit(1);
     }
     if rx_delta == 0 {
-        eprintln!("warn: rx_frames did not increase (bot may not be publishing response audio yet)");
+        eprintln!(
+            "warn: rx_frames did not increase (bot may not be publishing response audio yet)"
+        );
     }
 
     println!("ok: interop openclaw voice PASS");

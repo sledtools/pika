@@ -51,7 +51,9 @@ fn main() {
             keyframe: true,
             payload: format!("warmup-{i}").into_bytes(),
         };
-        pub_relay.publish(&pub_track, frame).expect("publish warmup");
+        pub_relay
+            .publish(&pub_track, frame)
+            .expect("publish warmup");
     }
 
     // Give time for broadcast to propagate

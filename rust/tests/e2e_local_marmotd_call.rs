@@ -302,15 +302,23 @@ impl DaemonHandle {
             std::path::Path::new(&bin).exists(),
             "marmotd binary not found at {bin}. Build it: cd ~/code/openclaw-marmot && cargo build -p marmotd"
         );
-        eprintln!("[daemon] spawning {bin} daemon --relay {relay_url} --state-dir {state_dir}");
-        let mut child = Command::new(&bin)
-            .arg("daemon")
+        let use_real_ai = std::env::var("OPENAI_API_KEY").is_ok();
+        eprintln!(
+            "[daemon] spawning {bin} daemon --relay {relay_url} --state-dir {state_dir} real_ai={use_real_ai}"
+        );
+        let mut cmd = Command::new(&bin);
+        cmd.arg("daemon")
             .arg("--relay")
             .arg(relay_url)
             .arg("--state-dir")
-            .arg(state_dir)
-            .env("MARMOT_STT_FIXTURE_TEXT", "hello from fixture")
-            .env("MARMOT_TTS_FIXTURE", "1")
+            .arg(state_dir);
+        if use_real_ai {
+            cmd.env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap());
+        } else {
+            cmd.env("MARMOT_STT_FIXTURE_TEXT", "hello from fixture")
+                .env("MARMOT_TTS_FIXTURE", "1");
+        }
+        let mut child = cmd
             .env(
                 "MARMOT_ECHO_MODE",
                 std::env::var("MARMOT_ECHO_MODE").unwrap_or_default(),
@@ -432,6 +440,19 @@ fn run_marmotd_call_test(relay_url: &str) {
         return;
     }
 
+    // When using real AI, feed speech audio instead of a sine wave so Whisper
+    // can produce a real transcript.
+    if std::env::var("OPENAI_API_KEY").is_ok() {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/speech_test.wav"
+        );
+        if std::path::Path::new(fixture).exists() {
+            std::env::set_var("PIKA_AUDIO_FIXTURE", fixture);
+            eprintln!("[test] audio fixture: {fixture}");
+        }
+    }
+
     eprintln!("[test] using relay: {relay_url}");
 
     // Spawn marmotd daemon as the "bot".
@@ -449,13 +470,18 @@ fn run_marmotd_call_test(relay_url: &str) {
     // Simulate what channel.ts does after sidecar is ready:
     // 1. set_relays (adds additional relays beyond the --relay arg)
     // 2. publish_keypackage
-    let extra_relays: Vec<&str> = if relay_url.starts_with("ws://127.") || relay_url.starts_with("ws://localhost") {
-        // Local relay: no extra relays to add
-        vec![relay_url]
-    } else {
-        // Public relay: simulate the deployed config with 3 relays
-        vec!["wss://relay.primal.net", "wss://nos.lol", "wss://relay.damus.io"]
-    };
+    let extra_relays: Vec<&str> =
+        if relay_url.starts_with("ws://127.") || relay_url.starts_with("ws://localhost") {
+            // Local relay: no extra relays to add
+            vec![relay_url]
+        } else {
+            // Public relay: simulate the deployed config with 3 relays
+            vec![
+                "wss://relay.primal.net",
+                "wss://nos.lol",
+                "wss://relay.damus.io",
+            ]
+        };
 
     daemon.send_cmd(serde_json::json!({
         "cmd": "set_relays",
@@ -662,10 +688,11 @@ fn run_marmotd_call_test(relay_url: &str) {
     );
     eprintln!("[test] caller is Active with tx frames flowing");
 
-    // If echo mode is active, wait for rx frames from the daemon.
     let require_rx = std::env::var("MARMOT_ECHO_MODE")
         .map(|v| !v.trim().is_empty() && v.trim() != "0")
         .unwrap_or(false);
+    let use_real_ai = std::env::var("OPENAI_API_KEY").is_ok();
+
     if require_rx {
         wait_until(
             "caller receiving echoed frames",
@@ -679,9 +706,28 @@ fn run_marmotd_call_test(relay_url: &str) {
                     .unwrap_or(false)
             },
         );
+    } else if use_real_ai {
+        // Real AI: keep call active for 4s+ so STT accumulates its 3s window.
+        // Synthetic audio won't produce a real transcript, but proves the pipeline works.
+        eprintln!("[test] real AI mode: waiting for daemon to receive 200+ frames (4s)...");
+        daemon.wait_for_event(
+            "daemon accumulating audio for real STT",
+            Duration::from_secs(30),
+            |v| {
+                v.get("type").and_then(|t| t.as_str()) == Some("call_debug")
+                    && v.get("call_id")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c == call_id)
+                        .unwrap_or(false)
+                    && v.get("rx_frames")
+                        .and_then(|n| n.as_u64())
+                        .map(|n| n >= 200)
+                        .unwrap_or(false)
+            },
+        );
+        eprintln!("[test] daemon received 200+ frames, STT pipeline running without errors");
     } else {
-        // STT mode: wait until the daemon reports it has received at least one inbound audio frame.
-        // (The caller itself won't receive anything back in this mode.)
+        // Fixture STT: just wait for daemon to receive some frames.
         daemon.wait_for_event(
             "daemon stt receiving frames",
             Duration::from_secs(20),
@@ -710,6 +756,80 @@ fn run_marmotd_call_test(relay_url: &str) {
         assert!(rx_frames > 0, "echo mode active but rx_frames=0");
     }
 
+    if !require_rx {
+        // In fixture mode, wait for transcript. In real AI mode, synthetic audio
+        // won't produce a transcript, so skip that check.
+        if !use_real_ai {
+            let transcript = daemon.wait_for_event(
+                "daemon call_transcript_final",
+                Duration::from_secs(20),
+                |v| {
+                    v.get("type").and_then(|t| t.as_str()) == Some("call_transcript_final")
+                        && v.get("call_id")
+                            .and_then(|c| c.as_str())
+                            .map(|c| c == call_id)
+                            .unwrap_or(false)
+                },
+            );
+            let text = transcript
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            eprintln!("[test] transcript final: {text:?}");
+            assert!(
+                text.contains("hello from fixture"),
+                "expected fixture transcript, got {text:?}"
+            );
+        }
+
+        // Test TTS: command daemon to publish audio response back into the call.
+        let tts_text = "This is a test of the text to speech system.";
+        eprintln!("[test] sending TTS: {tts_text:?}");
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "send_audio_response",
+            "request_id": "tts1",
+            "call_id": call_id,
+            "tts_text": tts_text,
+        }));
+        let tts_timeout = if use_real_ai {
+            Duration::from_secs(45)
+        } else {
+            Duration::from_secs(30)
+        };
+        let tts_result = daemon.wait_for_event("send_audio_response result", tts_timeout, |v| {
+            v.get("request_id").and_then(|id| id.as_str()) == Some("tts1")
+        });
+        let tts_ok = tts_result
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|t| t == "ok")
+            .unwrap_or(false);
+        eprintln!("[test] TTS result: {tts_result}");
+        assert!(tts_ok, "TTS publish failed: {tts_result}");
+
+        // Wait for caller to receive TTS audio frames.
+        wait_until(
+            "caller receiving TTS frames",
+            Duration::from_secs(30),
+            || {
+                caller
+                    .state()
+                    .active_call
+                    .as_ref()
+                    .and_then(|c| c.debug.as_ref().map(|d| d.rx_frames > 0))
+                    .unwrap_or(false)
+            },
+        );
+        let final_rx = caller
+            .state()
+            .active_call
+            .as_ref()
+            .and_then(|c| c.debug.as_ref().map(|d| d.rx_frames))
+            .unwrap_or(0);
+        eprintln!("[test] caller received {final_rx} TTS frames");
+    }
+
     // End the call.
     caller.dispatch(AppAction::EndCall);
     wait_until("caller call ended", Duration::from_secs(10), || {
@@ -720,31 +840,6 @@ fn run_marmotd_call_test(relay_url: &str) {
             .map(|c| matches!(c.status, CallStatus::Ended { .. }))
             .unwrap_or(true)
     });
-
-    // In STT mode, we expect at least one transcript to be emitted (fixture transcriber).
-    if !require_rx {
-        let transcript = daemon.wait_for_event(
-            "daemon call_transcript_final",
-            Duration::from_secs(20),
-            |v| {
-                v.get("type").and_then(|t| t.as_str()) == Some("call_transcript_final")
-                    && v.get("call_id")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c == call_id)
-                        .unwrap_or(false)
-            },
-        );
-        let text = transcript
-            .get("text")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string();
-        eprintln!("[test] transcript final: {text:?}");
-        assert!(
-            text.contains("hello from fixture"),
-            "expected fixture transcript, got {text:?}"
-        );
-    }
 
     if let Some(debug) = caller
         .state()

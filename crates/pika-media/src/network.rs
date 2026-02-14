@@ -329,11 +329,8 @@ impl NetworkRelayState {
                     return;
                 }
                 tracing::debug!("broadcast {broadcast_path} not found yet, waiting...");
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    consumer.announced(),
-                )
-                .await
+                match tokio::time::timeout(std::time::Duration::from_secs(2), consumer.announced())
+                    .await
                 {
                     Ok(Some(_)) => continue,
                     Ok(None) => {

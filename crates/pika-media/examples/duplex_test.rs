@@ -125,7 +125,10 @@ fn main() {
     std::thread::sleep(Duration::from_millis(1000));
 
     // Subscribe both
-    let alice_rx = alice.relay.subscribe(&alice.rx_track).expect("alice subscribe");
+    let alice_rx = alice
+        .relay
+        .subscribe(&alice.rx_track)
+        .expect("alice subscribe");
     let bob_rx = bob.relay.subscribe(&bob.rx_track).expect("bob subscribe");
     println!("both parties subscribed, waiting for propagation...");
 
@@ -172,9 +175,7 @@ fn main() {
     let alice_crypto_err = alice.rx_crypto_errors.load(Ordering::Relaxed);
     let bob_crypto_err = bob.rx_crypto_errors.load(Ordering::Relaxed);
     if alice_crypto_err > 0 || bob_crypto_err > 0 {
-        println!(
-            "WARNING: crypto errors: alice={alice_crypto_err}, bob={bob_crypto_err}"
-        );
+        println!("WARNING: crypto errors: alice={alice_crypto_err}, bob={bob_crypto_err}");
     }
 
     alice.relay.disconnect();
@@ -250,16 +251,14 @@ fn spawn_rx_thread(
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(frame) => {
-                    match decrypt_frame(&frame.payload, &keys) {
-                        Ok(_decrypted) => {
-                            counter.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(_) => {
-                            crypto_errors.fetch_add(1, Ordering::Relaxed);
-                        }
+                Ok(frame) => match decrypt_frame(&frame.payload, &keys) {
+                    Ok(_decrypted) => {
+                        counter.fetch_add(1, Ordering::Relaxed);
                     }
-                }
+                    Err(_) => {
+                        crypto_errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }

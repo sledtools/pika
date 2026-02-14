@@ -322,7 +322,9 @@ mod tests {
             keyframe: true,
             payload: vec![0x99],
         };
-        let delivered = publisher.publish(&track, frame).expect("publish after drop");
+        let delivered = publisher
+            .publish(&track, frame)
+            .expect("publish after drop");
         assert_eq!(delivered, 1);
 
         let f2 = rx2

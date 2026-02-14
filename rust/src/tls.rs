@@ -12,4 +12,3 @@ pub fn init_rustls_crypto_provider() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
-

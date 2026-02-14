@@ -112,21 +112,14 @@ impl MediaTransport {
         }
     }
 
-    fn subscribe(
-        &self,
-        track: &TrackAddress,
-    ) -> Result<MediaFrameSubscription, MediaSessionError> {
+    fn subscribe(&self, track: &TrackAddress) -> Result<MediaFrameSubscription, MediaSessionError> {
         match self {
             Self::InMemory(session) => session.subscribe(track),
             Self::Network(relay) => relay.subscribe(track),
         }
     }
 
-    fn publish(
-        &self,
-        track: &TrackAddress,
-        frame: MediaFrame,
-    ) -> Result<usize, MediaSessionError> {
+    fn publish(&self, track: &TrackAddress, frame: MediaFrame) -> Result<usize, MediaSessionError> {
         match self {
             Self::InMemory(session) => session.publish(track, frame),
             Self::Network(relay) => relay.publish(track, frame),
@@ -154,9 +147,7 @@ impl CallRuntime {
         self.on_call_ended(call_id);
 
         let mut transport = if is_real_moq_url(&session.moq_url) {
-            MediaTransport::Network(
-                NetworkRelay::new(&session.moq_url).map_err(to_string_error)?,
-            )
+            MediaTransport::Network(NetworkRelay::new(&session.moq_url).map_err(to_string_error)?)
         } else {
             let relay = shared_relay_for(session);
             MediaTransport::InMemory(MediaSession::with_relay(
@@ -181,7 +172,9 @@ impl CallRuntime {
             broadcast_path: peer_path,
             track_name: "audio0".to_string(),
         };
-        let rx = transport.subscribe(&subscribe_track).map_err(to_string_error)?;
+        let rx = transport
+            .subscribe(&subscribe_track)
+            .map_err(to_string_error)?;
         let tx_keys = media_ctx.tx_keys;
         let rx_keys = media_ctx.rx_keys;
 
@@ -441,14 +434,69 @@ fn default_backend_mode() -> &'static str {
 #[derive(Debug)]
 struct SyntheticAudio {
     phase: f32,
+    /// Pre-loaded PCM at 48kHz mono, read sequentially and looped.
+    fixture_pcm: Option<Vec<i16>>,
+    fixture_pos: usize,
 }
 
 impl SyntheticAudio {
     fn new() -> Self {
-        Self { phase: 0.0 }
+        let fixture_pcm = std::env::var("PIKA_AUDIO_FIXTURE")
+            .ok()
+            .and_then(|path| Self::load_wav_fixture(&path));
+        Self {
+            phase: 0.0,
+            fixture_pcm,
+            fixture_pos: 0,
+        }
+    }
+
+    fn load_wav_fixture(path: &str) -> Option<Vec<i16>> {
+        let data = std::fs::read(path).ok()?;
+        if data.len() < 44 {
+            return None;
+        }
+        let src_rate = u32::from_le_bytes(data[24..28].try_into().ok()?) as f64;
+        let bits = u16::from_le_bytes(data[34..36].try_into().ok()?);
+        if bits != 16 {
+            return None;
+        }
+        // Find data chunk
+        let data_offset = data.windows(4).position(|w| w == b"data").map(|i| i + 8)?;
+        let pcm_bytes = &data[data_offset..];
+        let src_samples: Vec<i16> = pcm_bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        // Resample to 48kHz if needed
+        let target_rate = SAMPLE_RATE as f64;
+        if (src_rate - target_rate).abs() < 1.0 {
+            Some(src_samples)
+        } else {
+            let ratio = target_rate / src_rate;
+            let out_len = (src_samples.len() as f64 * ratio) as usize;
+            let mut out = Vec::with_capacity(out_len);
+            for i in 0..out_len {
+                let src_idx = i as f64 / ratio;
+                let idx0 = src_idx as usize;
+                let frac = src_idx - idx0 as f64;
+                let s0 = src_samples.get(idx0).copied().unwrap_or(0) as f64;
+                let s1 = src_samples.get(idx0 + 1).copied().unwrap_or(s0 as i16) as f64;
+                out.push((s0 + frac * (s1 - s0)) as i16);
+            }
+            Some(out)
+        }
     }
 
     fn capture_pcm_frame(&mut self) -> Vec<i16> {
+        if let Some(ref pcm) = self.fixture_pcm {
+            let mut out = Vec::with_capacity(FRAME_SAMPLES);
+            for _ in 0..FRAME_SAMPLES {
+                out.push(pcm[self.fixture_pos % pcm.len()]);
+                self.fixture_pos += 1;
+            }
+            return out;
+        }
         let mut out = Vec::with_capacity(FRAME_SAMPLES);
         let freq = 220.0f32;
         let step = (2.0f32 * std::f32::consts::PI * freq) / SAMPLE_RATE as f32;
@@ -463,9 +511,7 @@ impl SyntheticAudio {
         out
     }
 
-    fn play_pcm_frame(&mut self, _pcm: &[i16]) {
-        // No-op in synthetic mode.
-    }
+    fn play_pcm_frame(&mut self, _pcm: &[i16]) {}
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]

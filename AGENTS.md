@@ -28,6 +28,10 @@ The test nsec is stored in `.env` (gitignored) as `PIKA_TEST_NSEC`. Agents and s
 
 The bot listens on: `wss://relay.primal.net`, `wss://nos.lol`, `wss://relay.damus.io`
 
+## Pre-commit
+
+Before committing, run `cargo fmt` from the repo root to format Rust code.
+
 ## Related codebases
 
 | Repo | Local path | Description |

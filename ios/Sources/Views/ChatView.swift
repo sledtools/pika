@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 
 struct ChatView: View {
     let chatId: String
@@ -26,7 +27,7 @@ struct ChatView: View {
                 VStack(spacing: 0) {
                     LazyVStack(spacing: 8) {
                         ForEach(chat.messages, id: \.id) { msg in
-                            MessageRow(message: msg, showSender: chat.isGroup)
+                            MessageRow(message: msg, showSender: chat.isGroup, onSendMessage: onSendMessage)
                                 .id(msg.id)
                         }
                     }
@@ -212,9 +213,66 @@ private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
     }
 }
 
+// MARK: - Pika-prompt model
+
+private struct PikaPrompt: Decodable {
+    let title: String
+    let options: [String]
+}
+
+/// Parses message content into segments: plain markdown text and pika-* code blocks.
+private enum MessageSegment: Identifiable {
+    case markdown(String)
+    case pikaPrompt(PikaPrompt)
+
+    var id: String {
+        switch self {
+        case .markdown(let text): return "md-\(text.hashValue)"
+        case .pikaPrompt(let prompt): return "prompt-\(prompt.title.hashValue)"
+        }
+    }
+}
+
+private func parseMessageSegments(_ content: String) -> [MessageSegment] {
+    var segments: [MessageSegment] = []
+    let pattern = /```pika-(\w+)\n([\s\S]*?)```/
+    var remaining = content[...]
+
+    while let match = remaining.firstMatch(of: pattern) {
+        let before = String(remaining[remaining.startIndex..<match.range.lowerBound])
+        if !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            segments.append(.markdown(before))
+        }
+
+        let blockType = String(match.output.1)
+        let blockBody = String(match.output.2).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if blockType == "prompt",
+           let data = blockBody.data(using: .utf8),
+           let prompt = try? JSONDecoder().decode(PikaPrompt.self, from: data) {
+            segments.append(.pikaPrompt(prompt))
+        } else {
+            // Unknown pika block — render as markdown code block
+            segments.append(.markdown("```\(blockType)\n\(blockBody)\n```"))
+        }
+
+        remaining = remaining[match.range.upperBound...]
+    }
+
+    let tail = String(remaining)
+    if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        segments.append(.markdown(tail))
+    }
+
+    return segments
+}
+
+// MARK: - Message row
+
 private struct MessageRow: View {
     let message: ChatMessage
     var showSender: Bool = false
+    let onSendMessage: @MainActor (String) -> Void
 
     var body: some View {
         HStack {
@@ -226,19 +284,27 @@ private struct MessageRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                mentionStyledText()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
-                    .foregroundStyle(message.isMine ? Color.white : Color.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .contextMenu {
-                        Button {
-                            UIPasteboard.general.string = message.displayContent
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
+                let segments = parseMessageSegments(message.displayContent)
+                ForEach(segments) { segment in
+                    switch segment {
+                    case .markdown(let text):
+                        Markdown(text)
+                            .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                    case .pikaPrompt(let prompt):
+                        PikaPromptView(prompt: prompt, onSelect: onSendMessage)
                     }
+                }
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = message.displayContent
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
 
                 if message.isMine {
                     Text(deliveryText(message.delivery))
@@ -250,36 +316,6 @@ private struct MessageRow: View {
         }
     }
 
-    private func mentionStyledText() -> Text {
-        guard !message.mentions.isEmpty else {
-            return Text(message.displayContent)
-        }
-
-        let content = message.displayContent
-        let sorted = message.mentions.sorted { $0.start < $1.start }
-        var result = Text("")
-        var cursor = content.startIndex
-
-        for mention in sorted {
-            let start = content.index(content.startIndex, offsetBy: Int(mention.start), limitedBy: content.endIndex) ?? content.endIndex
-            let end = content.index(content.startIndex, offsetBy: Int(mention.end), limitedBy: content.endIndex) ?? content.endIndex
-
-            if cursor < start {
-                result = result + Text(content[cursor..<start])
-            }
-            let mentionText = String(content[start..<end])
-            let mentionColor: Color = message.isMine ? .white.opacity(0.85) : .blue
-            result = result + Text(mentionText).bold().foregroundColor(mentionColor)
-            cursor = end
-        }
-
-        if cursor < content.endIndex {
-            result = result + Text(content[cursor..<content.endIndex])
-        }
-
-        return result
-    }
-
     private func deliveryText(_ d: MessageDeliveryState) -> String {
         switch d {
         case .pending: return "Pending"
@@ -287,6 +323,61 @@ private struct MessageRow: View {
         case .failed(let reason): return "Failed: \(reason)"
         }
     }
+}
+
+// MARK: - Pika prompt view
+
+private struct PikaPromptView: View {
+    let prompt: PikaPrompt
+    let onSelect: @MainActor (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(prompt.title)
+                .font(.subheadline.weight(.semibold))
+            ForEach(prompt.options, id: \.self) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    Text(option)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.blue.opacity(0.1))
+                        .foregroundStyle(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.gray.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: - Markdown themes
+
+extension Theme {
+    static let pikaOutgoing = Theme()
+        .text { ForegroundColor(.white) }
+        .link { ForegroundColor(.white.opacity(0.9)) }
+        .strong { ForegroundColor(.white) }
+        .code { ForegroundColor(.white.opacity(0.9)) }
+        .codeBlock { configuration in
+            configuration.label
+                .padding(8)
+                .background(Color.white.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+
+    static let pikaIncoming = Theme()
+        .text { ForegroundColor(.primary) }
+        .codeBlock { configuration in
+            configuration.label
+                .padding(8)
+                .background(Color.gray.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
 }
 
 #if DEBUG

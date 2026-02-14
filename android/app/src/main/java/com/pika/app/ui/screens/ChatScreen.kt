@@ -17,12 +17,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -45,6 +47,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import com.pika.app.ui.theme.PikaBlue
 import com.pika.app.ui.TestTags
+import dev.jeziellago.compose.markdowntext.MarkdownText
+import org.json.JSONObject
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -96,7 +100,12 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
             ) {
                 val reversed = chat.messages.asReversed()
                 items(reversed, key = { it.id }) { msg ->
-                    MessageBubble(message = msg)
+                    MessageBubble(
+                        message = msg,
+                        onSendMessage = { text ->
+                            manager.dispatch(AppAction.SendMessage(chat.chatId, text))
+                        },
+                    )
                 }
             }
 
@@ -128,39 +137,134 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
     }
 }
 
+// Parsed segment of a message: either markdown text or a pika-* custom block.
+private sealed class MessageSegment {
+    data class Markdown(val text: String) : MessageSegment()
+    data class PikaPrompt(val title: String, val options: List<String>) : MessageSegment()
+}
+
+private fun parseMessageSegments(content: String): List<MessageSegment> {
+    val segments = mutableListOf<MessageSegment>()
+    val pattern = Regex("```pika-(\\w+)\\n([\\s\\S]*?)```")
+    var lastEnd = 0
+
+    for (match in pattern.findAll(content)) {
+        val before = content.substring(lastEnd, match.range.first)
+        if (before.isNotBlank()) segments.add(MessageSegment.Markdown(before))
+
+        val blockType = match.groupValues[1]
+        val blockBody = match.groupValues[2].trim()
+
+        if (blockType == "prompt") {
+            try {
+                val json = JSONObject(blockBody)
+                val title = json.getString("title")
+                val optionsArray = json.getJSONArray("options")
+                val options = (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                segments.add(MessageSegment.PikaPrompt(title, options))
+            } catch (_: Exception) {
+                segments.add(MessageSegment.Markdown("```$blockType\n$blockBody\n```"))
+            }
+        } else {
+            segments.add(MessageSegment.Markdown("```$blockType\n$blockBody\n```"))
+        }
+
+        lastEnd = match.range.last + 1
+    }
+
+    val tail = content.substring(lastEnd)
+    if (tail.isNotBlank()) segments.add(MessageSegment.Markdown(tail))
+
+    return segments
+}
+
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, onSendMessage: (String) -> Unit) {
     val isMine = message.isMine
     val bubbleColor = if (isMine) PikaBlue else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
     val align = if (isMine) Alignment.End else Alignment.Start
+    val segments = remember(message.content) { parseMessageSegments(message.content) }
 
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = align) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Box(
-                modifier =
-                    Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(bubbleColor)
-                        .padding(horizontal = 12.dp, vertical = 9.dp)
-                        .widthIn(max = 280.dp),
-            ) {
-                Text(message.content, color = textColor, style = MaterialTheme.typography.bodyLarge)
-            }
-            if (isMine) {
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text =
-                        when (message.delivery) {
-                            is MessageDeliveryState.Pending -> "…"
-                            is MessageDeliveryState.Sent -> "✓"
-                            is MessageDeliveryState.Failed -> "!"
-                        },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                )
+        for (segment in segments) {
+            when (segment) {
+                is MessageSegment.Markdown -> {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(bubbleColor)
+                                    .padding(horizontal = 12.dp, vertical = 9.dp)
+                                    .widthIn(max = 280.dp),
+                        ) {
+                            MarkdownText(
+                                markdown = segment.text.trim(),
+                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor),
+                                enableSoftBreakAddsNewLine = true,
+                                afterSetMarkdown = { textView ->
+                                    textView.includeFontPadding = false
+                                },
+                            )
+                        }
+                        if (isMine) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text =
+                                    when (message.delivery) {
+                                        is MessageDeliveryState.Pending -> "…"
+                                        is MessageDeliveryState.Sent -> "✓"
+                                        is MessageDeliveryState.Failed -> "!"
+                                    },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                }
+                is MessageSegment.PikaPrompt -> {
+                    PikaPromptCard(
+                        title = segment.title,
+                        options = segment.options,
+                        onSelect = onSendMessage,
+                    )
+                }
             }
         }
         Spacer(Modifier.height(2.dp))
+    }
+}
+
+@Composable
+private fun PikaPromptCard(title: String, options: List<String>, onSelect: (String) -> Unit) {
+    Column(
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .padding(12.dp)
+                .widthIn(max = 280.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        for (option in options) {
+            TextButton(
+                onClick = { onSelect(option) },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                colors =
+                    ButtonDefaults.textButtonColors(
+                        containerColor = PikaBlue.copy(alpha = 0.1f),
+                        contentColor = PikaBlue,
+                    ),
+            ) {
+                Text(option, modifier = Modifier.fillMaxWidth())
+            }
+        }
     }
 }

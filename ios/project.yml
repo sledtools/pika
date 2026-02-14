@@ -17,6 +17,11 @@ settings:
     Debug:
       PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.dev
 
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: "2.4.0"
+
 targets:
   Pika:
     type: application
@@ -34,6 +39,7 @@ targets:
     dependencies:
       - framework: Frameworks/PikaCore.xcframework
         embed: false
+      - package: MarkdownUI
 
   PikaTests:
     type: bundle.unit-test

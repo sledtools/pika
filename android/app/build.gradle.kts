@@ -119,4 +119,7 @@ dependencies {
 
     // UniFFI Kotlin bindings default to JNA.
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+
+    // Markdown rendering in Compose
+    implementation("com.github.jeziellago:compose-markdown:0.5.4")
 }

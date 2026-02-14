@@ -5,4 +5,5 @@ pub mod jitter;
 #[cfg(feature = "network")]
 pub mod network;
 pub mod session;
+pub mod subscription;
 pub mod tracks;

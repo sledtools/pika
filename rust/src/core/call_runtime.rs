@@ -13,6 +13,7 @@ use pika_media::network::NetworkRelay;
 use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
+use pika_media::subscription::MediaFrameSubscription;
 use pika_media::tracks::{broadcast_path, TrackAddress};
 
 use crate::updates::{CoreMsg, InternalEvent};
@@ -114,7 +115,7 @@ impl MediaTransport {
     fn subscribe(
         &self,
         track: &TrackAddress,
-    ) -> Result<std::sync::mpsc::Receiver<MediaFrame>, MediaSessionError> {
+    ) -> Result<MediaFrameSubscription, MediaSessionError> {
         match self {
             Self::InMemory(session) => session.subscribe(track),
             Self::Network(relay) => relay.subscribe(track),

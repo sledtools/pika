@@ -5,23 +5,39 @@
 //! This validates Layer 3 of the debugging ladder without needing the iOS app,
 //! MLS signaling, or Nostr.
 
+#[cfg(not(feature = "network"))]
+fn main() {
+    eprintln!("This example requires `--features network`.");
+}
+
+#[cfg(feature = "network")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "network")]
 use std::sync::Arc;
+#[cfg(feature = "network")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "network")]
 use pika_media::crypto::{decrypt_frame, encrypt_frame, FrameInfo, FrameKeyMaterial};
+#[cfg(feature = "network")]
 use pika_media::network::NetworkRelay;
+#[cfg(feature = "network")]
 use pika_media::session::MediaFrame;
+#[cfg(feature = "network")]
 use pika_media::tracks::TrackAddress;
 
+#[cfg(feature = "network")]
 const FRAME_DURATION: Duration = Duration::from_millis(20);
+#[cfg(feature = "network")]
 const TEST_DURATION: Duration = Duration::from_secs(10);
 
+#[cfg(feature = "network")]
 fn make_keys(label: &str) -> FrameKeyMaterial {
     let seed = b"test-shared-secret-for-duplex-validation-123456";
     FrameKeyMaterial::from_fallback_context(seed, label.as_bytes(), 1, 0, "audio0")
 }
 
+#[cfg(feature = "network")]
 struct Party {
     name: String,
     relay: NetworkRelay,
@@ -34,6 +50,7 @@ struct Party {
     rx_crypto_errors: Arc<AtomicU64>,
 }
 
+#[cfg(feature = "network")]
 fn main() {
     let relay_url = "https://moq.justinmoon.com/anon";
     let unique = std::time::SystemTime::now()
@@ -168,12 +185,12 @@ fn main() {
     drop(bob_rx_handle);
 }
 
+#[cfg(feature = "network")]
 fn spawn_tx_thread(party: &Party, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     let relay = party.relay.clone();
     let track = party.tx_track.clone();
     let keys = party.tx_keys.clone();
     let counter = party.tx_frames.clone();
-    let name = party.name.clone();
 
     std::thread::spawn(move || {
         let mut seq = 10u64; // skip warmup seqs
@@ -220,17 +237,16 @@ fn spawn_tx_thread(party: &Party, stop: Arc<AtomicBool>) -> std::thread::JoinHan
     })
 }
 
+#[cfg(feature = "network")]
 fn spawn_rx_thread(
-    name: &str,
-    rx: std::sync::mpsc::Receiver<MediaFrame>,
+    _name: &str,
+    rx: pika_media::subscription::MediaFrameSubscription,
     party: &Party,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     let counter = party.rx_frames.clone();
     let crypto_errors = party.rx_crypto_errors.clone();
     let keys = party.rx_keys.clone();
-    let name = name.to_string();
-
     std::thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(100)) {
@@ -251,6 +267,7 @@ fn spawn_rx_thread(
     })
 }
 
+#[cfg(feature = "network")]
 fn print_stats(alice: &Party, bob: &Party) {
     let a_tx = alice.tx_frames.load(Ordering::Relaxed);
     let a_rx = alice.rx_frames.load(Ordering::Relaxed);

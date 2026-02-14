@@ -1,10 +1,16 @@
-use std::time::Duration;
-
-use pika_media::network::NetworkRelay;
-use pika_media::session::MediaFrame;
-use pika_media::tracks::TrackAddress;
-
+#[cfg(not(feature = "network"))]
 fn main() {
+    eprintln!("This example requires `--features network`.");
+}
+
+#[cfg(feature = "network")]
+fn main() {
+    use std::time::Duration;
+
+    use pika_media::network::NetworkRelay;
+    use pika_media::session::MediaFrame;
+    use pika_media::tracks::TrackAddress;
+
     let relay_url = "https://moq.justinmoon.com/anon";
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -311,6 +311,10 @@ impl DaemonHandle {
             .arg(state_dir)
             .env("MARMOT_STT_FIXTURE_TEXT", "hello from fixture")
             .env("MARMOT_TTS_FIXTURE", "1")
+            .env(
+                "MARMOT_ECHO_MODE",
+                std::env::var("MARMOT_ECHO_MODE").unwrap_or_default(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -658,7 +662,43 @@ fn run_marmotd_call_test(relay_url: &str) {
     );
     eprintln!("[test] caller is Active with tx frames flowing");
 
-    // Check if we're receiving frames from the daemon too.
+    // If echo mode is active, wait for rx frames from the daemon.
+    let require_rx = std::env::var("MARMOT_ECHO_MODE")
+        .map(|v| !v.trim().is_empty() && v.trim() != "0")
+        .unwrap_or(false);
+    if require_rx {
+        wait_until(
+            "caller receiving echoed frames",
+            Duration::from_secs(15),
+            || {
+                caller
+                    .state()
+                    .active_call
+                    .as_ref()
+                    .and_then(|c| c.debug.as_ref().map(|d| d.rx_frames > 0))
+                    .unwrap_or(false)
+            },
+        );
+    } else {
+        // STT mode: wait until the daemon reports it has received at least one inbound audio frame.
+        // (The caller itself won't receive anything back in this mode.)
+        daemon.wait_for_event(
+            "daemon stt receiving frames",
+            Duration::from_secs(20),
+            |v| {
+                v.get("type").and_then(|t| t.as_str()) == Some("call_debug")
+                    && v.get("call_id")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c == call_id)
+                        .unwrap_or(false)
+                    && v.get("rx_frames")
+                        .and_then(|n| n.as_u64())
+                        .map(|n| n > 0)
+                        .unwrap_or(false)
+            },
+        );
+    }
+
     let rx_frames = caller
         .state()
         .active_call
@@ -666,6 +706,9 @@ fn run_marmotd_call_test(relay_url: &str) {
         .and_then(|c| c.debug.as_ref().map(|d| d.rx_frames))
         .unwrap_or(0);
     eprintln!("[test] caller rx_frames={rx_frames}");
+    if require_rx {
+        assert!(rx_frames > 0, "echo mode active but rx_frames=0");
+    }
 
     // End the call.
     caller.dispatch(AppAction::EndCall);
@@ -677,6 +720,31 @@ fn run_marmotd_call_test(relay_url: &str) {
             .map(|c| matches!(c.status, CallStatus::Ended { .. }))
             .unwrap_or(true)
     });
+
+    // In STT mode, we expect at least one transcript to be emitted (fixture transcriber).
+    if !require_rx {
+        let transcript = daemon.wait_for_event(
+            "daemon call_transcript_final",
+            Duration::from_secs(20),
+            |v| {
+                v.get("type").and_then(|t| t.as_str()) == Some("call_transcript_final")
+                    && v.get("call_id")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c == call_id)
+                        .unwrap_or(false)
+            },
+        );
+        let text = transcript
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        eprintln!("[test] transcript final: {text:?}");
+        assert!(
+            text.contains("hello from fixture"),
+            "expected fixture transcript, got {text:?}"
+        );
+    }
 
     if let Some(debug) = caller
         .state()

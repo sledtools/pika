@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
+use crate::subscription::MediaFrameSubscription;
 use crate::tracks::TrackAddress;
 
 const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
@@ -27,6 +28,7 @@ pub enum MediaSessionError {
     NotConnected,
     InvalidTrack(String),
     Unauthorized(String),
+    Timeout(String),
 }
 
 impl Display for MediaSessionError {
@@ -35,6 +37,7 @@ impl Display for MediaSessionError {
             Self::NotConnected => write!(f, "media session is not connected"),
             Self::InvalidTrack(msg) => write!(f, "invalid track: {msg}"),
             Self::Unauthorized(msg) => write!(f, "unauthorized: {msg}"),
+            Self::Timeout(msg) => write!(f, "timeout: {msg}"),
         }
     }
 }
@@ -90,8 +93,9 @@ impl InMemoryRelay {
         &self,
         track_key: &str,
         relay_auth: &str,
-    ) -> Result<Receiver<MediaFrame>, MediaSessionError> {
+    ) -> Result<MediaFrameSubscription, MediaSessionError> {
         let (tx, rx) = mpsc::channel::<MediaFrame>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), MediaSessionError>>();
         let mut state = self.state.lock().expect("relay state poisoned");
         Self::authorize_state(&mut state, relay_auth)?;
         state
@@ -99,7 +103,8 @@ impl InMemoryRelay {
             .entry(track_key.to_string())
             .or_default()
             .push(tx);
-        Ok(rx)
+        let _ = ready_tx.send(Ok(()));
+        Ok(MediaFrameSubscription::new(rx, ready_rx, None))
     }
 
     pub fn publish(
@@ -182,7 +187,7 @@ impl MediaSession {
     pub fn subscribe(
         &self,
         track: &TrackAddress,
-    ) -> Result<Receiver<MediaFrame>, MediaSessionError> {
+    ) -> Result<MediaFrameSubscription, MediaSessionError> {
         if !self.connected {
             return Err(MediaSessionError::NotConnected);
         }
@@ -265,6 +270,65 @@ mod tests {
         }
         assert_eq!(got.len(), 50);
         assert_eq!(got, (0u64..50).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn multi_subscribe_delivers_to_all_subscribers() {
+        let relay = InMemoryRelay::new();
+        let config = SessionConfig {
+            moq_url: "https://moq.example.com/anon".to_string(),
+            relay_auth: "capv1_1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        };
+        let mut publisher = MediaSession::with_relay(config.clone(), relay.clone());
+        let mut subscriber = MediaSession::with_relay(config, relay);
+        publisher.connect().expect("publisher connect");
+        subscriber.connect().expect("subscriber connect");
+
+        let track = TrackAddress {
+            broadcast_path:
+                "pika/calls/550e8400-e29b-41d4-a716-446655440000/11b9a894813efe60d39f8621ae9dc4c6d26de4732411c1cdf4bb15e88898a19c"
+                    .to_string(),
+            track_name: "audio0".to_string(),
+        };
+
+        let rx1 = subscriber.subscribe(&track).expect("subscribe 1");
+        let rx2 = subscriber.subscribe(&track).expect("subscribe 2");
+        rx1.wait_ready(Duration::from_secs(1)).expect("ready 1");
+        rx2.wait_ready(Duration::from_secs(1)).expect("ready 2");
+
+        for i in 0u64..20 {
+            let frame = MediaFrame {
+                seq: i,
+                timestamp_us: i * 20_000,
+                keyframe: true,
+                payload: vec![i as u8],
+            };
+            let delivered = publisher.publish(&track, frame).expect("publish");
+            assert_eq!(delivered, 2);
+        }
+
+        for i in 0u64..20 {
+            let f1 = rx1.recv_timeout(Duration::from_secs(1)).expect("rx1 frame");
+            let f2 = rx2.recv_timeout(Duration::from_secs(1)).expect("rx2 frame");
+            assert_eq!(f1.seq, i);
+            assert_eq!(f2.seq, i);
+        }
+
+        drop(rx1);
+        let frame = MediaFrame {
+            seq: 999,
+            timestamp_us: 999 * 20_000,
+            keyframe: true,
+            payload: vec![0x99],
+        };
+        let delivered = publisher.publish(&track, frame).expect("publish after drop");
+        assert_eq!(delivered, 1);
+
+        let f2 = rx2
+            .recv_timeout(Duration::from_secs(1))
+            .expect("rx2 frame after drop");
+        assert_eq!(f2.seq, 999);
     }
 
     #[test]

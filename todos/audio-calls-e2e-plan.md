@@ -36,6 +36,15 @@ Actions:
   - If relevant: apply, review, commit with a clear message
   - If irrelevant: drop stash (or keep it explicitly labeled)
 
+Findings (laptop, observed 2026-02-14):
+- `~/code/infra` working tree: clean.
+- `git log -1`: `dd7862a docs(sops): document recipients and local editing`.
+- Stash `stash@{0}` contents:
+  - Updates `flake.lock` pin for `openclawMarmotSrc` from `410590ec...` to `b24b4a71...`.
+  - Removes `.gitignore` entry for `secrets/openclaw-local.yaml` (risky; could allow accidental commit).
+  - Deletes `justfile` recipes `openclaw-local-init`, `openclaw-local-edit`, `openclaw-local-upload` (local convenience for encrypted key handling).
+- Decision: keep the stash for now (do not apply) until we know whether the `openclaw-marmot` bump is needed for Phase-8 voice wiring; if we do need the bump, land it as a clean change (likely `flake.lock` only).
+
 Acceptance:
 - `~/code/infra` has either (a) no stash, or (b) stash entries are understood + documented.
 - Working tree clean or changes are intentional for audio-calls E2E.

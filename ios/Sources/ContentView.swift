@@ -92,6 +92,7 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             onLogout: { manager.logout() },
             onOpenChat: { manager.dispatch(.openChat(chatId: $0)) },
             onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
+            onNewGroupChat: { manager.dispatch(.pushScreen(screen: .newGroupChat)) },
             nsecProvider: { manager.getNsec() }
         )
     case .newChat:
@@ -99,11 +100,37 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             state: newChatState(from: state),
             onCreateChat: { manager.dispatch(.createChat(peerNpub: $0)) }
         )
+    case .newGroupChat:
+        NewGroupChatView(
+            state: newGroupChatState(from: state),
+            onCreateGroup: { name, npubs in
+                manager.dispatch(.createGroupChat(peerNpubs: npubs, groupName: name))
+            }
+        )
     case .chat(let chatId):
         ChatView(
             chatId: chatId,
             state: chatScreenState(from: state),
-            onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0)) }
+            onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0)) },
+            onGroupInfo: {
+                manager.dispatch(.pushScreen(screen: .groupInfo(chatId: chatId)))
+            }
+        )
+    case .groupInfo(let chatId):
+        GroupInfoView(
+            state: groupInfoState(from: state),
+            onAddMembers: { npubs in
+                manager.dispatch(.addGroupMembers(chatId: chatId, peerNpubs: npubs))
+            },
+            onRemoveMember: { pubkey in
+                manager.dispatch(.removeGroupMembers(chatId: chatId, memberPubkeys: [pubkey]))
+            },
+            onLeaveGroup: {
+                manager.dispatch(.leaveGroup(chatId: chatId))
+            },
+            onRenameGroup: { name in
+                manager.dispatch(.renameGroup(chatId: chatId, name: name))
+            }
         )
     }
 }
@@ -126,8 +153,16 @@ private func newChatState(from state: AppState) -> NewChatViewState {
     NewChatViewState(isCreatingChat: state.busy.creatingChat)
 }
 
+private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
+    NewGroupChatViewState(isCreatingChat: state.busy.creatingChat)
+}
+
 private func chatScreenState(from state: AppState) -> ChatScreenState {
     ChatScreenState(chat: state.currentChat)
+}
+
+private func groupInfoState(from state: AppState) -> GroupInfoViewState {
+    GroupInfoViewState(chat: state.currentChat)
 }
 
 private func myNpub(from state: AppState) -> String? {

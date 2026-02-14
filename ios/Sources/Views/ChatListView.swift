@@ -5,20 +5,25 @@ struct ChatListView: View {
     let onLogout: @MainActor () -> Void
     let onOpenChat: @MainActor (String) -> Void
     let onNewChat: @MainActor () -> Void
+    let onNewGroupChat: @MainActor () -> Void
     let nsecProvider: @MainActor () -> String?
     @State private var showMyNpub = false
 
     var body: some View {
         List(state.chats, id: \.chatId) { chat in
-            let displayName = chat.peerName ?? truncatedNpub(chat.peerNpub)
-            let subtitle = chat.peerName != nil ? truncatedNpub(chat.peerNpub) : nil
+            let displayName = chatDisplayName(chat)
+            let subtitle = chatSubtitle(chat)
 
             let row = HStack(spacing: 12) {
-                AvatarView(
-                    name: chat.peerName,
-                    npub: chat.peerNpub,
-                    pictureUrl: chat.peerPictureUrl
-                )
+                if chat.isGroup {
+                    groupAvatar(chat)
+                } else {
+                    AvatarView(
+                        name: chat.members.first?.name,
+                        npub: chat.members.first?.npub ?? "",
+                        pictureUrl: chat.members.first?.pictureUrl
+                    )
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(displayName)
@@ -75,14 +80,52 @@ struct ChatListView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    onNewChat()
+                Menu {
+                    Button {
+                        onNewChat()
+                    } label: {
+                        Label("New Chat", systemImage: "person")
+                    }
+                    Button {
+                        onNewGroupChat()
+                    } label: {
+                        Label("New Group", systemImage: "person.3")
+                    }
                 } label: {
                     Image(systemName: "square.and.pencil")
                 }
                 .accessibilityLabel("New Chat")
                 .accessibilityIdentifier(TestIds.chatListNewChat)
             }
+        }
+    }
+
+    private func chatDisplayName(_ chat: ChatSummary) -> String {
+        if chat.isGroup {
+            return chat.groupName ?? "Group (\(chat.members.count + 1))"
+        }
+        return chat.members.first?.name ?? truncatedNpub(chat.members.first?.npub ?? "")
+    }
+
+    private func chatSubtitle(_ chat: ChatSummary) -> String? {
+        if chat.isGroup {
+            return "\(chat.members.count + 1) members"
+        }
+        if chat.members.first?.name != nil {
+            return truncatedNpub(chat.members.first?.npub ?? "")
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func groupAvatar(_ chat: ChatSummary) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.blue.opacity(0.15))
+                .frame(width: 40, height: 40)
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(.blue)
         }
     }
 
@@ -103,6 +146,7 @@ struct ChatListView: View {
             onLogout: {},
             onOpenChat: { _ in },
             onNewChat: {},
+            onNewGroupChat: {},
             nsecProvider: { nil }
         )
     }
@@ -118,6 +162,7 @@ struct ChatListView: View {
             onLogout: {},
             onOpenChat: { _ in },
             onNewChat: {},
+            onNewGroupChat: {},
             nsecProvider: { nil }
         )
     }
@@ -133,6 +178,7 @@ struct ChatListView: View {
             onLogout: {},
             onOpenChat: { _ in },
             onNewChat: {},
+            onNewGroupChat: {},
             nsecProvider: { nil }
         )
     }

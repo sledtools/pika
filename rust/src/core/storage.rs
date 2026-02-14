@@ -1,6 +1,7 @@
 // Storage-derived state refresh + paging.
 
 use super::*;
+use crate::state::MemberInfo;
 
 impl AppCore {
     pub(super) fn refresh_all_from_storage(&mut self) {
@@ -34,43 +35,57 @@ impl AppCore {
         let mut missing_profile_pubkeys: Vec<PublicKey> = Vec::new();
 
         for g in groups {
-            // Map to chat_id = hex(nostr_group_id)
             let chat_id = hex::encode(g.nostr_group_id);
 
-            // Determine peer for 1:1 (or note-to-self).
-            let peer_pubkey = sess.mdk.get_members(&g.mls_group_id).ok().and_then(
-                |members: BTreeSet<PublicKey>| members.into_iter().find(|p| p != &my_pubkey),
-            );
-            let peer_npub = peer_pubkey
-                .as_ref()
-                .and_then(|p| p.to_bech32().ok())
-                .unwrap_or_else(|| my_pubkey.to_bech32().unwrap_or_else(|_| my_pubkey.to_hex()));
+            // Get all members except self.
+            let all_members: BTreeSet<PublicKey> =
+                sess.mdk.get_members(&g.mls_group_id).unwrap_or_default();
+            let other_members: Vec<PublicKey> = all_members
+                .iter()
+                .filter(|p| *p != &my_pubkey)
+                .cloned()
+                .collect();
 
-            // Look up cached Nostr profile for peer.
-            let peer_hex = peer_pubkey
-                .as_ref()
-                .map(|p| p.to_hex())
-                .unwrap_or_else(|| my_pubkey.to_hex());
-            let cached_profile = self.profiles.get(&peer_hex);
-            let peer_name = cached_profile.and_then(|p| p.name.clone());
-            let peer_picture_url = cached_profile.and_then(|p| p.picture_url.clone());
-
-            // Track peers missing from cache (or stale > 1 hour) for async fetch.
-            let now = crate::state::now_seconds();
-            let needs_fetch = match cached_profile {
-                None => true,
-                Some(p) => (now - p.fetched_at) > 3600,
+            // A group chat is anything with >1 other member, or explicitly named (not "DM").
+            let explicit_name = if g.name != DEFAULT_GROUP_NAME && !g.name.is_empty() {
+                Some(g.name.clone())
+            } else {
+                None
             };
-            if needs_fetch {
-                if let Some(pk) = peer_pubkey.as_ref() {
-                    if !missing_profile_pubkeys.iter().any(|p| p == pk) {
-                        missing_profile_pubkeys.push(*pk);
-                    }
+            let is_group = other_members.len() > 1 || explicit_name.is_some();
+
+            // Build member info with cached profiles.
+            let now = crate::state::now_seconds();
+            let mut member_infos: Vec<(PublicKey, Option<String>, Option<String>)> = Vec::new();
+            for pk in &other_members {
+                let hex = pk.to_hex();
+                let cached = self.profiles.get(&hex);
+                let name = cached.and_then(|p| p.name.clone());
+                let picture_url = cached.and_then(|p| p.picture_url.clone());
+                member_infos.push((*pk, name, picture_url));
+
+                let needs_fetch = match cached {
+                    None => true,
+                    Some(p) => (now - p.fetched_at) > 3600,
+                };
+                if needs_fetch && !missing_profile_pubkeys.iter().any(|p| p == pk) {
+                    missing_profile_pubkeys.push(*pk);
                 }
             }
 
-            // Do not rely on `last_message_id` being populated in all MDK flows.
-            // For MVP scale, fetching the newest message per group is cheap and robust.
+            let admin_pubkeys: Vec<String> = g.admin_pubkeys.iter().map(|p| p.to_hex()).collect();
+
+            let members_for_state: Vec<MemberInfo> = member_infos
+                .iter()
+                .map(|(pk, name, pic)| MemberInfo {
+                    pubkey: pk.to_hex(),
+                    npub: pk.to_bech32().unwrap_or_else(|_| pk.to_hex()),
+                    name: name.clone(),
+                    picture_url: pic.clone(),
+                })
+                .collect();
+
+            // Fetch newest message for preview.
             let newest = sess
                 .mdk
                 .get_messages(&g.mls_group_id, Some(Pagination::new(Some(1), Some(0))))
@@ -83,8 +98,6 @@ impl AppCore {
                 .map(|m| m.created_at.as_secs() as i64)
                 .or_else(|| g.last_message_at.map(|t| t.as_secs() as i64));
 
-            // Merge with local optimistic outbox (if any). If storage doesn't show the new message
-            // yet, we still want chat list previews to update immediately.
             let local_last = self.local_outbox.get(&chat_id).and_then(|m| {
                 m.values()
                     .max_by(|a, b| {
@@ -108,9 +121,9 @@ impl AppCore {
 
             list.push(ChatSummary {
                 chat_id: chat_id.clone(),
-                peer_npub: peer_npub.clone(),
-                peer_name: peer_name.clone(),
-                peer_picture_url: peer_picture_url.clone(),
+                is_group,
+                group_name: explicit_name.clone(),
+                members: members_for_state,
                 last_message,
                 last_message_at,
                 unread_count,
@@ -120,9 +133,10 @@ impl AppCore {
                 chat_id,
                 GroupIndexEntry {
                     mls_group_id: g.mls_group_id,
-                    peer_npub,
-                    peer_name,
-                    peer_picture_url,
+                    is_group,
+                    group_name: explicit_name,
+                    members: member_infos,
+                    admin_pubkeys,
                 },
             );
         }
@@ -236,7 +250,21 @@ impl AppCore {
             return;
         };
 
-        // Default initial load: newest 50, and preserve paging by reloading the already-loaded count.
+        let my_pubkey_hex = sess.keys.public_key().to_hex();
+
+        // Build a sender pubkey -> display name lookup from member info + profile cache.
+        let sender_names: HashMap<String, String> = entry
+            .members
+            .iter()
+            .filter_map(|(pk, name, _)| {
+                let hex = pk.to_hex();
+                let display = name
+                    .clone()
+                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
+                display.map(|n| (hex, n))
+            })
+            .collect();
+
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let limit = desired.max(50);
         let messages = sess
@@ -248,13 +276,14 @@ impl AppCore {
             .unwrap_or_default();
 
         let storage_len = messages.len();
-        // MDK returns descending by created_at; UI wants ascending.
         let mut msgs: Vec<ChatMessage> = messages
             .into_iter()
             .rev()
             .map(|m| {
                 let id = m.id.to_hex();
-                let is_mine = m.pubkey == sess.keys.public_key();
+                let sender_hex = m.pubkey.to_hex();
+                let is_mine = sender_hex == my_pubkey_hex;
+                let sender_name = sender_names.get(&sender_hex).cloned();
                 let delivery = self
                     .delivery_overrides
                     .get(chat_id)
@@ -263,7 +292,8 @@ impl AppCore {
                     .unwrap_or(MessageDeliveryState::Sent);
                 ChatMessage {
                     id,
-                    sender_pubkey: m.pubkey.to_hex(),
+                    sender_pubkey: sender_hex,
+                    sender_name,
                     content: m.content,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
@@ -272,10 +302,6 @@ impl AppCore {
             })
             .collect();
 
-        // Add optimistic local messages not yet visible through MDK storage.
-        //
-        // Important: do not inject messages older than the oldest storage-backed message in the
-        // current window, or we'd break paging by showing older content "for free".
         let oldest_loaded_ts = msgs.first().map(|m| m.timestamp).unwrap_or(i64::MIN);
         let present_ids: std::collections::HashSet<String> =
             msgs.iter().map(|m| m.id.clone()).collect();
@@ -296,6 +322,7 @@ impl AppCore {
                 msgs.push(ChatMessage {
                     id,
                     sender_pubkey: lm.sender_pubkey,
+                    sender_name: None,
                     content: lm.content,
                     timestamp: lm.timestamp,
                     is_mine: true,
@@ -305,21 +332,31 @@ impl AppCore {
             msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
         }
 
-        // Prune optimistic outbox entries once they show up in storage-backed messages, and also
-        // drop anything older than the current loaded storage window (paging correctness).
         if let Some(local) = self.local_outbox.get_mut(chat_id) {
             local.retain(|id, lm| !present_ids.contains(id) && lm.timestamp >= oldest_loaded_ts);
         }
 
         let can_load_older = storage_len == limit;
-        // loaded_count tracks the number of storage-backed messages loaded (used for paging offsets).
         self.loaded_count.insert(chat_id.to_string(), storage_len);
+
+        let is_admin = entry.admin_pubkeys.contains(&my_pubkey_hex);
+        let members_for_state: Vec<MemberInfo> = entry
+            .members
+            .iter()
+            .map(|(pk, name, pic)| MemberInfo {
+                pubkey: pk.to_hex(),
+                npub: pk.to_bech32().unwrap_or_else(|_| pk.to_hex()),
+                name: name.clone(),
+                picture_url: pic.clone(),
+            })
+            .collect();
 
         self.state.current_chat = Some(ChatViewState {
             chat_id: chat_id.to_string(),
-            peer_npub: entry.peer_npub,
-            peer_name: entry.peer_name,
-            peer_picture_url: entry.peer_picture_url,
+            is_group: entry.is_group,
+            group_name: entry.group_name,
+            members: members_for_state,
+            is_admin,
             messages: msgs,
             can_load_older,
         });
@@ -333,6 +370,20 @@ impl AppCore {
         let Some(entry) = sess.groups.get(chat_id).cloned() else {
             return;
         };
+
+        let my_pubkey_hex = sess.keys.public_key().to_hex();
+
+        let sender_names: HashMap<String, String> = entry
+            .members
+            .iter()
+            .filter_map(|(pk, name, _)| {
+                let hex = pk.to_hex();
+                let display = name
+                    .clone()
+                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
+                display.map(|n| (hex, n))
+            })
+            .collect();
 
         let offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let page = sess
@@ -355,13 +406,14 @@ impl AppCore {
 
         let fetched_len = page.len();
 
-        // Reverse page to ascending.
         let mut older: Vec<ChatMessage> = page
             .into_iter()
             .rev()
             .map(|m| {
                 let id = m.id.to_hex();
-                let is_mine = m.pubkey == sess.keys.public_key();
+                let sender_hex = m.pubkey.to_hex();
+                let is_mine = sender_hex == my_pubkey_hex;
+                let sender_name = sender_names.get(&sender_hex).cloned();
                 let delivery = self
                     .delivery_overrides
                     .get(chat_id)
@@ -370,7 +422,8 @@ impl AppCore {
                     .unwrap_or(MessageDeliveryState::Sent);
                 ChatMessage {
                     id,
-                    sender_pubkey: m.pubkey.to_hex(),
+                    sender_pubkey: sender_hex,
+                    sender_name,
                     content: m.content,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,

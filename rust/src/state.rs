@@ -26,11 +26,6 @@ impl AppState {
     }
 }
 
-/// "In flight" flags for long-ish operations that the UI should reflect.
-///
-/// Spec-v1 allows ephemeral UI state to remain native (scroll position, focus, etc),
-/// but UX-relevant async operation state should live in Rust to avoid native-side
-/// heuristics (e.g., resetting spinners on toast).
 #[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
 pub struct BusyState {
     pub creating_account: bool,
@@ -60,6 +55,8 @@ pub enum Screen {
     ChatList,
     Chat { chat_id: String },
     NewChat,
+    NewGroupChat,
+    GroupInfo { chat_id: String },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -69,11 +66,19 @@ pub enum AuthState {
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct MemberInfo {
+    pub pubkey: String,
+    pub npub: String,
+    pub name: Option<String>,
+    pub picture_url: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatSummary {
     pub chat_id: String,
-    pub peer_npub: String,
-    pub peer_name: Option<String>,
-    pub peer_picture_url: Option<String>,
+    pub is_group: bool,
+    pub group_name: Option<String>,
+    pub members: Vec<MemberInfo>,
     pub last_message: Option<String>,
     pub last_message_at: Option<i64>,
     pub unread_count: u32,
@@ -82,9 +87,10 @@ pub struct ChatSummary {
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct ChatViewState {
     pub chat_id: String,
-    pub peer_npub: String,
-    pub peer_name: Option<String>,
-    pub peer_picture_url: Option<String>,
+    pub is_group: bool,
+    pub group_name: Option<String>,
+    pub members: Vec<MemberInfo>,
+    pub is_admin: bool,
     pub messages: Vec<ChatMessage>,
     pub can_load_older: bool,
 }
@@ -93,6 +99,7 @@ pub struct ChatViewState {
 pub struct ChatMessage {
     pub id: String,
     pub sender_pubkey: String,
+    pub sender_name: Option<String>,
     pub content: String,
     pub timestamp: i64,
     pub is_mine: bool,

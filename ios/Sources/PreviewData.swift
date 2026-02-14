@@ -149,9 +149,10 @@ enum PreviewAppState {
             auth: .loggedIn(npub: sampleNpub, pubkey: samplePubkey),
             currentChat: ChatViewState(
                 chatId: "chat-empty",
-                peerNpub: samplePeerNpub,
-                peerName: "Empty Chat",
-                peerPictureUrl: nil,
+                isGroup: false,
+                groupName: nil,
+                members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Empty Chat", pictureUrl: nil)],
+                isAdmin: false,
                 messages: [],
                 canLoadOlder: false
             )
@@ -200,9 +201,9 @@ enum PreviewAppState {
     private static func chatSummary(id: String, name: String?, lastMessage: String, unread: UInt32) -> ChatSummary {
         ChatSummary(
             chatId: id,
-            peerNpub: samplePeerNpub,
-            peerName: name,
-            peerPictureUrl: nil,
+            isGroup: false,
+            groupName: nil,
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil)],
             lastMessage: lastMessage,
             lastMessageAt: 1_709_000_000,
             unreadCount: unread
@@ -214,6 +215,7 @@ enum PreviewAppState {
             ChatMessage(
                 id: "m1",
                 senderPubkey: samplePubkey,
+                senderName: nil,
                 content: "Hey! Are we still on for today?",
                 timestamp: 1_709_000_001,
                 isMine: true,
@@ -222,6 +224,7 @@ enum PreviewAppState {
             ChatMessage(
                 id: "m2",
                 senderPubkey: samplePeerPubkey,
+                senderName: name,
                 content: "Yep. See you at the relay.",
                 timestamp: 1_709_000_050,
                 isMine: false,
@@ -230,6 +233,7 @@ enum PreviewAppState {
             ChatMessage(
                 id: "m3",
                 senderPubkey: samplePubkey,
+                senderName: nil,
                 content: failed ? "This one failed to send." : "On my way.",
                 timestamp: 1_709_000_100,
                 isMine: true,
@@ -239,9 +243,10 @@ enum PreviewAppState {
 
         return ChatViewState(
             chatId: id,
-            peerNpub: samplePeerNpub,
-            peerName: name,
-            peerPictureUrl: nil,
+            isGroup: false,
+            groupName: nil,
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil)],
+            isAdmin: false,
             messages: messages,
             canLoadOlder: true
         )
@@ -252,6 +257,7 @@ enum PreviewAppState {
             ChatMessage(
                 id: "m\(idx)",
                 senderPubkey: idx.isMultiple(of: 2) ? samplePubkey : samplePeerPubkey,
+                senderName: idx.isMultiple(of: 2) ? nil : "Peer",
                 content: idx.isMultiple(of: 3)
                     ? "A long message intended to wrap across multiple lines for layout validation."
                     : "Message \(idx + 1)",
@@ -263,9 +269,10 @@ enum PreviewAppState {
 
         return ChatViewState(
             chatId: "chat-long",
-            peerNpub: samplePeerNpub,
-            peerName: "Long Thread",
-            peerPictureUrl: nil,
+            isGroup: false,
+            groupName: nil,
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Long Thread", pictureUrl: nil)],
+            isAdmin: false,
             messages: messages,
             canLoadOlder: true
         )

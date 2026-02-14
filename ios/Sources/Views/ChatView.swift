@@ -4,11 +4,19 @@ struct ChatView: View {
     let chatId: String
     let state: ChatScreenState
     let onSendMessage: @MainActor (String) -> Void
+    let onGroupInfo: (@MainActor () -> Void)?
     @State private var messageText = ""
     @State private var scrollPosition: String?
     @State private var isAtBottom = false
 
     private let scrollButtonBottomPadding: CGFloat = 12
+
+    init(chatId: String, state: ChatScreenState, onSendMessage: @escaping @MainActor (String) -> Void, onGroupInfo: (@MainActor () -> Void)? = nil) {
+        self.chatId = chatId
+        self.state = state
+        self.onSendMessage = onSendMessage
+        self.onGroupInfo = onGroupInfo
+    }
 
     var body: some View {
         if let chat = state.chat, chat.chatId == chatId {
@@ -16,7 +24,7 @@ struct ChatView: View {
                 VStack(spacing: 0) {
                     LazyVStack(spacing: 8) {
                         ForEach(chat.messages, id: \.id) { msg in
-                            MessageRow(message: msg)
+                            MessageRow(message: msg, showSender: chat.isGroup)
                                 .id(msg.id)
                         }
                     }
@@ -53,15 +61,34 @@ struct ChatView: View {
                 }
             }
             .modifier(FloatingInputBarModifier(content: { messageInputBar(chat: chat) }))
-            .navigationTitle(chat.peerName ?? chat.peerNpub)
+            .navigationTitle(chatTitle(chat))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if chat.isGroup {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            onGroupInfo?()
+                        } label: {
+                            Image(systemName: "info.circle")
+                        }
+                        .accessibilityIdentifier(TestIds.chatGroupInfo)
+                    }
+                }
+            }
         } else {
             VStack(spacing: 10) {
                 ProgressView()
-                Text("Loading chat…")
+                Text("Loading chat...")
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func chatTitle(_ chat: ChatViewState) -> String {
+        if chat.isGroup {
+            return chat.groupName ?? "Group"
+        }
+        return chat.members.first?.name ?? chat.members.first?.npub ?? ""
     }
 
     private func sendMessage() {
@@ -114,11 +141,18 @@ private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    var showSender: Bool = false
 
     var body: some View {
         HStack {
             if message.isMine { Spacer(minLength: 0) }
             VStack(alignment: message.isMine ? .trailing : .leading, spacing: 3) {
+                if showSender && !message.isMine {
+                    Text(message.senderName ?? String(message.senderPubkey.prefix(8)))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
                 Text(message.content)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)

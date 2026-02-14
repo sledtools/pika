@@ -10,7 +10,7 @@ use super::AppCore;
 const DEFAULT_RELAY_URLS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://relay.primal.net",
-    "wss://nostr.wine",
+    "wss://nos.lol",
 ];
 
 // Key packages (kind 443) are NIP-70 "protected" in modern MDK.

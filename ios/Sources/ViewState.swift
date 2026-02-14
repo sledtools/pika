@@ -14,6 +14,14 @@ struct NewChatViewState: Equatable {
     let isCreatingChat: Bool
 }
 
+struct NewGroupChatViewState: Equatable {
+    let isCreatingChat: Bool
+}
+
 struct ChatScreenState: Equatable {
+    let chat: ChatViewState?
+}
+
+struct GroupInfoViewState: Equatable {
     let chat: ChatViewState?
 }

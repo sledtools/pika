@@ -20,7 +20,7 @@ pub enum AppAction {
         stack: Vec<Screen>,
     },
 
-    // Chat
+    // Chat (1:1)
     CreateChat {
         peer_npub: String,
     },
@@ -39,6 +39,27 @@ pub enum AppAction {
         chat_id: String,
         before_message_id: String,
         limit: u32,
+    },
+
+    // Group chat
+    CreateGroupChat {
+        peer_npubs: Vec<String>,
+        group_name: String,
+    },
+    AddGroupMembers {
+        chat_id: String,
+        peer_npubs: Vec<String>,
+    },
+    RemoveGroupMembers {
+        chat_id: String,
+        member_pubkeys: Vec<String>,
+    },
+    LeaveGroup {
+        chat_id: String,
+    },
+    RenameGroup {
+        chat_id: String,
+        name: String,
     },
 
     // UI
@@ -68,6 +89,13 @@ impl AppAction {
             AppAction::RetryMessage { .. } => "RetryMessage",
             AppAction::OpenChat { .. } => "OpenChat",
             AppAction::LoadOlderMessages { .. } => "LoadOlderMessages",
+
+            // Group chat
+            AppAction::CreateGroupChat { .. } => "CreateGroupChat",
+            AppAction::AddGroupMembers { .. } => "AddGroupMembers",
+            AppAction::RemoveGroupMembers { .. } => "RemoveGroupMembers",
+            AppAction::LeaveGroup { .. } => "LeaveGroup",
+            AppAction::RenameGroup { .. } => "RenameGroup",
 
             // UI
             AppAction::ClearToast => "ClearToast",

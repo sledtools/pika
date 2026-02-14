@@ -35,9 +35,11 @@ const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
 #[derive(Debug, Clone)]
 struct GroupIndexEntry {
     mls_group_id: GroupId,
-    peer_npub: String,
-    peer_name: Option<String>,
-    peer_picture_url: Option<String>,
+    is_group: bool,
+    group_name: Option<String>,
+    // (pubkey, name, picture_url) for each member except self
+    members: Vec<(PublicKey, Option<String>, Option<String>)>,
+    admin_pubkeys: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,9 +245,12 @@ impl AppCore {
     }
 
     fn open_chat_screen(&mut self, chat_id: &str) {
-        // UX: creating a chat from "NewChat" should land you in the chat, with back returning to
-        // the chat list (not back to the compose screen).
-        if matches!(self.state.router.screen_stack.last(), Some(Screen::NewChat)) {
+        // UX: creating a chat from "NewChat" or "NewGroupChat" should land you in the chat,
+        // with back returning to the chat list (not back to the compose screen).
+        if matches!(
+            self.state.router.screen_stack.last(),
+            Some(Screen::NewChat) | Some(Screen::NewGroupChat)
+        ) {
             self.state.router.screen_stack.pop();
         }
 
@@ -298,8 +303,7 @@ impl AppCore {
     fn sync_current_chat_to_router(&mut self) {
         let top = self.state.router.screen_stack.last().cloned();
         match top {
-            Some(Screen::Chat { chat_id }) => {
-                // Ensure current_chat is loaded for the chat the router claims is visible.
+            Some(Screen::Chat { chat_id }) | Some(Screen::GroupInfo { chat_id }) => {
                 let needs_refresh = self
                     .state
                     .current_chat
@@ -575,6 +579,219 @@ impl AppCore {
                     let chat_id = chat.chat_id.clone();
                     self.refresh_current_chat(&chat_id);
                 }
+            }
+            InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys,
+                group_name,
+                key_package_events,
+                failed_peers,
+                candidate_kp_relays,
+            } => {
+                let network_enabled = self.network_enabled();
+
+                if key_package_events.is_empty() {
+                    self.set_busy(|b| b.creating_chat = false);
+                    let names: Vec<String> = failed_peers
+                        .iter()
+                        .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
+                        .collect();
+                    self.toast(format!("No key packages found: {}", names.join(", ")));
+                    return;
+                }
+
+                if !failed_peers.is_empty() {
+                    let names: Vec<String> = failed_peers
+                        .iter()
+                        .map(|(pk, _)| pk.to_hex()[..8].to_string())
+                        .collect();
+                    self.toast(format!(
+                        "Could not add {} peer(s): {}",
+                        failed_peers.len(),
+                        names.join(", ")
+                    ));
+                }
+
+                // Check if this is an add-members-to-existing-group operation.
+                // We repurpose group_name: if it's a hex chat_id of an existing group, it's an add-member op.
+                let is_add_members = self.chat_exists(&group_name);
+
+                if is_add_members {
+                    let chat_id = group_name;
+                    let Some(sess) = self.session.as_mut() else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        return;
+                    };
+                    let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        self.toast("Chat not found");
+                        return;
+                    };
+
+                    let kp_events: Vec<Event> = key_package_events
+                        .iter()
+                        .map(normalize_peer_key_package_event_for_mdk)
+                        .collect();
+
+                    for ev in &kp_events {
+                        if let Err(e) = sess.mdk.parse_key_package(ev) {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Invalid key package: {e}"));
+                            return;
+                        }
+                    }
+
+                    let result = match sess.mdk.add_members(&entry.mls_group_id, &kp_events) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Add members failed: {e}"));
+                            return;
+                        }
+                    };
+
+                    let added: Vec<PublicKey> = kp_events.iter().map(|e| e.pubkey).collect();
+                    self.publish_evolution_event(
+                        &chat_id,
+                        entry.mls_group_id,
+                        result.evolution_event,
+                        result.welcome_rumors,
+                        added,
+                    );
+                    self.set_busy(|b| b.creating_chat = false);
+                } else {
+                    // Create new group chat.
+                    let kp_events: Vec<Event> = key_package_events
+                        .iter()
+                        .map(normalize_peer_key_package_event_for_mdk)
+                        .collect();
+
+                    let peer_relays: Vec<RelayUrl> = kp_events
+                        .iter()
+                        .flat_map(|e| extract_relays_from_key_package_event(e).unwrap_or_default())
+                        .collect();
+                    let mut group_relays = self.default_relays();
+                    for r in candidate_kp_relays.iter().cloned() {
+                        if !group_relays.contains(&r) {
+                            group_relays.push(r);
+                        }
+                    }
+                    for r in peer_relays.iter().cloned() {
+                        if !group_relays.contains(&r) {
+                            group_relays.push(r);
+                        }
+                    }
+
+                    let Some(sess) = self.session.as_mut() else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        return;
+                    };
+
+                    for ev in &kp_events {
+                        if let Err(e) = sess.mdk.parse_key_package(ev) {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Invalid key package: {e}"));
+                            return;
+                        }
+                    }
+
+                    let admins = vec![sess.keys.public_key()];
+
+                    let config = NostrGroupConfigData {
+                        name: group_name.clone(),
+                        description: DEFAULT_GROUP_DESCRIPTION.to_string(),
+                        image_hash: None,
+                        image_key: None,
+                        image_nonce: None,
+                        relays: group_relays.clone(),
+                        admins,
+                    };
+
+                    let group_result = match sess.mdk.create_group(
+                        &sess.keys.public_key(),
+                        kp_events.clone(),
+                        config,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Create group failed: {e}"));
+                            return;
+                        }
+                    };
+
+                    // Deliver welcomes to all peers.
+                    if network_enabled {
+                        let mut welcome_relays = peer_relays;
+                        for r in candidate_kp_relays {
+                            if !welcome_relays.contains(&r) {
+                                welcome_relays.push(r);
+                            }
+                        }
+                        for r in group_relays {
+                            if !welcome_relays.contains(&r) {
+                                welcome_relays.push(r);
+                            }
+                        }
+                        for pk in &peer_pubkeys {
+                            self.publish_welcomes_to_peer(
+                                *pk,
+                                group_result.welcome_rumors.clone(),
+                                welcome_relays.clone(),
+                            );
+                        }
+                    }
+
+                    self.refresh_all_from_storage();
+                    let chat_id = hex::encode(group_result.group.nostr_group_id);
+                    self.open_chat_screen(&chat_id);
+                    self.refresh_current_chat(&chat_id);
+                    self.emit_router();
+                    self.set_busy(|b| b.creating_chat = false);
+                }
+            }
+            InternalEvent::GroupEvolutionPublished {
+                chat_id: _,
+                mls_group_id,
+                welcome_rumors,
+                added_pubkeys,
+                ok,
+                error,
+            } => {
+                if !ok {
+                    self.toast(format!(
+                        "Group update failed: {}",
+                        error.unwrap_or_else(|| "unknown".into())
+                    ));
+                    self.set_busy(|b| b.creating_chat = false);
+                    return;
+                }
+
+                // Merge the pending commit now that relay confirmed.
+                if let Some(sess) = self.session.as_mut() {
+                    if let Err(e) = sess.mdk.merge_pending_commit(&mls_group_id) {
+                        tracing::error!(%e, "merge_pending_commit failed");
+                    }
+                }
+
+                // Send welcomes to newly added members.
+                if let Some(rumors) = welcome_rumors {
+                    if !rumors.is_empty() && self.network_enabled() {
+                        let fallback_relays = self.default_relays();
+                        let relays: Vec<RelayUrl> = self
+                            .session
+                            .as_ref()
+                            .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
+                            .map(|s| s.into_iter().collect())
+                            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                            .unwrap_or(fallback_relays);
+                        for pk in added_pubkeys {
+                            self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
+                        }
+                    }
+                }
+
+                self.set_busy(|b| b.creating_chat = false);
+                self.refresh_all_from_storage();
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
@@ -1236,7 +1453,480 @@ impl AppCore {
 
                 self.load_older_messages(&chat_id, limit as usize);
             }
+
+            // Group chat actions
+            AppAction::CreateGroupChat {
+                peer_npubs,
+                group_name,
+            } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                if peer_npubs.is_empty() {
+                    self.toast("Add at least one member");
+                    return;
+                }
+                let group_name = group_name.trim().to_string();
+                if group_name.is_empty() {
+                    self.toast("Enter a group name");
+                    return;
+                }
+
+                let mut peer_pubkeys: Vec<PublicKey> = Vec::new();
+                for npub in &peer_npubs {
+                    match PublicKey::parse(npub.trim()) {
+                        Ok(p) => peer_pubkeys.push(p),
+                        Err(e) => {
+                            self.toast(format!("Invalid npub: {e}"));
+                            return;
+                        }
+                    }
+                }
+
+                self.set_busy(|b| b.creating_chat = true);
+
+                if !self.network_enabled() {
+                    self.set_busy(|b| b.creating_chat = false);
+                    self.toast("Network disabled");
+                    return;
+                }
+
+                let (client, tx) = {
+                    let Some(sess) = self.session.as_ref() else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        return;
+                    };
+                    (sess.client.clone(), self.core_sender.clone())
+                };
+                let fallback_kp_relays = self.key_package_relays();
+                let fallback_popular_relays = self.default_relays();
+
+                self.runtime.spawn(async move {
+                    // Ensure default relays are connected before any fetches.
+                    for r in fallback_kp_relays
+                        .iter()
+                        .chain(fallback_popular_relays.iter())
+                    {
+                        let _ = client.add_relay(r.clone()).await;
+                    }
+                    client.connect().await;
+                    client.wait_for_connection(Duration::from_secs(5)).await;
+
+                    let mut all_kp_events: Vec<Event> = Vec::new();
+                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
+                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+
+                    for pk in &peer_pubkeys {
+                        let kp_relay_filter = Filter::new()
+                            .author(*pk)
+                            .kind(Kind::MlsKeyPackageRelays)
+                            .limit(5);
+                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
+                        if let Ok(events) = client
+                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
+                            .await
+                        {
+                            let mut newest: Option<Event> = None;
+                            for e in events.into_iter() {
+                                if newest
+                                    .as_ref()
+                                    .map(|b| e.created_at > b.created_at)
+                                    .unwrap_or(true)
+                                {
+                                    newest = Some(e);
+                                }
+                            }
+                            if let Some(ev) = newest.as_ref() {
+                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
+                            }
+                        }
+                        if candidate_relays.is_empty() {
+                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
+                            for r in fallback_kp_relays.iter().cloned() {
+                                s.insert(r);
+                            }
+                            for r in fallback_popular_relays.iter().cloned() {
+                                s.insert(r);
+                            }
+                            candidate_relays = s.into_iter().collect();
+                        }
+                        for r in candidate_relays.iter().cloned() {
+                            let _ = client.add_relay(r).await;
+                        }
+                        client.connect().await;
+                        client.wait_for_connection(Duration::from_secs(4)).await;
+
+                        let kp_filter = Filter::new()
+                            .author(*pk)
+                            .kind(Kind::MlsKeyPackage)
+                            .limit(10);
+                        let res = match client
+                            .fetch_events_from(
+                                candidate_relays.clone(),
+                                kp_filter.clone(),
+                                Duration::from_secs(8),
+                            )
+                            .await
+                        {
+                            Ok(v) => Ok(v),
+                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
+                        };
+                        match res {
+                            Ok(events) => {
+                                let best = events.into_iter().max_by_key(|e| e.created_at);
+                                if let Some(ev) = best {
+                                    all_kp_events.push(ev);
+                                } else {
+                                    failed.push((*pk, "No key package found".into()));
+                                }
+                            }
+                            Err(e) => {
+                                failed.push((*pk, format!("Fetch failed: {e}")));
+                            }
+                        }
+                        for r in candidate_relays {
+                            if !all_candidate_relays.contains(&r) {
+                                all_candidate_relays.push(r);
+                            }
+                        }
+                    }
+
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupKeyPackagesFetched {
+                            peer_pubkeys,
+                            group_name,
+                            key_package_events: all_kp_events,
+                            failed_peers: failed,
+                            candidate_kp_relays: all_candidate_relays,
+                        },
+                    )));
+                });
+            }
+            AppAction::AddGroupMembers {
+                chat_id,
+                peer_npubs,
+            } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                if !self.network_enabled() {
+                    self.toast("Network disabled");
+                    return;
+                }
+                let mut peer_pubkeys: Vec<PublicKey> = Vec::new();
+                for npub in &peer_npubs {
+                    match PublicKey::parse(npub.trim()) {
+                        Ok(p) => peer_pubkeys.push(p),
+                        Err(e) => {
+                            self.toast(format!("Invalid npub: {e}"));
+                            return;
+                        }
+                    }
+                }
+                self.set_busy(|b| b.creating_chat = true);
+
+                let (client, tx) = {
+                    let Some(sess) = self.session.as_ref() else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        return;
+                    };
+                    (sess.client.clone(), self.core_sender.clone())
+                };
+                let fallback_kp_relays = self.key_package_relays();
+                let fallback_popular_relays = self.default_relays();
+                let chat_id_clone = chat_id.clone();
+
+                // Fetch key packages then add members.
+                self.runtime.spawn(async move {
+                    // Ensure relays are connected before fetches.
+                    for r in fallback_kp_relays
+                        .iter()
+                        .chain(fallback_popular_relays.iter())
+                    {
+                        let _ = client.add_relay(r.clone()).await;
+                    }
+                    client.connect().await;
+                    client.wait_for_connection(Duration::from_secs(5)).await;
+
+                    let mut kp_events: Vec<Event> = Vec::new();
+                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
+                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+
+                    for pk in &peer_pubkeys {
+                        let kp_relay_filter = Filter::new()
+                            .author(*pk)
+                            .kind(Kind::MlsKeyPackageRelays)
+                            .limit(5);
+                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
+                        if let Ok(events) = client
+                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
+                            .await
+                        {
+                            let newest = events.into_iter().max_by_key(|e| e.created_at);
+                            if let Some(ev) = newest.as_ref() {
+                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
+                            }
+                        }
+                        if candidate_relays.is_empty() {
+                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
+                            for r in fallback_kp_relays.iter().cloned() {
+                                s.insert(r);
+                            }
+                            for r in fallback_popular_relays.iter().cloned() {
+                                s.insert(r);
+                            }
+                            candidate_relays = s.into_iter().collect();
+                        }
+                        for r in candidate_relays.iter().cloned() {
+                            let _ = client.add_relay(r).await;
+                        }
+                        client.connect().await;
+                        client.wait_for_connection(Duration::from_secs(4)).await;
+
+                        let kp_filter = Filter::new()
+                            .author(*pk)
+                            .kind(Kind::MlsKeyPackage)
+                            .limit(10);
+                        let res = match client
+                            .fetch_events_from(
+                                candidate_relays.clone(),
+                                kp_filter.clone(),
+                                Duration::from_secs(8),
+                            )
+                            .await
+                        {
+                            Ok(v) => Ok(v),
+                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
+                        };
+                        match res {
+                            Ok(events) => {
+                                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                                    kp_events.push(ev);
+                                } else {
+                                    failed.push((*pk, "No key package found".into()));
+                                }
+                            }
+                            Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
+                        }
+                        for r in candidate_relays {
+                            if !all_candidate_relays.contains(&r) {
+                                all_candidate_relays.push(r);
+                            }
+                        }
+                    }
+
+                    if !failed.is_empty() {
+                        let names: Vec<String> = failed
+                            .iter()
+                            .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
+                            .collect();
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            format!("Failed to fetch key packages for: {}", names.join(", ")),
+                        ))));
+                    }
+
+                    if kp_events.is_empty() {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                            "No key packages found for any peer".into(),
+                        ))));
+                        return;
+                    }
+
+                    // Send fetched KP events back to the actor thread for MDK mutation.
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupKeyPackagesFetched {
+                            peer_pubkeys,
+                            group_name: chat_id_clone, // repurpose: signals this is an add-member op
+                            key_package_events: kp_events,
+                            failed_peers: failed,
+                            candidate_kp_relays: all_candidate_relays,
+                        },
+                    )));
+                });
+            }
+            AppAction::RemoveGroupMembers {
+                chat_id,
+                member_pubkeys,
+            } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                let Some(sess) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+                    self.toast("Chat not found");
+                    return;
+                };
+
+                let mut pubkeys: Vec<PublicKey> = Vec::new();
+                for hex in &member_pubkeys {
+                    match PublicKey::from_hex(hex) {
+                        Ok(p) => pubkeys.push(p),
+                        Err(e) => {
+                            self.toast(format!("Invalid pubkey: {e}"));
+                            return;
+                        }
+                    }
+                }
+
+                let result = match sess.mdk.remove_members(&entry.mls_group_id, &pubkeys) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.toast(format!("Remove members failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_evolution_event(
+                    &chat_id,
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                );
+            }
+            AppAction::LeaveGroup { chat_id } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                let Some(sess) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+                    self.toast("Chat not found");
+                    return;
+                };
+
+                let result = match sess.mdk.leave_group(&entry.mls_group_id) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.toast(format!("Leave group failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_evolution_event(
+                    &chat_id,
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                );
+
+                // Navigate back to chat list.
+                self.state
+                    .router
+                    .screen_stack
+                    .retain(|s| !matches!(s, Screen::Chat { chat_id: id } if id == &chat_id));
+                self.state.current_chat = None;
+                self.refresh_all_from_storage();
+                self.emit_router();
+            }
+            AppAction::RenameGroup { chat_id, name } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                let Some(sess) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+                    self.toast("Chat not found");
+                    return;
+                };
+
+                let update = mdk_core::prelude::NostrGroupDataUpdate::new().name(name);
+                let result = match sess.mdk.update_group_data(&entry.mls_group_id, update) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.toast(format!("Rename failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_evolution_event(
+                    &chat_id,
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                );
+            }
         }
+    }
+
+    fn publish_evolution_event(
+        &mut self,
+        chat_id: &str,
+        mls_group_id: GroupId,
+        event: Event,
+        welcome_rumors: Option<Vec<UnsignedEvent>>,
+        added_pubkeys: Vec<PublicKey>,
+    ) {
+        let fallback_relays = self.default_relays();
+        let Some(sess) = self.session.as_ref() else {
+            return;
+        };
+        let relays: Vec<RelayUrl> = sess
+            .mdk
+            .get_relays(&mls_group_id)
+            .ok()
+            .map(|s| s.into_iter().collect())
+            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+            .unwrap_or_else(|| fallback_relays.clone());
+
+        let client = sess.client.clone();
+        let tx = self.core_sender.clone();
+        let chat_id = chat_id.to_string();
+        let mls_group_id_clone = mls_group_id.clone();
+
+        self.runtime.spawn(async move {
+            let out = client.send_event_to(&relays, &event).await;
+            match out {
+                Ok(output) => {
+                    let ok = !output.success.is_empty();
+                    let err = if ok {
+                        None
+                    } else {
+                        Some(
+                            output
+                                .failed
+                                .values()
+                                .next()
+                                .cloned()
+                                .unwrap_or_else(|| "no relay accepted".into()),
+                        )
+                    };
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupEvolutionPublished {
+                            chat_id,
+                            mls_group_id: mls_group_id_clone,
+                            welcome_rumors,
+                            added_pubkeys,
+                            ok,
+                            error: err,
+                        },
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::GroupEvolutionPublished {
+                            chat_id,
+                            mls_group_id: mls_group_id_clone,
+                            welcome_rumors: None,
+                            added_pubkeys: vec![],
+                            ok: false,
+                            error: Some(e.to_string()),
+                        },
+                    )));
+                }
+            }
+        });
     }
 }
 

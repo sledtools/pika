@@ -8,6 +8,8 @@ struct ChatView: View {
     @State private var messageText = ""
     @State private var scrollPosition: String?
     @State private var isAtBottom = false
+    @State private var showMentionPicker = false
+    @State private var insertedMentions: [(display: String, npub: String)] = []
 
     private let scrollButtonBottomPadding: CGFloat = 12
 
@@ -94,25 +96,96 @@ struct ChatView: View {
     private func sendMessage() {
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        onSendMessage(trimmed)
+        var wire = trimmed
+        for mention in insertedMentions {
+            wire = wire.replacingOccurrences(of: mention.display, with: "nostr:\(mention.npub)")
+        }
+        onSendMessage(wire)
         messageText = ""
+        insertedMentions = []
     }
 
     @ViewBuilder
     private func messageInputBar(chat: ChatViewState) -> some View {
-        HStack(spacing: 10) {
-            TextField("Message", text: $messageText)
-                .onSubmit { sendMessage() }
-                .accessibilityIdentifier(TestIds.chatMessageInput)
-
-            Button(action: { sendMessage() }) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
+        VStack(spacing: 0) {
+            if showMentionPicker, chat.isGroup {
+                MentionPickerPopup(members: chat.members) { member in
+                    let displayTag = "@\(member.name ?? String(member.npub.prefix(8)))"
+                    // Remove the trailing "@" that triggered the picker.
+                    if messageText.hasSuffix("@") {
+                        messageText.removeLast()
+                    }
+                    messageText += "\(displayTag) "
+                    insertedMentions.append((display: displayTag, npub: member.npub))
+                    showMentionPicker = false
+                }
             }
-            .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityIdentifier(TestIds.chatSend)
+
+            HStack(spacing: 10) {
+                TextField("Message", text: $messageText)
+                    .onChange(of: messageText) { _, newValue in
+                        if chat.isGroup {
+                            let triggered = newValue.hasSuffix("@") &&
+                                (newValue.count == 1 || newValue.dropLast().hasSuffix(" "))
+                            if triggered {
+                                showMentionPicker = true
+                            } else if showMentionPicker && !newValue.hasSuffix("@") {
+                                showMentionPicker = false
+                            }
+                        }
+                    }
+                    .onSubmit { sendMessage() }
+                    .accessibilityIdentifier(TestIds.chatMessageInput)
+
+                Button(action: { sendMessage() }) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                }
+                .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier(TestIds.chatSend)
+            }
+            .modifier(GlassInputModifier())
         }
-        .modifier(GlassInputModifier())
+    }
+}
+
+private struct MentionPickerPopup: View {
+    let members: [MemberInfo]
+    let onSelect: (MemberInfo) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(members, id: \.pubkey) { member in
+                    Button {
+                        onSelect(member)
+                    } label: {
+                        HStack(spacing: 8) {
+                            AvatarView(
+                                name: member.name,
+                                npub: member.npub,
+                                pictureUrl: member.pictureUrl,
+                                size: 28
+                            )
+                            Text(member.name ?? String(member.npub.prefix(12)))
+                                .font(.subheadline)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                    .foregroundStyle(.primary)
+                    if member.pubkey != members.last?.pubkey {
+                        Divider().padding(.leading, 48)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: 180)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 12)
     }
 }
 
@@ -153,7 +226,7 @@ private struct MessageRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text(message.content)
+                mentionStyledText()
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
@@ -161,7 +234,7 @@ private struct MessageRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contextMenu {
                         Button {
-                            UIPasteboard.general.string = message.content
+                            UIPasteboard.general.string = message.displayContent
                         } label: {
                             Label("Copy", systemImage: "doc.on.doc")
                         }
@@ -175,6 +248,36 @@ private struct MessageRow: View {
             }
             if !message.isMine { Spacer(minLength: 0) }
         }
+    }
+
+    private func mentionStyledText() -> Text {
+        guard !message.mentions.isEmpty else {
+            return Text(message.displayContent)
+        }
+
+        let content = message.displayContent
+        let sorted = message.mentions.sorted { $0.start < $1.start }
+        var result = Text("")
+        var cursor = content.startIndex
+
+        for mention in sorted {
+            let start = content.index(content.startIndex, offsetBy: Int(mention.start), limitedBy: content.endIndex) ?? content.endIndex
+            let end = content.index(content.startIndex, offsetBy: Int(mention.end), limitedBy: content.endIndex) ?? content.endIndex
+
+            if cursor < start {
+                result = result + Text(content[cursor..<start])
+            }
+            let mentionText = String(content[start..<end])
+            let mentionColor: Color = message.isMine ? .white.opacity(0.85) : .blue
+            result = result + Text(mentionText).bold().foregroundColor(mentionColor)
+            cursor = end
+        }
+
+        if cursor < content.endIndex {
+            result = result + Text(content[cursor..<content.endIndex])
+        }
+
+        return result
     }
 
     private func deliveryText(_ d: MessageDeliveryState) -> String {

@@ -101,9 +101,19 @@ pub struct ChatMessage {
     pub sender_pubkey: String,
     pub sender_name: Option<String>,
     pub content: String,
+    pub display_content: String,
+    pub mentions: Vec<Mention>,
     pub timestamp: i64,
     pub is_mine: bool,
     pub delivery: MessageDeliveryState,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct Mention {
+    pub npub: String,
+    pub display_name: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
@@ -119,4 +129,54 @@ pub fn now_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// Scan `content` for `nostr:npub1...` tokens, resolve display names via `lookup`,
+/// and return `(display_content, mentions)`.
+pub fn resolve_mentions(
+    content: &str,
+    lookup: &std::collections::HashMap<String, String>,
+) -> (String, Vec<Mention>) {
+    use nostr_sdk::prelude::PublicKey;
+
+    let mut mentions = Vec::new();
+    let mut display = String::with_capacity(content.len());
+    let mut rest = content;
+
+    while let Some(pos) = rest.find("nostr:npub1") {
+        display.push_str(&rest[..pos]);
+        let token_start = pos + "nostr:".len();
+        let npub_str = &rest[token_start..];
+        let end = npub_str
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == '!' || c == '?')
+            .unwrap_or(npub_str.len());
+        let npub = &npub_str[..end];
+
+        let display_name = if let Ok(pk) = PublicKey::parse(npub) {
+            let hex = pk.to_hex();
+            lookup
+                .get(&hex)
+                .cloned()
+                .unwrap_or_else(|| hex[..8].to_string())
+        } else {
+            npub[..npub.len().min(12)].to_string()
+        };
+
+        let mention_label = format!("@{display_name}");
+        let start = display.len() as u32;
+        let end_pos = start + mention_label.len() as u32;
+        display.push_str(&mention_label);
+
+        mentions.push(Mention {
+            npub: npub.to_string(),
+            display_name: display_name.clone(),
+            start,
+            end: end_pos,
+        });
+
+        rest = &rest[pos + "nostr:".len() + end..];
+    }
+    display.push_str(rest);
+
+    (display, mentions)
 }

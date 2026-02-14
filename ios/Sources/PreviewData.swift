@@ -217,6 +217,8 @@ enum PreviewAppState {
                 senderPubkey: samplePubkey,
                 senderName: nil,
                 content: "Hey! Are we still on for today?",
+                displayContent: "Hey! Are we still on for today?",
+                mentions: [],
                 timestamp: 1_709_000_001,
                 isMine: true,
                 delivery: .sent
@@ -226,6 +228,8 @@ enum PreviewAppState {
                 senderPubkey: samplePeerPubkey,
                 senderName: name,
                 content: "Yep. See you at the relay.",
+                displayContent: "Yep. See you at the relay.",
+                mentions: [],
                 timestamp: 1_709_000_050,
                 isMine: false,
                 delivery: .sent
@@ -235,6 +239,8 @@ enum PreviewAppState {
                 senderPubkey: samplePubkey,
                 senderName: nil,
                 content: failed ? "This one failed to send." : "On my way.",
+                displayContent: failed ? "This one failed to send." : "On my way.",
+                mentions: [],
                 timestamp: 1_709_000_100,
                 isMine: true,
                 delivery: failed ? .failed(reason: "Network timeout") : .pending
@@ -254,13 +260,16 @@ enum PreviewAppState {
 
     private static func chatViewStateLongThread() -> ChatViewState {
         let messages = (0..<20).map { idx in
-            ChatMessage(
+            let text = idx.isMultiple(of: 3)
+                ? "A long message intended to wrap across multiple lines for layout validation."
+                : "Message \(idx + 1)"
+            return ChatMessage(
                 id: "m\(idx)",
                 senderPubkey: idx.isMultiple(of: 2) ? samplePubkey : samplePeerPubkey,
                 senderName: idx.isMultiple(of: 2) ? nil : "Peer",
-                content: idx.isMultiple(of: 3)
-                    ? "A long message intended to wrap across multiple lines for layout validation."
-                    : "Message \(idx + 1)",
+                content: text,
+                displayContent: text,
+                mentions: [],
                 timestamp: Int64(1_709_000_200 + idx),
                 isMine: idx.isMultiple(of: 2),
                 delivery: .sent

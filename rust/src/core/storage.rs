@@ -1,7 +1,7 @@
 // Storage-derived state refresh + paging.
 
 use super::*;
-use crate::state::MemberInfo;
+use crate::state::{resolve_mentions, MemberInfo};
 
 impl AppCore {
     pub(super) fn refresh_all_from_storage(&mut self) {
@@ -290,11 +290,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,
                     sender_name,
                     content: m.content,
+                    display_content,
+                    mentions,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,
@@ -319,11 +322,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Pending);
+                let (display_content, mentions) = resolve_mentions(&lm.content, &sender_names);
                 msgs.push(ChatMessage {
                     id,
                     sender_pubkey: lm.sender_pubkey,
                     sender_name: None,
                     content: lm.content,
+                    display_content,
+                    mentions,
                     timestamp: lm.timestamp,
                     is_mine: true,
                     delivery,
@@ -420,11 +426,14 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,
                     sender_name,
                     content: m.content,
+                    display_content,
+                    mentions,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,

@@ -817,17 +817,21 @@ public struct ChatMessage: Equatable, Hashable {
     public var senderPubkey: String
     public var senderName: String?
     public var content: String
+    public var displayContent: String
+    public var mentions: [Mention]
     public var timestamp: Int64
     public var isMine: Bool
     public var delivery: MessageDeliveryState
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, senderPubkey: String, senderName: String?, content: String, timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState) {
+    public init(id: String, senderPubkey: String, senderName: String?, content: String, displayContent: String, mentions: [Mention], timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState) {
         self.id = id
         self.senderPubkey = senderPubkey
         self.senderName = senderName
         self.content = content
+        self.displayContent = displayContent
+        self.mentions = mentions
         self.timestamp = timestamp
         self.isMine = isMine
         self.delivery = delivery
@@ -853,6 +857,8 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
                 senderPubkey: FfiConverterString.read(from: &buf), 
                 senderName: FfiConverterOptionString.read(from: &buf), 
                 content: FfiConverterString.read(from: &buf), 
+                displayContent: FfiConverterString.read(from: &buf), 
+                mentions: FfiConverterSequenceTypeMention.read(from: &buf), 
                 timestamp: FfiConverterInt64.read(from: &buf), 
                 isMine: FfiConverterBool.read(from: &buf), 
                 delivery: FfiConverterTypeMessageDeliveryState.read(from: &buf)
@@ -864,6 +870,8 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
         FfiConverterString.write(value.senderPubkey, into: &buf)
         FfiConverterOptionString.write(value.senderName, into: &buf)
         FfiConverterString.write(value.content, into: &buf)
+        FfiConverterString.write(value.displayContent, into: &buf)
+        FfiConverterSequenceTypeMention.write(value.mentions, into: &buf)
         FfiConverterInt64.write(value.timestamp, into: &buf)
         FfiConverterBool.write(value.isMine, into: &buf)
         FfiConverterTypeMessageDeliveryState.write(value.delivery, into: &buf)
@@ -1093,6 +1101,68 @@ public func FfiConverterTypeMemberInfo_lift(_ buf: RustBuffer) throws -> MemberI
 #endif
 public func FfiConverterTypeMemberInfo_lower(_ value: MemberInfo) -> RustBuffer {
     return FfiConverterTypeMemberInfo.lower(value)
+}
+
+
+public struct Mention: Equatable, Hashable {
+    public var npub: String
+    public var displayName: String
+    public var start: UInt32
+    public var end: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(npub: String, displayName: String, start: UInt32, end: UInt32) {
+        self.npub = npub
+        self.displayName = displayName
+        self.start = start
+        self.end = end
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Mention: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMention: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Mention {
+        return
+            try Mention(
+                npub: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf), 
+                start: FfiConverterUInt32.read(from: &buf), 
+                end: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Mention, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.npub, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterUInt32.write(value.start, into: &buf)
+        FfiConverterUInt32.write(value.end, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMention_lift(_ buf: RustBuffer) throws -> Mention {
+    return try FfiConverterTypeMention.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMention_lower(_ value: Mention) -> RustBuffer {
+    return FfiConverterTypeMention.lower(value)
 }
 
 
@@ -1999,6 +2069,31 @@ fileprivate struct FfiConverterSequenceTypeMemberInfo: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMemberInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMention: FfiConverterRustBuffer {
+    typealias SwiftType = [Mention]
+
+    public static func write(_ value: [Mention], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMention.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Mention] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Mention]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMention.read(from: &buf))
         }
         return seq
     }

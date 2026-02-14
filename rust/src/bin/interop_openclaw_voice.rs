@@ -29,7 +29,9 @@ const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
 ];
 
-// Match rust/src/core/config.rs defaults: protected kind 443 publishes require relays that accept them.
+// Match rust/src/core/config.rs defaults. Historically, key packages (kind 443) were NIP-70 protected
+// in MDK, so these were relays known to accept protected events. MDK now supports unprotected key
+// packages (see mdk#168), but we keep this list for compatibility / debugging.
 const DEFAULT_KEY_PACKAGE_RELAYS: &[&str] = &[
     "wss://nostr-pub.wellorder.net",
     "wss://nostr-01.yakihonne.com",
@@ -72,12 +74,29 @@ fn parse_csv_env(key: &str) -> Option<Vec<String>> {
     if v.is_empty() { None } else { Some(v) }
 }
 
-fn default_relays() -> Vec<String> {
-    DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect()
+fn dedup_preserve_order(xs: impl IntoIterator<Item = String>) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for x in xs {
+        if seen.insert(x.clone()) {
+            out.push(x);
+        }
+    }
+    out
 }
 
 fn relays() -> Vec<String> {
-    parse_csv_env("PIKA_E2E_RELAYS").unwrap_or_else(default_relays)
+    parse_csv_env("PIKA_E2E_RELAYS").unwrap_or_else(|| {
+        // For Step 3 debugging, it's often useful to include both "popular" relays and the
+        // protected-kind-friendly set to avoid relay split-brain during group creation.
+        dedup_preserve_order(
+            DEFAULT_RELAYS
+                .iter()
+                .chain(DEFAULT_KEY_PACKAGE_RELAYS.iter())
+                .map(|s| s.to_string()),
+        )
+    })
 }
 
 fn kp_relays() -> Vec<String> {
@@ -224,6 +243,33 @@ impl AppReconciler for Collector {
     }
 }
 
+fn status_label(s: &CallStatus) -> String {
+    match s {
+        CallStatus::Offering => "Offering".into(),
+        CallStatus::Ringing => "Ringing".into(),
+        CallStatus::Connecting => "Connecting".into(),
+        CallStatus::Active => "Active".into(),
+        CallStatus::Ended { reason } => format!("Ended({reason})"),
+    }
+}
+
+fn h_tag(event: &nostr_sdk::Event) -> Option<String> {
+    event.tags.iter().find_map(|t| {
+        if t.as_slice().first().map(|s| s.as_str()) != Some("h") {
+            return None;
+        }
+        t.as_slice().get(1).map(|s| s.to_string())
+    })
+}
+
+fn is_protected_event(event: &nostr_sdk::Event) -> bool {
+    // NIP-70 protected marker is the tag `["-"]`.
+    event
+        .tags
+        .iter()
+        .any(|t| t.as_slice().first().map(|s| s.as_str()) == Some("-"))
+}
+
 fn write_config(
     data_dir: &Path,
     relays: &[String],
@@ -277,9 +323,11 @@ fn main() {
     fs::create_dir_all(&data_dir).expect("create data dir");
     write_config(&data_dir, &relays, &kp_relays, &moq_url, &broadcast_prefix);
 
+    // Keep a runtime alive for background observers.
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+
     // Best-effort: confirm the bot key package is visible before attempting CreateChat.
     // If this fails we still proceed, but CreateChat will likely toast an error.
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let kp_ok = rt.block_on(wait_for_keypackage_on_any_relay(
         &kp_relays,
         bot_pubkey,
@@ -298,6 +346,14 @@ fn main() {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
+    let (self_npub, self_pubkey_hex) = match app.state().auth {
+        AuthState::LoggedIn { npub, pubkey } => (npub, pubkey),
+        _ => unreachable!("waited for login"),
+    };
+    eprintln!("self_npub={self_npub}");
+    eprintln!("self_pubkey={self_pubkey_hex}");
+    eprintln!("bot_pubkey={}", bot_pubkey.to_hex());
+
     app.dispatch(AppAction::CreateChat {
         peer_npub: bot_npub.clone(),
     });
@@ -306,7 +362,71 @@ fn main() {
     let chat_id = app.state().current_chat.as_ref().unwrap().chat_id.clone();
     eprintln!("chat_id={chat_id}");
 
-    // Deterministic readiness check: bot should reply pong:<nonce> without invoking an LLM.
+    // Nostr wire tap: observe group-message traffic authored by us or the bot.
+    // This answers "did we publish anything for this chat" and "did the bot publish anything".
+    let relays_for_observer = relays.clone();
+    let _chat_id_for_observer = chat_id.clone();
+    let self_pubkey = PublicKey::from_hex(&self_pubkey_hex).expect("parse self pubkey");
+    rt.spawn(async move {
+        let keys = Keys::generate();
+        let client = Client::new(keys);
+        for r in relays_for_observer.iter() {
+            let _ = client.add_relay(r).await;
+        }
+        client.connect().await;
+
+        // Subscribe separately; avoids relying on multi-author filter API details.
+        let _ = client
+            .subscribe(
+                Filter::new()
+                    .kind(Kind::MlsGroupMessage)
+                    .author(self_pubkey),
+                None,
+            )
+            .await;
+        let _ = client
+            .subscribe(
+                Filter::new()
+                    .kind(Kind::MlsGroupMessage)
+                    .author(bot_pubkey),
+                None,
+            )
+            .await;
+
+        let mut rx = client.notifications();
+        loop {
+            match rx.recv().await {
+                Ok(RelayPoolNotification::Event { event, relay_url, .. }) => {
+                    let ev = event.as_ref();
+                    if ev.kind != Kind::MlsGroupMessage {
+                        continue;
+                    }
+                    let who = if ev.pubkey == self_pubkey {
+                        "self"
+                    } else if ev.pubkey == bot_pubkey {
+                        "bot"
+                    } else {
+                        "other"
+                    };
+                    let h = h_tag(ev).unwrap_or_else(|| "<none>".into());
+                    let prot = is_protected_event(ev);
+                    eprintln!(
+                        "nostr_tap who={who} relay={relay_url} kind={} id={} created_at={} h={} protected={}",
+                        ev.kind.as_u16(),
+                        ev.id.to_hex(),
+                        ev.created_at.as_secs(),
+                        h,
+                        prot
+                    );
+                }
+                Ok(_other) => {}
+                Err(_closed) => break,
+            }
+        }
+    });
+
+    // Readiness check: attempt a ping. Don't hard-block the run on a specific response, since
+    // deployed bot behavior can change (LLM routing, rate limits, etc).
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let ping = format!("ping:{nonce}");
     let pong = format!("pong:{nonce}");
@@ -314,22 +434,120 @@ fn main() {
         chat_id: chat_id.clone(),
         content: ping,
     });
-    wait_until("bot pong received", Duration::from_secs(120), || {
-        app.state()
-            .current_chat
-            .as_ref()
-            .and_then(|c| c.messages.iter().find(|m| m.content == pong))
-            .is_some()
-    });
+    let ping_window = Duration::from_secs(30);
+    let ping_start = Instant::now();
+    let mut saw_any_bot_message = false;
+    let mut saw_expected_pong = false;
+    while ping_start.elapsed() < ping_window {
+        let st = app.state();
+        let Some(chat) = st.current_chat.as_ref() else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        for m in chat.messages.iter().rev().take(10) {
+            if !m.is_mine {
+                saw_any_bot_message = true;
+            }
+            if m.content == pong {
+                saw_expected_pong = true;
+            }
+        }
+        if saw_expected_pong {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if saw_expected_pong {
+        eprintln!("pong_ok nonce={nonce}");
+    } else if saw_any_bot_message {
+        eprintln!("warn: bot replied but not with expected pong nonce={nonce}");
+    } else {
+        eprintln!("warn: no bot reply observed within {ping_window:?} (continuing)");
+    }
+
+    // Optional: send a JSON-looking message to validate server-side "message_received" logging
+    // hooks without relying on call-signaling parsing.
+    if std::env::var("PIKA_INTEROP_JSON_PROBE").ok().as_deref() == Some("1") {
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let probe = format!(r#"{{"probe":"interop_json","ts_ms":{ts_ms}}}"#);
+        app.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            content: probe,
+        });
+        std::thread::sleep(Duration::from_millis(500));
+    }
 
     app.dispatch(AppAction::StartCall { chat_id });
-    wait_until("call active", Duration::from_secs(120), || {
-        app.state()
-            .active_call
-            .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Active))
-            .unwrap_or(false)
-    });
+    let call_deadline = Instant::now() + Duration::from_secs(120);
+    let call_start = Instant::now();
+    let mut last_toast = collector.last_toast();
+    let mut last_call_status: Option<String> = None;
+    let mut last_bot_msg_id: Option<String> = None;
+    while Instant::now() < call_deadline {
+        if let Some(t) = collector.last_toast() {
+            if Some(t.clone()) != last_toast {
+                eprintln!("toast={t:?}");
+                last_toast = Some(t);
+            }
+        }
+
+        let st = app.state();
+        if let Some(chat) = st.current_chat.as_ref() {
+            if let Some(m) = chat.messages.iter().rev().find(|m| !m.is_mine) {
+                if Some(m.id.clone()) != last_bot_msg_id {
+                    // Useful for diagnosing "bot saw the call invite but treated it as a normal message".
+                    let snippet: String = m.content.chars().take(240).collect();
+                    eprintln!(
+                        "bot_msg id={} sender={} content={:?}",
+                        m.id, m.sender_pubkey, snippet
+                    );
+                    last_bot_msg_id = Some(m.id.clone());
+                }
+            }
+        }
+        if let Some(call) = st.active_call.as_ref() {
+            let lbl = status_label(&call.status);
+            if Some(lbl.clone()) != last_call_status {
+                eprintln!(
+                    "call_status t_ms={} status={} call_id={}",
+                    call_start.elapsed().as_millis(),
+                    lbl,
+                    call.call_id
+                );
+                last_call_status = Some(lbl.clone());
+            }
+            if matches!(call.status, CallStatus::Active) {
+                break;
+            }
+            if matches!(call.status, CallStatus::Ended { .. }) {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let st = app.state();
+    let is_active = st
+        .active_call
+        .as_ref()
+        .map(|c| matches!(c.status, CallStatus::Active))
+        .unwrap_or(false);
+    if !is_active {
+        eprintln!("fail: call never became Active within timeout");
+        if let Some(call) = st.active_call.as_ref() {
+            eprintln!("final_call_status={}", status_label(&call.status));
+        } else {
+            eprintln!("final_call_status=None");
+        }
+        if let Some(t) = collector.last_toast() {
+            eprintln!("last_toast={t:?}");
+        }
+        eprintln!("state_dir={}", data_dir.to_string_lossy());
+        std::process::exit(1);
+    }
 
     // Wait for debug to show up.
     wait_until("call debug present", Duration::from_secs(30), || {

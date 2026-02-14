@@ -171,7 +171,7 @@ impl AppCore {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
-        let (content, tags) = match sess
+        let (content, tags, _hash_ref) = match sess
             .mdk
             .create_key_package_for_event(&sess.keys.public_key(), relays.clone())
         {

@@ -12,6 +12,7 @@ struct ChatView: View {
     @State private var scrollPosition: String?
     @State private var isAtBottom = false
     @State private var showMentionPicker = false
+    @State private var mentionQuery = ""
     @State private var insertedMentions: [(display: String, npub: String)] = []
 
     private let scrollButtonBottomPadding: CGFloat = 12
@@ -159,14 +160,15 @@ struct ChatView: View {
     private func messageInputBar(chat: ChatViewState) -> some View {
         VStack(spacing: 0) {
             if showMentionPicker, chat.isGroup {
-                MentionPickerPopup(members: chat.members) { member in
+                MentionPickerPopup(members: chat.members, query: mentionQuery) { member in
                     let displayTag = "@\(member.name ?? String(member.npub.prefix(8)))"
-                    // Remove the trailing "@" that triggered the picker.
-                    if messageText.hasSuffix("@") {
-                        messageText.removeLast()
+                    // Remove the "@" + any partial query that triggered the picker.
+                    if let atIdx = messageText.lastIndex(of: "@") {
+                        messageText = String(messageText[..<atIdx])
                     }
                     messageText += "\(displayTag) "
                     insertedMentions.append((display: displayTag, npub: member.npub))
+                    mentionQuery = ""
                     showMentionPicker = false
                 }
             }
@@ -194,12 +196,25 @@ struct ChatView: View {
                     }
                     .onChange(of: messageText) { _, newValue in
                         if chat.isGroup {
-                            let triggered = newValue.hasSuffix("@") &&
-                                (newValue.count == 1 || newValue.dropLast().hasSuffix(" "))
-                            if triggered {
-                                showMentionPicker = true
-                            } else if showMentionPicker && !newValue.hasSuffix("@") {
+                            if let atIdx = newValue.lastIndex(of: "@") {
+                                let prefix = newValue[..<atIdx]
+                                let isWordStart = prefix.isEmpty || prefix.last == " " || prefix.last == "\n"
+                                if isWordStart {
+                                    let query = String(newValue[newValue.index(after: atIdx)...])
+                                    if !query.contains(" ") {
+                                        showMentionPicker = true
+                                        mentionQuery = query
+                                    } else {
+                                        showMentionPicker = false
+                                        mentionQuery = ""
+                                    }
+                                } else if showMentionPicker {
+                                    showMentionPicker = false
+                                    mentionQuery = ""
+                                }
+                            } else if showMentionPicker {
                                 showMentionPicker = false
+                                mentionQuery = ""
                             }
                         }
                     }
@@ -219,12 +234,22 @@ struct ChatView: View {
 
 private struct MentionPickerPopup: View {
     let members: [MemberInfo]
+    let query: String
     let onSelect: (MemberInfo) -> Void
+
+    private var filteredMembers: [MemberInfo] {
+        guard !query.isEmpty else { return members }
+        let q = query.lowercased()
+        return members.filter { member in
+            if let name = member.name, name.lowercased().hasPrefix(q) { return true }
+            return member.npub.lowercased().hasPrefix(q)
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ForEach(members, id: \.pubkey) { member in
+                ForEach(filteredMembers, id: \.pubkey) { member in
                     Button {
                         onSelect(member)
                     } label: {
@@ -244,13 +269,13 @@ private struct MentionPickerPopup: View {
                         .padding(.vertical, 8)
                     }
                     .foregroundStyle(.primary)
-                    if member.pubkey != members.last?.pubkey {
+                    if member.pubkey != filteredMembers.last?.pubkey {
                         Divider().padding(.leading, 48)
                     }
                 }
             }
         }
-        .frame(maxHeight: 180)
+        .frame(maxHeight: min(CGFloat(filteredMembers.count) * 44, 180))
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 12)

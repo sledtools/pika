@@ -154,6 +154,13 @@ struct ChatView: View {
                     .frame(minHeight: 36, maxHeight: 150)
                     .fixedSize(horizontal: false, vertical: true)
                     .scrollContentBackground(.hidden)
+                    .onKeyPress(.return, phases: .down) { keyPress in
+                        if keyPress.modifiers.contains(.shift) {
+                            return .ignored
+                        }
+                        sendMessage()
+                        return .handled
+                    }
                     .overlay(alignment: .topLeading) {
                         if messageText.isEmpty {
                             Text("Message")

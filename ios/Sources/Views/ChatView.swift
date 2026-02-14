@@ -1,5 +1,6 @@
 import SwiftUI
 import MarkdownUI
+import WebKit
 
 struct ChatView: View {
     let chatId: String
@@ -290,11 +291,13 @@ private struct PikaPrompt: Decodable {
 private enum MessageSegment: Identifiable {
     case markdown(String)
     case pikaPrompt(PikaPrompt)
+    case pikaHtml(String)
 
     var id: String {
         switch self {
         case .markdown(let text): return "md-\(text.hashValue)"
         case .pikaPrompt(let prompt): return "prompt-\(prompt.title.hashValue)"
+        case .pikaHtml(let html): return "html-\(html.hashValue)"
         }
     }
 }
@@ -313,12 +316,15 @@ private func parseMessageSegments(_ content: String) -> [MessageSegment] {
         let blockType = String(match.output.1)
         let blockBody = String(match.output.2).trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if blockType == "prompt",
-           let data = blockBody.data(using: .utf8),
-           let prompt = try? JSONDecoder().decode(PikaPrompt.self, from: data) {
-            segments.append(.pikaPrompt(prompt))
-        } else {
-            // Unknown pika block — render as markdown code block
+        switch blockType {
+        case "prompt":
+            if let data = blockBody.data(using: .utf8),
+               let prompt = try? JSONDecoder().decode(PikaPrompt.self, from: data) {
+                segments.append(.pikaPrompt(prompt))
+            }
+        case "html":
+            segments.append(.pikaHtml(blockBody))
+        default:
             segments.append(.markdown("```\(blockType)\n\(blockBody)\n```"))
         }
 
@@ -466,6 +472,8 @@ private struct MessageBubble: View {
                 markdownBubble(text: text)
             case .pikaPrompt(let prompt):
                 PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
+            case .pikaHtml(let html):
+                PikaHtmlView(html: html, onSendMessage: onSendMessage)
             }
         }
         .contextMenu {
@@ -603,6 +611,137 @@ private struct PikaPromptView: View {
         .padding(12)
         .background(Color.gray.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: - Pika HTML view
+
+private struct PikaHtmlView: View {
+    let html: String
+    let onSendMessage: @MainActor (String) -> Void
+
+    @State private var contentHeight: CGFloat = 100
+    @State private var showFullScreen = false
+
+    var body: some View {
+        PikaWebView(html: html, contentHeight: $contentHeight, onSendMessage: onSendMessage, interactive: false)
+            .frame(height: min(contentHeight, 400))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .background(Color.gray.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .contentShape(Rectangle())
+            .onTapGesture { showFullScreen = true }
+            .fullScreenCover(isPresented: $showFullScreen) {
+                PikaHtmlFullScreen(html: html, onSendMessage: onSendMessage, isPresented: $showFullScreen)
+            }
+    }
+}
+
+private struct PikaHtmlFullScreen: View {
+    let html: String
+    let onSendMessage: @MainActor (String) -> Void
+    @Binding var isPresented: Bool
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                PikaWebView(html: html, contentHeight: $contentHeight, onSendMessage: onSendMessage)
+                    .frame(height: contentHeight)
+            }
+            .navigationTitle("HTML")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { isPresented = false }
+                }
+            }
+        }
+    }
+}
+
+private struct PikaWebView: UIViewRepresentable {
+    let html: String
+    @Binding var contentHeight: CGFloat
+    let onSendMessage: @MainActor (String) -> Void
+    var interactive: Bool = true
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let userContentController = WKUserContentController()
+        userContentController.add(context.coordinator, name: "pikaSend")
+
+        let bridgeScript = WKUserScript(
+            source: "window.pika = { send: function(text) { window.webkit.messageHandlers.pikaSend.postMessage(text); } };",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        userContentController.addUserScript(bridgeScript)
+        config.userContentController = userContentController
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.scrollView.isScrollEnabled = false
+        webView.isUserInteractionEnabled = interactive
+        webView.navigationDelegate = context.coordinator
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let wrapped = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+        <style>
+        :root { color-scheme: light dark; }
+        body { margin: 8px; font-family: -apple-system, sans-serif; background: transparent; }
+        </style>
+        </head>
+        <body>\(html)</body>
+        </html>
+        """
+        webView.loadHTMLString(wrapped, baseURL: nil)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        let parent: PikaWebView
+
+        init(parent: PikaWebView) {
+            self.parent = parent
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "pikaSend", let text = message.body as? String {
+                Task { @MainActor in
+                    parent.onSendMessage(text)
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.evaluateJavaScript("document.body.scrollHeight") { [weak self] result, _ in
+                if let height = result as? CGFloat {
+                    Task { @MainActor in
+                        self?.parent.contentHeight = height
+                    }
+                }
+            }
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.navigationType == .linkActivated {
+                decisionHandler(.cancel)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
     }
 }
 

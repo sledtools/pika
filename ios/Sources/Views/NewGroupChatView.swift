@@ -220,12 +220,14 @@ struct NewGroupChatView: View {
             }
             .disabled(isLoading)
 
-            Button {
-                showScanner = true
-            } label: {
-                Image(systemName: "qrcode.viewfinder")
+            if ProcessInfo.processInfo.isiOSAppOnMac == false {
+                Button {
+                    showScanner = true
+                } label: {
+                    Image(systemName: "qrcode.viewfinder")
+                }
+                .disabled(isLoading)
             }
-            .disabled(isLoading)
 
             Button("Add") {
                 addManualMember()

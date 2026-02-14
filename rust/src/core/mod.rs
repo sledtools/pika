@@ -844,13 +844,11 @@ impl AppCore {
                     })
                     .collect();
                 // Sort: names first (alphabetical), then npub-only entries.
-                follow_list.sort_by(|a, b| {
-                    match (&a.name, &b.name) {
-                        (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => a.npub.cmp(&b.npub),
-                    }
+                follow_list.sort_by(|a, b| match (&a.name, &b.name) {
+                    (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.npub.cmp(&b.npub),
                 });
                 self.state.follow_list = follow_list;
                 self.set_busy(|b| b.fetching_follow_list = false);

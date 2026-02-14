@@ -28,6 +28,10 @@ final class AppManager: AppReconciler {
         // Optional relay override (matches `tools/run-ios` environment variables).
         let relays = (env["PIKA_RELAY_URLS"] ?? env["PIKA_RELAY_URL"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let kpRelays = (env["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? env["PIKA_KP_RELAY_URLS"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let callMoqUrl = (env["PIKA_CALL_MOQ_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedCallMoqUrl = callMoqUrl.isEmpty ? "https://moq.local/anon" : callMoqUrl
+        let resolvedCallBroadcastPrefix = callBroadcastPrefix.isEmpty ? "pika/calls" : callBroadcastPrefix
         if !relays.isEmpty || !kpRelays.isEmpty {
             let relayItems = relays
                 .split(separator: ",")
@@ -49,6 +53,9 @@ final class AppManager: AppReconciler {
                 "disable_network": false,
                 "relay_urls": relayItems,
                 "key_package_relay_urls": kpItems,
+                // Keep voice-call controls usable by default in launcher-driven dev runs.
+                "call_moq_url": resolvedCallMoqUrl,
+                "call_broadcast_prefix": resolvedCallBroadcastPrefix,
             ]
 
             if let data = try? JSONSerialization.data(withJSONObject: obj, options: []) {

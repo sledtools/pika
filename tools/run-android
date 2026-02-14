@@ -218,6 +218,8 @@ maybe_write_config() {
 
   local relays="${PIKA_RELAY_URLS:-${PIKA_RELAY_URL:-}}"
   local kp_relays="${PIKA_KEY_PACKAGE_RELAY_URLS:-${PIKA_KP_RELAY_URLS:-}}"
+  local call_moq_url="${PIKA_CALL_MOQ_URL:-https://moq.local/anon}"
+  local call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
 
   # Defaults aimed at quick-start interop with the deployed Rust bot.
   if [ -z "${relays:-}" ]; then
@@ -236,7 +238,13 @@ relays = "${relays}".strip()
 kp_relays = "${kp_relays}".strip()
 relay_items = [x.strip() for x in relays.split(",") if x.strip()]
 kp_items = [x.strip() for x in kp_relays.split(",") if x.strip()]
-print(json.dumps({"disable_network": False, "relay_urls": relay_items, "key_package_relay_urls": kp_items}))
+print(json.dumps({
+  "disable_network": False,
+  "relay_urls": relay_items,
+  "key_package_relay_urls": kp_items,
+  "call_moq_url": "${call_moq_url}",
+  "call_broadcast_prefix": "${call_broadcast_prefix}",
+}))
 PY
   )"
 

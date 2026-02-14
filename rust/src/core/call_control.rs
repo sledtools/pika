@@ -1,10 +1,15 @@
 use super::*;
 use crate::state::CallStatus;
+use mdk_core::encrypted_media::crypto::{derive_encryption_key, DEFAULT_SCHEME_VERSION};
+use nostr_sdk::hashes::{sha256, Hash as _};
+use pika_media::crypto::{opaque_participant_label, FrameKeyMaterial};
 use serde::{Deserialize, Serialize};
 
 const CALL_NS: &str = "pika.call";
 const CALL_PROTOCOL_VERSION: u8 = 1;
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
+const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
+const RELAY_AUTH_HEX_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct CallTrackSpec {
@@ -31,6 +36,7 @@ impl CallTrackSpec {
 pub(super) struct CallSessionParams {
     pub moq_url: String,
     pub broadcast_base: String,
+    pub relay_auth: String,
     pub tracks: Vec<CallTrackSpec>,
 }
 
@@ -85,6 +91,46 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn context_hash(parts: &[&[u8]]) -> [u8; 32] {
+    let mut buf = Vec::new();
+    for part in parts {
+        let len: u32 = part.len().try_into().unwrap_or(u32::MAX);
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(part);
+    }
+    sha256::Hash::hash(&buf).to_byte_array()
+}
+
+fn valid_relay_auth_token(token: &str) -> bool {
+    let trimmed = token.trim();
+    let Some(hex_part) = trimmed.strip_prefix(RELAY_AUTH_CAP_PREFIX) else {
+        return false;
+    };
+    hex_part.len() == RELAY_AUTH_HEX_LEN && hex_part.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn key_id_for_sender(sender_id: &[u8]) -> u64 {
+    let digest = context_hash(&[b"pika.call.media.keyid.v1", sender_id]);
+    u64::from_be_bytes(digest[0..8].try_into().expect("hash width"))
+}
+
+fn call_shared_seed(
+    call_id: &str,
+    session: &CallSessionParams,
+    local_pubkey_hex: &str,
+    peer_pubkey_hex: &str,
+) -> String {
+    let (left, right) = if local_pubkey_hex <= peer_pubkey_hex {
+        (local_pubkey_hex, peer_pubkey_hex)
+    } else {
+        (peer_pubkey_hex, local_pubkey_hex)
+    };
+    format!(
+        "pika-call-media-v1|{call_id}|{}|{}|{}|{}",
+        session.moq_url, session.broadcast_base, left, right
+    )
 }
 
 pub(super) fn parse_call_signal(content: &str) -> Option<ParsedCallSignal> {
@@ -204,6 +250,7 @@ impl AppCore {
         Some(CallSessionParams {
             moq_url,
             broadcast_base: format!("{prefix}/{call_id}"),
+            relay_auth: String::new(),
             tracks: vec![CallTrackSpec::audio0_opus_default()],
         })
     }
@@ -217,6 +264,180 @@ impl AppCore {
 
     fn current_pubkey_hex(&self) -> Option<String> {
         self.session.as_ref().map(|s| s.keys.public_key().to_hex())
+    }
+
+    fn derive_mls_media_crypto_context(
+        &self,
+        chat_id: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+        local_pubkey_hex: &str,
+        peer_pubkey_hex: &str,
+    ) -> Result<super::call_runtime::CallMediaCryptoContext, String> {
+        let sess = self
+            .session
+            .as_ref()
+            .ok_or_else(|| "no active session".to_string())?;
+        let group_entry = sess
+            .groups
+            .get(chat_id)
+            .ok_or_else(|| "chat group not found".to_string())?;
+        let group = sess
+            .mdk
+            .get_group(&group_entry.mls_group_id)
+            .map_err(|e| format!("load mls group failed: {e}"))?
+            .ok_or_else(|| "mls group not found".to_string())?;
+
+        let shared_seed = call_shared_seed(call_id, session, local_pubkey_hex, peer_pubkey_hex);
+
+        let track = "audio0";
+        let generation = 0u8;
+        let tx_hash = context_hash(&[
+            b"pika.call.media.base.v1",
+            shared_seed.as_bytes(),
+            local_pubkey_hex.as_bytes(),
+            track.as_bytes(),
+        ]);
+        let rx_hash = context_hash(&[
+            b"pika.call.media.base.v1",
+            shared_seed.as_bytes(),
+            peer_pubkey_hex.as_bytes(),
+            track.as_bytes(),
+        ]);
+        let root_hash = context_hash(&[
+            b"pika.call.media.root.v1",
+            shared_seed.as_bytes(),
+            track.as_bytes(),
+        ]);
+
+        let tx_filename = format!("call/{call_id}/{track}/{local_pubkey_hex}");
+        let rx_filename = format!("call/{call_id}/{track}/{peer_pubkey_hex}");
+        let root_filename = format!("call/{call_id}/{track}/group-root");
+
+        let tx_base = *derive_encryption_key(
+            &sess.mdk,
+            &group_entry.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &tx_hash,
+            "application/pika-call",
+            &tx_filename,
+        )
+        .map_err(|e| format!("derive tx media key failed: {e}"))?;
+
+        let rx_base = *derive_encryption_key(
+            &sess.mdk,
+            &group_entry.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &rx_hash,
+            "application/pika-call",
+            &rx_filename,
+        )
+        .map_err(|e| format!("derive rx media key failed: {e}"))?;
+
+        let group_root = *derive_encryption_key(
+            &sess.mdk,
+            &group_entry.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &root_hash,
+            "application/pika-call",
+            &root_filename,
+        )
+        .map_err(|e| format!("derive media group root failed: {e}"))?;
+
+        let tx_keys = FrameKeyMaterial::from_base_key(
+            tx_base,
+            key_id_for_sender(local_pubkey_hex.as_bytes()),
+            group.epoch,
+            generation,
+            track,
+            group_root,
+        );
+        let rx_keys = FrameKeyMaterial::from_base_key(
+            rx_base,
+            key_id_for_sender(peer_pubkey_hex.as_bytes()),
+            group.epoch,
+            generation,
+            track,
+            group_root,
+        );
+
+        Ok(super::call_runtime::CallMediaCryptoContext {
+            tx_keys,
+            rx_keys,
+            local_participant_label: opaque_participant_label(
+                &group_root,
+                local_pubkey_hex.as_bytes(),
+            ),
+            peer_participant_label: opaque_participant_label(
+                &group_root,
+                peer_pubkey_hex.as_bytes(),
+            ),
+        })
+    }
+
+    fn derive_relay_auth_token(
+        &self,
+        chat_id: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+        local_pubkey_hex: &str,
+        peer_pubkey_hex: &str,
+    ) -> Result<String, String> {
+        let sess = self
+            .session
+            .as_ref()
+            .ok_or_else(|| "no active session".to_string())?;
+        let group_entry = sess
+            .groups
+            .get(chat_id)
+            .ok_or_else(|| "chat group not found".to_string())?;
+        let shared_seed = call_shared_seed(call_id, session, local_pubkey_hex, peer_pubkey_hex);
+        let auth_hash = context_hash(&[
+            b"pika.call.relay.auth.seed.v1",
+            shared_seed.as_bytes(),
+            call_id.as_bytes(),
+        ]);
+        let auth_key = *derive_encryption_key(
+            &sess.mdk,
+            &group_entry.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &auth_hash,
+            "application/pika-call-auth",
+            &format!("call/{call_id}/relay-auth"),
+        )
+        .map_err(|e| format!("derive relay auth token failed: {e}"))?;
+        let token_hash = context_hash(&[
+            b"pika.call.relay.auth.token.v1",
+            &auth_key,
+            call_id.as_bytes(),
+            session.moq_url.as_bytes(),
+            session.broadcast_base.as_bytes(),
+        ]);
+        Ok(format!("capv1_{}", hex::encode(token_hash)))
+    }
+
+    fn validate_relay_auth_token(
+        &self,
+        chat_id: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+        local_pubkey_hex: &str,
+        peer_pubkey_hex: &str,
+    ) -> Result<(), String> {
+        if !valid_relay_auth_token(&session.relay_auth) {
+            return Err("call relay auth token format invalid".to_string());
+        }
+        let expected = self.derive_relay_auth_token(
+            chat_id,
+            call_id,
+            session,
+            local_pubkey_hex,
+            peer_pubkey_hex,
+        )?;
+        if expected != session.relay_auth {
+            return Err("call relay auth mismatch".to_string());
+        }
+        Ok(())
     }
 
     fn publish_call_signal(
@@ -328,9 +549,33 @@ impl AppCore {
             self.toast("Chat peer not found");
             return;
         };
-        let Some(session) = self.call_session_from_config(&call_id) else {
+        let Some(mut session) = self.call_session_from_config(&call_id) else {
             self.toast("Call config missing: set `call_moq_url` in pika_config.json");
             return;
+        };
+        let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
+            self.toast("No local pubkey for call setup");
+            return;
+        };
+        let peer_pubkey_hex = match PublicKey::parse(&peer_npub) {
+            Ok(pk) => pk.to_hex(),
+            Err(e) => {
+                self.toast(format!("Peer pubkey parse failed: {e}"));
+                return;
+            }
+        };
+        session.relay_auth = match self.derive_relay_auth_token(
+            chat_id,
+            &call_id,
+            &session,
+            &local_pubkey_hex,
+            &peer_pubkey_hex,
+        ) {
+            Ok(token) => token,
+            Err(err) => {
+                self.toast(format!("Call relay auth setup failed: {err}"));
+                return;
+            }
         };
 
         self.state.active_call = Some(crate::state::CallState {
@@ -370,27 +615,10 @@ impl AppCore {
         if !matches!(active.status, CallStatus::Ringing) {
             return;
         }
-        let session = self
-            .call_session_params
-            .clone()
-            .or_else(|| self.call_session_from_config(&active.call_id));
-        let Some(session) = session else {
-            self.toast("Call config missing: set `call_moq_url` in pika_config.json");
+        let Some(session) = self.call_session_params.clone() else {
+            self.toast("Missing call session parameters");
             return;
         };
-
-        let payload =
-            match build_call_signal_json(&active.call_id, OutgoingCallSignal::Accept(&session)) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.toast(format!("Serialize accept failed: {e}"));
-                    return;
-                }
-            };
-        if let Err(e) = self.publish_call_signal(chat_id, payload, "Call accept publish failed") {
-            self.toast(e);
-            return;
-        }
 
         let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
             self.toast("No local pubkey for call runtime");
@@ -405,11 +633,48 @@ impl AppCore {
                 return;
             }
         };
-        if let Err(e) = self.call_runtime.on_call_connecting(
+        if let Err(err) = self.validate_relay_auth_token(
+            chat_id,
             &active.call_id,
             &session,
             &local_pubkey_hex,
             &peer_pubkey_hex,
+        ) {
+            self.toast(format!("Call relay auth verification failed: {err}"));
+            self.send_call_reject(chat_id, &active.call_id, "auth_failed");
+            self.end_call_local("auth_failed".to_string());
+            return;
+        }
+        let payload =
+            match build_call_signal_json(&active.call_id, OutgoingCallSignal::Accept(&session)) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.toast(format!("Serialize accept failed: {e}"));
+                    return;
+                }
+            };
+        if let Err(e) = self.publish_call_signal(chat_id, payload, "Call accept publish failed") {
+            self.toast(e);
+            return;
+        }
+        let media_crypto = match self.derive_mls_media_crypto_context(
+            chat_id,
+            &active.call_id,
+            &session,
+            &local_pubkey_hex,
+            &peer_pubkey_hex,
+        ) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                self.toast(format!("Call media key setup failed: {err}"));
+                self.end_call_local("runtime_error".to_string());
+                return;
+            }
+        };
+        if let Err(e) = self.call_runtime.on_call_connecting(
+            &active.call_id,
+            &session,
+            media_crypto,
             self.config.call_audio_backend.as_deref(),
             self.core_sender.clone(),
         ) {
@@ -498,13 +763,16 @@ impl AppCore {
         self.emit_call_state();
     }
 
+    fn send_call_reject(&mut self, chat_id: &str, call_id: &str, reason: &str) {
+        let payload = match build_call_signal_json(call_id, OutgoingCallSignal::Reject { reason }) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = self.publish_call_signal(chat_id, payload, "Call reject publish failed");
+    }
+
     fn send_busy_reject(&mut self, chat_id: &str, call_id: &str) {
-        let payload =
-            match build_call_signal_json(call_id, OutgoingCallSignal::Reject { reason: "busy" }) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-        let _ = self.publish_call_signal(chat_id, payload, "Busy reject publish failed");
+        self.send_call_reject(chat_id, call_id, "busy");
     }
 
     pub(super) fn handle_incoming_call_signal(
@@ -521,6 +789,23 @@ impl AppCore {
             ParsedCallSignal::Invite { call_id, session } => {
                 if self.has_live_call() {
                     self.send_busy_reject(chat_id, &call_id);
+                    return;
+                }
+                let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
+                    self.toast("No local pubkey for incoming call");
+                    self.send_call_reject(chat_id, &call_id, "auth_failed");
+                    return;
+                };
+                let peer_pubkey_hex = sender_pubkey.to_hex();
+                if let Err(err) = self.validate_relay_auth_token(
+                    chat_id,
+                    &call_id,
+                    &session,
+                    &local_pubkey_hex,
+                    &peer_pubkey_hex,
+                ) {
+                    self.toast(format!("Rejected call invite: {err}"));
+                    self.send_call_reject(chat_id, &call_id, "auth_failed");
                     return;
                 }
                 self.call_session_params = Some(session);
@@ -545,7 +830,6 @@ impl AppCore {
                 {
                     return;
                 }
-                self.call_session_params = Some(session);
                 let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
                     self.toast("No local pubkey for call runtime");
                     self.end_call_local("runtime_error".to_string());
@@ -559,16 +843,44 @@ impl AppCore {
                         return;
                     }
                 };
-                let Some(params) = self.call_session_params.as_ref() else {
-                    self.toast("Missing call session parameters");
-                    self.end_call_local("runtime_error".to_string());
+                if let Some(expected) = self.call_session_params.as_ref() {
+                    if expected.relay_auth != session.relay_auth {
+                        self.toast("Call relay auth mismatch between invite and accept");
+                        self.end_call_local("auth_failed".to_string());
+                        return;
+                    }
+                }
+                if let Err(err) = self.validate_relay_auth_token(
+                    chat_id,
+                    &call_id,
+                    &session,
+                    &local_pubkey_hex,
+                    &peer_pubkey_hex,
+                ) {
+                    self.toast(format!("Call relay auth verification failed: {err}"));
+                    self.end_call_local("auth_failed".to_string());
                     return;
+                }
+                self.call_session_params = Some(session.clone());
+                let params = session;
+                let media_crypto = match self.derive_mls_media_crypto_context(
+                    chat_id,
+                    &call_id,
+                    &params,
+                    &local_pubkey_hex,
+                    &peer_pubkey_hex,
+                ) {
+                    Ok(ctx) => ctx,
+                    Err(err) => {
+                        self.toast(format!("Call media key setup failed: {err}"));
+                        self.end_call_local("runtime_error".to_string());
+                        return;
+                    }
                 };
                 if let Err(e) = self.call_runtime.on_call_connecting(
                     &call_id,
-                    params,
-                    &local_pubkey_hex,
-                    &peer_pubkey_hex,
+                    &params,
+                    media_crypto,
                     self.config.call_audio_backend.as_deref(),
                     self.core_sender.clone(),
                 ) {
@@ -622,6 +934,7 @@ mod tests {
         let session = CallSessionParams {
             moq_url: "https://moq.example.com/anon".to_string(),
             broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: "capv1_test_token".to_string(),
             tracks: vec![CallTrackSpec::audio0_opus_default()],
         };
         let json = build_call_signal_json(call_id, OutgoingCallSignal::Invite(&session)).unwrap();
@@ -634,6 +947,7 @@ mod tests {
                 assert_eq!(got_call_id, call_id);
                 assert_eq!(got_session.moq_url, "https://moq.example.com/anon");
                 assert_eq!(got_session.broadcast_base, format!("pika/calls/{call_id}"));
+                assert_eq!(got_session.relay_auth, "capv1_test_token");
                 assert_eq!(got_session.tracks.len(), 1);
                 assert_eq!(got_session.tracks[0].name, "audio0");
             }
@@ -646,5 +960,14 @@ mod tests {
         let msg = r#"{"foo":"bar"}"#;
         assert!(parse_call_signal(msg).is_none());
         assert!(!is_call_signal_payload(msg));
+    }
+
+    #[test]
+    fn validates_relay_auth_token_shape() {
+        assert!(valid_relay_auth_token(
+            "capv1_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!valid_relay_auth_token("capv1_short"));
+        assert!(!valid_relay_auth_token("notcap_0123456789abcdef"));
     }
 }

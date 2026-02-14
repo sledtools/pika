@@ -15,6 +15,7 @@
 		5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FE3F3E8BA33932B132B693 /* ChatView.swift */; };
 		77E9D3F87F29E747F53DD5F0 /* PikaUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8600EE3AFD44A8B726A64716 /* PikaUITests.swift */; };
 		783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366C05B721835967C3BE5418 /* ChatListView.swift */; };
+		817D08E342C132B5784F1ED1 /* CallAudioSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11B93B14504401A3B6D1FE8E /* CallAudioSessionCoordinator.swift */; };
 		8DE9696EA83BB0459D17C997 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 48C80C272FFE8C28F8E0A54E /* Assets.xcassets */; };
 		9581B9688EDC90BCBC177E47 /* TestIds.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FAE9ECBDFC0A976452024F /* TestIds.swift */; };
 		970D12403533E203A33FBEFC /* NewChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62170468ABECD8AAA8B6B6A /* NewChatView.swift */; };
@@ -47,6 +48,7 @@
 /* Begin PBXFileReference section */
 		05B2B1856254D8FE240BC93A /* AppManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppManager.swift; sourceTree = "<group>"; };
 		0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyNpubQrSheet.swift; sourceTree = "<group>"; };
+		11B93B14504401A3B6D1FE8E /* CallAudioSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallAudioSessionCoordinator.swift; sourceTree = "<group>"; };
 		2510455883E1CDFB6D589F5C /* pika_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pika_core.swift; sourceTree = "<group>"; };
 		276F120E43A9DF389448FE5C /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStoreTests.swift; sourceTree = "<group>"; };
@@ -86,6 +88,7 @@
 			children = (
 				05B2B1856254D8FE240BC93A /* AppManager.swift */,
 				48C80C272FFE8C28F8E0A54E /* Assets.xcassets */,
+				11B93B14504401A3B6D1FE8E /* CallAudioSessionCoordinator.swift */,
 				42E962F7911EF0441F706C10 /* ContentView.swift */,
 				5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */,
 				E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */,
@@ -292,6 +295,7 @@
 			files = (
 				A15307C1B4692DC5925858CE /* AppManager.swift in Sources */,
 				F69233C493C4DF364AB6B468 /* AvatarView.swift in Sources */,
+				817D08E342C132B5784F1ED1 /* CallAudioSessionCoordinator.swift in Sources */,
 				783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */,
 				5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */,
 				FE739725B724B1944145C8EF /* ContentView.swift in Sources */,

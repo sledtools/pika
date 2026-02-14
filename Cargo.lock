@@ -2473,6 +2473,11 @@ dependencies = [
 [[package]]
 name = "pika-media"
 version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "sha2",
+]
 
 [[package]]
 name = "pika_core"

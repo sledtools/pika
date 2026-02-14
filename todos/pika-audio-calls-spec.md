@@ -464,3 +464,37 @@ For v0 1:1: 2 broadcasts, 2 subscriptions. The same code handles N participants 
 | Anonymous relay access | Call IDs are random UUIDs; auth hardening before production |
 | Opus cross-compilation (iOS) | Verify libopus links on iOS target early in Phase 1 |
 | Nostr signaling latency | Reserved MOQ control track for future in-call migration |
+
+## 13. Execution Status (2026-02-13)
+
+Clarification: Phase 3 is complete. The only phase marked partial in 0-8 is Phase 2.
+
+| Phase | Status | Notes |
+|------|--------|-------|
+| 0. Control scaffold | Complete | Call signaling/state machine + tests are in place. |
+| 1. MOQ media plumbing (synthetic) | Complete | In-memory media session + Opus path + frame/order tests. |
+| 2. Push-to-talk audio | Partial | Rust audio backend implemented; full device/manual QA remains. |
+| 3. Bot echo | Complete | Implemented in `openclaw-marmot`; `scripts/phase3_audio.sh` passes (`sent_frames=50`, `echoed_frames=50`). |
+| 4. Bot STT -> text | Complete | Implemented in `openclaw-marmot` daemon/sidecar flow (`call_stt.rs`, transcript events/emit path). |
+| 5. Full duplex audio | Complete | Simultaneous send/receive, jitter prefill/bounds, overlap verification in local relay E2E. |
+| 6. Encryption hardening | Complete | MLS-derived frame keys are required (fallback removed), opaque participant labels are enforced, relay auth capability token format/match is enforced in signaling/session, frame nonce now uses full counter width, replay-window drops duplicate/stale decrypted frames, and tx counter exhaustion is handled (unit + local relay E2E coverage). |
+| 7. Android port | Complete | Android `cpal` path compiles; mic permission + audio focus shims are wired; `just android-rust`, `just android-assemble`, `just android-ui-test`, and `just android-ui-e2e-local` pass. |
+| 8. Bot full duplex voice | Complete (in-memory lane) | `openclaw-marmot` now supports `call_transcript_final -> agent reply -> send_audio_response -> TTS -> Opus publish`; sidecar/plugin command path is wired and verified via `just pre-merge` + `phase8-voice` lane. |
+| 9. Video | Pending | Not started. |
+
+## 14. Pinned Follow-Ups / Blockers
+
+1. Call media key derivation still uses an interim MDK path.
+Current implementation derives call media keys from MLS group exporter material via MDK encrypted-media helper APIs. Replace with a dedicated first-class call media exporter API to reduce coupling.
+
+2. Real cross-process MOQ media transport is still pending.
+Current call media tests use the in-memory relay/session transport. To validate full real-device bot voice calls over process boundaries, switch to real MOQ relay transport in both `pika` and `openclaw-marmot` lanes.
+
+3. Real speech E2E is not yet scripted as one command against the deployed bot.
+The duplex voice pipeline is wired (STT -> LLM -> TTS -> Opus), but there is no single committed scenario that drives a live deployed call end-to-end with OpenAI keys and asserts audible round-trip.
+
+4. Keep OpenClaw phase-4 script/plugin-id wiring in sync across checkouts.
+The working config uses plugin id `openclaw-marmot` in `scripts/phase4_openclaw_marmot.sh`. Older copies that still reference `marmot` under `plugins.entries` will fail startup.
+
+5. Android build pitfall: raw `cargo check --target aarch64-linux-android` is not a valid signal in this nix shell.
+Use `cargo ndk ... -P 26` (now wired in `just android-rust` and `rmp-cli` bindings build) to ensure the correct NDK linker/sysroot and AAudio availability.

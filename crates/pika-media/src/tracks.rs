@@ -1,4 +1,4 @@
-const PUBKEY_HEX_LEN: usize = 64;
+const PARTICIPANT_LABEL_HEX_LEN: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackSpec {
@@ -56,14 +56,14 @@ pub fn validate_broadcast_base(broadcast_base: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn broadcast_path(broadcast_base: &str, participant_hex: &str) -> Result<String, String> {
+pub fn broadcast_path(broadcast_base: &str, participant_label_hex: &str) -> Result<String, String> {
     validate_broadcast_base(broadcast_base)?;
-    if participant_hex.len() != PUBKEY_HEX_LEN
-        || !participant_hex.chars().all(|c| c.is_ascii_hexdigit())
+    if participant_label_hex.len() != PARTICIPANT_LABEL_HEX_LEN
+        || !participant_label_hex.chars().all(|c| c.is_ascii_hexdigit())
     {
-        return Err("participant_hex must be a 64-char hex pubkey".to_string());
+        return Err("participant label must be a 64-char hex string".to_string());
     }
-    Ok(format!("{broadcast_base}/{participant_hex}"))
+    Ok(format!("{broadcast_base}/{participant_label_hex}"))
 }
 
 #[cfg(test)]

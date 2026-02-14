@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use flume::Sender;
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
+use pika_media::crypto::{decrypt_frame, encrypt_frame, FrameInfo, FrameKeyMaterial};
 use pika_media::jitter::JitterBuffer;
 use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
@@ -17,7 +19,15 @@ use crate::updates::{CoreMsg, InternalEvent};
 use super::call_control::CallSessionParams;
 
 const SAMPLE_RATE: u32 = 48_000;
+const FRAME_DURATION_MS: u32 = 20;
+const FRAME_DURATION_US: u64 = (FRAME_DURATION_MS as u64) * 1_000;
+const FRAME_DURATION: Duration = Duration::from_millis(FRAME_DURATION_MS as u64);
 const FRAME_SAMPLES: usize = 960; // 20ms @ 48kHz mono.
+const JITTER_MAX_FRAMES: usize = 12;
+const JITTER_TARGET_FRAMES: usize = 3;
+const MAX_RX_FRAMES_PER_TICK: usize = 4;
+const STATS_EMIT_INTERVAL_TICKS: u64 = 5;
+const RX_REPLAY_WINDOW_FRAMES: u64 = 128;
 
 #[derive(Debug)]
 struct CallWorker {
@@ -28,6 +38,44 @@ struct CallWorker {
 #[derive(Debug, Default)]
 pub(super) struct CallRuntime {
     workers: HashMap<String, CallWorker>, // call_id -> worker
+}
+
+#[derive(Debug, Default, Clone)]
+struct ReplayWindow {
+    max_seen: Option<u64>,
+    seen_bits: u128,
+}
+
+impl ReplayWindow {
+    fn allow(&mut self, seq: u64) -> bool {
+        let Some(max_seen) = self.max_seen else {
+            self.max_seen = Some(seq);
+            self.seen_bits = 1;
+            return true;
+        };
+
+        if seq > max_seen {
+            let shift = seq.saturating_sub(max_seen);
+            if shift >= RX_REPLAY_WINDOW_FRAMES {
+                self.seen_bits = 1;
+            } else {
+                self.seen_bits = (self.seen_bits << (shift as usize)) | 1;
+            }
+            self.max_seen = Some(seq);
+            return true;
+        }
+
+        let delta = max_seen.saturating_sub(seq);
+        if delta >= RX_REPLAY_WINDOW_FRAMES {
+            return false;
+        }
+        let bit = 1u128 << (delta as usize);
+        if (self.seen_bits & bit) != 0 {
+            return false;
+        }
+        self.seen_bits |= bit;
+        true
+    }
 }
 
 fn relay_pool() -> &'static Mutex<HashMap<String, InMemoryRelay>> {
@@ -42,16 +90,16 @@ fn relay_key(session: &CallSessionParams) -> String {
 fn shared_relay_for(session: &CallSessionParams) -> InMemoryRelay {
     let key = relay_key(session);
     let mut map = relay_pool().lock().expect("relay pool lock poisoned");
-    map.entry(key).or_insert_with(InMemoryRelay::new).clone()
+    map.entry(key).or_default().clone()
 }
 
 impl CallRuntime {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_call_connecting(
         &mut self,
         call_id: &str,
         session: &CallSessionParams,
-        local_pubkey_hex: &str,
-        peer_pubkey_hex: &str,
+        media_crypto: CallMediaCryptoContext,
         audio_backend_mode: Option<&str>,
         tx: Sender<CoreMsg>,
     ) -> Result<(), String> {
@@ -61,13 +109,16 @@ impl CallRuntime {
         let mut media = MediaSession::with_relay(
             SessionConfig {
                 moq_url: session.moq_url.clone(),
+                relay_auth: session.relay_auth.clone(),
             },
             relay,
         );
-        media.connect();
+        media.connect().map_err(to_string_error)?;
 
-        let local_path = broadcast_path(&session.broadcast_base, local_pubkey_hex)?;
-        let peer_path = broadcast_path(&session.broadcast_base, peer_pubkey_hex)?;
+        let media_ctx = media_crypto;
+        let local_path =
+            broadcast_path(&session.broadcast_base, &media_ctx.local_participant_label)?;
+        let peer_path = broadcast_path(&session.broadcast_base, &media_ctx.peer_participant_label)?;
         let publish_track = TrackAddress {
             broadcast_path: local_path,
             track_name: "audio0".to_string(),
@@ -77,6 +128,8 @@ impl CallRuntime {
             track_name: "audio0".to_string(),
         };
         let rx = media.subscribe(&subscribe_track).map_err(to_string_error)?;
+        let tx_keys = media_ctx.tx_keys;
+        let rx_keys = media_ctx.rx_keys;
 
         let call_id_owned = call_id.to_string();
         let stop = Arc::new(AtomicBool::new(false));
@@ -104,50 +157,129 @@ impl CallRuntime {
             let mut seq = 0u64;
             let mut tx_frames = 0u64;
             let mut rx_frames = 0u64;
-            let mut jitter = JitterBuffer::<Vec<i16>>::new(8);
+            let mut jitter =
+                JitterBuffer::<Vec<i16>>::with_target(JITTER_MAX_FRAMES, JITTER_TARGET_FRAMES);
             let mut tick = 0u64;
+            let mut next_tick = Instant::now();
+            let mut tx_counter = 0u32;
+            let mut crypto_rx_dropped = 0u64;
+            let mut replay_rx_dropped = 0u64;
+            let mut tx_crypto_error_reported = false;
+            let mut rx_crypto_error_reported = false;
+            let mut tx_counter_exhausted = false;
+            let mut tx_counter_exhausted_reported = false;
+            let mut replay_window = ReplayWindow::default();
 
             while !stop_for_thread.load(Ordering::Relaxed) {
                 if !muted_for_thread.load(Ordering::Relaxed) {
-                    let pcm = audio_backend.capture_pcm_frame();
-                    let packet = codec.encode_pcm_i16(&pcm);
-                    let frame = MediaFrame {
-                        seq,
-                        timestamp_us: seq.saturating_mul(20_000),
-                        keyframe: true,
-                        payload: packet.0,
-                    };
-                    if media.publish(&publish_track, frame).is_ok() {
-                        tx_frames = tx_frames.saturating_add(1);
-                        seq = seq.saturating_add(1);
+                    if tx_counter_exhausted {
+                        if !tx_counter_exhausted_reported {
+                            tx_counter_exhausted_reported = true;
+                            let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::Toast(
+                                    "Call media tx counter exhausted; stopping mic publish"
+                                        .to_string(),
+                                ),
+                            )));
+                        }
+                    } else {
+                        let pcm = audio_backend.capture_pcm_frame();
+                        let packet = codec.encode_pcm_i16(&pcm);
+                        let frame_info = FrameInfo {
+                            counter: tx_counter,
+                            group_seq: seq,
+                            frame_idx: 0,
+                            keyframe: true,
+                        };
+                        if tx_counter == u32::MAX {
+                            tx_counter_exhausted = true;
+                        } else {
+                            tx_counter = tx_counter.saturating_add(1);
+                        }
+                        let encrypted_payload = match encrypt_frame(&packet.0, &tx_keys, frame_info)
+                        {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                if !tx_crypto_error_reported {
+                                    tx_crypto_error_reported = true;
+                                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                                        InternalEvent::Toast(format!(
+                                            "Call media encryption failed: {err}"
+                                        )),
+                                    )));
+                                }
+                                continue;
+                            }
+                        };
+                        let frame = MediaFrame {
+                            seq,
+                            timestamp_us: seq.saturating_mul(FRAME_DURATION_US),
+                            keyframe: true,
+                            payload: encrypted_payload,
+                        };
+                        if media.publish(&publish_track, frame).is_ok() {
+                            tx_frames = tx_frames.saturating_add(1);
+                            seq = seq.saturating_add(1);
+                        }
                     }
                 }
 
-                while let Ok(inbound) = rx.try_recv() {
-                    rx_frames = rx_frames.saturating_add(1);
-                    let pcm = codec.decode_to_pcm_i16(&OpusPacket(inbound.payload));
-                    let _ = jitter.push(pcm);
+                for _ in 0..MAX_RX_FRAMES_PER_TICK {
+                    match rx.try_recv() {
+                        Ok(inbound) => match decrypt_frame(&inbound.payload, &rx_keys) {
+                            Ok(decrypted) => {
+                                if !replay_window.allow(decrypted.info.group_seq) {
+                                    replay_rx_dropped = replay_rx_dropped.saturating_add(1);
+                                    continue;
+                                }
+                                rx_frames = rx_frames.saturating_add(1);
+                                let pcm = codec.decode_to_pcm_i16(&OpusPacket(decrypted.payload));
+                                let _ = jitter.push(pcm);
+                            }
+                            Err(err) => {
+                                crypto_rx_dropped = crypto_rx_dropped.saturating_add(1);
+                                if !rx_crypto_error_reported {
+                                    rx_crypto_error_reported = true;
+                                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                                        InternalEvent::Toast(format!(
+                                            "Call media decryption failed: {err}"
+                                        )),
+                                    )));
+                                }
+                            }
+                        },
+                        Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                    }
                 }
-                if let Some(playback_pcm) = jitter.pop() {
+                if let Some(playback_pcm) = jitter.pop_for_playout() {
                     audio_backend.play_pcm_frame(&playback_pcm);
                 }
 
                 tick = tick.saturating_add(1);
-                if tick % 5 == 0 {
+                if tick.is_multiple_of(STATS_EMIT_INTERVAL_TICKS) {
                     let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
                         InternalEvent::CallRuntimeStats {
                             call_id: call_id_owned.clone(),
                             tx_frames,
                             rx_frames,
-                            rx_dropped: jitter.dropped(),
-                            // 20ms packets.
-                            jitter_buffer_ms: (jitter.len() as u32).saturating_mul(20),
+                            rx_dropped: jitter
+                                .dropped()
+                                .saturating_add(crypto_rx_dropped)
+                                .saturating_add(replay_rx_dropped),
+                            jitter_buffer_ms: (jitter.len() as u32)
+                                .saturating_mul(FRAME_DURATION_MS),
                             last_rtt_ms: None,
                         },
                     )));
                 }
 
-                thread::sleep(Duration::from_millis(20));
+                next_tick += FRAME_DURATION;
+                let now = Instant::now();
+                if next_tick > now {
+                    thread::sleep(next_tick.saturating_duration_since(now));
+                } else {
+                    next_tick = now;
+                }
             }
         });
 
@@ -180,10 +312,18 @@ fn to_string_error(err: MediaSessionError) -> String {
     err.to_string()
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CallMediaCryptoContext {
+    pub(super) tx_keys: FrameKeyMaterial,
+    pub(super) rx_keys: FrameKeyMaterial,
+    pub(super) local_participant_label: String,
+    pub(super) peer_participant_label: String,
+}
+
 #[derive(Debug)]
 enum AudioBackend {
     Synthetic(SyntheticAudio),
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     Cpal(CpalAudio),
 }
 
@@ -201,13 +341,13 @@ impl AudioBackend {
         match normalized.as_str() {
             "synthetic" => Ok(Self::synthetic()),
             "cpal" => {
-                #[cfg(target_os = "ios")]
+                #[cfg(any(target_os = "ios", target_os = "android"))]
                 {
                     CpalAudio::new().map(Self::Cpal)
                 }
-                #[cfg(not(target_os = "ios"))]
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
                 {
-                    Err("cpal backend is currently iOS-only; using synthetic".to_string())
+                    Err("cpal backend is currently mobile-only; using synthetic".to_string())
                 }
             }
             other => Err(format!(
@@ -219,7 +359,7 @@ impl AudioBackend {
     fn capture_pcm_frame(&mut self) -> Vec<i16> {
         match self {
             Self::Synthetic(v) => v.capture_pcm_frame(),
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             Self::Cpal(v) => v.capture_pcm_frame(),
         }
     }
@@ -227,18 +367,18 @@ impl AudioBackend {
     fn play_pcm_frame(&mut self, pcm: &[i16]) {
         match self {
             Self::Synthetic(v) => v.play_pcm_frame(pcm),
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", target_os = "android"))]
             Self::Cpal(v) => v.play_pcm_frame(pcm),
         }
     }
 }
 
 fn default_backend_mode() -> &'static str {
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
         "cpal"
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         "synthetic"
     }
@@ -274,8 +414,7 @@ impl SyntheticAudio {
     }
 }
 
-#[cfg(target_os = "ios")]
-#[derive(Debug)]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 struct CpalAudio {
     capture: Arc<Mutex<std::collections::VecDeque<i16>>>,
     playback: Arc<Mutex<std::collections::VecDeque<i16>>>,
@@ -283,7 +422,14 @@ struct CpalAudio {
     _output_stream: cpal::Stream,
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
+impl std::fmt::Debug for CpalAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CpalAudio").finish_non_exhaustive()
+    }
+}
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
 impl CpalAudio {
     fn new() -> Result<Self, String> {
         use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -436,7 +582,7 @@ impl CpalAudio {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn push_capture_sample(queue: &Arc<Mutex<std::collections::VecDeque<i16>>>, sample: i16) {
     let mut q = queue.lock().expect("capture queue lock poisoned");
     q.push_back(sample);
@@ -445,7 +591,7 @@ fn push_capture_sample(queue: &Arc<Mutex<std::collections::VecDeque<i16>>>, samp
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn push_mono_i16_from_i16(
     data: &[i16],
     channels: usize,
@@ -458,7 +604,7 @@ fn push_mono_i16_from_i16(
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn push_mono_i16_from_u16(
     data: &[u16],
     channels: usize,
@@ -471,7 +617,7 @@ fn push_mono_i16_from_u16(
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn push_mono_i16_from_f32(
     data: &[f32],
     channels: usize,
@@ -485,13 +631,13 @@ fn push_mono_i16_from_f32(
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn pop_playback_sample(queue: &Arc<Mutex<std::collections::VecDeque<i16>>>) -> i16 {
     let mut q = queue.lock().expect("playback queue lock poisoned");
     q.pop_front().unwrap_or(0)
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn pop_playback_to_i16(
     data: &mut [i16],
     channels: usize,
@@ -505,7 +651,7 @@ fn pop_playback_to_i16(
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn pop_playback_to_u16(
     data: &mut [u16],
     channels: usize,
@@ -520,7 +666,7 @@ fn pop_playback_to_u16(
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 fn pop_playback_to_f32(
     data: &mut [f32],
     channels: usize,
@@ -531,5 +677,28 @@ fn pop_playback_to_f32(
         for dst in frame.iter_mut() {
             *dst = s;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReplayWindow;
+
+    #[test]
+    fn replay_window_accepts_in_order_and_fresh_out_of_order() {
+        let mut w = ReplayWindow::default();
+        assert!(w.allow(10));
+        assert!(w.allow(11));
+        assert!(w.allow(9));
+        assert!(w.allow(12));
+    }
+
+    #[test]
+    fn replay_window_rejects_duplicates_and_stale_frames() {
+        let mut w = ReplayWindow::default();
+        assert!(w.allow(1000));
+        assert!(w.allow(1001));
+        assert!(!w.allow(1000), "duplicate frame must be rejected");
+        assert!(!w.allow(800), "stale frame outside window must be rejected");
     }
 }

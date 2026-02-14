@@ -5,9 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::tracks::TrackAddress;
 
+const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
+const RELAY_AUTH_HEX_LEN: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
     pub moq_url: String,
+    pub relay_auth: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +26,7 @@ pub struct MediaFrame {
 pub enum MediaSessionError {
     NotConnected,
     InvalidTrack(String),
+    Unauthorized(String),
 }
 
 impl Display for MediaSessionError {
@@ -29,6 +34,7 @@ impl Display for MediaSessionError {
         match self {
             Self::NotConnected => write!(f, "media session is not connected"),
             Self::InvalidTrack(msg) => write!(f, "invalid track: {msg}"),
+            Self::Unauthorized(msg) => write!(f, "unauthorized: {msg}"),
         }
     }
 }
@@ -37,6 +43,7 @@ impl std::error::Error for MediaSessionError {}
 
 #[derive(Debug, Default)]
 struct RelayState {
+    required_relay_auth: Option<String>,
     subscribers: HashMap<String, Vec<Sender<MediaFrame>>>,
 }
 
@@ -50,21 +57,61 @@ impl InMemoryRelay {
         Self::default()
     }
 
-    pub fn subscribe(&self, track_key: &str) -> Receiver<MediaFrame> {
+    fn authorize_state(state: &mut RelayState, relay_auth: &str) -> Result<(), MediaSessionError> {
+        let token = relay_auth.trim();
+        if token.is_empty() {
+            return Err(MediaSessionError::Unauthorized(
+                "relay auth token is empty".to_string(),
+            ));
+        }
+        if !valid_relay_auth_token(token) {
+            return Err(MediaSessionError::Unauthorized(
+                "relay auth token format invalid".to_string(),
+            ));
+        }
+        match &state.required_relay_auth {
+            Some(expected) if expected != token => Err(MediaSessionError::Unauthorized(
+                "relay auth token mismatch".to_string(),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                state.required_relay_auth = Some(token.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn connect(&self, relay_auth: &str) -> Result<(), MediaSessionError> {
+        let mut state = self.state.lock().expect("relay state poisoned");
+        Self::authorize_state(&mut state, relay_auth)
+    }
+
+    pub fn subscribe(
+        &self,
+        track_key: &str,
+        relay_auth: &str,
+    ) -> Result<Receiver<MediaFrame>, MediaSessionError> {
         let (tx, rx) = mpsc::channel::<MediaFrame>();
         let mut state = self.state.lock().expect("relay state poisoned");
+        Self::authorize_state(&mut state, relay_auth)?;
         state
             .subscribers
             .entry(track_key.to_string())
             .or_default()
             .push(tx);
-        rx
+        Ok(rx)
     }
 
-    pub fn publish(&self, track_key: &str, frame: MediaFrame) -> usize {
+    pub fn publish(
+        &self,
+        track_key: &str,
+        relay_auth: &str,
+        frame: MediaFrame,
+    ) -> Result<usize, MediaSessionError> {
         let mut state = self.state.lock().expect("relay state poisoned");
+        Self::authorize_state(&mut state, relay_auth)?;
         let Some(subscribers) = state.subscribers.get_mut(track_key) else {
-            return 0;
+            return Ok(0);
         };
 
         let mut delivered = 0usize;
@@ -75,8 +122,15 @@ impl InMemoryRelay {
             }
             Err(_) => false,
         });
-        delivered
+        Ok(delivered)
     }
+}
+
+fn valid_relay_auth_token(token: &str) -> bool {
+    let Some(hex_part) = token.strip_prefix(RELAY_AUTH_CAP_PREFIX) else {
+        return false;
+    };
+    hex_part.len() == RELAY_AUTH_HEX_LEN && hex_part.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone)]
@@ -107,8 +161,10 @@ impl MediaSession {
         self.relay.clone()
     }
 
-    pub fn connect(&mut self) {
+    pub fn connect(&mut self) -> Result<(), MediaSessionError> {
+        self.relay.connect(&self.config.relay_auth)?;
         self.connected = true;
+        Ok(())
     }
 
     pub fn disconnect(&mut self) {
@@ -131,7 +187,7 @@ impl MediaSession {
             return Err(MediaSessionError::NotConnected);
         }
         let key = validate_track_key(track)?;
-        Ok(self.relay.subscribe(&key))
+        self.relay.subscribe(&key, &self.config.relay_auth)
     }
 
     pub fn publish(
@@ -143,7 +199,7 @@ impl MediaSession {
             return Err(MediaSessionError::NotConnected);
         }
         let key = validate_track_key(track)?;
-        Ok(self.relay.publish(&key, frame))
+        self.relay.publish(&key, &self.config.relay_auth, frame)
     }
 }
 
@@ -173,11 +229,13 @@ mod tests {
         let relay = InMemoryRelay::new();
         let config = SessionConfig {
             moq_url: "https://moq.example.com/anon".to_string(),
+            relay_auth: "capv1_1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
         };
         let mut publisher = MediaSession::with_relay(config.clone(), relay.clone());
         let mut subscriber = MediaSession::with_relay(config, relay);
-        publisher.connect();
-        subscriber.connect();
+        publisher.connect().expect("publisher connect");
+        subscriber.connect().expect("subscriber connect");
 
         let track = TrackAddress {
             broadcast_path:
@@ -213,6 +271,8 @@ mod tests {
     fn requires_connection_for_publish_and_subscribe() {
         let session = MediaSession::new(SessionConfig {
             moq_url: "https://moq.example.com/anon".to_string(),
+            relay_auth: "capv1_1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
         });
         let track = TrackAddress {
             broadcast_path: "pika/calls/cid/pk".to_string(),
@@ -230,5 +290,61 @@ mod tests {
 
         let subscribe = session.subscribe(&track);
         assert!(matches!(subscribe, Err(MediaSessionError::NotConnected)));
+    }
+
+    #[test]
+    fn enforces_relay_auth_token() {
+        let relay = InMemoryRelay::new();
+        let mut session_a = MediaSession::with_relay(
+            SessionConfig {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                relay_auth:
+                    "capv1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+            },
+            relay.clone(),
+        );
+        let mut session_b = MediaSession::with_relay(
+            SessionConfig {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                relay_auth:
+                    "capv1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string(),
+            },
+            relay.clone(),
+        );
+        let mut session_empty = MediaSession::with_relay(
+            SessionConfig {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                relay_auth: "".to_string(),
+            },
+            relay,
+        );
+
+        session_a.connect().expect("first session sets relay auth");
+        assert!(matches!(
+            session_b.connect(),
+            Err(MediaSessionError::Unauthorized(_))
+        ));
+        assert!(matches!(
+            session_empty.connect(),
+            Err(MediaSessionError::Unauthorized(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_relay_auth_token() {
+        let relay = InMemoryRelay::new();
+        let mut session = MediaSession::with_relay(
+            SessionConfig {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                relay_auth: "capv1_short".to_string(),
+            },
+            relay,
+        );
+        assert!(matches!(
+            session.connect(),
+            Err(MediaSessionError::Unauthorized(_))
+        ));
     }
 }

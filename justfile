@@ -188,6 +188,7 @@ gen-kotlin: rust-build-host
 android-rust:
   mkdir -p android/app/src/main/jniLibs
   cargo ndk -o android/app/src/main/jniLibs \
+    -P 26 \
     -t arm64-v8a -t armeabi-v7a -t x86_64 \
     build -p pika_core --release
 

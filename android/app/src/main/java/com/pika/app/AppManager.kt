@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AppManager private constructor(context: Context) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val secureStore = SecureNsecStore(context)
+    private val audioFocus = AndroidAudioFocusManager(context.applicationContext)
     private val rust: FfiApp
     private var lastRevApplied: ULong = 0UL
     private val listening = AtomicBoolean(false)
@@ -46,6 +47,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
         rust = FfiApp(dataDir)
         val initial = rust.state()
         state = initial
+        audioFocus.syncForCall(initial.activeCall)
         lastRevApplied = initial.rev
         startListening()
 
@@ -108,6 +110,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
                     state = state.copy(rev = updateRev)
                 }
             }
+            audioFocus.syncForCall(state.activeCall)
         }
     }
 

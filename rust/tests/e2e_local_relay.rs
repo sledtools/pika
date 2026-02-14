@@ -46,6 +46,25 @@ fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
     panic!("{what}: condition not met within {timeout:?}");
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CallStatsSnapshot {
+    tx_frames: u64,
+    rx_frames: u64,
+    rx_dropped: u64,
+    jitter_buffer_ms: u32,
+}
+
+fn call_stats_snapshot(app: &FfiApp) -> Option<CallStatsSnapshot> {
+    let call = app.state().active_call?;
+    let debug = call.debug?;
+    Some(CallStatsSnapshot {
+        tx_frames: debug.tx_frames,
+        rx_frames: debug.rx_frames,
+        rx_dropped: debug.rx_dropped,
+        jitter_buffer_ms: debug.jitter_buffer_ms,
+    })
+}
+
 #[derive(Clone)]
 struct LocalRelayHandle {
     url: String,
@@ -982,6 +1001,51 @@ fn call_invite_accept_end_flow_over_local_relay() {
         },
     );
 
+    let alice_overlap_start = call_stats_snapshot(&alice).expect("alice call stats");
+    let bob_overlap_start = call_stats_snapshot(&bob).expect("bob call stats");
+    wait_until(
+        "full-duplex overlap stats progress on both sides",
+        Duration::from_secs(10),
+        || {
+            let Some(alice_now) = call_stats_snapshot(&alice) else {
+                return false;
+            };
+            let Some(bob_now) = call_stats_snapshot(&bob) else {
+                return false;
+            };
+            alice_now.tx_frames > alice_overlap_start.tx_frames
+                && alice_now.rx_frames > alice_overlap_start.rx_frames
+                && bob_now.tx_frames > bob_overlap_start.tx_frames
+                && bob_now.rx_frames > bob_overlap_start.rx_frames
+        },
+    );
+    let alice_overlap_end = call_stats_snapshot(&alice).expect("alice overlap stats");
+    let bob_overlap_end = call_stats_snapshot(&bob).expect("bob overlap stats");
+    assert!(
+        alice_overlap_end.jitter_buffer_ms <= 240,
+        "alice jitter buffer should stay bounded (<= 240ms), got {}ms",
+        alice_overlap_end.jitter_buffer_ms
+    );
+    assert!(
+        bob_overlap_end.jitter_buffer_ms <= 240,
+        "bob jitter buffer should stay bounded (<= 240ms), got {}ms",
+        bob_overlap_end.jitter_buffer_ms
+    );
+    let alice_drop_delta = alice_overlap_end
+        .rx_dropped
+        .saturating_sub(alice_overlap_start.rx_dropped);
+    let bob_drop_delta = bob_overlap_end
+        .rx_dropped
+        .saturating_sub(bob_overlap_start.rx_dropped);
+    assert!(
+        alice_drop_delta <= 8,
+        "alice dropped too many frames during overlap window: {alice_drop_delta}"
+    );
+    assert!(
+        bob_drop_delta <= 8,
+        "bob dropped too many frames during overlap window: {bob_drop_delta}"
+    );
+
     // While Alice is in-call, a second invite should not replace the active call.
     let second_invite_call_id = "550e8400-e29b-41d4-a716-446655440999";
     let second_invite = serde_json::json!({
@@ -993,6 +1057,7 @@ fn call_invite_accept_end_flow_over_local_relay() {
         "body": {
             "moq_url": "https://moq.local/anon",
             "broadcast_base": format!("pika/calls/{second_invite_call_id}"),
+            "relay_auth": "capv1_second_invite_probe",
             "tracks": [{
                 "name": "audio0",
                 "codec": "opus",
@@ -1108,6 +1173,107 @@ fn call_invite_accept_end_flow_over_local_relay() {
             .find(|c| c.chat_id == chat_id)
             .and_then(|c| c.last_message.clone()),
         None
+    );
+
+    drop(relay);
+    relay_thread.join().unwrap();
+}
+
+#[test]
+fn call_invite_with_invalid_relay_auth_is_rejected() {
+    let (relay, relay_thread) = start_local_relay();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config(
+        &dir_a.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
+    write_config(
+        &dir_b.path().to_string_lossy(),
+        &relay.url,
+        Some(&relay.url),
+    );
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub: bob_npub, .. } => bob_npub,
+        _ => unreachable!(),
+    };
+
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub,
+    });
+    wait_until("alice chat opened", Duration::from_secs(20), || {
+        alice.state().current_chat.is_some()
+    });
+    wait_until("bob has chat", Duration::from_secs(20), || {
+        !bob.state().chat_list.is_empty()
+    });
+
+    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    bob.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob opened chat", Duration::from_secs(10), || {
+        bob.state().current_chat.is_some()
+    });
+
+    let bad_call_id = "550e8400-e29b-41d4-a716-446655441111";
+    let bad_invite = serde_json::json!({
+        "v": 1,
+        "ns": "pika.call",
+        "type": "call.invite",
+        "call_id": bad_call_id,
+        "ts_ms": 1730000000000i64,
+        "body": {
+            "moq_url": "https://moq.local/anon",
+            "broadcast_base": format!("pika/calls/{bad_call_id}"),
+            "relay_auth": "capv1_invalid_auth",
+            "tracks": [{
+                "name": "audio0",
+                "codec": "opus",
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20
+            }]
+        }
+    })
+    .to_string();
+    bob.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: bad_invite,
+    });
+
+    wait_until(
+        "alice rejects invalid relay auth invite",
+        Duration::from_secs(10),
+        || {
+            let st = alice.state();
+            st.active_call.is_none()
+                && st
+                    .toast
+                    .as_deref()
+                    .map(|t| t.contains("Rejected call invite"))
+                    .unwrap_or(false)
+        },
+    );
+    assert!(
+        alice.state().active_call.is_none(),
+        "invalid relay auth invite must not create ringing state",
     );
 
     drop(relay);

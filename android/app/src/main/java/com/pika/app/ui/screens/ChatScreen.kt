@@ -1,5 +1,10 @@
 package com.pika.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,9 +39,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.CallState
@@ -137,9 +144,33 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
 
 @Composable
 private fun CallControls(manager: AppManager, chatId: String) {
+    val ctx = LocalContext.current
     val activeCall = manager.state.activeCall
     val callForChat = if (activeCall?.chatId == chatId) activeCall else null
     val hasLiveCallElsewhere = activeCall?.let { it.chatId != chatId && isLiveCallStatus(it.status) } ?: false
+    var pendingMicAction by remember { mutableStateOf<PendingMicAction?>(null) }
+    val micPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val action = pendingMicAction
+            pendingMicAction = null
+            if (granted && action != null) {
+                dispatchMicAction(manager, chatId, action)
+            } else if (!granted) {
+                Toast.makeText(ctx, "Microphone permission is required for calls.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+    val dispatchWithMicPermission: (PendingMicAction) -> Unit = { action ->
+        val hasMic =
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        if (hasMic) {
+            dispatchMicAction(manager, chatId, action)
+        } else {
+            pendingMicAction = action
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (callForChat != null) {
@@ -159,7 +190,7 @@ private fun CallControls(manager: AppManager, chatId: String) {
                 when (callForChat.status) {
                     is CallStatus.Ringing -> {
                         Button(
-                            onClick = { manager.dispatch(AppAction.AcceptCall(chatId)) },
+                            onClick = { dispatchWithMicPermission(PendingMicAction.Accept) },
                             modifier = Modifier.testTag(TestTags.CHAT_CALL_ACCEPT),
                         ) {
                             Text("Accept")
@@ -187,7 +218,7 @@ private fun CallControls(manager: AppManager, chatId: String) {
                     }
                     is CallStatus.Ended -> {
                         Button(
-                            onClick = { manager.dispatch(AppAction.StartCall(chatId)) },
+                            onClick = { dispatchWithMicPermission(PendingMicAction.Start) },
                             modifier = Modifier.testTag(TestTags.CHAT_CALL_START),
                         ) {
                             Text("Start Again")
@@ -202,7 +233,7 @@ private fun CallControls(manager: AppManager, chatId: String) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
-                    onClick = { manager.dispatch(AppAction.StartCall(chatId)) },
+                    onClick = { dispatchWithMicPermission(PendingMicAction.Start) },
                     enabled = !hasLiveCallElsewhere,
                     modifier = Modifier.testTag(TestTags.CHAT_CALL_START),
                 ) {
@@ -217,6 +248,18 @@ private fun CallControls(manager: AppManager, chatId: String) {
                 }
             }
         }
+    }
+}
+
+private enum class PendingMicAction {
+    Start,
+    Accept,
+}
+
+private fun dispatchMicAction(manager: AppManager, chatId: String, action: PendingMicAction) {
+    when (action) {
+        PendingMicAction.Start -> manager.dispatch(AppAction.StartCall(chatId))
+        PendingMicAction.Accept -> manager.dispatch(AppAction.AcceptCall(chatId))
     }
 }
 

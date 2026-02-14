@@ -60,20 +60,35 @@ fn rust_target_to_zig(target: &str) -> Option<&'static str> {
     }
 }
 
-fn zigmdx_source_dir() -> PathBuf {
+fn zigmdx_source_dir() -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| panic!("missing CARGO_MANIFEST_DIR")),
     );
 
     if let Ok(raw) = env::var("PIKA_ZIG_MDX_PATH") {
         let p = PathBuf::from(raw);
-        if p.is_absolute() {
-            return p;
+        let resolved = if p.is_absolute() {
+            p
+        } else {
+            manifest_dir.join(p)
+        };
+
+        if !resolved.exists() {
+            panic!(
+                "PIKA_ZIG_MDX_PATH points to missing zig-mdx source: {}",
+                resolved.display()
+            );
         }
-        return manifest_dir.join(p);
+
+        return Some(resolved);
     }
 
-    manifest_dir.join("../third_party/zig-mdx")
+    let vendored = manifest_dir.join("../third_party/zig-mdx");
+    if vendored.exists() {
+        Some(vendored)
+    } else {
+        None
+    }
 }
 
 fn build_and_link_zigmdx() {
@@ -95,13 +110,13 @@ fn build_and_link_zigmdx() {
         return;
     }
 
-    let source_dir = zigmdx_source_dir();
-    if !source_dir.exists() {
-        panic!(
-            "zig-mdx source not found at {} (set PIKA_ZIG_MDX_PATH to override)",
-            source_dir.display()
+    let Some(source_dir) = zigmdx_source_dir() else {
+        println!(
+            "cargo:warning=zig-mdx source not found; set PIKA_ZIG_MDX_PATH to enable markdown parsing"
         );
-    }
+        println!("cargo:rustc-cfg=zig_mdx_disabled");
+        return;
+    };
 
     emit_rerun_tree(&source_dir.join("src"));
     println!(

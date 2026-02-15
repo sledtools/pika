@@ -1,13 +1,5 @@
 set shell := ["bash", "-c"]
 
-# Device ids for `cargo dinghy ... -d`.
-#
-# These default from environment variables, but can also be set via:
-#   just UDID=<udid> ios-quic-connect-device
-#   just SERIAL=<serial> android-quic-connect-device
-UDID := env_var_or_default("UDID", "")
-SERIAL := env_var_or_default("SERIAL", "")
-
 # List available recipes.
 default:
   @just --list

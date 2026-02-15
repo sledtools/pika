@@ -76,10 +76,18 @@ maybe_run_rust() {
 }
 
 run_android() {
-  ./tools/android-emulator-ensure
+  # Default: run on an emulator to keep CI/dev machines consistent.
+  # If a hardware device is desired, set PIKA_ANDROID_SERIAL=<serial>.
+  if [ -z "${PIKA_ANDROID_SERIAL:-}" ]; then
+    ./tools/android-emulator-ensure
+  fi
   just gen-kotlin android-rust android-local-properties >/dev/null
 
-  (cd android && ./gradlew :app:connectedDebugAndroidTest \
+  SERIAL="$(./tools/android-pick-serial)"
+  if [[ "$SERIAL" != emulator-* ]]; then
+    ./tools/android-ensure-unlocked "$SERIAL"
+  fi
+  (cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
     -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
     -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \

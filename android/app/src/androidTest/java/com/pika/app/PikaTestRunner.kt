@@ -15,6 +15,8 @@ import java.io.File
  * -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false
  * -Pandroid.testInstrumentationRunnerArguments.pika_relay_urls=wss://...
  * -Pandroid.testInstrumentationRunnerArguments.pika_key_package_relay_urls=wss://...
+ * -Pandroid.testInstrumentationRunnerArguments.pika_call_moq_url=https://...
+ * -Pandroid.testInstrumentationRunnerArguments.pika_call_broadcast_prefix=pika/calls
  */
 class PikaTestRunner : AndroidJUnitRunner() {
     private var runnerArgs: Bundle? = null
@@ -51,6 +53,12 @@ class PikaTestRunner : AndroidJUnitRunner() {
             (args.getString("pika_key_package_relay_urls") ?: args.getString("pika_kp_relay_urls"))
                 ?.trim()
                 .orEmpty()
+        val callMoqUrl =
+            args.getString("pika_call_moq_url")?.trim().orEmpty().ifBlank {
+                "https://moq.justinmoon.com/anon"
+            }
+        val callBroadcastPrefix =
+            args.getString("pika_call_broadcast_prefix")?.trim().orEmpty().ifBlank { "pika/calls" }
 
         fun splitCsv(s: String): List<String> =
             s.split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -88,6 +96,12 @@ class PikaTestRunner : AndroidJUnitRunner() {
                     }
                     append(']')
                 }
+                append(",\"call_moq_url\":\"")
+                append(callMoqUrl.replace("\"", "\\\""))
+                append('"')
+                append(",\"call_broadcast_prefix\":\"")
+                append(callBroadcastPrefix.replace("\"", "\\\""))
+                append('"')
                 append('}')
             }
 

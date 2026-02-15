@@ -140,7 +140,8 @@ env_json_for_device() {
   relays="$(effective_relays)"
   kp_relays="$(effective_kp_relays)"
   local call_moq_url call_broadcast_prefix
-  call_moq_url="${PIKA_CALL_MOQ_URL:-https://moq.local/anon}"
+  # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
+  call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
   python3 - <<PY
 import json
@@ -326,7 +327,8 @@ maybe_write_config() {
   relays="$(effective_relays)"
   kp_relays="$(effective_kp_relays)"
   local call_moq_url call_broadcast_prefix
-  call_moq_url="${PIKA_CALL_MOQ_URL:-https://moq.local/anon}"
+  # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
+  call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
 
   local json

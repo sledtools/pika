@@ -218,7 +218,8 @@ maybe_write_config() {
 
   local relays="${PIKA_RELAY_URLS:-${PIKA_RELAY_URL:-}}"
   local kp_relays="${PIKA_KEY_PACKAGE_RELAY_URLS:-${PIKA_KP_RELAY_URLS:-}}"
-  local call_moq_url="${PIKA_CALL_MOQ_URL:-https://moq.local/anon}"
+  # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
+  local call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   local call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
 
   # Defaults aimed at quick-start interop with the deployed Rust bot.

@@ -871,6 +871,10 @@ fn run_marmotd_call_test(relay_url: &str) {
 #[test]
 #[ignore] // requires external marmotd binary + QUIC egress
 fn call_with_local_marmotd() {
+    if std::env::var("PIKA_E2E_LOCAL").unwrap_or_default().trim() != "1" {
+        eprintln!("SKIP: set PIKA_E2E_LOCAL=1 to run local marmotd tests");
+        return;
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let (relay, relay_thread) = start_local_relay();
@@ -882,6 +886,10 @@ fn call_with_local_marmotd() {
 #[test]
 #[ignore] // requires network access to relay.primal.net
 fn call_with_local_marmotd_primal() {
+    if std::env::var("PIKA_E2E_LOCAL").unwrap_or_default().trim() != "1" {
+        eprintln!("SKIP: set PIKA_E2E_LOCAL=1 to run local marmotd tests");
+        return;
+    }
     pika_core::init_rustls_crypto_provider();
 
     run_marmotd_call_test("wss://relay.primal.net");

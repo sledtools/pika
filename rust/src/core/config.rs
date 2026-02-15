@@ -7,11 +7,7 @@ use serde::Deserialize;
 use super::AppCore;
 
 // "Popular ones" per user request; keep small for MVP.
-const DEFAULT_RELAY_URLS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nostr.wine",
-];
+const DEFAULT_RELAY_URLS: &[&str] = &["wss://relay.damus.io", "wss://relay.primal.net"];
 
 // Key packages (kind 443) are NIP-70 "protected" in modern MDK.
 // Many popular relays (incl. Damus/Primal/nos.lol) currently reject protected events.

@@ -58,11 +58,6 @@ pub enum InternalEvent {
     // Async CreateChat fetch result
     PeerKeyPackageFetched {
         peer_pubkey: nostr_sdk::prelude::PublicKey,
-        // Relays we used (or discovered via kind 10051) when fetching the peer's key package.
-        // These are valuable as an interop baseline: if the peer published their key package
-        // there, they almost certainly have connectivity to them, so using them for the new
-        // group's relay set increases the chance of immediate bidirectional message delivery.
-        candidate_kp_relays: Vec<nostr_sdk::prelude::RelayUrl>,
         key_package_event: Option<nostr_sdk::prelude::Event>,
         error: Option<String>,
     },

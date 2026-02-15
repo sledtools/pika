@@ -17,21 +17,15 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-fn write_config(data_dir: &str, relay_url: &str, key_package_relay_url: Option<&str>) {
+fn write_config(data_dir: &str, relay_url: &str) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
-    let mut v = serde_json::json!({
+    let v = serde_json::json!({
         "disable_network": false,
         "relay_urls": [relay_url],
         "call_moq_url": "ws://moq.local/anon",
         "call_broadcast_prefix": "pika/calls",
         "call_audio_backend": "synthetic",
     });
-    if let Some(kp) = key_package_relay_url {
-        v.as_object_mut().unwrap().insert(
-            "key_package_relay_urls".to_string(),
-            serde_json::json!([kp]),
-        );
-    }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
 
@@ -415,27 +409,12 @@ fn local_relay_delivers_events_to_nostr_sdk_notifications() {
 
 #[test]
 fn alice_sends_bob_receives_over_local_relay() {
-    // Use two relays to prove the architecture:
-    // - "general" relay: carries discovery (kind 10051) + normal group traffic.
-    // - "key package" relay: carries protected key packages (kind 443).
     let (general_relay, general_thread) = start_local_relay();
-    let (kp_relay, kp_thread) = start_local_relay();
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    // Avoid connecting to built-in public key-package relays during tests.
-    // If Alice used this fallback relay, she'd fail to fetch Bob's key package (which is only
-    // published to kp_relay), so the test still proves key-package-relay discovery works.
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&general_relay.url),
-    );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&kp_relay.url),
-    );
+    write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -469,37 +448,14 @@ fn alice_sends_bob_receives_over_local_relay() {
         _ => unreachable!(),
     };
 
-    // Ensure Bob has published the key package relay list (kind 10051) to the *general* relay.
+    // Ensure Bob has published a key package (kind 443) to the relay.
     let bob_pubkey = PublicKey::parse(&bob_pubkey_hex).expect("pubkey parse");
-    wait_until("bob published kind 10051", Duration::from_secs(10), || {
+    wait_until("bob key package published", Duration::from_secs(10), || {
         let st = general_relay.state.lock().unwrap();
         st.events
             .iter()
-            .any(|e| e.kind == Kind::MlsKeyPackageRelays && e.pubkey == bob_pubkey)
+            .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
     });
-
-    // Ensure Bob has published a key package (kind 443) to the *key package* relay, and not to
-    // the general relay. This proves that Alice must use discovery to fetch from the correct relay.
-    wait_until(
-        "bob key package published to kp relay",
-        Duration::from_secs(10),
-        || {
-            let st = kp_relay.state.lock().unwrap();
-            st.events
-                .iter()
-                .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
-        },
-    );
-    wait_until(
-        "bob key package not on general relay",
-        Duration::from_secs(10),
-        || {
-            let st = general_relay.state.lock().unwrap();
-            !st.events
-                .iter()
-                .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
-        },
-    );
 
     // Alice creates a DM with Bob (fetch KP, create group, giftwrap welcome).
     alice.dispatch(AppAction::CreateChat {
@@ -774,9 +730,7 @@ fn alice_sends_bob_receives_over_local_relay() {
     assert_eq!(preview.as_deref(), Some("hi-from-alice"));
 
     drop(general_relay);
-    drop(kp_relay);
     general_thread.join().unwrap();
-    kp_thread.join().unwrap();
 }
 
 #[test]
@@ -784,7 +738,7 @@ fn send_failure_then_retry_succeeds_over_local_relay() {
     let (relay, relay_thread) = start_local_relay();
 
     let dir = tempdir().unwrap();
-    write_config(&dir.path().to_string_lossy(), &relay.url, Some(&relay.url));
+    write_config(&dir.path().to_string_lossy(), &relay.url);
 
     let app = FfiApp::new(dir.path().to_string_lossy().to_string());
     app.dispatch(AppAction::CreateAccount);
@@ -864,16 +818,8 @@ fn call_invite_accept_end_flow_over_local_relay() {
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &relay.url,
-        Some(&relay.url),
-    );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &relay.url,
-        Some(&relay.url),
-    );
+    write_config(&dir_a.path().to_string_lossy(), &relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -1185,16 +1131,8 @@ fn call_invite_with_invalid_relay_auth_is_rejected() {
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &relay.url,
-        Some(&relay.url),
-    );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &relay.url,
-        Some(&relay.url),
-    );
+    write_config(&dir_a.path().to_string_lossy(), &relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -1283,20 +1221,11 @@ fn call_invite_with_invalid_relay_auth_is_rejected() {
 #[test]
 fn duplicate_group_message_does_not_duplicate_in_ui() {
     let (general_relay, general_thread) = start_local_relay();
-    let (kp_relay, kp_thread) = start_local_relay();
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&general_relay.url),
-    );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&kp_relay.url),
-    );
+    write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -1317,11 +1246,12 @@ fn duplicate_group_message_does_not_duplicate_in_ui() {
     };
     let bob_pubkey = PublicKey::parse(&bob_pubkey_hex).expect("pubkey parse");
 
-    wait_until("bob published kind 10051", Duration::from_secs(10), || {
+    // Wait for Bob's key package to land on the relay before Alice tries to fetch it.
+    wait_until("bob key package published", Duration::from_secs(10), || {
         let st = general_relay.state.lock().unwrap();
         st.events
             .iter()
-            .any(|e| e.kind == Kind::MlsKeyPackageRelays && e.pubkey == bob_pubkey)
+            .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
     });
 
     // Create DM (key package fetch + giftwrap welcome).
@@ -1395,7 +1325,5 @@ fn duplicate_group_message_does_not_duplicate_in_ui() {
     });
 
     drop(general_relay);
-    drop(kp_relay);
     general_thread.join().unwrap();
-    kp_thread.join().unwrap();
 }

@@ -26,8 +26,8 @@ use mdk_storage_traits::groups::Pagination;
 use nostr_sdk::prelude::*;
 
 use interop::{
-    extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
-    normalize_peer_key_package_event_for_mdk, referenced_key_package_event_id,
+    extract_relays_from_key_package_event, normalize_peer_key_package_event_for_mdk,
+    referenced_key_package_event_id,
 };
 
 const DEFAULT_GROUP_NAME: &str = "DM";
@@ -489,7 +489,7 @@ impl AppCore {
                 };
                 let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
 
-                // Merge relays from the peer's key package event with our defaults.
+                // Merge our default relays with any relays the peer advertised in their key package.
                 let peer_relays =
                     extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
                 let mut group_relays = self.default_relays();
@@ -627,6 +627,7 @@ impl AppCore {
                     self.refresh_current_chat(&chat_id);
                 }
             }
+
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
                 let result = {
@@ -887,100 +888,20 @@ impl AppCore {
                     };
                     (sess.client.clone(), self.core_sender.clone())
                 };
-                // Fallback relays for discovering peer key packages:
-                // - key-package relays (protected kind 443 publishes for modern clients)
-                // - plus our "popular" relays to support peers that only publish key packages there.
-                let fallback_kp_relays = self.key_package_relays();
-                let fallback_popular_relays = self.default_relays();
                 tracing::info!(peer = %peer_pubkey.to_hex(), "create_chat: fetching peer key package");
                 self.runtime.spawn(async move {
-                    // 1) Discover the peer's key-package relays (kind 10051), per NIP-104.
-                    // These events are not protected, so they can live on "popular" relays.
-                    tracing::info!(peer = %peer_pubkey.to_hex(), "fetching kind 10051 (MlsKeyPackageRelays)");
-                    let kp_relay_list_filter = Filter::new()
-                        .author(peer_pubkey)
-                        .kind(Kind::MlsKeyPackageRelays)
-                        .limit(5);
-
-                    let mut candidate_kp_relays: Vec<RelayUrl> = Vec::new();
-                    if let Ok(events) = client
-                        .fetch_events(kp_relay_list_filter, Duration::from_secs(6))
-                        .await
-                    {
-                        // Choose newest.
-                        let mut newest: Option<Event> = None;
-                        for e in events.into_iter() {
-                            if newest
-                                .as_ref()
-                                .map(|b| e.created_at > b.created_at)
-                                .unwrap_or(true)
-                            {
-                                newest = Some(e);
-                            }
-                        }
-                        if let Some(ev) = newest.as_ref() {
-                            candidate_kp_relays = extract_relays_from_key_package_relays_event(ev);
-                        }
-                    }
-
-                    if candidate_kp_relays.is_empty() {
-                        tracing::info!("no kind 10051 found, using fallback relays");
-                        let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-                        for r in fallback_kp_relays.iter().cloned() {
-                            s.insert(r);
-                        }
-                        for r in fallback_popular_relays.iter().cloned() {
-                            s.insert(r);
-                        }
-                        candidate_kp_relays = s.into_iter().collect();
-                    }
-
-                    tracing::info!(
-                        kp_relays = ?candidate_kp_relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
-                        "fetching kind 443 from relays"
-                    );
-
-                    // Ensure these relays exist in the pool and are connected before requesting from them.
-                    for r in candidate_kp_relays.iter().cloned() {
-                        let _ = client.add_relay(r).await;
-                    }
-                    client.connect().await;
-                    client.wait_for_connection(Duration::from_secs(4)).await;
-
-                    // 2) Fetch peer key package (kind 443) from the discovered relays.
+                    // Fetch peer key package (kind 443) from connected relays.
                     let kp_filter = Filter::new()
                         .author(peer_pubkey)
                         .kind(Kind::MlsKeyPackage)
                         .limit(10);
 
-                    let res = match client
-                        .fetch_events_from(
-                            candidate_kp_relays.clone(),
-                            kp_filter.clone(),
-                            Duration::from_secs(8),
-                        )
-                        .await
-                    {
-                        Ok(v) => Ok(v),
-                        Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
-                    };
-
-                    match res {
+                    match client.fetch_events(kp_filter, Duration::from_secs(8)).await {
                         Ok(events) => {
-                            let mut best: Option<Event> = None;
-                            for e in events.into_iter() {
-                                if best
-                                    .as_ref()
-                                    .map(|b| e.created_at > b.created_at)
-                                    .unwrap_or(true)
-                                {
-                                    best = Some(e);
-                                }
-                            }
+                            let best = events.into_iter().max_by_key(|e| e.created_at);
                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                 InternalEvent::PeerKeyPackageFetched {
                                     peer_pubkey,
-                                    candidate_kp_relays: candidate_kp_relays.clone(),
                                     key_package_event: best,
                                     error: None,
                                 },
@@ -990,7 +911,6 @@ impl AppCore {
                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                 InternalEvent::PeerKeyPackageFetched {
                                     peer_pubkey,
-                                    candidate_kp_relays: candidate_kp_relays.clone(),
                                     key_package_event: None,
                                     error: Some(format!("Fetch peer key package failed: {e}")),
                                 },

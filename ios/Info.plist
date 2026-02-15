@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan QR codes to start new chats.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Voice calls require microphone access.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

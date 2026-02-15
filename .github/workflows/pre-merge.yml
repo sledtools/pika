@@ -119,13 +119,50 @@ jobs:
 
       - run: nix develop .#default -c just rmp-nightly-linux
 
+  nightly-pika:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just nightly-pika-e2e
+        env:
+          # Optional: set in repo secrets to actually run the deployed-bot call test.
+          PIKA_TEST_NSEC: ${{ secrets.PIKA_TEST_NSEC }}
+          # Prefer a stable public MOQ relay for E2E.
+          PIKA_CALL_MOQ_URL: https://us-east.moq.logos.surf/anon
+
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
-    needs: [nightly-linux]
+    needs: [nightly-linux, nightly-pika]
     runs-on: ubuntu-latest
     steps:
       - run: |
           if [[ "${{ needs.nightly-linux.result }}" != "success" ]]; then
             echo "nightly-linux failed"
+            exit 1
+          fi
+          if [[ "${{ needs.nightly-pika.result }}" != "success" ]]; then
+            echo "nightly-pika failed"
             exit 1
           fi

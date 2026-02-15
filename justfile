@@ -149,6 +149,17 @@ pre-merge:
 # Nightly root task.
 nightly:
   just pre-merge
+  just nightly-pika-e2e
+  @echo "nightly complete"
+
+# Nightly E2E (Rust): run all `#[ignore]` tests (intended for long/flaky network suites).
+nightly-pika-e2e:
+  set -euo pipefail; \
+  export PIKA_E2E_PUBLIC=1; \
+  if [ -z "${PIKA_TEST_NSEC:-}" ]; then \
+    echo "note: PIKA_TEST_NSEC not set; e2e_deployed_bot_call will skip"; \
+  fi; \
+  cargo test -p pika_core --tests -- --ignored --nocapture
 
 # Full QA: fmt, clippy, test, android build, iOS sim build.
 qa: fmt clippy test android-assemble ios-build-sim

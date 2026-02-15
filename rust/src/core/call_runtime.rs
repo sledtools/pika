@@ -125,13 +125,6 @@ impl MediaTransport {
             Self::Network(relay) => relay.publish(track, frame),
         }
     }
-
-    fn disconnect(&mut self) {
-        match self {
-            Self::InMemory(session) => session.disconnect(),
-            Self::Network(relay) => relay.disconnect(),
-        }
-    }
 }
 
 impl CallRuntime {

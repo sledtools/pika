@@ -39,7 +39,7 @@ fn diag_nostr_publish_enabled() -> bool {
     match std::env::var("PIKA_DIAG_NOSTR_PUBLISH") {
         Ok(v) => {
             let t = v.trim();
-            !t.is_empty() && t != "0" && t.to_ascii_lowercase() != "false"
+            !t.is_empty() && t != "0" && !t.eq_ignore_ascii_case("false")
         }
         Err(_) => false,
     }

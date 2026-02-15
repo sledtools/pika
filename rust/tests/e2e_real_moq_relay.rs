@@ -80,6 +80,9 @@ struct RelayState {
     conns: HashMap<u64, ConnEntry>,
 }
 
+type SubSnapshot = (String, Vec<Filter>);
+type ConnSnapshot = (u64, Vec<SubSnapshot>);
+
 fn send_json(state: &Arc<Mutex<RelayState>>, conn_id: u64, v: serde_json::Value) -> bool {
     let tx = {
         let st = state.lock().unwrap();
@@ -92,12 +95,12 @@ fn send_json(state: &Arc<Mutex<RelayState>>, conn_id: u64, v: serde_json::Value)
 }
 
 fn broadcast_event(state: &Arc<Mutex<RelayState>>, ev: &Event) {
-    let conns: Vec<(u64, Vec<(String, Vec<Filter>)>)> = {
+    let conns: Vec<ConnSnapshot> = {
         let st = state.lock().unwrap();
         st.conns
             .iter()
             .map(|(id, c)| {
-                let subs: Vec<(String, Vec<Filter>)> = c
+                let subs: Vec<SubSnapshot> = c
                     .subs
                     .iter()
                     .map(|(sid, filters)| (sid.clone(), filters.clone()))
@@ -273,6 +276,7 @@ fn start_local_relay() -> (LocalRelayHandle, JoinHandle<()>) {
 // --- The actual test ---
 
 #[test]
+#[ignore] // requires QUIC egress to us-east.moq.logos.surf:443
 fn call_over_real_moq_relay() {
     // Both ring and aws-lc-rs are in the dep tree. Must pick one explicitly.
     let _ = rustls::crypto::ring::default_provider().install_default();

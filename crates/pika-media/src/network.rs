@@ -408,7 +408,7 @@ impl NetworkRelayState {
                                         data.len(),
                                         elapsed.as_secs_f64() * 1000.0,
                                     );
-                                } else if seq % 50 == 0 {
+                                } else if seq.is_multiple_of(50) {
                                     let elapsed = subscribe_start.elapsed();
                                     tracing::info!(
                                         "subscriber: progress rx={seq} group_seq={group_seq} skipped={skipped_groups} elapsed={:.1}s",

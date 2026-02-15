@@ -95,6 +95,9 @@ struct RelayState {
     conns: HashMap<u64, ConnEntry>,
 }
 
+type SubSnapshot = (String, Vec<Filter>);
+type ConnSnapshot = (u64, Vec<SubSnapshot>);
+
 fn send_json(state: &Arc<Mutex<RelayState>>, conn_id: u64, v: serde_json::Value) -> bool {
     let tx = {
         let st = state.lock().unwrap();
@@ -107,12 +110,12 @@ fn send_json(state: &Arc<Mutex<RelayState>>, conn_id: u64, v: serde_json::Value)
 }
 
 fn broadcast_event(state: &Arc<Mutex<RelayState>>, ev: &Event) {
-    let conns: Vec<(u64, Vec<(String, Vec<Filter>)>)> = {
+    let conns: Vec<ConnSnapshot> = {
         let st = state.lock().unwrap();
         st.conns
             .iter()
             .map(|(id, c)| {
-                let subs: Vec<(String, Vec<Filter>)> = c
+                let subs: Vec<SubSnapshot> = c
                     .subs
                     .iter()
                     .map(|(sid, filters)| (sid.clone(), filters.clone()))
@@ -335,10 +338,8 @@ impl DaemonHandle {
 
         let stderr_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[marmotd stderr] {line}");
-                }
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[marmotd stderr] {line}");
             }
         });
 
@@ -346,12 +347,10 @@ impl DaemonHandle {
         let lines_for_thread = stdout_lines.clone();
         let stdout_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[marmotd stdout] {line}");
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        lines_for_thread.lock().unwrap().push(v);
-                    }
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[marmotd stdout] {line}");
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    lines_for_thread.lock().unwrap().push(v);
                 }
             }
         });
@@ -427,6 +426,12 @@ impl Drop for DaemonHandle {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(t) = self.stderr_thread.take() {
+            let _ = t.join();
+        }
+        if let Some(t) = self.stdout_thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
@@ -864,6 +869,7 @@ fn run_marmotd_call_test(relay_url: &str) {
 // --- The actual tests ---
 
 #[test]
+#[ignore] // requires external marmotd binary + QUIC egress
 fn call_with_local_marmotd() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 

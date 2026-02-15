@@ -10,7 +10,7 @@
 //!
 //! Requires:
 //! - Network access to us-east.moq.logos.surf:443 (UDP/QUIC)
-//! - `marmotd` built from `third_party/openclaw-marmot` (use `just e2e-local-marmotd`)
+//! - `marmotd` available on PATH (recommended: via `nix develop`) or set `MARMOTD_BIN=/path/to/marmotd`
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -32,18 +32,32 @@ use tokio_tungstenite::tungstenite::Message;
 
 const REAL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 
+fn which(program: &str) -> Option<String> {
+    let out = Command::new("which").arg(program).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 fn marmotd_binary() -> String {
     if let Ok(bin) = std::env::var("MARMOTD_BIN") {
         if !bin.trim().is_empty() {
             return bin;
         }
     }
-    // Default: in-repo marmotd build output.
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    repo_root
-        .join("third_party/openclaw-marmot/target/debug/marmotd")
-        .to_string_lossy()
-        .to_string()
+    if let Some(bin) = which("marmotd") {
+        return bin;
+    }
+
+    // Back-compat fallback for existing dev setups.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/justin".to_string());
+    format!("{home}/code/openclaw-marmot/target/debug/marmotd")
 }
 
 fn write_config(data_dir: &str, relay_url: &str, kp_relay_url: Option<&str>) {
@@ -310,7 +324,7 @@ impl DaemonHandle {
         let bin = marmotd_binary();
         assert!(
             std::path::Path::new(&bin).exists(),
-            "marmotd binary not found at {bin}. Build it: just e2e-local-marmotd"
+            "marmotd binary not found at {bin}. Build it: cd ~/code/openclaw-marmot && cargo build -p marmotd"
         );
         let use_real_ai = std::env::var("OPENAI_API_KEY").is_ok();
         eprintln!(
@@ -448,7 +462,7 @@ fn run_marmotd_call_test(relay_url: &str) {
     let bin = marmotd_binary();
     if !std::path::Path::new(&bin).exists() {
         eprintln!("SKIP: marmotd binary not found at {bin}");
-        eprintln!("Build it: just e2e-local-marmotd");
+        eprintln!("Build it: cd ~/code/openclaw-marmot && cargo build -p marmotd");
         return;
     }
 

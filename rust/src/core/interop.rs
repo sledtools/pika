@@ -1,6 +1,19 @@
 use base64::Engine as _;
 use nostr_sdk::prelude::*;
 
+pub(super) fn extract_relays_from_key_package_relays_event(event: &Event) -> Vec<RelayUrl> {
+    if event.kind != Kind::MlsKeyPackageRelays {
+        return vec![];
+    }
+    let mut out: Vec<RelayUrl> = Vec::new();
+    for t in event.tags.iter() {
+        if let Some(TagStandard::Relay(url)) = t.as_standardized() {
+            out.push(url.clone());
+        }
+    }
+    out
+}
+
 pub(super) fn extract_relays_from_key_package_event(event: &Event) -> Option<Vec<RelayUrl>> {
     for t in event.tags.iter() {
         if t.kind() == TagKind::Relays {

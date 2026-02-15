@@ -1,7 +1,6 @@
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nostr_sdk::prelude::*;
+use nostr_sdk::prelude::{Client, Filter, Keys, Kind, PublicKey, RelayPoolNotification};
 use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, FfiApp};
 use tempfile::tempdir;
 
@@ -23,11 +22,32 @@ fn relay_urls() -> Vec<String> {
     ]
 }
 
-fn write_config(data_dir: &str, relays: &[String]) {
+fn key_package_relay_urls() -> Vec<String> {
+    if let Ok(s) = std::env::var("PIKA_E2E_KP_RELAYS") {
+        let v: Vec<String> = s
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.to_string())
+            .collect();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    vec![
+        "wss://nostr-pub.wellorder.net".into(),
+        "wss://nostr-01.yakihonne.com".into(),
+        "wss://nostr-02.yakihonne.com".into(),
+        "wss://relay.satlantis.io".into(),
+    ]
+}
+
+fn write_config(data_dir: &str, relays: &[String], kp_relays: &[String]) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let v = serde_json::json!({
         "disable_network": false,
         "relay_urls": relays,
+        "key_package_relay_urls": kp_relays,
     });
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
@@ -38,25 +58,19 @@ fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
         if f() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(100));
     }
     panic!("{what}: condition not met within {timeout:?}");
 }
 
 #[derive(Clone)]
-struct Collector {
-    updates: Arc<Mutex<Vec<AppUpdate>>>,
-}
-
+struct Collector(std::sync::Arc<std::sync::Mutex<Vec<AppUpdate>>>);
 impl Collector {
     fn new() -> Self {
-        Collector {
-            updates: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
     }
-
     fn toasts(&self) -> Vec<String> {
-        self.updates
+        self.0
             .lock()
             .unwrap()
             .iter()
@@ -67,10 +81,9 @@ impl Collector {
             .collect()
     }
 }
-
 impl AppReconciler for Collector {
     fn reconcile(&self, update: AppUpdate) {
-        self.updates.lock().unwrap().push(update);
+        self.0.lock().unwrap().push(update);
     }
 }
 
@@ -82,29 +95,38 @@ async fn wait_for_kind443_on_any_relay(
     let keys = Keys::generate();
     let client = Client::new(keys);
     for r in relays {
-        let _ = client.add_relay(r.as_str()).await;
+        let _ = client.add_relay(r).await;
     }
     client.connect().await;
-    client.wait_for_connection(Duration::from_secs(5)).await;
 
+    // Subscribe + watch notifications; more reliable than a single fetch across multiple relays.
     let filter = Filter::new()
         .author(pubkey)
         .kind(Kind::MlsKeyPackage)
         .limit(1);
+    let _ = client.subscribe(filter, None).await;
+
+    let mut rx = client.notifications();
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Ok(events) = client
-            .fetch_events(filter.clone(), Duration::from_secs(5))
-            .await
-        {
-            if events.into_iter().any(|_| true) {
-                client.shutdown().await;
-                return true;
+        // `recv().await` can block indefinitely if no notifications arrive, which would
+        // defeat our timeout. Poll with a short timeout so the loop can observe elapsed time.
+        match tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+            Ok(Ok(RelayPoolNotification::Event { event, .. })) => {
+                if event.kind == Kind::MlsKeyPackage && event.pubkey == pubkey {
+                    return true;
+                }
+            }
+            Ok(Ok(_other)) => {}
+            Ok(Err(_closed)) => {
+                // Notification channel closed; treat as failure.
+                return false;
+            }
+            Err(_elapsed) => {
+                // No notification in this polling interval.
             }
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
     }
-    client.shutdown().await;
     false
 }
 
@@ -115,6 +137,7 @@ async fn wait_for_kind443_on_any_relay(
 //   PIKA_E2E_PUBLIC=1 cargo test -p pika_core --test e2e_public_relays -- --ignored --nocapture
 // Optional:
 //   PIKA_E2E_RELAYS="wss://relay.damus.io,wss://relay.primal.net" ...
+//   PIKA_E2E_KP_RELAYS="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,..." ...
 #[test]
 #[ignore]
 fn alice_sends_bob_over_public_relays() {
@@ -124,12 +147,14 @@ fn alice_sends_bob_over_public_relays() {
     }
 
     let relays = relay_urls();
-    eprintln!("public relays: {relays:?}");
+    let kp_relays = key_package_relay_urls();
+    eprintln!("public relays (general): {relays:?}");
+    eprintln!("public relays (key packages): {kp_relays:?}");
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(&dir_a.path().to_string_lossy(), &relays);
-    write_config(&dir_b.path().to_string_lossy(), &relays);
+    write_config(&dir_a.path().to_string_lossy(), &relays, &kp_relays);
+    write_config(&dir_b.path().to_string_lossy(), &relays, &kp_relays);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -156,13 +181,13 @@ fn alice_sends_bob_over_public_relays() {
     // Wait for Bob's key package to be visible on at least one configured relay.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let kp_ok = rt.block_on(wait_for_kind443_on_any_relay(
-        &relays,
+        &kp_relays,
         bob_pubkey,
         Duration::from_secs(60),
     ));
     if !kp_ok {
         panic!(
-            "bob key package (kind 443) not observed on relays within timeout; relays={relays:?}; bob_pubkey={bob_pubkey_hex}; toasts={:?}",
+            "bob key package (kind 443) not observed on relays within timeout; kp_relays={kp_relays:?}; bob_pubkey={bob_pubkey_hex}; toasts={:?}",
             bob_collector.toasts()
         );
     }

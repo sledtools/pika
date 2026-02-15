@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fail fast if a physical Android device is locked. Connected UI tests cannot proceed past
+# the keyguard (PIN/biometric) screen.
+#
+# Usage:
+#   ./tools/android-ensure-unlocked <serial>
+#
+# Notes:
+# - Emulators are typically unlockable automatically; this script is meant for hardware devices.
+# - If your device has a PIN/biometric lock, unlock it manually and keep the screen on.
+
+ADB="${ADB:-adb}"
+SERIAL="${1:-${ANDROID_SERIAL:-${PIKA_ANDROID_SERIAL:-}}}"
+
+if [ -z "${SERIAL:-}" ]; then
+  echo "error: missing android serial (usage: $0 <serial>)" >&2
+  exit 2
+fi
+
+out="$("$ADB" -s "$SERIAL" shell dumpsys window policy 2>/dev/null || true)"
+if [ -z "$out" ]; then
+  echo "error: could not read window policy via adb (serial=$SERIAL)" >&2
+  exit 2
+fi
+
+# Android's dumpsys output isn't stable across versions; rely on KeyguardServiceDelegate flags.
+showing="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*showing=\\([^[:space:]]\\+\\).*$/\\1/p' | head -n 1)"
+secure="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*secure=\\([^[:space:]]\\+\\).*$/\\1/p' | head -n 1)"
+screen_state="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*screenState=\\([^[:space:]]\\+\\).*$/\\1/p' | head -n 1)"
+
+if [ "${showing:-}" = "true" ]; then
+  echo "error: android device is locked (serial=$SERIAL secure=${secure:-unknown} screenState=${screen_state:-unknown})" >&2
+  echo "unlock the phone (PIN/biometric), keep the screen on, then re-run." >&2
+  echo "tip: if you can't keep it unlocked, run E2E on the emulator instead." >&2
+  exit 2
+fi
+
+exit 0
+

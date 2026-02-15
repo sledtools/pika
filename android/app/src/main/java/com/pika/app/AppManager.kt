@@ -11,7 +11,9 @@ import com.pika.app.rust.AppReconciler
 import com.pika.app.rust.AppState
 import com.pika.app.rust.AppUpdate
 import com.pika.app.rust.FfiApp
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 class AppManager private constructor(context: Context) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -43,6 +45,10 @@ class AppManager private constructor(context: Context) : AppReconciler {
         private set
 
     init {
+        // Ensure call config is present before Rust bootstraps. If the file already exists (e.g.
+        // created by tooling), only fill missing keys to avoid clobbering overrides.
+        ensureDefaultConfig(context)
+
         val dataDir = context.filesDir.absolutePath
         rust = FfiApp(dataDir)
         val initial = rust.state()
@@ -54,6 +60,50 @@ class AppManager private constructor(context: Context) : AppReconciler {
         val storedNsec = secureStore.getNsec()
         if (!storedNsec.isNullOrBlank()) {
             rust.dispatch(AppAction.RestoreSession(storedNsec))
+        }
+    }
+
+    private fun ensureDefaultConfig(context: Context) {
+        val filesDir = context.filesDir
+        val path = File(filesDir, "pika_config.json")
+        val defaultMoqUrl = "https://moq.justinmoon.com/anon"
+        val defaultBroadcastPrefix = "pika/calls"
+
+        val obj =
+            runCatching {
+                if (path.exists()) {
+                    JSONObject(path.readText())
+                } else {
+                    JSONObject()
+                }
+            }.getOrElse { JSONObject() }
+
+        // Keep deterministic/offline behavior test-only (PikaTestRunner overwrites the file for instrumentation).
+        if (!obj.has("disable_network")) {
+            obj.put("disable_network", false)
+        }
+
+        fun isMissingOrBlank(key: String): Boolean {
+            if (!obj.has(key)) return true
+            val v = obj.optString(key, "").trim()
+            return v.isEmpty()
+        }
+
+        if (isMissingOrBlank("call_moq_url")) {
+            obj.put("call_moq_url", defaultMoqUrl)
+        }
+        if (isMissingOrBlank("call_broadcast_prefix")) {
+            obj.put("call_broadcast_prefix", defaultBroadcastPrefix)
+        }
+
+        runCatching {
+            val tmp = File(filesDir, "pika_config.json.tmp")
+            tmp.writeText(obj.toString())
+            if (!tmp.renameTo(path)) {
+                // Fallback for devices that don't allow rename across filesystems (shouldn't happen in app filesDir).
+                path.writeText(obj.toString())
+                tmp.delete()
+            }
         }
     }
 

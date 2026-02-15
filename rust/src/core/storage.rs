@@ -126,6 +126,8 @@ impl AppCore {
             let last_message = last_message.map(|msg| {
                 if msg.contains("```pika-prompt-response\n") {
                     "Voted in poll".to_string()
+                } else if msg.contains("```pika-html-update ") {
+                    "Updated content".to_string()
                 } else {
                     msg
                 }
@@ -367,6 +369,7 @@ impl AppCore {
         let can_load_older = storage_len == limit;
         self.loaded_count.insert(chat_id.to_string(), storage_len);
 
+        process_html_updates(&mut msgs);
         process_poll_tallies(&mut msgs, &my_pubkey_hex);
 
         let is_admin = entry.admin_pubkeys.contains(&my_pubkey_hex);
@@ -479,6 +482,7 @@ impl AppCore {
                 cur.can_load_older = fetched_len == limit;
                 self.loaded_count
                     .insert(chat_id.to_string(), offset + fetched_len);
+                process_html_updates(&mut cur.messages);
                 process_poll_tallies(&mut cur.messages, &my_pubkey_hex);
                 self.emit_current_chat();
             }
@@ -566,5 +570,221 @@ fn process_poll_tallies(msgs: &mut Vec<ChatMessage>, my_pubkey_hex: &str) {
     // Remove response messages (reverse order to preserve indices).
     for i in response_indices.into_iter().rev() {
         msgs.remove(i);
+    }
+}
+
+/// Extract the application-level ID from a `pika-html <id>` fence line.
+/// Returns `None` for plain `pika-html` blocks (no ID).
+fn parse_html_id(content: &str) -> Option<String> {
+    let marker = "```pika-html ";
+    let start = content.find(marker)?;
+    let rest = &content[start + marker.len()..];
+    let line_end = rest.find('\n')?;
+    let id = rest[..line_end].trim();
+    if id.is_empty() {
+        return None;
+    }
+    // Ensure it looks like a simple token (no spaces)
+    if id.contains(' ') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// Extract `(target_id, new_html_content)` from a `pika-html-update <id>` block.
+fn parse_html_update(content: &str) -> Option<(String, String)> {
+    let marker = "```pika-html-update ";
+    let start = content.find(marker)?;
+    let rest = &content[start + marker.len()..];
+    let line_end = rest.find('\n')?;
+    let id = rest[..line_end].trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let body_start = &rest[line_end + 1..];
+    let end = body_start.find("```")?;
+    let full_body = body_start[..end].to_string();
+    // Reconstruct the updated content as a pika-html block with the same ID
+    let new_content = format!("```pika-html {}\n{}```", id, full_body);
+    Some((id, new_content))
+}
+
+/// Scan messages for `pika-html-update` blocks, merge them into the original
+/// `pika-html` messages by ID, and remove the update messages.
+fn process_html_updates(msgs: &mut Vec<ChatMessage>) {
+    // Collect updates: target_id -> (new_content, index, timestamp)
+    // Keep only the latest update per target_id.
+    let mut latest_updates: HashMap<String, (String, i64)> = HashMap::new();
+    let mut update_indices: Vec<usize> = Vec::new();
+
+    for (i, msg) in msgs.iter().enumerate() {
+        if let Some((target_id, new_content)) = parse_html_update(&msg.content) {
+            tracing::debug!(target_id, msg_id = msg.id, "html-update found");
+            let dominated = latest_updates
+                .get(&target_id)
+                .map(|(_, ts)| msg.timestamp > *ts)
+                .unwrap_or(true);
+            if dominated {
+                latest_updates.insert(target_id, (new_content, msg.timestamp));
+            }
+            update_indices.push(i);
+        }
+    }
+
+    if update_indices.is_empty() {
+        return;
+    }
+
+    // Scan originals and apply updates.
+    let mut matched = 0usize;
+    for msg in msgs.iter_mut() {
+        if let Some(html_id) = parse_html_id(&msg.content) {
+            if let Some((new_content, _)) = latest_updates.get(&html_id) {
+                tracing::debug!(html_id, msg_id = msg.id, "html-update applied to original");
+                msg.content = new_content.clone();
+                msg.display_content = new_content.clone();
+                matched += 1;
+            }
+        }
+    }
+
+    if matched == 0 {
+        tracing::warn!(
+            update_count = update_indices.len(),
+            ids = ?latest_updates.keys().collect::<Vec<_>>(),
+            "html-update(s) found but no matching pika-html originals"
+        );
+    }
+
+    // Remove update messages (reverse order to preserve indices).
+    for i in update_indices.into_iter().rev() {
+        msgs.remove(i);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::MessageDeliveryState;
+
+    fn make_msg(id: &str, content: &str, timestamp: i64) -> ChatMessage {
+        ChatMessage {
+            id: id.to_string(),
+            sender_pubkey: "aabb".to_string(),
+            sender_name: None,
+            content: content.to_string(),
+            display_content: content.to_string(),
+            mentions: vec![],
+            timestamp,
+            is_mine: false,
+            delivery: MessageDeliveryState::Sent,
+            poll_tally: vec![],
+            my_poll_vote: None,
+        }
+    }
+
+    #[test]
+    fn parse_html_id_with_id() {
+        let content = "```pika-html dashboard\n<h1>Loading...</h1>\n```";
+        assert_eq!(parse_html_id(content), Some("dashboard".to_string()));
+    }
+
+    #[test]
+    fn parse_html_id_no_id() {
+        let content = "```pika-html\n<h1>Static</h1>\n```";
+        assert_eq!(parse_html_id(content), None);
+    }
+
+    #[test]
+    fn parse_html_id_ignores_update() {
+        let content = "```pika-html-update dashboard\n<h1>New</h1>\n```";
+        // "pika-html " marker doesn't match "pika-html-update "
+        assert_eq!(parse_html_id(content), None);
+    }
+
+    #[test]
+    fn parse_html_update_extracts_id_and_content() {
+        let content = "```pika-html-update dashboard\n<h1>Results!</h1>\n```";
+        let (id, new_content) = parse_html_update(content).unwrap();
+        assert_eq!(id, "dashboard");
+        assert!(new_content.contains("```pika-html dashboard\n"));
+        assert!(new_content.contains("<h1>Results!</h1>"));
+    }
+
+    #[test]
+    fn parse_html_update_no_match_for_plain_html() {
+        let content = "```pika-html dashboard\n<h1>Loading</h1>\n```";
+        assert!(parse_html_update(content).is_none());
+    }
+
+    #[test]
+    fn process_html_updates_merges_and_removes() {
+        let mut msgs = vec![
+            make_msg(
+                "m1",
+                "```pika-html dashboard\n<h1>Loading...</h1>\n```",
+                100,
+            ),
+            make_msg("m2", "Hello world", 101),
+            make_msg(
+                "m3",
+                "```pika-html-update dashboard\n<h1>Results ready!</h1>\n```",
+                102,
+            ),
+        ];
+
+        process_html_updates(&mut msgs);
+
+        // Should have 2 messages (update removed)
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].id, "m1");
+        assert!(msgs[0].content.contains("Results ready!"));
+        assert!(msgs[0].display_content.contains("Results ready!"));
+        assert_eq!(msgs[1].id, "m2");
+    }
+
+    #[test]
+    fn process_html_updates_last_update_wins() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html dash\n<h1>V1</h1>\n```", 100),
+            make_msg("m2", "```pika-html-update dash\n<h1>V2</h1>\n```", 101),
+            make_msg("m3", "```pika-html-update dash\n<h1>V3</h1>\n```", 102),
+        ];
+
+        process_html_updates(&mut msgs);
+
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].content.contains("V3"));
+    }
+
+    #[test]
+    fn process_html_updates_no_op_without_updates() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html dashboard\n<h1>Static</h1>\n```", 100),
+            make_msg("m2", "Hello", 101),
+        ];
+
+        process_html_updates(&mut msgs);
+
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].content.contains("Static"));
+    }
+
+    #[test]
+    fn process_html_updates_plain_html_unaffected() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html\n<h1>No ID</h1>\n```", 100),
+            make_msg(
+                "m2",
+                "```pika-html-update dashboard\n<h1>Orphan update</h1>\n```",
+                101,
+            ),
+        ];
+
+        process_html_updates(&mut msgs);
+
+        // Update removed but original unchanged (no matching ID)
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].content.contains("No ID"));
     }
 }

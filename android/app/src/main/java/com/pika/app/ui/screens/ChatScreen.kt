@@ -141,11 +141,12 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
 private sealed class MessageSegment {
     data class Markdown(val text: String) : MessageSegment()
     data class PikaPrompt(val title: String, val options: List<String>) : MessageSegment()
+    data class PikaHtml(val html: String) : MessageSegment()
 }
 
 private fun parseMessageSegments(content: String): List<MessageSegment> {
     val segments = mutableListOf<MessageSegment>()
-    val pattern = Regex("```pika-(\\w+)\\n([\\s\\S]*?)```")
+    val pattern = Regex("```pika-([\\w-]+)(?:[ \\t]+(\\S+))?\\n([\\s\\S]*?)```")
     var lastEnd = 0
 
     for (match in pattern.findAll(content)) {
@@ -153,20 +154,29 @@ private fun parseMessageSegments(content: String): List<MessageSegment> {
         if (before.isNotBlank()) segments.add(MessageSegment.Markdown(before))
 
         val blockType = match.groupValues[1]
-        val blockBody = match.groupValues[2].trim()
+        val blockBody = match.groupValues[3].trim()
 
-        if (blockType == "prompt") {
-            try {
-                val json = JSONObject(blockBody)
-                val title = json.getString("title")
-                val optionsArray = json.getJSONArray("options")
-                val options = (0 until optionsArray.length()).map { optionsArray.getString(it) }
-                segments.add(MessageSegment.PikaPrompt(title, options))
-            } catch (_: Exception) {
+        when (blockType) {
+            "prompt" -> {
+                try {
+                    val json = JSONObject(blockBody)
+                    val title = json.getString("title")
+                    val optionsArray = json.getJSONArray("options")
+                    val options = (0 until optionsArray.length()).map { optionsArray.getString(it) }
+                    segments.add(MessageSegment.PikaPrompt(title, options))
+                } catch (_: Exception) {
+                    segments.add(MessageSegment.Markdown("```$blockType\n$blockBody\n```"))
+                }
+            }
+            "html" -> {
+                segments.add(MessageSegment.PikaHtml(blockBody))
+            }
+            "html-update", "prompt-response" -> {
+                // Consumed by Rust core; silently drop if one slips through.
+            }
+            else -> {
                 segments.add(MessageSegment.Markdown("```$blockType\n$blockBody\n```"))
             }
-        } else {
-            segments.add(MessageSegment.Markdown("```$blockType\n$blockBody\n```"))
         }
 
         lastEnd = match.range.last + 1
@@ -230,6 +240,25 @@ private fun MessageBubble(message: ChatMessage, onSendMessage: (String) -> Unit)
                         message = message,
                         onSelect = onSendMessage,
                     )
+                }
+                is MessageSegment.PikaHtml -> {
+                    Box(
+                        modifier =
+                            Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                .padding(12.dp)
+                                .widthIn(max = 280.dp),
+                    ) {
+                        MarkdownText(
+                            markdown = segment.html,
+                            style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                            enableSoftBreakAddsNewLine = true,
+                            afterSetMarkdown = { textView ->
+                                textView.includeFontPadding = false
+                            },
+                        )
+                    }
                 }
             }
         }

@@ -329,7 +329,7 @@ private enum MessageSegment: Identifiable {
 
 private func parseMessageSegments(_ content: String) -> [MessageSegment] {
     var segments: [MessageSegment] = []
-    let pattern = /```pika-(\w+)\n([\s\S]*?)```/
+    let pattern = /```pika-([\w-]+)(?:[ \t]+(\S+))?\n([\s\S]*?)```/
     var remaining = content[...]
 
     while let match = remaining.firstMatch(of: pattern) {
@@ -339,7 +339,7 @@ private func parseMessageSegments(_ content: String) -> [MessageSegment] {
         }
 
         let blockType = String(match.output.1)
-        let blockBody = String(match.output.2).trimmingCharacters(in: .whitespacesAndNewlines)
+        let blockBody = String(match.output.3).trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch blockType {
         case "prompt":
@@ -349,6 +349,8 @@ private func parseMessageSegments(_ content: String) -> [MessageSegment] {
             }
         case "html":
             segments.append(.pikaHtml(blockBody))
+        case "html-update", "prompt-response":
+            break // Consumed by Rust core; silently drop if one slips through.
         default:
             segments.append(.markdown("```\(blockType)\n\(blockBody)\n```"))
         }

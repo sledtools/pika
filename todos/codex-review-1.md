@@ -11,7 +11,7 @@ Scope: clean up project detritus and track next review actions for audio calls.
 ## 1. Default Config Consistency
 
 - [ ] Make iOS/Android/Rust agree on defaults:
-  - [ ] `call_moq_url` default should match everywhere (recommend: `https://moq.justinmoon.com/anon`).
+  - [ ] `call_moq_url` default should match everywhere (recommend: `https://us-east.moq.logos.surf/anon`).
   - [ ] `call_broadcast_prefix` default should match everywhere (`pika/calls`).
 - [ ] Add a small guard/test so a mismatch is caught early (unit-ish, not networked).
 

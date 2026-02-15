@@ -30,7 +30,7 @@ Scope: make `just pre-merge` green, reduce flake, align spec/impl enough to land
 - Protocol reality notes (ensure code + deployment agree):
 - Signaling includes `relay_auth` in `CallSessionParams` (`rust/src/core/call_control.rs:36`).
 - v0 plaintext docs are obsolete: current impl enforces MLS-derived frame crypto + opaque labels + relay-auth token shape.
-- Defaults drift: iOS/Android default `call_moq_url` to `https://us-east.moq.logos.surf/anon` (`ios/Sources/AppManager.swift:33`, `android/app/src/main/java/com/pika/app/AppManager.kt:69`) while some infra/bot references still mention `moq.justinmoon.com`.
+- Defaults: iOS/Android default `call_moq_url` to `https://us-east.moq.logos.surf/anon` (`ios/Sources/AppManager.swift:33`, `android/app/src/main/java/com/pika/app/AppManager.kt:69`).
 
 ## P3: “One-command” manual E2E
 

@@ -332,12 +332,22 @@ run-ios *ARGS:
   ./tools/pika-run ios run {{ARGS}}
 
 # iOS device smoke: run minimal QUIC/TLS connect test via cargo-dinghy.
-ios-quic-connect-device UDID:
-  cargo dinghy -p auto-ios-aarch64 -d "{{UDID}}" run -p pika-media --example quic_connect_test --features network
+#
+# Usage:
+#   just ios-quic-connect-device UDID=<DEVICE_UDID>
+ios-quic-connect-device:
+  set -euo pipefail; \
+  : "${UDID:?missing UDID=<DEVICE_UDID>}"; \
+  cargo dinghy -p auto-ios-aarch64 -d "$UDID" run -p pika-media --example quic_connect_test --features network
 
 # Android device smoke: run minimal QUIC/TLS connect test via cargo-dinghy.
-android-quic-connect-device SERIAL PLATFORM="auto-android-aarch64-api35":
-  cargo dinghy -p "{{PLATFORM}}" -d "{{SERIAL}}" run -p pika-media --example quic_connect_test --features network
+#
+# Usage:
+#   just android-quic-connect-device SERIAL=<serial>
+android-quic-connect-device PLATFORM="auto-android-aarch64-api35":
+  set -euo pipefail; \
+  : "${SERIAL:?missing SERIAL=<serial>}"; \
+  cargo dinghy -p "{{PLATFORM}}" -d "$SERIAL" run -p pika-media --example quic_connect_test --features network
 
 # Check iOS dev environment (Xcode, simulators, runtimes).
 doctor-ios:

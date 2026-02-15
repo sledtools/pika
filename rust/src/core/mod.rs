@@ -441,6 +441,13 @@ impl AppCore {
                 ok,
                 error,
             } => {
+                tracing::info!(
+                    ok,
+                    ?error,
+                    %chat_id,
+                    %rumor_id,
+                    "message_publish_result"
+                );
                 let per_chat = self.delivery_overrides.entry(chat_id.clone()).or_default();
                 if ok {
                     per_chat.insert(rumor_id.clone(), MessageDeliveryState::Sent);

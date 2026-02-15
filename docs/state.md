@@ -20,6 +20,7 @@ Pika uses a single-threaded Rust "app actor" as the source of truth.
 - navigation (`router`)
 - auth (`auth`)
 - list + detail slices (`chat_list`, `current_chat`)
+- call state (`active_call`)
 - ephemeral UI (`toast`)
 
 Rust also maintains actor-internal bookkeeping that is *not* part of `AppState` (paging counters,
@@ -70,4 +71,3 @@ Costs:
 If performance becomes an issue, we can evolve to more granular updates later (e.g. per-slice deltas
 or targeted records), but we will only do that once we have evidence that full snapshots are a
 bottleneck.
-

@@ -1467,17 +1467,13 @@ data class AppState (
     , 
     var `auth`: AuthState
     , 
-    var `myProfile`: MyProfileState
-    , 
     var `busy`: BusyState
     , 
     var `chatList`: List<ChatSummary>
     , 
     var `currentChat`: ChatViewState?
     , 
-    var `followList`: List<FollowListEntry>
-    , 
-    var `peerProfile`: PeerProfileState?
+    var `activeCall`: CallState?
     , 
     var `toast`: kotlin.String?
     
@@ -1499,12 +1495,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.read(buf),
             FfiConverterTypeRouter.read(buf),
             FfiConverterTypeAuthState.read(buf),
-            FfiConverterTypeMyProfileState.read(buf),
             FfiConverterTypeBusyState.read(buf),
             FfiConverterSequenceTypeChatSummary.read(buf),
             FfiConverterOptionalTypeChatViewState.read(buf),
-            FfiConverterSequenceTypeFollowListEntry.read(buf),
-            FfiConverterOptionalTypePeerProfileState.read(buf),
+            FfiConverterOptionalTypeCallState.read(buf),
             FfiConverterOptionalString.read(buf),
         )
     }
@@ -1513,12 +1507,10 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.allocationSize(value.`rev`) +
             FfiConverterTypeRouter.allocationSize(value.`router`) +
             FfiConverterTypeAuthState.allocationSize(value.`auth`) +
-            FfiConverterTypeMyProfileState.allocationSize(value.`myProfile`) +
             FfiConverterTypeBusyState.allocationSize(value.`busy`) +
             FfiConverterSequenceTypeChatSummary.allocationSize(value.`chatList`) +
             FfiConverterOptionalTypeChatViewState.allocationSize(value.`currentChat`) +
-            FfiConverterSequenceTypeFollowListEntry.allocationSize(value.`followList`) +
-            FfiConverterOptionalTypePeerProfileState.allocationSize(value.`peerProfile`) +
+            FfiConverterOptionalTypeCallState.allocationSize(value.`activeCall`) +
             FfiConverterOptionalString.allocationSize(value.`toast`)
     )
 
@@ -1526,26 +1518,29 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterULong.write(value.`rev`, buf)
             FfiConverterTypeRouter.write(value.`router`, buf)
             FfiConverterTypeAuthState.write(value.`auth`, buf)
-            FfiConverterTypeMyProfileState.write(value.`myProfile`, buf)
             FfiConverterTypeBusyState.write(value.`busy`, buf)
             FfiConverterSequenceTypeChatSummary.write(value.`chatList`, buf)
             FfiConverterOptionalTypeChatViewState.write(value.`currentChat`, buf)
-            FfiConverterSequenceTypeFollowListEntry.write(value.`followList`, buf)
-            FfiConverterOptionalTypePeerProfileState.write(value.`peerProfile`, buf)
+            FfiConverterOptionalTypeCallState.write(value.`activeCall`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
     }
 }
 
 
 
+/**
+ * "In flight" flags for long-ish operations that the UI should reflect.
+ *
+ * Spec-v1 allows ephemeral UI state to remain native (scroll position, focus, etc),
+ * but UX-relevant async operation state should live in Rust to avoid native-side
+ * heuristics (e.g., resetting spinners on toast).
+ */
 data class BusyState (
     var `creatingAccount`: kotlin.Boolean
     , 
     var `loggingIn`: kotlin.Boolean
     , 
     var `creatingChat`: kotlin.Boolean
-    , 
-    var `fetchingFollowList`: kotlin.Boolean
     
 ){
     
@@ -1565,22 +1560,135 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
-            FfiConverterBoolean.read(buf),
         )
     }
 
     override fun allocationSize(value: BusyState) = (
             FfiConverterBoolean.allocationSize(value.`creatingAccount`) +
             FfiConverterBoolean.allocationSize(value.`loggingIn`) +
-            FfiConverterBoolean.allocationSize(value.`creatingChat`) +
-            FfiConverterBoolean.allocationSize(value.`fetchingFollowList`)
+            FfiConverterBoolean.allocationSize(value.`creatingChat`)
     )
 
     override fun write(value: BusyState, buf: ByteBuffer) {
             FfiConverterBoolean.write(value.`creatingAccount`, buf)
             FfiConverterBoolean.write(value.`loggingIn`, buf)
             FfiConverterBoolean.write(value.`creatingChat`, buf)
-            FfiConverterBoolean.write(value.`fetchingFollowList`, buf)
+    }
+}
+
+
+
+data class CallDebugStats (
+    var `txFrames`: kotlin.ULong
+    , 
+    var `rxFrames`: kotlin.ULong
+    , 
+    var `rxDropped`: kotlin.ULong
+    , 
+    var `jitterBufferMs`: kotlin.UInt
+    , 
+    var `lastRttMs`: kotlin.UInt?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugStats> {
+    override fun read(buf: ByteBuffer): CallDebugStats {
+        return CallDebugStats(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CallDebugStats) = (
+            FfiConverterULong.allocationSize(value.`txFrames`) +
+            FfiConverterULong.allocationSize(value.`rxFrames`) +
+            FfiConverterULong.allocationSize(value.`rxDropped`) +
+            FfiConverterUInt.allocationSize(value.`jitterBufferMs`) +
+            FfiConverterOptionalUInt.allocationSize(value.`lastRttMs`)
+    )
+
+    override fun write(value: CallDebugStats, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`txFrames`, buf)
+            FfiConverterULong.write(value.`rxFrames`, buf)
+            FfiConverterULong.write(value.`rxDropped`, buf)
+            FfiConverterUInt.write(value.`jitterBufferMs`, buf)
+            FfiConverterOptionalUInt.write(value.`lastRttMs`, buf)
+    }
+}
+
+
+
+data class CallState (
+    var `callId`: kotlin.String
+    , 
+    var `chatId`: kotlin.String
+    , 
+    var `peerNpub`: kotlin.String
+    , 
+    var `status`: CallStatus
+    , 
+    var `startedAt`: kotlin.Long?
+    , 
+    var `isMuted`: kotlin.Boolean
+    , 
+    var `debug`: CallDebugStats?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
+    override fun read(buf: ByteBuffer): CallState {
+        return CallState(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeCallStatus.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalTypeCallDebugStats.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CallState) = (
+            FfiConverterString.allocationSize(value.`callId`) +
+            FfiConverterString.allocationSize(value.`chatId`) +
+            FfiConverterString.allocationSize(value.`peerNpub`) +
+            FfiConverterTypeCallStatus.allocationSize(value.`status`) +
+            FfiConverterOptionalLong.allocationSize(value.`startedAt`) +
+            FfiConverterBoolean.allocationSize(value.`isMuted`) +
+            FfiConverterOptionalTypeCallDebugStats.allocationSize(value.`debug`)
+    )
+
+    override fun write(value: CallState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`callId`, buf)
+            FfiConverterString.write(value.`chatId`, buf)
+            FfiConverterString.write(value.`peerNpub`, buf)
+            FfiConverterTypeCallStatus.write(value.`status`, buf)
+            FfiConverterOptionalLong.write(value.`startedAt`, buf)
+            FfiConverterBoolean.write(value.`isMuted`, buf)
+            FfiConverterOptionalTypeCallDebugStats.write(value.`debug`, buf)
     }
 }
 
@@ -1591,25 +1699,13 @@ data class ChatMessage (
     , 
     var `senderPubkey`: kotlin.String
     , 
-    var `senderName`: kotlin.String?
-    , 
     var `content`: kotlin.String
-    , 
-    var `displayContent`: kotlin.String
-    , 
-    var `mentions`: List<Mention>
     , 
     var `timestamp`: kotlin.Long
     , 
     var `isMine`: kotlin.Boolean
     , 
     var `delivery`: MessageDeliveryState
-    , 
-    var `pollTally`: List<PollTally>
-    , 
-    var `myPollVote`: kotlin.String?
-    , 
-    var `htmlState`: kotlin.String?
     
 ){
     
@@ -1628,47 +1724,29 @@ public object FfiConverterTypeChatMessage: FfiConverterRustBuffer<ChatMessage> {
         return ChatMessage(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
-            FfiConverterOptionalString.read(buf),
             FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterSequenceTypeMention.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterTypeMessageDeliveryState.read(buf),
-            FfiConverterSequenceTypePollTally.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalString.read(buf),
         )
     }
 
     override fun allocationSize(value: ChatMessage) = (
             FfiConverterString.allocationSize(value.`id`) +
             FfiConverterString.allocationSize(value.`senderPubkey`) +
-            FfiConverterOptionalString.allocationSize(value.`senderName`) +
             FfiConverterString.allocationSize(value.`content`) +
-            FfiConverterString.allocationSize(value.`displayContent`) +
-            FfiConverterSequenceTypeMention.allocationSize(value.`mentions`) +
             FfiConverterLong.allocationSize(value.`timestamp`) +
             FfiConverterBoolean.allocationSize(value.`isMine`) +
-            FfiConverterTypeMessageDeliveryState.allocationSize(value.`delivery`) +
-            FfiConverterSequenceTypePollTally.allocationSize(value.`pollTally`) +
-            FfiConverterOptionalString.allocationSize(value.`myPollVote`) +
-            FfiConverterOptionalString.allocationSize(value.`htmlState`)
+            FfiConverterTypeMessageDeliveryState.allocationSize(value.`delivery`)
     )
 
     override fun write(value: ChatMessage, buf: ByteBuffer) {
             FfiConverterString.write(value.`id`, buf)
             FfiConverterString.write(value.`senderPubkey`, buf)
-            FfiConverterOptionalString.write(value.`senderName`, buf)
             FfiConverterString.write(value.`content`, buf)
-            FfiConverterString.write(value.`displayContent`, buf)
-            FfiConverterSequenceTypeMention.write(value.`mentions`, buf)
             FfiConverterLong.write(value.`timestamp`, buf)
             FfiConverterBoolean.write(value.`isMine`, buf)
             FfiConverterTypeMessageDeliveryState.write(value.`delivery`, buf)
-            FfiConverterSequenceTypePollTally.write(value.`pollTally`, buf)
-            FfiConverterOptionalString.write(value.`myPollVote`, buf)
-            FfiConverterOptionalString.write(value.`htmlState`, buf)
     }
 }
 
@@ -1677,11 +1755,11 @@ public object FfiConverterTypeChatMessage: FfiConverterRustBuffer<ChatMessage> {
 data class ChatSummary (
     var `chatId`: kotlin.String
     , 
-    var `isGroup`: kotlin.Boolean
+    var `peerNpub`: kotlin.String
     , 
-    var `groupName`: kotlin.String?
+    var `peerName`: kotlin.String?
     , 
-    var `members`: List<MemberInfo>
+    var `peerPictureUrl`: kotlin.String?
     , 
     var `lastMessage`: kotlin.String?
     , 
@@ -1705,9 +1783,9 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
     override fun read(buf: ByteBuffer): ChatSummary {
         return ChatSummary(
             FfiConverterString.read(buf),
-            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
-            FfiConverterSequenceTypeMemberInfo.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterUInt.read(buf),
@@ -1716,9 +1794,9 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
 
     override fun allocationSize(value: ChatSummary) = (
             FfiConverterString.allocationSize(value.`chatId`) +
-            FfiConverterBoolean.allocationSize(value.`isGroup`) +
-            FfiConverterOptionalString.allocationSize(value.`groupName`) +
-            FfiConverterSequenceTypeMemberInfo.allocationSize(value.`members`) +
+            FfiConverterString.allocationSize(value.`peerNpub`) +
+            FfiConverterOptionalString.allocationSize(value.`peerName`) +
+            FfiConverterOptionalString.allocationSize(value.`peerPictureUrl`) +
             FfiConverterOptionalString.allocationSize(value.`lastMessage`) +
             FfiConverterOptionalLong.allocationSize(value.`lastMessageAt`) +
             FfiConverterUInt.allocationSize(value.`unreadCount`)
@@ -1726,9 +1804,9 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
 
     override fun write(value: ChatSummary, buf: ByteBuffer) {
             FfiConverterString.write(value.`chatId`, buf)
-            FfiConverterBoolean.write(value.`isGroup`, buf)
-            FfiConverterOptionalString.write(value.`groupName`, buf)
-            FfiConverterSequenceTypeMemberInfo.write(value.`members`, buf)
+            FfiConverterString.write(value.`peerNpub`, buf)
+            FfiConverterOptionalString.write(value.`peerName`, buf)
+            FfiConverterOptionalString.write(value.`peerPictureUrl`, buf)
             FfiConverterOptionalString.write(value.`lastMessage`, buf)
             FfiConverterOptionalLong.write(value.`lastMessageAt`, buf)
             FfiConverterUInt.write(value.`unreadCount`, buf)
@@ -1740,13 +1818,11 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
 data class ChatViewState (
     var `chatId`: kotlin.String
     , 
-    var `isGroup`: kotlin.Boolean
+    var `peerNpub`: kotlin.String
     , 
-    var `groupName`: kotlin.String?
+    var `peerName`: kotlin.String?
     , 
-    var `members`: List<MemberInfo>
-    , 
-    var `isAdmin`: kotlin.Boolean
+    var `peerPictureUrl`: kotlin.String?
     , 
     var `messages`: List<ChatMessage>
     , 
@@ -1768,10 +1844,9 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
     override fun read(buf: ByteBuffer): ChatViewState {
         return ChatViewState(
             FfiConverterString.read(buf),
-            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
-            FfiConverterSequenceTypeMemberInfo.read(buf),
-            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterSequenceTypeChatMessage.read(buf),
             FfiConverterBoolean.read(buf),
         )
@@ -1779,310 +1854,20 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
 
     override fun allocationSize(value: ChatViewState) = (
             FfiConverterString.allocationSize(value.`chatId`) +
-            FfiConverterBoolean.allocationSize(value.`isGroup`) +
-            FfiConverterOptionalString.allocationSize(value.`groupName`) +
-            FfiConverterSequenceTypeMemberInfo.allocationSize(value.`members`) +
-            FfiConverterBoolean.allocationSize(value.`isAdmin`) +
+            FfiConverterString.allocationSize(value.`peerNpub`) +
+            FfiConverterOptionalString.allocationSize(value.`peerName`) +
+            FfiConverterOptionalString.allocationSize(value.`peerPictureUrl`) +
             FfiConverterSequenceTypeChatMessage.allocationSize(value.`messages`) +
             FfiConverterBoolean.allocationSize(value.`canLoadOlder`)
     )
 
     override fun write(value: ChatViewState, buf: ByteBuffer) {
             FfiConverterString.write(value.`chatId`, buf)
-            FfiConverterBoolean.write(value.`isGroup`, buf)
-            FfiConverterOptionalString.write(value.`groupName`, buf)
-            FfiConverterSequenceTypeMemberInfo.write(value.`members`, buf)
-            FfiConverterBoolean.write(value.`isAdmin`, buf)
+            FfiConverterString.write(value.`peerNpub`, buf)
+            FfiConverterOptionalString.write(value.`peerName`, buf)
+            FfiConverterOptionalString.write(value.`peerPictureUrl`, buf)
             FfiConverterSequenceTypeChatMessage.write(value.`messages`, buf)
             FfiConverterBoolean.write(value.`canLoadOlder`, buf)
-    }
-}
-
-
-
-data class FollowListEntry (
-    var `pubkey`: kotlin.String
-    , 
-    var `npub`: kotlin.String
-    , 
-    var `name`: kotlin.String?
-    , 
-    var `pictureUrl`: kotlin.String?
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeFollowListEntry: FfiConverterRustBuffer<FollowListEntry> {
-    override fun read(buf: ByteBuffer): FollowListEntry {
-        return FollowListEntry(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalString.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: FollowListEntry) = (
-            FfiConverterString.allocationSize(value.`pubkey`) +
-            FfiConverterString.allocationSize(value.`npub`) +
-            FfiConverterOptionalString.allocationSize(value.`name`) +
-            FfiConverterOptionalString.allocationSize(value.`pictureUrl`)
-    )
-
-    override fun write(value: FollowListEntry, buf: ByteBuffer) {
-            FfiConverterString.write(value.`pubkey`, buf)
-            FfiConverterString.write(value.`npub`, buf)
-            FfiConverterOptionalString.write(value.`name`, buf)
-            FfiConverterOptionalString.write(value.`pictureUrl`, buf)
-    }
-}
-
-
-
-data class MemberInfo (
-    var `pubkey`: kotlin.String
-    , 
-    var `npub`: kotlin.String
-    , 
-    var `name`: kotlin.String?
-    , 
-    var `pictureUrl`: kotlin.String?
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeMemberInfo: FfiConverterRustBuffer<MemberInfo> {
-    override fun read(buf: ByteBuffer): MemberInfo {
-        return MemberInfo(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalString.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: MemberInfo) = (
-            FfiConverterString.allocationSize(value.`pubkey`) +
-            FfiConverterString.allocationSize(value.`npub`) +
-            FfiConverterOptionalString.allocationSize(value.`name`) +
-            FfiConverterOptionalString.allocationSize(value.`pictureUrl`)
-    )
-
-    override fun write(value: MemberInfo, buf: ByteBuffer) {
-            FfiConverterString.write(value.`pubkey`, buf)
-            FfiConverterString.write(value.`npub`, buf)
-            FfiConverterOptionalString.write(value.`name`, buf)
-            FfiConverterOptionalString.write(value.`pictureUrl`, buf)
-    }
-}
-
-
-
-data class Mention (
-    var `npub`: kotlin.String
-    , 
-    var `displayName`: kotlin.String
-    , 
-    var `start`: kotlin.UInt
-    , 
-    var `end`: kotlin.UInt
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeMention: FfiConverterRustBuffer<Mention> {
-    override fun read(buf: ByteBuffer): Mention {
-        return Mention(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterUInt.read(buf),
-            FfiConverterUInt.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: Mention) = (
-            FfiConverterString.allocationSize(value.`npub`) +
-            FfiConverterString.allocationSize(value.`displayName`) +
-            FfiConverterUInt.allocationSize(value.`start`) +
-            FfiConverterUInt.allocationSize(value.`end`)
-    )
-
-    override fun write(value: Mention, buf: ByteBuffer) {
-            FfiConverterString.write(value.`npub`, buf)
-            FfiConverterString.write(value.`displayName`, buf)
-            FfiConverterUInt.write(value.`start`, buf)
-            FfiConverterUInt.write(value.`end`, buf)
-    }
-}
-
-
-
-data class MyProfileState (
-    var `name`: kotlin.String
-    , 
-    var `about`: kotlin.String
-    , 
-    var `pictureUrl`: kotlin.String?
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeMyProfileState: FfiConverterRustBuffer<MyProfileState> {
-    override fun read(buf: ByteBuffer): MyProfileState {
-        return MyProfileState(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterOptionalString.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: MyProfileState) = (
-            FfiConverterString.allocationSize(value.`name`) +
-            FfiConverterString.allocationSize(value.`about`) +
-            FfiConverterOptionalString.allocationSize(value.`pictureUrl`)
-    )
-
-    override fun write(value: MyProfileState, buf: ByteBuffer) {
-            FfiConverterString.write(value.`name`, buf)
-            FfiConverterString.write(value.`about`, buf)
-            FfiConverterOptionalString.write(value.`pictureUrl`, buf)
-    }
-}
-
-
-
-data class PeerProfileState (
-    var `pubkey`: kotlin.String
-    , 
-    var `npub`: kotlin.String
-    , 
-    var `name`: kotlin.String?
-    , 
-    var `about`: kotlin.String?
-    , 
-    var `pictureUrl`: kotlin.String?
-    , 
-    var `isFollowed`: kotlin.Boolean
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypePeerProfileState: FfiConverterRustBuffer<PeerProfileState> {
-    override fun read(buf: ByteBuffer): PeerProfileState {
-        return PeerProfileState(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterOptionalString.read(buf),
-            FfiConverterBoolean.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: PeerProfileState) = (
-            FfiConverterString.allocationSize(value.`pubkey`) +
-            FfiConverterString.allocationSize(value.`npub`) +
-            FfiConverterOptionalString.allocationSize(value.`name`) +
-            FfiConverterOptionalString.allocationSize(value.`about`) +
-            FfiConverterOptionalString.allocationSize(value.`pictureUrl`) +
-            FfiConverterBoolean.allocationSize(value.`isFollowed`)
-    )
-
-    override fun write(value: PeerProfileState, buf: ByteBuffer) {
-            FfiConverterString.write(value.`pubkey`, buf)
-            FfiConverterString.write(value.`npub`, buf)
-            FfiConverterOptionalString.write(value.`name`, buf)
-            FfiConverterOptionalString.write(value.`about`, buf)
-            FfiConverterOptionalString.write(value.`pictureUrl`, buf)
-            FfiConverterBoolean.write(value.`isFollowed`, buf)
-    }
-}
-
-
-
-data class PollTally (
-    var `option`: kotlin.String
-    , 
-    var `count`: kotlin.UInt
-    , 
-    var `voterNames`: List<kotlin.String>
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypePollTally: FfiConverterRustBuffer<PollTally> {
-    override fun read(buf: ByteBuffer): PollTally {
-        return PollTally(
-            FfiConverterString.read(buf),
-            FfiConverterUInt.read(buf),
-            FfiConverterSequenceString.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: PollTally) = (
-            FfiConverterString.allocationSize(value.`option`) +
-            FfiConverterUInt.allocationSize(value.`count`) +
-            FfiConverterSequenceString.allocationSize(value.`voterNames`)
-    )
-
-    override fun write(value: PollTally, buf: ByteBuffer) {
-            FfiConverterString.write(value.`option`, buf)
-            FfiConverterUInt.write(value.`count`, buf)
-            FfiConverterSequenceString.write(value.`voterNames`, buf)
     }
 }
 
@@ -2152,29 +1937,6 @@ sealed class AppAction {
     object Logout : AppAction()
     
     
-    object RefreshMyProfile : AppAction()
-    
-    
-    data class SaveMyProfile(
-        val `name`: kotlin.String, 
-        val `about`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class UploadMyProfileImage(
-        val `imageBase64`: kotlin.String, 
-        val `mimeType`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
     data class PushScreen(
         val `screen`: com.pika.app.rust.Screen) : AppAction()
         
@@ -2242,37 +2004,7 @@ sealed class AppAction {
         companion object
     }
     
-    data class CreateGroupChat(
-        val `peerNpubs`: List<kotlin.String>, 
-        val `groupName`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class AddGroupMembers(
-        val `chatId`: kotlin.String, 
-        val `peerNpubs`: List<kotlin.String>) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class RemoveGroupMembers(
-        val `chatId`: kotlin.String, 
-        val `memberPubkeys`: List<kotlin.String>) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class LeaveGroup(
+    data class StartCall(
         val `chatId`: kotlin.String) : AppAction()
         
     {
@@ -2281,17 +2013,7 @@ sealed class AppAction {
         companion object
     }
     
-    data class RenameGroup(
-        val `chatId`: kotlin.String, 
-        val `name`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class ArchiveChat(
+    data class AcceptCall(
         val `chatId`: kotlin.String) : AppAction()
         
     {
@@ -2299,45 +2021,27 @@ sealed class AppAction {
 
         companion object
     }
+    
+    data class RejectCall(
+        val `chatId`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    object EndCall : AppAction()
+    
+    
+    object ToggleMute : AppAction()
+    
     
     object ClearToast : AppAction()
     
     
     object Foregrounded : AppAction()
     
-    
-    data class OpenPeerProfile(
-        val `pubkey`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    object ClosePeerProfile : AppAction()
-    
-    
-    object RefreshFollowList : AppAction()
-    
-    
-    data class FollowUser(
-        val `pubkey`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class UnfollowUser(
-        val `pubkey`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
     
 
     
@@ -2363,75 +2067,44 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 )
             4 -> AppAction.Logout
-            5 -> AppAction.RefreshMyProfile
-            6 -> AppAction.SaveMyProfile(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            7 -> AppAction.UploadMyProfileImage(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            8 -> AppAction.PushScreen(
+            5 -> AppAction.PushScreen(
                 FfiConverterTypeScreen.read(buf),
                 )
-            9 -> AppAction.UpdateScreenStack(
+            6 -> AppAction.UpdateScreenStack(
                 FfiConverterSequenceTypeScreen.read(buf),
                 )
-            10 -> AppAction.CreateChat(
+            7 -> AppAction.CreateChat(
                 FfiConverterString.read(buf),
                 )
-            11 -> AppAction.SendMessage(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            12 -> AppAction.RetryMessage(
+            8 -> AppAction.SendMessage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            13 -> AppAction.OpenChat(
+            9 -> AppAction.RetryMessage(
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            14 -> AppAction.LoadOlderMessages(
+            10 -> AppAction.OpenChat(
+                FfiConverterString.read(buf),
+                )
+            11 -> AppAction.LoadOlderMessages(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterUInt.read(buf),
                 )
-            15 -> AppAction.CreateGroupChat(
-                FfiConverterSequenceString.read(buf),
+            12 -> AppAction.StartCall(
                 FfiConverterString.read(buf),
                 )
-            16 -> AppAction.AddGroupMembers(
-                FfiConverterString.read(buf),
-                FfiConverterSequenceString.read(buf),
-                )
-            17 -> AppAction.RemoveGroupMembers(
-                FfiConverterString.read(buf),
-                FfiConverterSequenceString.read(buf),
-                )
-            18 -> AppAction.LeaveGroup(
+            13 -> AppAction.AcceptCall(
                 FfiConverterString.read(buf),
                 )
-            19 -> AppAction.RenameGroup(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            20 -> AppAction.ArchiveChat(
+            14 -> AppAction.RejectCall(
                 FfiConverterString.read(buf),
                 )
-            21 -> AppAction.ClearToast
-            22 -> AppAction.Foregrounded
-            23 -> AppAction.OpenPeerProfile(
-                FfiConverterString.read(buf),
-                )
-            24 -> AppAction.ClosePeerProfile
-            25 -> AppAction.RefreshFollowList
-            26 -> AppAction.FollowUser(
-                FfiConverterString.read(buf),
-                )
-            27 -> AppAction.UnfollowUser(
-                FfiConverterString.read(buf),
-                )
+            15 -> AppAction.EndCall
+            16 -> AppAction.ToggleMute
+            17 -> AppAction.ClearToast
+            18 -> AppAction.Foregrounded
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -2461,28 +2134,6 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
-            )
-        }
-        is AppAction.RefreshMyProfile -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.SaveMyProfile -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`name`)
-                + FfiConverterString.allocationSize(value.`about`)
-            )
-        }
-        is AppAction.UploadMyProfileImage -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`imageBase64`)
-                + FfiConverterString.allocationSize(value.`mimeType`)
             )
         }
         is AppAction.PushScreen -> {
@@ -2538,50 +2189,37 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterUInt.allocationSize(value.`limit`)
             )
         }
-        is AppAction.CreateGroupChat -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterSequenceString.allocationSize(value.`peerNpubs`)
-                + FfiConverterString.allocationSize(value.`groupName`)
-            )
-        }
-        is AppAction.AddGroupMembers -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`chatId`)
-                + FfiConverterSequenceString.allocationSize(value.`peerNpubs`)
-            )
-        }
-        is AppAction.RemoveGroupMembers -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`chatId`)
-                + FfiConverterSequenceString.allocationSize(value.`memberPubkeys`)
-            )
-        }
-        is AppAction.LeaveGroup -> {
+        is AppAction.StartCall -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`chatId`)
             )
         }
-        is AppAction.RenameGroup -> {
+        is AppAction.AcceptCall -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`chatId`)
-                + FfiConverterString.allocationSize(value.`name`)
             )
         }
-        is AppAction.ArchiveChat -> {
+        is AppAction.RejectCall -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
+        is AppAction.EndCall -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.ToggleMute -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
             )
         }
         is AppAction.ClearToast -> {
@@ -2594,39 +2232,6 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
-            )
-        }
-        is AppAction.OpenPeerProfile -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`pubkey`)
-            )
-        }
-        is AppAction.ClosePeerProfile -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.RefreshFollowList -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.FollowUser -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`pubkey`)
-            )
-        }
-        is AppAction.UnfollowUser -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`pubkey`)
             )
         }
     }
@@ -2651,124 +2256,74 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(4)
                 Unit
             }
-            is AppAction.RefreshMyProfile -> {
-                buf.putInt(5)
-                Unit
-            }
-            is AppAction.SaveMyProfile -> {
-                buf.putInt(6)
-                FfiConverterString.write(value.`name`, buf)
-                FfiConverterString.write(value.`about`, buf)
-                Unit
-            }
-            is AppAction.UploadMyProfileImage -> {
-                buf.putInt(7)
-                FfiConverterString.write(value.`imageBase64`, buf)
-                FfiConverterString.write(value.`mimeType`, buf)
-                Unit
-            }
             is AppAction.PushScreen -> {
-                buf.putInt(8)
+                buf.putInt(5)
                 FfiConverterTypeScreen.write(value.`screen`, buf)
                 Unit
             }
             is AppAction.UpdateScreenStack -> {
-                buf.putInt(9)
+                buf.putInt(6)
                 FfiConverterSequenceTypeScreen.write(value.`stack`, buf)
                 Unit
             }
             is AppAction.CreateChat -> {
-                buf.putInt(10)
+                buf.putInt(7)
                 FfiConverterString.write(value.`peerNpub`, buf)
                 Unit
             }
             is AppAction.SendMessage -> {
-                buf.putInt(11)
+                buf.putInt(8)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.RetryMessage -> {
-                buf.putInt(12)
+                buf.putInt(9)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`messageId`, buf)
                 Unit
             }
             is AppAction.OpenChat -> {
-                buf.putInt(13)
+                buf.putInt(10)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.LoadOlderMessages -> {
-                buf.putInt(14)
+                buf.putInt(11)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`beforeMessageId`, buf)
                 FfiConverterUInt.write(value.`limit`, buf)
                 Unit
             }
-            is AppAction.CreateGroupChat -> {
+            is AppAction.StartCall -> {
+                buf.putInt(12)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.AcceptCall -> {
+                buf.putInt(13)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.RejectCall -> {
+                buf.putInt(14)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.EndCall -> {
                 buf.putInt(15)
-                FfiConverterSequenceString.write(value.`peerNpubs`, buf)
-                FfiConverterString.write(value.`groupName`, buf)
                 Unit
             }
-            is AppAction.AddGroupMembers -> {
+            is AppAction.ToggleMute -> {
                 buf.putInt(16)
-                FfiConverterString.write(value.`chatId`, buf)
-                FfiConverterSequenceString.write(value.`peerNpubs`, buf)
-                Unit
-            }
-            is AppAction.RemoveGroupMembers -> {
-                buf.putInt(17)
-                FfiConverterString.write(value.`chatId`, buf)
-                FfiConverterSequenceString.write(value.`memberPubkeys`, buf)
-                Unit
-            }
-            is AppAction.LeaveGroup -> {
-                buf.putInt(18)
-                FfiConverterString.write(value.`chatId`, buf)
-                Unit
-            }
-            is AppAction.RenameGroup -> {
-                buf.putInt(19)
-                FfiConverterString.write(value.`chatId`, buf)
-                FfiConverterString.write(value.`name`, buf)
-                Unit
-            }
-            is AppAction.ArchiveChat -> {
-                buf.putInt(20)
-                FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.ClearToast -> {
-                buf.putInt(21)
+                buf.putInt(17)
                 Unit
             }
             is AppAction.Foregrounded -> {
-                buf.putInt(22)
-                Unit
-            }
-            is AppAction.OpenPeerProfile -> {
-                buf.putInt(23)
-                FfiConverterString.write(value.`pubkey`, buf)
-                Unit
-            }
-            is AppAction.ClosePeerProfile -> {
-                buf.putInt(24)
-                Unit
-            }
-            is AppAction.RefreshFollowList -> {
-                buf.putInt(25)
-                Unit
-            }
-            is AppAction.FollowUser -> {
-                buf.putInt(26)
-                FfiConverterString.write(value.`pubkey`, buf)
-                Unit
-            }
-            is AppAction.UnfollowUser -> {
-                buf.putInt(27)
-                FfiConverterString.write(value.`pubkey`, buf)
+                buf.putInt(18)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -2956,6 +2511,121 @@ public object FfiConverterTypeAuthState : FfiConverterRustBuffer<AuthState>{
 
 
 
+sealed class CallStatus {
+    
+    object Offering : CallStatus()
+    
+    
+    object Ringing : CallStatus()
+    
+    
+    object Connecting : CallStatus()
+    
+    
+    object Active : CallStatus()
+    
+    
+    data class Ended(
+        val `reason`: kotlin.String) : CallStatus()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallStatus : FfiConverterRustBuffer<CallStatus>{
+    override fun read(buf: ByteBuffer): CallStatus {
+        return when(buf.getInt()) {
+            1 -> CallStatus.Offering
+            2 -> CallStatus.Ringing
+            3 -> CallStatus.Connecting
+            4 -> CallStatus.Active
+            5 -> CallStatus.Ended(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: CallStatus) = when(value) {
+        is CallStatus.Offering -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Ringing -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Connecting -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Active -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CallStatus.Ended -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: CallStatus, buf: ByteBuffer) {
+        when(value) {
+            is CallStatus.Offering -> {
+                buf.putInt(1)
+                Unit
+            }
+            is CallStatus.Ringing -> {
+                buf.putInt(2)
+                Unit
+            }
+            is CallStatus.Connecting -> {
+                buf.putInt(3)
+                Unit
+            }
+            is CallStatus.Active -> {
+                buf.putInt(4)
+                Unit
+            }
+            is CallStatus.Ended -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
 sealed class MessageDeliveryState {
     
     object Pending : MessageDeliveryState()
@@ -3063,18 +2733,6 @@ sealed class Screen {
     object NewChat : Screen()
     
     
-    object NewGroupChat : Screen()
-    
-    
-    data class GroupInfo(
-        val `chatId`: kotlin.String) : Screen()
-        
-    {
-        
-
-        companion object
-    }
-    
 
     
 
@@ -3097,10 +2755,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 FfiConverterString.read(buf),
                 )
             4 -> Screen.NewChat
-            5 -> Screen.NewGroupChat
-            6 -> Screen.GroupInfo(
-                FfiConverterString.read(buf),
-                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -3131,19 +2785,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 4UL
             )
         }
-        is Screen.NewGroupChat -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is Screen.GroupInfo -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`chatId`)
-            )
-        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -3163,15 +2804,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.NewChat -> {
                 buf.putInt(4)
-                Unit
-            }
-            is Screen.NewGroupChat -> {
-                buf.putInt(5)
-                Unit
-            }
-            is Screen.GroupInfo -> {
-                buf.putInt(6)
-                FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -3246,6 +2878,38 @@ public object FfiConverterTypeAppReconciler: FfiConverterCallbackInterface<AppRe
 /**
  * @suppress
  */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
     override fun read(buf: ByteBuffer): kotlin.Long? {
         if (buf.get().toInt() == 0) {
@@ -3310,6 +2974,70 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeCallDebugStats: FfiConverterRustBuffer<CallDebugStats?> {
+    override fun read(buf: ByteBuffer): CallDebugStats? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeCallDebugStats.read(buf)
+    }
+
+    override fun allocationSize(value: CallDebugStats?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeCallDebugStats.allocationSize(value)
+        }
+    }
+
+    override fun write(value: CallDebugStats?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeCallDebugStats.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeCallState: FfiConverterRustBuffer<CallState?> {
+    override fun read(buf: ByteBuffer): CallState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeCallState.read(buf)
+    }
+
+    override fun allocationSize(value: CallState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeCallState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: CallState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeCallState.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeChatViewState: FfiConverterRustBuffer<ChatViewState?> {
     override fun read(buf: ByteBuffer): ChatViewState? {
         if (buf.get().toInt() == 0) {
@@ -3332,66 +3060,6 @@ public object FfiConverterOptionalTypeChatViewState: FfiConverterRustBuffer<Chat
         } else {
             buf.put(1)
             FfiConverterTypeChatViewState.write(value, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterOptionalTypePeerProfileState: FfiConverterRustBuffer<PeerProfileState?> {
-    override fun read(buf: ByteBuffer): PeerProfileState? {
-        if (buf.get().toInt() == 0) {
-            return null
-        }
-        return FfiConverterTypePeerProfileState.read(buf)
-    }
-
-    override fun allocationSize(value: PeerProfileState?): ULong {
-        if (value == null) {
-            return 1UL
-        } else {
-            return 1UL + FfiConverterTypePeerProfileState.allocationSize(value)
-        }
-    }
-
-    override fun write(value: PeerProfileState?, buf: ByteBuffer) {
-        if (value == null) {
-            buf.put(0)
-        } else {
-            buf.put(1)
-            FfiConverterTypePeerProfileState.write(value, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
-    override fun read(buf: ByteBuffer): List<kotlin.String> {
-        val len = buf.getInt()
-        return List<kotlin.String>(len) {
-            FfiConverterString.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<kotlin.String>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterString.write(it, buf)
         }
     }
 }
@@ -3448,118 +3116,6 @@ public object FfiConverterSequenceTypeChatSummary: FfiConverterRustBuffer<List<C
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeChatSummary.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceTypeFollowListEntry: FfiConverterRustBuffer<List<FollowListEntry>> {
-    override fun read(buf: ByteBuffer): List<FollowListEntry> {
-        val len = buf.getInt()
-        return List<FollowListEntry>(len) {
-            FfiConverterTypeFollowListEntry.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<FollowListEntry>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypeFollowListEntry.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<FollowListEntry>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterTypeFollowListEntry.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceTypeMemberInfo: FfiConverterRustBuffer<List<MemberInfo>> {
-    override fun read(buf: ByteBuffer): List<MemberInfo> {
-        val len = buf.getInt()
-        return List<MemberInfo>(len) {
-            FfiConverterTypeMemberInfo.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<MemberInfo>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypeMemberInfo.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<MemberInfo>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterTypeMemberInfo.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceTypeMention: FfiConverterRustBuffer<List<Mention>> {
-    override fun read(buf: ByteBuffer): List<Mention> {
-        val len = buf.getInt()
-        return List<Mention>(len) {
-            FfiConverterTypeMention.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<Mention>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypeMention.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<Mention>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterTypeMention.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceTypePollTally: FfiConverterRustBuffer<List<PollTally>> {
-    override fun read(buf: ByteBuffer): List<PollTally> {
-        val len = buf.getInt()
-        return List<PollTally>(len) {
-            FfiConverterTypePollTally.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<PollTally>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypePollTally.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<PollTally>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterTypePollTally.write(it, buf)
         }
     }
 }

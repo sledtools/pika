@@ -13,4 +13,9 @@ object TestTags {
     const val CHAT_MESSAGE_LIST = "chat_message_list"
     const val CHAT_MESSAGE_INPUT = "chat_message_input"
     const val CHAT_SEND = "chat_send"
+    const val CHAT_CALL_START = "chat_call_start"
+    const val CHAT_CALL_ACCEPT = "chat_call_accept"
+    const val CHAT_CALL_REJECT = "chat_call_reject"
+    const val CHAT_CALL_END = "chat_call_end"
+    const val CHAT_CALL_MUTE = "chat_call_mute"
 }

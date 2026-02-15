@@ -22,7 +22,7 @@ The test nsec is stored in `.env` (gitignored) as `PIKA_TEST_NSEC`. Agents and s
 
 ## Bot npub
 
-`npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38`
+`npub1z6ujr8rad5zp9sr9w22rkxm0truulf2jntrks6rlwskhdmqsawpqmnjlcp`
 
 ## Relays
 
@@ -38,6 +38,6 @@ Before committing, run `cargo fmt` from the repo root to format Rust code.
 |------|-----------|-------------|
 | pika | `~/code/pika` | This repo. iOS + Android app, Rust core, pika-cli. |
 | mdk | `~/code/mdk` | Marmot Development Kit. Rust MLS library used by pika and openclaw-marmot. |
-| openclaw-marmot | `~/code/openclaw-marmot` | OpenClaw plugin + Rust sidecar daemon for Marmot messaging. Deployed on the bot server. |
+| openclaw-marmot | `~/code/pika/openclaw-marmot` | OpenClaw plugin + harness for the Marmot sidecar (`marmotd`). |
 | openclaw | `~/code/openclaw` | OpenClaw gateway. The bot framework that hosts the marmot plugin. |
 | infra | `~/code/infra` | NixOS deployment config for the Hetzner server (`openclaw-prod`). |

@@ -387,11 +387,6 @@ fn maybe_write_ios_relay_config(
         .or_else(|| std::env::var("PIKA_RELAY_URL").ok())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io".into());
-    let kp_relays = std::env::var("PIKA_KEY_PACKAGE_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io".into());
 
     let relay_items: Vec<String> = relays
         .split(',')
@@ -399,14 +394,8 @@ fn maybe_write_ios_relay_config(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
-    let kp_items: Vec<String> = kp_relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
 
-    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items, "key_package_relay_urls": kp_items});
+    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items});
 
     // container path
     let mut cmd = Command::new("/usr/bin/xcrun");
@@ -868,11 +857,6 @@ fn maybe_write_android_relay_config(
         .or_else(|| std::env::var("PIKA_RELAY_URL").ok())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io".into());
-    let kp_relays = std::env::var("PIKA_KEY_PACKAGE_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io".into());
 
     let relay_items: Vec<String> = relays
         .split(',')
@@ -880,13 +864,7 @@ fn maybe_write_android_relay_config(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
-    let kp_items: Vec<String> = kp_relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items, "key_package_relay_urls": kp_items});
+    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items});
     let json_s = serde_json::to_string(&json).unwrap();
 
     human_log(

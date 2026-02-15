@@ -20,7 +20,7 @@ impl AppCore {
         let client = Client::new(keys.clone());
 
         if self.network_enabled() {
-            let relays = self.all_session_relays();
+            let relays = self.default_relays();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let c = client.clone();
             self.runtime.spawn(async move {
@@ -64,7 +64,6 @@ impl AppCore {
         self.refresh_follow_list();
 
         if self.network_enabled() {
-            self.publish_key_package_relays_best_effort();
             self.ensure_key_package_published_best_effort();
             self.recompute_subscriptions();
         }
@@ -106,25 +105,6 @@ impl AppCore {
 
             loop {
                 match rx.recv().await {
-                    Ok(RelayPoolNotification::Message { relay_url, message }) => {
-                        // NIP-42 auth is required by many relays to publish NIP-70 "protected" events.
-                        // MDK marks key packages (kind 443) as protected, so we must respond to AUTH
-                        // challenges or publishing will be rejected ("blocked: event marked as protected").
-                        if let RelayMessage::Auth { challenge } = message {
-                            // nostr-sdk 0.44 doesn't expose a `Client::auth` helper; build/sign/send.
-                            if let Ok(event) = client
-                                .sign_event_builder(EventBuilder::auth(
-                                    challenge,
-                                    relay_url.clone(),
-                                ))
-                                .await
-                            {
-                                let _ = client
-                                    .send_msg_to([relay_url], ClientMessage::auth(event))
-                                    .await;
-                            }
-                        }
-                    }
                     Ok(RelayPoolNotification::Event { event, .. }) => {
                         let ev: Event = (*event).clone();
                         let id_hex = ev.id.to_hex();
@@ -172,11 +152,11 @@ impl AppCore {
     }
 
     pub(super) fn ensure_key_package_published_best_effort(&mut self) {
-        let relays = self.key_package_relays();
+        let relays = self.default_relays();
         let Some(sess) = self.session.as_mut() else {
             return;
         };
-        let (content, tags) = match sess
+        let (content, tags, _hash_ref) = match sess
             .mdk
             .create_key_package_for_event(&sess.keys.public_key(), relays.clone())
         {
@@ -199,14 +179,6 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
 
-        // Report success immediately so the UI isn't blocked.
-        let _ = tx.send(CoreMsg::Internal(Box::new(
-            InternalEvent::KeyPackagePublished {
-                ok: true,
-                error: None,
-            },
-        )));
-
         self.runtime.spawn(async move {
             for r in relays.iter().cloned() {
                 let _ = client.add_relay(r).await;
@@ -218,7 +190,15 @@ impl AppCore {
             // accepting protected events (NIP-70).
             for attempt in 0..5u8 {
                 match client.send_event_to(&relays, &event).await {
-                    Ok(output) if !output.success.is_empty() => return,
+                    Ok(output) if !output.success.is_empty() => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::KeyPackagePublished {
+                                ok: true,
+                                error: None,
+                            },
+                        )));
+                        return;
+                    }
                     Ok(output) => {
                         let err = output.failed.values().next().cloned().unwrap_or_default();
                         let should_retry = err.contains("protected")
@@ -226,6 +206,12 @@ impl AppCore {
                             || err.contains("AUTH");
                         if !should_retry {
                             tracing::warn!(err, "key package publish rejected");
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::KeyPackagePublished {
+                                    ok: false,
+                                    error: Some(err),
+                                },
+                            )));
                             return;
                         }
                     }
@@ -237,37 +223,12 @@ impl AppCore {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
             tracing::warn!("key package publish failed after retries");
-        });
-    }
-
-    pub(super) fn publish_key_package_relays_best_effort(&mut self) {
-        let general_relays = self.default_relays();
-        let kp_relays = self.key_package_relays();
-        let Some(sess) = self.session.as_ref() else {
-            return;
-        };
-
-        if general_relays.is_empty() || kp_relays.is_empty() {
-            return;
-        }
-
-        let tags: Vec<Tag> = kp_relays.iter().cloned().map(Tag::relay).collect();
-
-        let builder = EventBuilder::new(Kind::MlsKeyPackageRelays, "").tags(tags);
-        let event = match builder.sign_with_keys(&sess.keys) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        let client = sess.client.clone();
-        self.runtime.spawn(async move {
-            // Ensure general relays exist.
-            for r in general_relays.iter().cloned() {
-                let _ = client.add_relay(r).await;
-            }
-            client.connect().await;
-            client.wait_for_connection(Duration::from_secs(4)).await;
-            let _ = client.send_event_to(general_relays, &event).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::KeyPackagePublished {
+                    ok: false,
+                    error: Some("key package publish failed after retries".into()),
+                },
+            )));
         });
     }
 
@@ -283,7 +244,7 @@ impl AppCore {
         // Ensure the client is connected to all relays referenced by joined groups.
         // Without this, we may subscribe to #h filters but never actually see events because
         // the relay URLs were never added to the client pool.
-        let mut needed_relays: Vec<RelayUrl> = self.all_session_relays();
+        let mut needed_relays: Vec<RelayUrl> = self.default_relays();
         if let Some(sess) = self.session.as_ref() {
             for entry in sess.groups.values() {
                 if let Ok(set) = sess.mdk.get_relays(&entry.mls_group_id) {

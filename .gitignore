@@ -1,5 +1,12 @@
 target/
 
+# Openclaw-marmot harness artifacts
+openclaw-marmot/.state/
+openclaw-marmot/node_modules/
+openclaw-marmot/**/node_modules/
+openclaw-marmot/.env
+openclaw-marmot/.env.*
+
 # Android
 android/.gradle/
 android/**/build/
@@ -28,6 +35,8 @@ worktrees
 .env
 .env.local
 .cargo/config.toml
+.pika-cli-test
+ios/UITests/env.test
 
 # macos lol
 .DS_Store

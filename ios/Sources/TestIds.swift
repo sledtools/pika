@@ -36,6 +36,11 @@ enum TestIds {
     static let chatMessageInput = "chat_message_input"
     static let chatSend = "chat_send"
     static let chatGroupInfo = "chat_group_info"
+    static let chatCallStart = "chat_call_start"
+    static let chatCallAccept = "chat_call_accept"
+    static let chatCallReject = "chat_call_reject"
+    static let chatCallEnd = "chat_call_end"
+    static let chatCallMute = "chat_call_mute"
 
     // Group info
     static let groupInfoAddNpub = "groupinfo_add_npub"

@@ -3,6 +3,7 @@ mod core;
 mod logging;
 mod mdk_support;
 mod state;
+mod tls;
 mod updates;
 
 #[cfg(target_os = "android")]
@@ -17,6 +18,12 @@ use flume::{Receiver, Sender};
 pub use actions::AppAction;
 pub use state::*;
 pub use updates::*;
+
+// Not exposed over UniFFI; used by binaries/tests to avoid rustls provider ambiguity when
+// multiple crypto backends are enabled in the dependency graph.
+pub fn init_rustls_crypto_provider() {
+    tls::init_rustls_crypto_provider();
+}
 
 uniffi::setup_scaffolding!();
 
@@ -37,6 +44,8 @@ pub struct FfiApp {
 impl FfiApp {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Arc<Self> {
+        // Must run before any rustls users (nostr-sdk, moq/quinn, etc) initialize.
+        tls::init_rustls_crypto_provider();
         logging::init_logging(&data_dir);
         tracing::info!(data_dir = %data_dir, "FfiApp::new() starting");
 

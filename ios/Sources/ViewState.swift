@@ -25,6 +25,7 @@ struct NewGroupChatViewState: Equatable {
 
 struct ChatScreenState: Equatable {
     let chat: ChatViewState?
+    let activeCall: CallState?
 }
 
 struct GroupInfoViewState: Equatable {

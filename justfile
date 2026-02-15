@@ -21,6 +21,8 @@ info:
   @echo "    PIKA_IOS_DEVICE_UDID=<UDID>     (pick device)"
   @echo "    PIKA_IOS_DEVELOPMENT_TEAM=...   (required for device builds)"
   @echo "    PIKA_IOS_CONSOLE=1              (attach console on device)"
+  @echo "    PIKA_CALL_MOQ_URL=...           (override MOQ relay URL)"
+  @echo "    PIKA_MOQ_PROBE_ON_START=1       (log QUIC+TLS probe PASS/FAIL on startup)"
   @echo
   @echo "Android"
   @echo "  Emulator:"
@@ -32,6 +34,8 @@ info:
   @echo
   @echo "  Env equivalents:"
   @echo "    PIKA_ANDROID_SERIAL=<serial>"
+  @echo "    PIKA_CALL_MOQ_URL=...           (override MOQ relay URL)"
+  @echo "    PIKA_MOQ_PROBE_ON_START=1       (log QUIC+TLS probe PASS/FAIL on startup)"
   @echo
   @echo "RMP (new)"
   @echo "  Run iOS simulator:"
@@ -136,6 +140,12 @@ pre-merge-pika: fmt
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"
 
+# CI-safe pre-merge for the openclaw-marmot (marmotd) lane.
+pre-merge-marmotd:
+  cargo clippy -p marmotd -- -D warnings
+  cargo test -p marmotd
+  @echo "pre-merge-marmotd complete"
+
 # CI-safe pre-merge for the RMP tooling lane.
 pre-merge-rmp:
   just rmp-init-smoke-ci
@@ -144,18 +154,43 @@ pre-merge-rmp:
 # Single CI entrypoint for the whole repo.
 pre-merge:
   just pre-merge-pika
+  just pre-merge-marmotd
   just pre-merge-rmp
   @echo "pre-merge complete"
 
 # Nightly root task.
 nightly:
   just pre-merge
+  just nightly-pika-e2e
+  just nightly-marmotd
+  @echo "nightly complete"
+
+# Nightly E2E (Rust): run all `#[ignore]` tests (intended for long/flaky network suites).
+nightly-pika-e2e:
+  set -euo pipefail; \
+  if [ -z "${PIKA_TEST_NSEC:-}" ]; then \
+    echo "note: PIKA_TEST_NSEC not set; e2e_deployed_bot_call will skip"; \
+  fi; \
+  cargo test -p pika_core --tests -- --ignored --nocapture
+
+# Nightly lane: build marmotd + run the marmotd E2E suite (local Nostr relay + local MoQ relay).
+nightly-marmotd:
+  just e2e-local-marmotd
+  just openclaw-marmot-scenarios
+
+# openclaw-marmot scenario suite (local Nostr relay + marmotd scenarios).
+openclaw-marmot-scenarios:
+  ./openclaw-marmot/scripts/phase1.sh
+  ./openclaw-marmot/scripts/phase2.sh
+  ./openclaw-marmot/scripts/phase3.sh
+  ./openclaw-marmot/scripts/phase3_audio.sh
+  MARMOT_TTS_FIXTURE=1 cargo test -p marmotd daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
 
 # Full QA: fmt, clippy, test, android build, iOS sim build.
 qa: fmt clippy test android-assemble ios-build-sim
   @echo "QA complete"
 
-# Deterministic E2E: local docker relay + local Rust bot (iOS + Android).
+# Deterministic E2E: local Nostr relay + local Rust bot (iOS + Android).
 e2e-local-relay:
   just ios-ui-e2e-local
   just android-ui-e2e-local
@@ -167,6 +202,19 @@ e2e-public-relays:
 # Rust-level E2E smoke test against public relays (nondeterministic).
 e2e-public:
   PIKA_E2E_PUBLIC=1 cargo test -p pika_core --test e2e_public_relays -- --ignored --nocapture
+
+# E2E call test over the real MOQ relay (nondeterministic; requires QUIC egress).
+e2e-real-moq:
+  cargo test -p pika_core --test e2e_real_moq_relay -- --ignored --nocapture
+
+# Local E2E: local Nostr relay + local marmotd daemon.
+# Builds marmotd from the workspace crate (`crates/marmotd`) so no external repos are required.
+e2e-local-marmotd:
+  set -euo pipefail; \
+  cargo build -p marmotd; \
+  MARMOTD_BIN="$PWD/target/debug/marmotd" \
+    PIKA_E2E_LOCAL=1 \
+    cargo test -p pika_core --test e2e_local_marmotd_call -- --ignored --nocapture
 
 # Build Rust core for the host platform.
 rust-build-host:
@@ -189,6 +237,7 @@ gen-kotlin: rust-build-host
 android-rust:
   mkdir -p android/app/src/main/jniLibs
   cargo ndk -o android/app/src/main/jniLibs \
+    -P 26 \
     -t arm64-v8a -t armeabi-v7a -t x86_64 \
     build -p pika_core --release
 
@@ -212,7 +261,7 @@ android-ui-test: gen-kotlin android-rust android-local-properties
   SERIAL="$(./tools/android-pick-serial)"; \
   ANDROID_SERIAL="$SERIAL" cd android && ./gradlew :app:connectedDebugAndroidTest
 
-# Android E2E: local docker relay + local Rust bot. Requires Docker + emulator.
+# Android E2E: local Nostr relay + local Rust bot. Requires emulator.
 android-ui-e2e-local:
   ./tools/ui-e2e-local --platform android
 
@@ -276,7 +325,7 @@ ios-ui-test: ios-xcframework ios-xcodeproj
   ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -derivedDataPath ios/build -destination "id=$udid" test ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
     -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 
-# iOS E2E: local docker relay + local Rust bot. Requires Docker.
+# iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:
   ./tools/ui-e2e-local --platform ios
 
@@ -310,7 +359,7 @@ run-ios *ARGS:
 doctor-ios:
   ./tools/ios-runtime-doctor
 
-# Interop baseline: local Rust bot. Requires Docker + ~/code/marmot-interop-lab-rust.
+# Interop baseline: local Rust bot. Requires ~/code/marmot-interop-lab-rust.
 interop-rust-baseline:
   ./tools/interop-rust-baseline
 

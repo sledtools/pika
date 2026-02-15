@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run the call E2E test on a physical iOS device.
+#
+# Usage:
+#   ./tools/run-call-e2e-device --udid <DEVICE_UDID>
+#
+# Requires: PIKA_TEST_NSEC in .env
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
+
+UDID=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --udid) UDID="${2:-}"; shift 2 ;;
+    *) echo "usage: $0 --udid <DEVICE_UDID>" >&2; exit 2 ;;
+  esac
+done
+
+: "${UDID:?missing --udid}"
+: "${PIKA_TEST_NSEC:?missing (put it in .env)}"
+: "${PIKA_IOS_DEVELOPMENT_TEAM:?missing (put it in .env as PIKA_IOS_DEVELOPMENT_TEAM=YOUR_TEAM_ID)}"
+
+BOT_NPUB="${PIKA_BOT_NPUB:-npub1z6ujr8rad5zp9sr9w22rkxm0truulf2jntrks6rlwskhdmqsawpqmnjlcp}"
+BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+
+echo "==> Building xcframework + xcode project..."
+just ios-xcframework ios-xcodeproj >/dev/null
+
+echo "==> Running call E2E on device $UDID..."
+PIKA_TEST_NSEC="$PIKA_TEST_NSEC" \
+  PIKA_BOT_NPUB="$BOT_NPUB" \
+  ./tools/xcode-run xcodebuild test \
+    -project ios/Pika.xcodeproj \
+    -scheme Pika \
+    -destination "id=$UDID" \
+    -allowProvisioningUpdates \
+    -only-testing:PikaUITests/CallE2ETests/testCallDeployedBot \
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+    DEVELOPMENT_TEAM="$PIKA_IOS_DEVELOPMENT_TEAM" \
+    CODE_SIGN_STYLE=Automatic

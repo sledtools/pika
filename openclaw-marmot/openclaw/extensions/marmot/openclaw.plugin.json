@@ -1,0 +1,68 @@
+{
+  "id": "marmot",
+  "channels": ["marmot"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "relays": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1
+      },
+      "stateDir": { "type": "string" },
+      "sidecarCmd": { "type": "string" },
+      "sidecarArgs": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "autoAcceptWelcomes": {
+        "type": "boolean",
+        "default": true
+      },
+      "groupPolicy": {
+        "type": "string",
+        "enum": ["allowlist", "open"],
+        "default": "allowlist"
+      },
+      "groupAllowFrom": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "owner": {
+        "description": "Hex pubkey of the bot owner. Gets CommandAuthorized=true. Falls back to first entry in groupAllowFrom if not set.",
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "type": "string" } }
+        ]
+      },
+      "memberNames": {
+        "description": "Map of hex pubkey or npub to display name. Overrides Nostr profile name resolution.",
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+      },
+      "dmGroups": {
+        "description": "Group IDs that should route to the main session instead of an isolated group session.",
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "groups": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "requireMention": { "type": "boolean" }
+          }
+        }
+      },
+      "ignorePubkeys": {
+        "description": "Pubkeys to ignore messages from (e.g., other bots).",
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "required": []
+  }
+}

@@ -11,24 +11,21 @@ use nostr_sdk::nostr::{Event, EventId, Filter, Kind, PublicKey};
 use nostr_sdk::prelude::{
     Alphabet, Client, EventBuilder, RelayPoolNotification, SingleLetterTag, Tag,
 };
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, FfiApp};
+use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-fn write_config(data_dir: &str, relay_url: &str, key_package_relay_url: Option<&str>) {
+fn write_config(data_dir: &str, relay_url: &str) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
-    let mut v = serde_json::json!({
+    let v = serde_json::json!({
         "disable_network": false,
         "relay_urls": [relay_url],
+        "call_moq_url": "ws://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
     });
-    if let Some(kp) = key_package_relay_url {
-        v.as_object_mut().unwrap().insert(
-            "key_package_relay_urls".to_string(),
-            serde_json::json!([kp]),
-        );
-    }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
 
@@ -41,6 +38,25 @@ fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("{what}: condition not met within {timeout:?}");
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CallStatsSnapshot {
+    tx_frames: u64,
+    rx_frames: u64,
+    rx_dropped: u64,
+    jitter_buffer_ms: u32,
+}
+
+fn call_stats_snapshot(app: &FfiApp) -> Option<CallStatsSnapshot> {
+    let call = app.state().active_call?;
+    let debug = call.debug?;
+    Some(CallStatsSnapshot {
+        tx_frames: debug.tx_frames,
+        rx_frames: debug.rx_frames,
+        rx_dropped: debug.rx_dropped,
+        jitter_buffer_ms: debug.jitter_buffer_ms,
+    })
 }
 
 #[derive(Clone)]
@@ -393,27 +409,12 @@ fn local_relay_delivers_events_to_nostr_sdk_notifications() {
 
 #[test]
 fn alice_sends_bob_receives_over_local_relay() {
-    // Use two relays to prove the architecture:
-    // - "general" relay: carries discovery (kind 10051) + normal group traffic.
-    // - "key package" relay: carries protected key packages (kind 443).
     let (general_relay, general_thread) = start_local_relay();
-    let (kp_relay, kp_thread) = start_local_relay();
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    // Avoid connecting to built-in public key-package relays during tests.
-    // If Alice used this fallback relay, she'd fail to fetch Bob's key package (which is only
-    // published to kp_relay), so the test still proves key-package-relay discovery works.
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&general_relay.url),
-    );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&kp_relay.url),
-    );
+    write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -447,37 +448,14 @@ fn alice_sends_bob_receives_over_local_relay() {
         _ => unreachable!(),
     };
 
-    // Ensure Bob has published the key package relay list (kind 10051) to the *general* relay.
+    // Ensure Bob has published a key package (kind 443) to the relay.
     let bob_pubkey = PublicKey::parse(&bob_pubkey_hex).expect("pubkey parse");
-    wait_until("bob published kind 10051", Duration::from_secs(10), || {
+    wait_until("bob key package published", Duration::from_secs(10), || {
         let st = general_relay.state.lock().unwrap();
         st.events
             .iter()
-            .any(|e| e.kind == Kind::MlsKeyPackageRelays && e.pubkey == bob_pubkey)
+            .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
     });
-
-    // Ensure Bob has published a key package (kind 443) to the *key package* relay, and not to
-    // the general relay. This proves that Alice must use discovery to fetch from the correct relay.
-    wait_until(
-        "bob key package published to kp relay",
-        Duration::from_secs(10),
-        || {
-            let st = kp_relay.state.lock().unwrap();
-            st.events
-                .iter()
-                .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
-        },
-    );
-    wait_until(
-        "bob key package not on general relay",
-        Duration::from_secs(10),
-        || {
-            let st = general_relay.state.lock().unwrap();
-            !st.events
-                .iter()
-                .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
-        },
-    );
 
     // Alice creates a DM with Bob (fetch KP, create group, giftwrap welcome).
     alice.dispatch(AppAction::CreateChat {
@@ -752,9 +730,7 @@ fn alice_sends_bob_receives_over_local_relay() {
     assert_eq!(preview.as_deref(), Some("hi-from-alice"));
 
     drop(general_relay);
-    drop(kp_relay);
     general_thread.join().unwrap();
-    kp_thread.join().unwrap();
 }
 
 #[test]
@@ -762,7 +738,7 @@ fn send_failure_then_retry_succeeds_over_local_relay() {
     let (relay, relay_thread) = start_local_relay();
 
     let dir = tempdir().unwrap();
-    write_config(&dir.path().to_string_lossy(), &relay.url, Some(&relay.url));
+    write_config(&dir.path().to_string_lossy(), &relay.url);
 
     let app = FfiApp::new(dir.path().to_string_lossy().to_string());
     app.dispatch(AppAction::CreateAccount);
@@ -815,22 +791,419 @@ fn send_failure_then_retry_succeeds_over_local_relay() {
 }
 
 #[test]
-fn duplicate_group_message_does_not_duplicate_in_ui() {
-    let (general_relay, general_thread) = start_local_relay();
-    let (kp_relay, kp_thread) = start_local_relay();
+fn call_invite_accept_end_flow_over_local_relay() {
+    let (relay, relay_thread) = start_local_relay();
 
     let dir_a = tempdir().unwrap();
     let dir_b = tempdir().unwrap();
-    write_config(
-        &dir_a.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&general_relay.url),
+    write_config(&dir_a.path().to_string_lossy(), &relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &relay.url);
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub,
+    });
+    wait_until("alice chat opened", Duration::from_secs(60), || {
+        alice.state().current_chat.is_some()
+    });
+    wait_until("bob has chat", Duration::from_secs(60), || {
+        !bob.state().chat_list.is_empty()
+    });
+
+    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    wait_until("bob chat id matches", Duration::from_secs(60), || {
+        bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+
+    wait_until("alice offering", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Offering))
+            .unwrap_or(false)
+    });
+    wait_until("bob ringing", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ringing))
+            .unwrap_or(false)
+    });
+
+    let call_id = alice
+        .state()
+        .active_call
+        .as_ref()
+        .map(|c| c.call_id.clone())
+        .expect("alice call id");
+    wait_until("bob has same call id", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| c.call_id == call_id)
+            .unwrap_or(false)
+    });
+
+    bob.dispatch(AppAction::AcceptCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob connecting or active", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
+            .unwrap_or(false)
+    });
+    wait_until(
+        "alice connecting or active",
+        Duration::from_secs(10),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .map(|c| matches!(c.status, CallStatus::Connecting | CallStatus::Active))
+                .unwrap_or(false)
+        },
     );
-    write_config(
-        &dir_b.path().to_string_lossy(),
-        &general_relay.url,
-        Some(&kp_relay.url),
+
+    wait_until(
+        "bob active with media stats",
+        Duration::from_secs(20),
+        || {
+            bob.state()
+                .active_call
+                .as_ref()
+                .map(|c| {
+                    matches!(c.status, CallStatus::Active)
+                        && c.debug
+                            .as_ref()
+                            .map(|d| d.tx_frames > 0 && d.rx_frames > 0)
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        },
     );
+    wait_until(
+        "alice active with media stats",
+        Duration::from_secs(20),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .map(|c| {
+                    matches!(c.status, CallStatus::Active)
+                        && c.debug
+                            .as_ref()
+                            .map(|d| d.tx_frames > 0 && d.rx_frames > 0)
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        },
+    );
+
+    let alice_overlap_start = call_stats_snapshot(&alice).expect("alice call stats");
+    let bob_overlap_start = call_stats_snapshot(&bob).expect("bob call stats");
+    wait_until(
+        "full-duplex overlap stats progress on both sides",
+        Duration::from_secs(10),
+        || {
+            let Some(alice_now) = call_stats_snapshot(&alice) else {
+                return false;
+            };
+            let Some(bob_now) = call_stats_snapshot(&bob) else {
+                return false;
+            };
+            alice_now.tx_frames > alice_overlap_start.tx_frames
+                && alice_now.rx_frames > alice_overlap_start.rx_frames
+                && bob_now.tx_frames > bob_overlap_start.tx_frames
+                && bob_now.rx_frames > bob_overlap_start.rx_frames
+        },
+    );
+    let alice_overlap_end = call_stats_snapshot(&alice).expect("alice overlap stats");
+    let bob_overlap_end = call_stats_snapshot(&bob).expect("bob overlap stats");
+    assert!(
+        alice_overlap_end.jitter_buffer_ms <= 240,
+        "alice jitter buffer should stay bounded (<= 240ms), got {}ms",
+        alice_overlap_end.jitter_buffer_ms
+    );
+    assert!(
+        bob_overlap_end.jitter_buffer_ms <= 240,
+        "bob jitter buffer should stay bounded (<= 240ms), got {}ms",
+        bob_overlap_end.jitter_buffer_ms
+    );
+    let alice_drop_delta = alice_overlap_end
+        .rx_dropped
+        .saturating_sub(alice_overlap_start.rx_dropped);
+    let bob_drop_delta = bob_overlap_end
+        .rx_dropped
+        .saturating_sub(bob_overlap_start.rx_dropped);
+    assert!(
+        alice_drop_delta <= 8,
+        "alice dropped too many frames during overlap window: {alice_drop_delta}"
+    );
+    assert!(
+        bob_drop_delta <= 8,
+        "bob dropped too many frames during overlap window: {bob_drop_delta}"
+    );
+
+    // While Alice is in-call, a second invite should not replace the active call.
+    let second_invite_call_id = "550e8400-e29b-41d4-a716-446655440999";
+    let second_invite = serde_json::json!({
+        "v": 1,
+        "ns": "pika.call",
+        "type": "call.invite",
+        "call_id": second_invite_call_id,
+        "ts_ms": 1730000000000i64,
+        "body": {
+            "moq_url": "https://moq.local/anon",
+            "broadcast_base": format!("pika/calls/{second_invite_call_id}"),
+            "relay_auth": "capv1_second_invite_probe",
+            "tracks": [{
+                "name": "audio0",
+                "codec": "opus",
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20
+            }]
+        }
+    })
+    .to_string();
+    bob.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: second_invite,
+    });
+    wait_until(
+        "alice keeps original active call id",
+        Duration::from_secs(10),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .map(|c| c.call_id == call_id)
+                .unwrap_or(false)
+        },
+    );
+
+    // Mute should pause local TX frame generation.
+    alice.dispatch(AppAction::ToggleMute);
+    wait_until("alice muted", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| c.is_muted)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    let alice_tx_muted_baseline = alice
+        .state()
+        .active_call
+        .as_ref()
+        .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+        .unwrap_or(0);
+    std::thread::sleep(Duration::from_millis(250));
+    let alice_tx_while_muted = alice
+        .state()
+        .active_call
+        .as_ref()
+        .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+        .unwrap_or(0);
+    assert_eq!(
+        alice_tx_while_muted, alice_tx_muted_baseline,
+        "mute should pause tx frame counter"
+    );
+
+    // Unmute should resume TX frame generation.
+    alice.dispatch(AppAction::ToggleMute);
+    wait_until("alice unmuted", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| !c.is_muted)
+            .unwrap_or(false)
+    });
+    wait_until("alice tx resumes", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .and_then(|c| c.debug.as_ref().map(|d| d.tx_frames))
+            .map(|tx| tx > alice_tx_while_muted)
+            .unwrap_or(false)
+    });
+
+    alice.dispatch(AppAction::EndCall);
+    wait_until("alice ended", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ended { .. }))
+            .unwrap_or(false)
+    });
+    wait_until("bob ended", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| {
+                matches!(
+                    c.status,
+                    CallStatus::Ended { ref reason } if reason == "user_hangup"
+                )
+            })
+            .unwrap_or(false)
+    });
+
+    // Call signals should not appear in chat previews.
+    assert_eq!(
+        alice
+            .state()
+            .chat_list
+            .iter()
+            .find(|c| c.chat_id == chat_id)
+            .and_then(|c| c.last_message.clone()),
+        None
+    );
+    assert_eq!(
+        bob.state()
+            .chat_list
+            .iter()
+            .find(|c| c.chat_id == chat_id)
+            .and_then(|c| c.last_message.clone()),
+        None
+    );
+
+    drop(relay);
+    relay_thread.join().unwrap();
+}
+
+#[test]
+fn call_invite_with_invalid_relay_auth_is_rejected() {
+    let (relay, relay_thread) = start_local_relay();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config(&dir_a.path().to_string_lossy(), &relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &relay.url);
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub: bob_npub, .. } => bob_npub,
+        _ => unreachable!(),
+    };
+
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub,
+    });
+    wait_until("alice chat opened", Duration::from_secs(20), || {
+        alice.state().current_chat.is_some()
+    });
+    wait_until("bob has chat", Duration::from_secs(20), || {
+        !bob.state().chat_list.is_empty()
+    });
+
+    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    bob.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob opened chat", Duration::from_secs(10), || {
+        bob.state().current_chat.is_some()
+    });
+
+    let bad_call_id = "550e8400-e29b-41d4-a716-446655441111";
+    let bad_invite = serde_json::json!({
+        "v": 1,
+        "ns": "pika.call",
+        "type": "call.invite",
+        "call_id": bad_call_id,
+        "ts_ms": 1730000000000i64,
+        "body": {
+            "moq_url": "https://moq.local/anon",
+            "broadcast_base": format!("pika/calls/{bad_call_id}"),
+            "relay_auth": "capv1_invalid_auth",
+            "tracks": [{
+                "name": "audio0",
+                "codec": "opus",
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20
+            }]
+        }
+    })
+    .to_string();
+    bob.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: bad_invite,
+    });
+
+    wait_until(
+        "alice rejects invalid relay auth invite",
+        Duration::from_secs(10),
+        || {
+            let st = alice.state();
+            st.active_call.is_none()
+                && st
+                    .toast
+                    .as_deref()
+                    .map(|t| t.contains("Rejected call invite"))
+                    .unwrap_or(false)
+        },
+    );
+    assert!(
+        alice.state().active_call.is_none(),
+        "invalid relay auth invite must not create ringing state",
+    );
+
+    drop(relay);
+    relay_thread.join().unwrap();
+}
+
+#[test]
+fn duplicate_group_message_does_not_duplicate_in_ui() {
+    let (general_relay, general_thread) = start_local_relay();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
+    write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
     let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
     let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
@@ -851,26 +1224,13 @@ fn duplicate_group_message_does_not_duplicate_in_ui() {
     };
     let bob_pubkey = PublicKey::parse(&bob_pubkey_hex).expect("pubkey parse");
 
-    wait_until("bob published kind 10051", Duration::from_secs(10), || {
+    // Wait for Bob's key package to land on the relay before Alice tries to fetch it.
+    wait_until("bob key package published", Duration::from_secs(10), || {
         let st = general_relay.state.lock().unwrap();
         st.events
             .iter()
-            .any(|e| e.kind == Kind::MlsKeyPackageRelays && e.pubkey == bob_pubkey)
+            .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
     });
-
-    // Key package publishing is fire-and-forget (optimistic), so we must
-    // wait for the event to actually land on the relay before Alice tries
-    // to fetch it.
-    wait_until(
-        "bob key package published to kp relay",
-        Duration::from_secs(10),
-        || {
-            let st = kp_relay.state.lock().unwrap();
-            st.events
-                .iter()
-                .any(|e| e.kind == Kind::MlsKeyPackage && e.pubkey == bob_pubkey)
-        },
-    );
 
     // Create DM (key package fetch + giftwrap welcome).
     alice.dispatch(AppAction::CreateChat {
@@ -943,7 +1303,5 @@ fn duplicate_group_message_does_not_duplicate_in_ui() {
     });
 
     drop(general_relay);
-    drop(kp_relay);
     general_thread.join().unwrap();
-    kp_thread.join().unwrap();
 }

@@ -16,6 +16,7 @@ struct ChatView: View {
     let onGroupInfo: (@MainActor () -> Void)?
     let onTapSender: (@MainActor (String) -> Void)?
     let onReact: (@MainActor (String, String) -> Void)?
+    let onDispatch: (@MainActor (AppAction) -> Void)?
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var activeReactionMessageId: String?
@@ -26,75 +27,78 @@ struct ChatView: View {
 
     private let scrollButtonBottomPadding: CGFloat = 12
 
-    init(chatId: String, state: ChatScreenState, onSendMessage: @escaping @MainActor (String) -> Void, onGroupInfo: (@MainActor () -> Void)? = nil, onTapSender: (@MainActor (String) -> Void)? = nil, onReact: (@MainActor (String, String) -> Void)? = nil) {
+    init(chatId: String, state: ChatScreenState, onSendMessage: @escaping @MainActor (String) -> Void, onGroupInfo: (@MainActor () -> Void)? = nil, onTapSender: (@MainActor (String) -> Void)? = nil, onReact: (@MainActor (String, String) -> Void)? = nil, onDispatch: (@MainActor (AppAction) -> Void)? = nil) {
         self.chatId = chatId
         self.state = state
         self.onSendMessage = onSendMessage
         self.onGroupInfo = onGroupInfo
         self.onTapSender = onTapSender
         self.onReact = onReact
+        self.onDispatch = onDispatch
     }
 
     var body: some View {
         if let chat = state.chat, chat.chatId == chatId {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        LazyVStack(spacing: 8) {
-                            ForEach(groupedMessages(chat)) { group in
-                                MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
+            VStack(spacing: 0) {
+                callControls(chat: chat)
 
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: BottomVisibleKey.self,
-                                value: geo.frame(in: .named("chatScroll")).minY
-                            )
-                        }
-                        .frame(height: 1)
-                        .id("bottom-anchor")
-                    }
-                }
-                .overlay {
-                    if activeReactionMessageId != nil {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.15)) {
-                                    activeReactionMessageId = nil
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            LazyVStack(spacing: 8) {
+                                ForEach(groupedMessages(chat)) { group in
+                                    MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
                                 }
                             }
-                    }
-                }
-                .coordinateSpace(name: "chatScroll")
-                .defaultScrollAnchor(.bottom)
-                .onPreferenceChange(BottomVisibleKey.self) { minY in
-                    // The anchor is visible when its top edge is within the scroll view bounds.
-                    // Give some tolerance (100pt) to account for the input bar overlay.
-                    if let minY {
-                        isAtBottom = minY < UIScreen.main.bounds.height + 100
-                    }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if !isAtBottom {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("bottom-anchor", anchor: .bottom)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomVisibleKey.self,
+                                    value: geo.frame(in: .named("chatScroll")).minY
+                                )
                             }
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.footnote.weight(.semibold))
-                                .padding(10)
+                            .frame(height: 1)
+                            .id("bottom-anchor")
                         }
-                        .foregroundStyle(.primary)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-                        .padding(.trailing, 16)
-                        .padding(.bottom, scrollButtonBottomPadding)
-                        .accessibilityLabel("Scroll to bottom")
+                    }
+                    .overlay {
+                        if activeReactionMessageId != nil {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        activeReactionMessageId = nil
+                                    }
+                                }
+                        }
+                    }
+                    .coordinateSpace(name: "chatScroll")
+                    .defaultScrollAnchor(.bottom)
+                    .onPreferenceChange(BottomVisibleKey.self) { minY in
+                        if let minY {
+                            isAtBottom = minY < UIScreen.main.bounds.height + 100
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !isAtBottom {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo("bottom-anchor", anchor: .bottom)
+                                }
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.footnote.weight(.semibold))
+                                    .padding(10)
+                            }
+                            .foregroundStyle(.primary)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                            .padding(.trailing, 16)
+                            .padding(.bottom, scrollButtonBottomPadding)
+                            .accessibilityLabel("Scroll to bottom")
+                        }
                     }
                 }
             }
@@ -186,6 +190,96 @@ struct ChatView: View {
         onSendMessage(wire)
         messageText = ""
         insertedMentions = []
+    }
+
+    private func isLiveStatus(_ status: CallStatus) -> Bool {
+        switch status {
+        case .offering, .ringing, .connecting, .active:
+            return true
+        case .ended:
+            return false
+        }
+    }
+
+    @ViewBuilder
+    private func callControls(chat: ChatViewState) -> some View {
+        let activeCall = state.activeCall
+        let callForChat = activeCall?.chatId == chat.chatId ? activeCall : nil
+        let hasLiveCallElsewhere = activeCall.map { $0.chatId != chat.chatId && isLiveStatus($0.status) } ?? false
+
+        if let call = callForChat {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(callStatusText(call.status))
+                    .font(.subheadline.weight(.semibold))
+
+                if let debug = call.debug {
+                    Text("tx \(debug.txFrames)  rx \(debug.rxFrames)  drop \(debug.rxDropped)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    switch call.status {
+                    case .ringing:
+                        Button("Accept") {
+                            onDispatch?(.acceptCall(chatId: chat.chatId))
+                        }
+                        .accessibilityIdentifier(TestIds.chatCallAccept)
+                        Button("Reject", role: .destructive) {
+                            onDispatch?(.rejectCall(chatId: chat.chatId))
+                        }
+                        .accessibilityIdentifier(TestIds.chatCallReject)
+                    case .offering, .connecting, .active:
+                        Button(call.isMuted ? "Unmute" : "Mute") {
+                            onDispatch?(.toggleMute)
+                        }
+                        .accessibilityIdentifier(TestIds.chatCallMute)
+                        Button("End", role: .destructive) {
+                            onDispatch?(.endCall)
+                        }
+                        .accessibilityIdentifier(TestIds.chatCallEnd)
+                    case .ended:
+                        Button("Start Again") {
+                            onDispatch?(.startCall(chatId: chat.chatId))
+                        }
+                        .accessibilityIdentifier(TestIds.chatCallStart)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+        } else {
+            HStack {
+                Button("Start Call") {
+                    onDispatch?(.startCall(chatId: chat.chatId))
+                }
+                .disabled(hasLiveCallElsewhere)
+                .accessibilityIdentifier(TestIds.chatCallStart)
+                if hasLiveCallElsewhere {
+                    Text("Another call is active")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+        }
+    }
+
+    private func callStatusText(_ status: CallStatus) -> String {
+        switch status {
+        case .offering:
+            return "Calling…"
+        case .ringing:
+            return "Incoming call"
+        case .connecting:
+            return "Connecting…"
+        case .active:
+            return "Call active"
+        case let .ended(reason):
+            return "Call ended: \(reason)"
+        }
     }
 
     @ViewBuilder

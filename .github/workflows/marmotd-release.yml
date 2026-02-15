@@ -1,0 +1,97 @@
+name: marmotd release
+
+on:
+  push:
+    tags:
+      - "marmotd-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset_name: marmotd-x86_64-linux
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            asset_name: marmotd-aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add target
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Build binary
+        run: cargo build -p marmotd --release --target "${{ matrix.target }}"
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/marmotd" "dist/${{ matrix.asset_name }}"
+          chmod +x "dist/${{ matrix.asset_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            asset_name: marmotd-x86_64-darwin
+          - target: aarch64-apple-darwin
+            asset_name: marmotd-aarch64-darwin
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add target
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Build binary
+        run: cargo build -p marmotd --release --target "${{ matrix.target }}"
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/marmotd" "dist/${{ matrix.asset_name }}"
+          chmod +x "dist/${{ matrix.asset_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux
+      - build-macos
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: marmotd-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+

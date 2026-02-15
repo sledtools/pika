@@ -1,0 +1,127 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 3b877d8..a931b86 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -66,3 +66,7 @@ version = "0.10"
+ 
+ [dependencies.log]
+ version = "0.4"
++
++
++[patch.crates-io]
++dinghy-lib = { path = "dinghy-lib" }
+diff --git a/dinghy-lib/src/apple/device.rs b/dinghy-lib/src/apple/device.rs
+index 9a8afeb..a6dd84e 100644
+--- a/dinghy-lib/src/apple/device.rs
++++ b/dinghy-lib/src/apple/device.rs
+@@ -149,6 +149,31 @@ impl IosDevice {
+         if self.is_pre_ios_17()? {
+             return self.run_remote_with_ios_deploy(build_bundle, args, envs, debugger);
+         }
++
++        if !debugger {
++            let mut cmd = process::Command::new("xcrun");
++            cmd.args("devicectl device process launch --console --terminate-existing --device".split_whitespace())
++                .arg(&self.id)
++                .arg(build_bundle.app_id.as_ref().unwrap());
++            for env in envs {
++                if let Some((k, v)) = env.split_once("=") {
++                    cmd.env(format!("DEVICECTL_CHILD_{k}"), v);
++                }
++            }
++            for arg in args {
++                cmd.arg(arg);
++            }
++            cmd.stderr(Stdio::inherit());
++            cmd.stdout(Stdio::inherit());
++            let status = cmd
++                .log_invocation(1)
++                .status()
++                .context("Failed to run devicectl device process launch")?;
++            if !status.success() {
++                bail!("Run on device failed")
++            }
++            return Ok(());
++        }
+         let app_list = process::Command::new("pymobiledevice3")
+             .args("apps list --no-color --udid".split_whitespace())
+             .arg(&self.id)
+@@ -515,6 +540,24 @@ fn make_apple_app(
+     sim_type: Option<&AppleSimulatorType>,
+ ) -> Result<BuildBundle> {
+     use crate::project;
++
++    fn arch_from_file_output(magic: &str) -> &str {
++        // `file` output format varies by macOS versions.
++        //
++        // Example (macOS 15+):
++        //   "Mach-O 64-bit arm64 executable, flags:<...>"
++        //
++        // Older dinghy versions used the last whitespace-separated token, which can be:
++        //   "flags:<...>"
++        for candidate in ["arm64e", "arm64", "x86_64", "i386", "armv7", "armv7s"] {
++            if magic.contains(candidate) {
++                return candidate;
++            }
++        }
++        // Conservative fallback: iOS devices are arm64; simulator builds are handled separately.
++        "arm64"
++    }
++
+     let build_bundle = make_remote_app_with_name(project, build, Some("Dinghy.app"))?;
+     project::rec_copy(&runnable.exe, build_bundle.bundle_dir.join("Dinghy"), false)?;
+     let magic = process::Command::new("file")
+@@ -527,11 +570,7 @@ fn make_apple_app(
+         .log_invocation(3)
+         .output()?;
+     let magic = String::from_utf8(magic.stdout)?;
+-    let target = magic
+-        .split(" ")
+-        .last()
+-        .ok_or_else(|| anyhow!("empty magic"))?;
+-    xcode::add_plist_to_app(&build_bundle, target, app_id, sim_type)?;
++    xcode::add_plist_to_app(&build_bundle, arch_from_file_output(&magic), app_id, sim_type)?;
+     Ok(build_bundle)
+ }
+ 
+diff --git a/dinghy-lib/src/apple/xcode.rs b/dinghy-lib/src/apple/xcode.rs
+index e6056bc..dd8f73c 100644
+--- a/dinghy-lib/src/apple/xcode.rs
++++ b/dinghy-lib/src/apple/xcode.rs
+@@ -14,6 +14,24 @@ pub fn add_plist_to_app(
+     app_bundle_id: &str,
+     sim_type: Option<&AppleSimulatorType>,
+ ) -> Result<()> {
++    fn xml_escape(s: &str) -> String {
++        let mut out = String::with_capacity(s.len());
++        for ch in s.chars() {
++            match ch {
++                '&' => out.push_str("&amp;"),
++                '<' => out.push_str("&lt;"),
++                '>' => out.push_str("&gt;"),
++                '\"' => out.push_str("&quot;"),
++                '\'' => out.push_str("&apos;"),
++                _ => out.push(ch),
++            }
++        }
++        out
++    }
++
++    let arch = xml_escape(arch);
++    let app_bundle_id = xml_escape(app_bundle_id);
++
+     let mut plist = fs::File::create(bundle.bundle_dir.join("Info.plist"))?;
+     writeln!(plist, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
+     writeln!(
+@@ -32,9 +50,9 @@ pub fn add_plist_to_app(
+         app_bundle_id
+     )?;
+     writeln!(plist, "<key>CFBundleVersion</key>")?;
+-    writeln!(plist, "<string>{}</string>", arch)?;
++    writeln!(plist, "<string>1</string>")?;
+     writeln!(plist, "<key>CFBundleShortVersionString</key>")?;
+-    writeln!(plist, "<string>{}</string>", arch)?;
++    writeln!(plist, "<string>1.0</string>")?;
+     match sim_type {
+         // The iOS/tvOS simulator have the same plist as an iOS device.
+         Some(AppleSimulatorType::Ios) | Some(AppleSimulatorType::Tvos) | None => {

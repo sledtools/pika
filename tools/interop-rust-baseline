@@ -5,7 +5,7 @@ set -euo pipefail
 # from marmot-interop-lab-rust over a local relay.
 #
 # This script:
-# 1) starts a local nostr-rs-relay via the marmot-interop-lab-rust docker compose
+# 1) starts a local nostr-rs-relay (nix develop: nostr-rs-relay on PATH)
 # 2) starts the rust_harness "bot" (publishes kind 443 + waits for a welcome)
 # 3) runs the Pika core baseline client to create a chat and verify `ping` -> `pong`
 #
@@ -51,7 +51,7 @@ need() {
     exit 1
   fi
 }
-need docker
+need nostr-rs-relay
 need cargo
 
 if [ -d "$MDK_DIR/.git" ]; then
@@ -88,8 +88,9 @@ cleanup() {
     # Avoid "Terminated: 15" noise from bash job control on exit.
     wait "${BOT_PID}" >/dev/null 2>&1 || true
   fi
-  if [ -n "${RELAY_CID:-}" ]; then
-    docker stop "$RELAY_CID" >/dev/null 2>&1 || true
+  if [ -n "${RELAY_PID:-}" ]; then
+    kill "${RELAY_PID}" >/dev/null 2>&1 || true
+    wait "${RELAY_PID}" >/dev/null 2>&1 || true
   fi
   if [ "$KEEP" -eq 0 ] && [ -z "${PIKA_INTEROP_STATE_DIR:-}" ]; then
     rm -rf "$STATE_DIR" >/dev/null 2>&1 || true
@@ -115,18 +116,24 @@ if [ ! -f "$RELAY_CONFIG" ]; then
   exit 1
 fi
 
-echo "starting local relay (docker) state_dir=$STATE_DIR port=$RELAY_PORT"
-RELAY_NAME="pika-interop-relay-${RELAY_PORT}"
-RELAY_CID="$(
-  docker run -d --rm \
-    --name "$RELAY_NAME" \
-    --platform linux/amd64 \
-    -p "127.0.0.1:${RELAY_PORT}:8080" \
-    -v "${RELAY_CONFIG}:/usr/src/app/config.toml:ro" \
-    -v "${RELAY_DB_DIR}:/usr/src/app/db" \
-    -e RUST_LOG=warn \
-    scsibug/nostr-rs-relay:latest
-)"
+RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
+sed -E \
+  -e "s|^relay_url = \\\".*\\\"|relay_url = \\\"ws://127.0.0.1:${RELAY_PORT}\\\"|g" \
+  -e "s|^port = [0-9]+|port = ${RELAY_PORT}|g" \
+  -e "s|^data_directory = \\\".*\\\"|data_directory = \\\"${RELAY_DB_DIR}\\\"|g" \
+  "${RELAY_CONFIG}" > "${RELAY_CONFIG_TMP}"
+
+RELAY_LOG="${STATE_DIR}/relay.log"
+echo "starting local relay (nostr-rs-relay) state_dir=$STATE_DIR port=$RELAY_PORT"
+nostr-rs-relay --db "${RELAY_DB_DIR}" --config "${RELAY_CONFIG_TMP}" >"${RELAY_LOG}" 2>&1 &
+RELAY_PID="$!"
+
+for _ in $(seq 1 200); do
+  if (echo >"/dev/tcp/127.0.0.1/${RELAY_PORT}") >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.05
+done
 
 RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"

@@ -1,0 +1,23 @@
+[package]
+name = "pika-media"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+network = ["moq-lite", "tokio", "bytes", "tracing", "url", "quinn", "web-transport-quinn", "pika-tls"]
+
+[dependencies]
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
+# Network transport (behind "network" feature so tests stay light)
+moq-lite = { git = "https://github.com/kixelated/moq", rev = "5ad5c064875d11d22f31779537fc0e541d792717", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"], optional = true }
+bytes = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
+url = { version = "2", optional = true }
+quinn = { version = "0.11", default-features = true, optional = true }
+web-transport-quinn = { version = "0.11.4", optional = true }
+pika-tls = { path = "../pika-tls", optional = true }

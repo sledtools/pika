@@ -207,7 +207,6 @@ maybe_write_config() {
   #
   # Override:
   #   PIKA_RELAY_URLS="ws://10.0.2.2:18080" just run-android
-  #   PIKA_KEY_PACKAGE_RELAY_URLS="wss://..." just run-android
   #
   # Disable:
   #   PIKA_NO_RELAY_OVERRIDE=1 just run-android
@@ -217,14 +216,14 @@ maybe_write_config() {
   fi
 
   local relays="${PIKA_RELAY_URLS:-${PIKA_RELAY_URL:-}}"
-  local kp_relays="${PIKA_KEY_PACKAGE_RELAY_URLS:-${PIKA_KP_RELAY_URLS:-}}"
+  # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
+  local call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
+  local call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
+  local moq_probe_on_start="${PIKA_MOQ_PROBE_ON_START:-0}"
 
   # Defaults aimed at quick-start interop with the deployed Rust bot.
   if [ -z "${relays:-}" ]; then
     relays="wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
-  fi
-  if [ -z "${kp_relays:-}" ]; then
-    kp_relays="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io"
   fi
 
   # Comma-separated list -> JSON array.
@@ -233,10 +232,14 @@ maybe_write_config() {
     python3 - <<PY
 import json
 relays = "${relays}".strip()
-kp_relays = "${kp_relays}".strip()
 relay_items = [x.strip() for x in relays.split(",") if x.strip()]
-kp_items = [x.strip() for x in kp_relays.split(",") if x.strip()]
-print(json.dumps({"disable_network": False, "relay_urls": relay_items, "key_package_relay_urls": kp_items}))
+print(json.dumps({
+  "disable_network": False,
+  "relay_urls": relay_items,
+  "call_moq_url": "${call_moq_url}",
+  "call_broadcast_prefix": "${call_broadcast_prefix}",
+  "moq_probe_on_start": True if "${moq_probe_on_start}" == "1" else False,
+}))
 PY
   )"
 

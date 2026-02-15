@@ -17,7 +17,6 @@ set -euo pipefail
 #   PIKA_TEST_NSEC
 #   PIKA_UI_E2E_BOT_NPUB
 #   PIKA_UI_E2E_RELAYS
-#   PIKA_UI_E2E_KP_RELAYS
 # Optional:
 #   PIKA_UI_E2E_NSEC           (defaults to PIKA_TEST_NSEC)
 #   PIKA_UI_E2E_RUN_RUST=1     (run rust-level e2e-public first; default for --platform all)
@@ -62,11 +61,9 @@ fi
 : "${PIKA_TEST_NSEC:?missing (put it in ./.env or ./.env.local)}"
 : "${PIKA_UI_E2E_BOT_NPUB:?missing (put it in ./.env or ./.env.local)}"
 : "${PIKA_UI_E2E_RELAYS:?missing (put it in ./.env or ./.env.local)}"
-: "${PIKA_UI_E2E_KP_RELAYS:?missing (put it in ./.env or ./.env.local)}"
 
 peer="${PIKA_UI_E2E_BOT_NPUB}"
 relays="${PIKA_UI_E2E_RELAYS}"
-kp_relays="${PIKA_UI_E2E_KP_RELAYS}"
 nsec="${PIKA_UI_E2E_NSEC:-${PIKA_TEST_NSEC}}"
 
 maybe_run_rust() {
@@ -76,17 +73,24 @@ maybe_run_rust() {
 }
 
 run_android() {
-  ./tools/android-emulator-ensure
+  # Default: run on an emulator to keep CI/dev machines consistent.
+  # If a hardware device is desired, set PIKA_ANDROID_SERIAL=<serial>.
+  if [ -z "${PIKA_ANDROID_SERIAL:-}" ]; then
+    ./tools/android-emulator-ensure
+  fi
   just gen-kotlin android-rust android-local-properties >/dev/null
 
-  (cd android && ./gradlew :app:connectedDebugAndroidTest \
+  SERIAL="$(./tools/android-pick-serial)"
+  if [[ "$SERIAL" != emulator-* ]]; then
+    ./tools/android-ensure-unlocked "$SERIAL"
+  fi
+  (cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
     -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
     -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
     -Pandroid.testInstrumentationRunnerArguments.pika_reset=1 \
     -Pandroid.testInstrumentationRunnerArguments.pika_peer_npub="$peer" \
     -Pandroid.testInstrumentationRunnerArguments.pika_relay_urls="$relays" \
-    -Pandroid.testInstrumentationRunnerArguments.pika_key_package_relay_urls="$kp_relays" \
     -Pandroid.testInstrumentationRunnerArguments.pika_nsec="$nsec")
 }
 
@@ -106,7 +110,6 @@ run_ios() {
   PIKA_UI_E2E=1 \
     PIKA_UI_E2E_BOT_NPUB="$peer" \
     PIKA_UI_E2E_RELAYS="$relays" \
-    PIKA_UI_E2E_KP_RELAYS="$kp_relays" \
     PIKA_UI_E2E_NSEC="$nsec" \
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
       PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \

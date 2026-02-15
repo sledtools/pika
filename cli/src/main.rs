@@ -165,14 +165,14 @@ async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {
     let client = client(cli, &keys).await?;
     let relays = relay_util::parse_relay_urls(&cli.relay)?;
 
-    let (content, tags) = mdk
+    let (content, tags, _hash_ref) = mdk
         .create_key_package_for_event(&keys.public_key(), relays.clone())
         .context("create key package")?;
 
     // Strip NIP-70 "protected" tag — many popular relays reject protected events.
     let tags: Tags = tags
         .into_iter()
-        .filter(|t| !matches!(t.kind(), TagKind::Protected))
+        .filter(|t: &Tag| !matches!(t.kind(), TagKind::Protected))
         .collect();
 
     let event = EventBuilder::new(Kind::MlsKeyPackage, content)

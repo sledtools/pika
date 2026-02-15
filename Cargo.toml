@@ -4,5 +4,15 @@ members = [
   "rust",
   "uniffi-bindgen",
   "cli",
+  "crates/pika-media",
+  "crates/pika-tls",
+  "crates/marmotd",
   "crates/rmp-cli",
 ]
+
+[workspace.dependencies]
+# Pin MDK once for the whole workspace to avoid version skew between members.
+# (MDK is load-bearing for interop: MLS state formats, key package behavior, etc.)
+mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "d6777f73a35028bbfe638949a4963ecb9f3f4117", features = ["mip04"] }
+mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "d6777f73a35028bbfe638949a4963ecb9f3f4117" }
+mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "d6777f73a35028bbfe638949a4963ecb9f3f4117" }

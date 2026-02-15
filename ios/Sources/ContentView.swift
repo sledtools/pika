@@ -134,7 +134,8 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             },
             onReact: { messageId, emoji in
                 manager.dispatch(.reactToMessage(chatId: chatId, messageId: messageId, emoji: emoji))
-            }
+            },
+            onDispatch: { manager.dispatch($0) }
         )
         .sheet(isPresented: Binding(
             get: { state.peerProfile != nil },
@@ -216,7 +217,7 @@ private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
 }
 
 private func chatScreenState(from state: AppState) -> ChatScreenState {
-    ChatScreenState(chat: state.currentChat)
+    ChatScreenState(chat: state.currentChat, activeCall: state.activeCall)
 }
 
 private func groupInfoState(from state: AppState) -> GroupInfoViewState {

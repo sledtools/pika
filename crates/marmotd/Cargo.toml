@@ -1,0 +1,23 @@
+[package]
+name = "marmotd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.37", features = ["derive"] }
+hex = "0.4"
+mdk-core = { workspace = true }
+mdk-sqlite-storage = { workspace = true }
+mdk-storage-traits = { workspace = true }
+nostr-sdk = { version = "0.44", features = ["nip44", "nip59"] }
+rand = "0.9"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.44", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pika-media = { path = "../pika-media", features = ["network"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+hound = "3.5"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

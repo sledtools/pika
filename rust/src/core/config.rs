@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use nostr_sdk::prelude::RelayUrl;
@@ -13,22 +12,16 @@ const DEFAULT_RELAY_URLS: &[&str] = &[
     "wss://nos.lol",
 ];
 
-// Key packages (kind 443) are NIP-70 "protected" in modern MDK.
-// Many popular relays (incl. Damus/Primal/nos.lol) currently reject protected events.
-// Default these to relays that accept protected kind 443 publishes (manual probe).
-const DEFAULT_KEY_PACKAGE_RELAY_URLS: &[&str] = &[
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-01.yakihonne.com",
-    "wss://nostr-02.yakihonne.com",
-    "wss://relay.satlantis.io",
-];
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub(super) struct AppConfig {
     pub(super) disable_network: Option<bool>,
     pub(super) relay_urls: Option<Vec<String>>,
-    pub(super) key_package_relay_urls: Option<Vec<String>>,
+    pub(super) call_moq_url: Option<String>,
+    pub(super) call_broadcast_prefix: Option<String>,
+    pub(super) call_audio_backend: Option<String>,
+    // Dev-only: run a one-shot QUIC+TLS probe on startup and log PASS/FAIL.
+    pub(super) moq_probe_on_start: Option<bool>,
 }
 
 pub(super) fn load_app_config(data_dir: &str) -> AppConfig {
@@ -62,35 +55,5 @@ impl AppCore {
             .iter()
             .filter_map(|u| RelayUrl::parse(u).ok())
             .collect()
-    }
-
-    pub(super) fn key_package_relays(&self) -> Vec<RelayUrl> {
-        if let Some(urls) = &self.config.key_package_relay_urls {
-            let parsed: Vec<RelayUrl> = urls
-                .iter()
-                .filter_map(|u| RelayUrl::parse(u).ok())
-                .collect();
-            if !parsed.is_empty() {
-                return parsed;
-            }
-        }
-        DEFAULT_KEY_PACKAGE_RELAY_URLS
-            .iter()
-            .filter_map(|u| RelayUrl::parse(u).ok())
-            .collect()
-    }
-
-    pub(super) fn all_session_relays(&self) -> Vec<RelayUrl> {
-        // Ensure the single nostr-sdk client can publish/fetch both:
-        // - normal traffic on general relays
-        // - key packages (kind 443) on key-package relays
-        let mut set: BTreeSet<RelayUrl> = BTreeSet::new();
-        for r in self.default_relays() {
-            set.insert(r);
-        }
-        for r in self.key_package_relays() {
-            set.insert(r);
-        }
-        set.into_iter().collect()
     }
 }

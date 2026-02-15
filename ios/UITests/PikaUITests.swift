@@ -234,18 +234,14 @@ final class PikaUITests: XCTestCase {
         let botNpub = env["PIKA_UI_E2E_BOT_NPUB"] ?? ""
         let testNsec = env["PIKA_UI_E2E_NSEC"] ?? env["PIKA_TEST_NSEC"] ?? ""
         let relays = env["PIKA_UI_E2E_RELAYS"] ?? ""
-        let kpRelays = env["PIKA_UI_E2E_KP_RELAYS"] ?? ""
-
         // Public-relay E2E should be explicit. Defaults hide misconfiguration and cause flaky hangs.
         if botNpub.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_BOT_NPUB"); return }
         if testNsec.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_NSEC (or PIKA_TEST_NSEC)"); return }
         if relays.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_RELAYS"); return }
-        if kpRelays.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_KP_RELAYS"); return }
 
         let app = XCUIApplication()
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_RELAY_URLS"] = relays
-        app.launchEnvironment["PIKA_KEY_PACKAGE_RELAY_URLS"] = kpRelays
         app.launch()
 
         // If we land on Login, prefer logging into a stable allowlisted identity when provided.

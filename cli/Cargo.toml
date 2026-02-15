@@ -11,9 +11,9 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
-mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
-mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
-mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "1ad73229ab712018c078d5295e11ec38e10d6a24" }
+mdk-core = { workspace = true }
+mdk-sqlite-storage = { workspace = true }
+mdk-storage-traits = { workspace = true }
 nostr-sdk = { version = "0.44.1", features = ["nip59"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

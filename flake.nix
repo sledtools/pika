@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    moq = {
+      url = "github:kixelated/moq";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -14,7 +18,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, android-nixpkgs }:
+  outputs = { self, nixpkgs, flake-utils, moq, rust-overlay, android-nixpkgs }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -69,6 +73,36 @@
           cargo build -q -p rmp-cli
           exec "$root/target/debug/rmp" "$@"
         '';
+
+        dinghyLibSrc = pkgs.fetchCrate {
+          pname = "dinghy-lib";
+          version = "0.8.4";
+          hash = "sha256-umHlY0YEQI2ZWfZuHalhuPlZ5YT4evYjv/gQ+P7+SGM=";
+        };
+
+        cargoDinghy = pkgs.rustPlatform.buildRustPackage {
+          pname = "cargo-dinghy";
+          version = "0.8.4";
+
+          src = pkgs.fetchCrate {
+            pname = "cargo-dinghy";
+            version = "0.8.4";
+            hash = "sha256-eYtURPNxeeEWXjEOO1YyilsHHMP+35oWeOB0ojxA9Ww=";
+          };
+
+          patches = [ ./nix/patches/dinghy-lib-ios-plist-arch.patch ];
+
+          postUnpack = ''
+            cp -R ${dinghyLibSrc} "$sourceRoot/dinghy-lib"
+            chmod -R u+w "$sourceRoot/dinghy-lib"
+          '';
+
+          cargoHash = "sha256-3tKV1syCZFXVVOSZbh0mvcwGiC+JNnmEBr4EMlzLgCM=";
+
+          meta = {
+            mainProgram = "cargo-dinghy";
+          };
+        };
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -84,6 +118,9 @@
             pkgs.python3
             pkgs.curl
             pkgs.git
+            cargoDinghy
+            pkgs.nostr-rs-relay
+            moq.packages.${system}.moq-relay
             pkgs.cargo-ndk
             pkgs.gradle
             rmp
@@ -124,14 +161,10 @@
                 export LIBRARY_PATH="${pkgs.libiconv}/lib"
               fi
 
-              case "$DEVELOPER_DIR" in
-                ""|/nix/store/*|/Library/Developer/CommandLineTools*)
-                  DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-                  if [ -n "$DEV_DIR" ]; then
-                    export DEVELOPER_DIR="$DEV_DIR"
-                  fi
-                  ;;
-              esac
+              DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+              if [ -n "$DEV_DIR" ]; then
+                export DEVELOPER_DIR="$DEV_DIR"
+              fi
             fi
 
             # Help Gradle find the SDK/NDK without Android Studio.

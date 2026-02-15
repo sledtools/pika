@@ -54,19 +54,12 @@ just e2e-public-relays
 
 ## Relays (V2 / MDK)
 
-Modern MDK publishes MLS key packages as kind `443` events tagged NIP-70 `protected`. Many popular public relays (including Damus/Primal/nos.lol) reject protected events with `blocked: event marked as protected`, which breaks chat creation if you try to publish/fetch key packages there.
-
-Pika splits relays by role:
-- `relay_urls`: "general" relays (popular) used for normal traffic and discovery.
-- `key_package_relay_urls`: relays used *only* for key packages (kind `443`) and advertised via kind `10051` (MLS Key Package Relays).
-
 Config file: `pika_config.json` under the app’s data dir:
 
 ```json
 {
   "disable_network": false,
-  "relay_urls": ["wss://relay.damus.io", "wss://relay.primal.net"],
-  "key_package_relay_urls": ["wss://nostr-pub.wellorder.net", "wss://nostr-01.yakihonne.com"]
+  "relay_urls": ["wss://relay.damus.io", "wss://relay.primal.net", "wss://nos.lol"]
 }
 ```
 
@@ -96,7 +89,7 @@ XCUITest smoke tests exist (requires an installed iOS Simulator runtime + a simu
 just ios-ui-test
 ```
 
-Deterministic local E2E (local docker relay + local Rust bot):
+Deterministic local E2E (local Nostr relay + local Rust bot):
 
 ```bash
 just ios-ui-e2e-local
@@ -139,7 +132,7 @@ Deterministic UI smoke tests exist as Compose instrumentation tests (requires a 
 just android-ui-test
 ```
 
-Deterministic local E2E (local docker relay + local Rust bot):
+Deterministic local E2E (local Nostr relay + local Rust bot):
 
 ```bash
 just android-ui-e2e-local

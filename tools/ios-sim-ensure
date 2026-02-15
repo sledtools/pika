@@ -83,7 +83,6 @@ fi
 maybe_nsec="${PIKA_UI_E2E_NSEC:-${PIKA_TEST_NSEC:-}}"
 maybe_bot_npub="${PIKA_UI_E2E_BOT_NPUB:-}"
 maybe_relays="${PIKA_UI_E2E_RELAYS:-}"
-maybe_kp_relays="${PIKA_UI_E2E_KP_RELAYS:-}"
 
 # Notes:
 # - XCUITest runs inside the simulator and does not reliably inherit the host env.
@@ -98,8 +97,6 @@ fi
 if [ -n "${maybe_relays:-}" ]; then
   "$SIMCTL" spawn "$udid" launchctl setenv PIKA_UI_E2E_RELAYS "$maybe_relays" >/dev/null 2>&1 || true
 fi
-if [ -n "${maybe_kp_relays:-}" ]; then
-  "$SIMCTL" spawn "$udid" launchctl setenv PIKA_UI_E2E_KP_RELAYS "$maybe_kp_relays" >/dev/null 2>&1 || true
-fi
+
 
 echo "ok: ios simulator ready (udid=$udid)"

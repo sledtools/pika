@@ -90,11 +90,15 @@ impl AppCore {
                 .collect();
 
             // Fetch newest message for preview.
+            // Signal/control messages share the MLS app-message path; skip them in chat previews.
             let newest = sess
                 .mdk
-                .get_messages(&g.mls_group_id, Some(Pagination::new(Some(1), Some(0))))
+                .get_messages(&g.mls_group_id, Some(Pagination::new(Some(20), Some(0))))
                 .ok()
-                .and_then(|v| v.into_iter().next());
+                .and_then(|v| {
+                    v.into_iter()
+                        .find(|m| !super::call_control::is_call_signal_payload(&m.content))
+                });
 
             let stored_last_message = newest.as_ref().map(|m| m.content.clone());
             let stored_last_message_at = newest
@@ -299,11 +303,17 @@ impl AppCore {
 
         let storage_len = messages.len();
 
+        // Filter out call signal messages before processing.
+        let visible_messages: Vec<_> = messages
+            .into_iter()
+            .filter(|m| !super::call_control::is_call_signal_payload(&m.content))
+            .collect();
+
         // Separate reactions (kind 7) from regular messages.
         // reaction_target_id -> Vec<(emoji, sender_pubkey)>
         let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut regular_messages = Vec::new();
-        for m in &messages {
+        for m in &visible_messages {
             if m.kind == nostr_sdk::Kind::Reaction {
                 // Find the target event id from the `e` tag.
                 if let Some(target_id) = m.tags.iter().find_map(|t| {
@@ -328,6 +338,7 @@ impl AppCore {
             regular_messages.push(m);
         }
 
+        // MDK returns descending by created_at; UI wants ascending.
         let mut msgs: Vec<ChatMessage> = regular_messages
             .into_iter()
             .rev()

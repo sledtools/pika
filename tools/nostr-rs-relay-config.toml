@@ -1,7 +1,6 @@
 # Minimal nostr-rs-relay config for deterministic local E2E.
 #
-# This file is mounted into the nostr-rs-relay Docker container at
-# /usr/src/app/config.toml. The database directory is mounted at /usr/src/app/db.
+# Local runners/scripts may rewrite `relay_url`, `port`, and `data_directory` at runtime.
 #
 # Keep this config intentionally permissive for local-only tests.
 
@@ -17,5 +16,4 @@ address = "0.0.0.0"
 port = 8080
 
 [database]
-data_directory = "/usr/src/app/db"
-
+data_directory = "/tmp/nostr-rs-relay-db"

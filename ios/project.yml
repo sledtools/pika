@@ -46,6 +46,9 @@ targets:
   PikaTests:
     type: bundle.unit-test
     platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     sources:
       - path: Tests
     dependencies:
@@ -54,8 +57,47 @@ targets:
   PikaUITests:
     type: bundle.ui-testing
     platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     sources:
       - path: UITests
+    postBuildScripts:
+      - name: "Copy .env into test bundle"
+        script: |
+          ENV_SRC="${SRCROOT}/../.env"
+          if [ ! -f "$ENV_SRC" ]; then
+            echo "warning: .env not found at $ENV_SRC"
+            exit 0
+          fi
+
+          # Device UI tests run the .xctest bundle inside the *Runner.app/PlugIns*.
+          # Put env.test into the .xctest bundle so Bundle(for:) can find it.
+          candidates=()
+          if [ -n "${CODESIGNING_FOLDER_PATH:-}" ]; then candidates+=("$CODESIGNING_FOLDER_PATH"); fi
+          if [ -n "${WRAPPER_NAME:-}" ]; then candidates+=("${TARGET_BUILD_DIR:-}/${WRAPPER_NAME}"); fi
+          if [ -n "${WRAPPER_NAME:-}" ]; then candidates+=("${BUILT_PRODUCTS_DIR:-}/${WRAPPER_NAME}"); fi
+          if [ -n "${XCTRUNNER_PRODUCT_NAME:-}" ] && [ -n "${WRAPPER_NAME:-}" ]; then
+            candidates+=("${TARGET_BUILD_DIR:-}/${XCTRUNNER_PRODUCT_NAME}/PlugIns/${WRAPPER_NAME}")
+            candidates+=("${BUILT_PRODUCTS_DIR:-}/${XCTRUNNER_PRODUCT_NAME}/PlugIns/${WRAPPER_NAME}")
+          fi
+
+          copied=0
+          for dst in "${candidates[@]}"; do
+            [ -n "$dst" ] || continue
+            if [ -d "$dst" ]; then
+              cp "$ENV_SRC" "$dst/env.test"
+              echo "Copied .env to $dst/env.test"
+              copied=1
+              break
+            fi
+          done
+
+          if [ "$copied" != "1" ]; then
+            echo "warning: could not locate .xctest bundle; tried:"
+            printf '  - %s\n' "${candidates[@]}"
+          fi
+        basedOnDependencyAnalysis: false
     dependencies:
       - target: Pika
 

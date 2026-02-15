@@ -44,6 +44,36 @@ jobs:
 
       - run: nix develop .#default -c just pre-merge-pika
 
+  check-marmotd:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && 'ci-approval' || 'ci-auto' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just pre-merge-marmotd
+
   check-rmp:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -74,12 +104,16 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [check-pika, check-rmp]
+    needs: [check-pika, check-marmotd, check-rmp]
     runs-on: ubuntu-latest
     steps:
       - run: |
           if [[ "${{ needs.check-pika.result }}" != "success" ]]; then
             echo "check-pika failed"
+            exit 1
+          fi
+          if [[ "${{ needs.check-marmotd.result }}" != "success" ]]; then
+            echo "check-marmotd failed"
             exit 1
           fi
           if [[ "${{ needs.check-rmp.result }}" != "success" ]]; then
@@ -115,13 +149,109 @@ jobs:
 
       - run: nix develop .#default -c just rmp-nightly-linux
 
+  nightly-pika:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just nightly-pika-e2e
+
+  nightly-marmotd:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just nightly-marmotd
+
+  nightly-pika-ui-android:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just android-ui-e2e-local
+
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
-    needs: [nightly-linux]
+    needs: [nightly-linux, nightly-pika, nightly-marmotd, nightly-pika-ui-android]
     runs-on: ubuntu-latest
     steps:
       - run: |
           if [[ "${{ needs.nightly-linux.result }}" != "success" ]]; then
             echo "nightly-linux failed"
+            exit 1
+          fi
+          if [[ "${{ needs.nightly-pika.result }}" != "success" ]]; then
+            echo "nightly-pika failed"
+            exit 1
+          fi
+          if [[ "${{ needs.nightly-marmotd.result }}" != "success" ]]; then
+            echo "nightly-marmotd failed"
+            exit 1
+          fi
+          if [[ "${{ needs.nightly-pika-ui-android.result }}" != "success" ]]; then
+            echo "nightly-pika-ui-android failed"
             exit 1
           fi

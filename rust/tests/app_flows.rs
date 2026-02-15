@@ -1,13 +1,16 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, FfiApp, Screen};
+use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp, Screen};
 use tempfile::tempdir;
 
 fn write_config(data_dir: &str, disable_network: bool) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let v = serde_json::json!({
         "disable_network": disable_network,
+        "call_moq_url": "https://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
     });
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
@@ -59,6 +62,9 @@ fn create_account_navigates_to_chat_list() {
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("navigated to chat list", Duration::from_secs(2), || {
+        app.state().router.default_screen == Screen::ChatList
     });
 
     let s = app.state();
@@ -156,6 +162,61 @@ fn send_message_creates_pending_then_sent() {
             .as_ref()
             .and_then(|c| c.messages.iter().find(|m| m.content == "hello"))
             .map(|m| matches!(m.delivery, pika_core::MessageDeliveryState::Sent))
+            .unwrap_or(false)
+    });
+}
+
+#[test]
+fn start_call_toggle_mute_and_end_transitions_state() {
+    let dir = tempdir().unwrap();
+    write_config(&dir.path().to_string_lossy(), true);
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("logged in", Duration::from_secs(2), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let npub = match app.state().auth {
+        AuthState::LoggedIn { ref npub, .. } => npub.clone(),
+        _ => panic!("expected logged in"),
+    };
+    app.dispatch(AppAction::CreateChat { peer_npub: npub });
+    wait_until("chat created", Duration::from_secs(2), || {
+        !app.state().chat_list.is_empty()
+    });
+    let chat_id = app.state().chat_list[0].chat_id.clone();
+
+    app.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("call offering", Duration::from_secs(2), || {
+        app.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Offering))
+            .unwrap_or(false)
+    });
+
+    app.dispatch(AppAction::ToggleMute);
+    wait_until("call muted", Duration::from_secs(2), || {
+        app.state()
+            .active_call
+            .as_ref()
+            .map(|c| c.is_muted)
+            .unwrap_or(false)
+    });
+
+    app.dispatch(AppAction::EndCall);
+    wait_until("call ended", Duration::from_secs(2), || {
+        app.state()
+            .active_call
+            .as_ref()
+            .map(|c| {
+                matches!(
+                    c.status,
+                    CallStatus::Ended { ref reason } if reason == "user_hangup"
+                )
+            })
             .unwrap_or(false)
     });
 }

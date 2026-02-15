@@ -601,6 +601,8 @@ fn build_android_so(
         .arg("ndk")
         .arg("-o")
         .arg(root.join("android/app/src/main/jniLibs"))
+        .arg("-P")
+        .arg("26")
         .arg("-t")
         .arg("arm64-v8a")
         .arg("-t")

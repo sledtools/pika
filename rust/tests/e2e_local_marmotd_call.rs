@@ -10,7 +10,7 @@
 //!
 //! Requires:
 //! - Network access to us-east.moq.logos.surf:443 (UDP/QUIC)
-//! - `marmotd` binary built at ~/code/openclaw-marmot/target/debug/marmotd
+//! - `marmotd` available on PATH (recommended: via `nix develop`) or set `MARMOTD_BIN=/path/to/marmotd`
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -32,11 +32,32 @@ use tokio_tungstenite::tungstenite::Message;
 
 const REAL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 
+fn which(program: &str) -> Option<String> {
+    let out = Command::new("which").arg(program).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 fn marmotd_binary() -> String {
-    std::env::var("MARMOTD_BIN").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/justin".to_string());
-        format!("{home}/code/openclaw-marmot/target/debug/marmotd")
-    })
+    if let Ok(bin) = std::env::var("MARMOTD_BIN") {
+        if !bin.trim().is_empty() {
+            return bin;
+        }
+    }
+    if let Some(bin) = which("marmotd") {
+        return bin;
+    }
+
+    // Back-compat fallback for existing dev setups.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/justin".to_string());
+    format!("{home}/code/openclaw-marmot/target/debug/marmotd")
 }
 
 fn write_config(data_dir: &str, relay_url: &str, kp_relay_url: Option<&str>) {

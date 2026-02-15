@@ -178,6 +178,10 @@ e2e-public-relays:
 e2e-public:
   PIKA_E2E_PUBLIC=1 cargo test -p pika_core --test e2e_public_relays -- --ignored --nocapture
 
+# Local E2E: local Nostr relay + local marmotd daemon (requires `marmotd` on PATH or MARMOTD_BIN).
+e2e-local-marmotd:
+  PIKA_E2E_LOCAL=1 cargo test -p pika_core --test e2e_local_marmotd_call -- --ignored --nocapture
+
 # Build Rust core for the host platform.
 rust-build-host:
   cargo build -p pika_core --release

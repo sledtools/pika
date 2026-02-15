@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    moq = {
+      url = "github:kixelated/moq";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -14,7 +18,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, android-nixpkgs }:
+  outputs = { self, nixpkgs, flake-utils, moq, rust-overlay, android-nixpkgs }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -85,6 +89,7 @@
             pkgs.curl
             pkgs.git
             pkgs.nostr-rs-relay
+            moq.packages.${system}.moq-relay
             pkgs.cargo-ndk
             pkgs.gradle
             rmp

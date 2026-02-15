@@ -12,6 +12,7 @@
 		38BA65C125C5EE3586248416 /* KeychainNsecStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F1BF02C1AAAEAA33532732 /* KeychainNsecStoreTests.swift */; };
 		3B614972940C843FB662920B /* PikaCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CD38D8437B178B873D96238 /* PikaCore.xcframework */; };
 		502171B59272A56AB36AECCF /* PeerKeyValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */; };
+		58C517FF149AC254090595C5 /* CallE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C357146E006B099CACA69E19 /* CallE2ETests.swift */; };
 		5EA0CD4191E6688471F8FAB5 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FE3F3E8BA33932B132B693 /* ChatView.swift */; };
 		77E9D3F87F29E747F53DD5F0 /* PikaUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8600EE3AFD44A8B726A64716 /* PikaUITests.swift */; };
 		783CBC6C2A48969656021CD8 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 366C05B721835967C3BE5418 /* ChatListView.swift */; };
@@ -20,6 +21,7 @@
 		9581B9688EDC90BCBC177E47 /* TestIds.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4FAE9ECBDFC0A976452024F /* TestIds.swift */; };
 		970D12403533E203A33FBEFC /* NewChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62170468ABECD8AAA8B6B6A /* NewChatView.swift */; };
 		A15307C1B4692DC5925858CE /* AppManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B2B1856254D8FE240BC93A /* AppManager.swift */; };
+		AB24A24A3D0C17ADAEC6D2F2 /* env.test in Resources */ = {isa = PBXBuildFile; fileRef = D49BBB41449CB3CC6F445B27 /* env.test */; };
 		DE799DF1E97151C517647E61 /* QrScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */; };
 		EDAE180A5D3FEED3C801658F /* MyNpubQrSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0705B2EA2A82DFC41EFF9DCF /* MyNpubQrSheet.swift */; };
 		F2A2C56251354A67641CA82F /* pika_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2510455883E1CDFB6D589F5C /* pika_core.swift */; };
@@ -63,6 +65,8 @@
 		A62170468ABECD8AAA8B6B6A /* NewChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatView.swift; sourceTree = "<group>"; };
 		B083A8885A5C0BDDEFCF5EAC /* QrScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerSheet.swift; sourceTree = "<group>"; };
 		B2FE3F3E8BA33932B132B693 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		C357146E006B099CACA69E19 /* CallE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallE2ETests.swift; sourceTree = "<group>"; };
+		D49BBB41449CB3CC6F445B27 /* env.test */ = {isa = PBXFileReference; path = env.test; sourceTree = "<group>"; };
 		E366BE398C3E8FAA39A15A33 /* PikaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PikaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9B7DE0FCF7AB984004968F9 /* PeerKeyValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerKeyValidator.swift; sourceTree = "<group>"; };
 		EB0FD903A8B9CBC1D80EB16D /* AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarView.swift; sourceTree = "<group>"; };
@@ -126,6 +130,8 @@
 		3ECF7FFD917DF02854E9843D /* UITests */ = {
 			isa = PBXGroup;
 			children = (
+				C357146E006B099CACA69E19 /* CallE2ETests.swift */,
+				D49BBB41449CB3CC6F445B27 /* env.test */,
 				8600EE3AFD44A8B726A64716 /* PikaUITests.swift */,
 			);
 			path = UITests;
@@ -195,6 +201,8 @@
 			buildConfigurationList = F275E37E9AD9A7F80F625D43 /* Build configuration list for PBXNativeTarget "PikaUITests" */;
 			buildPhases = (
 				6023270A4E630FC9CA92A75C /* Sources */,
+				CA8CF84D02EADB6649924A28 /* Copy .env into test bundle */,
+				2C16FFD954C0A0CABC056777 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -270,13 +278,44 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2C16FFD954C0A0CABC056777 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB24A24A3D0C17ADAEC6D2F2 /* env.test in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		CA8CF84D02EADB6649924A28 /* Copy .env into test bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy .env into test bundle";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "ENV_SRC=\"${SRCROOT}/../.env\"\n# Copy into the xctest bundle so Bundle(for:) can find it\nXCTEST=\"${BUILT_PRODUCTS_DIR}/${FULL_PRODUCT_NAME}\"\nif [ -d \"$XCTEST\" ] && [ -f \"$ENV_SRC\" ]; then\n  cp \"$ENV_SRC\" \"$XCTEST/env.test\"\n  echo \"Copied .env to $XCTEST/env.test\"\nelif [ -f \"$ENV_SRC\" ]; then\n  # Fallback: put it in BUILT_PRODUCTS_DIR\n  cp \"$ENV_SRC\" \"${BUILT_PRODUCTS_DIR}/env.test\"\n  echo \"Copied .env to ${BUILT_PRODUCTS_DIR}/env.test (fallback)\"\nelse\n  echo \"warning: .env not found at $ENV_SRC\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		6023270A4E630FC9CA92A75C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				58C517FF149AC254090595C5 /* CallE2ETests.swift in Sources */,
 				77E9D3F87F29E747F53DD5F0 /* PikaUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -397,6 +436,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -431,6 +471,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -446,6 +487,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -539,6 +581,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

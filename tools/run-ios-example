@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build a pika-media example for aarch64-apple-ios, wrap in .app, deploy to device.
+#
+# Usage:
+#   ./tools/run-ios-example quic_connect_test --udid 00008140-001E54E90E6A801C
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
+
+EXAMPLE=""
+UDID=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --udid) UDID="${2:-}"; shift 2 ;;
+    *) EXAMPLE="$1"; shift ;;
+  esac
+done
+
+: "${EXAMPLE:?usage: $0 <example_name> --udid <DEVICE_UDID>}"
+: "${UDID:?missing --udid}"
+
+TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:?set PIKA_IOS_DEVELOPMENT_TEAM in .env}"
+BUNDLE_ID="com.justinmoon.pika.dev.test"
+
+# --- Build for iOS device using the same env as just ios-rust ---
+XCODE_DEV="$(xcode-select -p)"
+SDKROOT_IOS="$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+CC_BIN="$(xcrun --sdk iphoneos --find clang)"
+IOS_MIN="17.0"
+
+echo "==> Building example '$EXAMPLE' for aarch64-apple-ios..."
+
+# Use the same unwrapped-compiler approach as ios-rust
+declare -a base_env=()
+base_env+=(CC="$CC_BIN" AR="$(xcrun --sdk iphoneos --find ar)")
+
+"${base_env[@]}" SDKROOT="$SDKROOT_IOS" \
+  RUSTFLAGS="-C linker=$CC_BIN -C link-arg=-miphoneos-version-min=$IOS_MIN" \
+  cargo build -p pika-media --example "$EXAMPLE" --features network --release --target aarch64-apple-ios
+
+BINARY="target/aarch64-apple-ios/release/examples/$EXAMPLE"
+if [ ! -f "$BINARY" ]; then
+  echo "error: binary not found at $BINARY" >&2
+  exit 1
+fi
+
+# --- Wrap in .app bundle ---
+APP_DIR="/tmp/${EXAMPLE}.app"
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+cp "$BINARY" "$APP_DIR/$EXAMPLE"
+
+cat > "$APP_DIR/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>${EXAMPLE}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${BUNDLE_ID}</string>
+  <key>CFBundleName</key>
+  <string>${EXAMPLE}</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>MinimumOSVersion</key>
+  <string>${IOS_MIN}</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array><string>iPhoneOS</string></array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
+PLIST
+
+# --- Codesign ---
+echo "==> Codesigning..."
+/usr/bin/codesign --force --sign "Apple Development: ${TEAM_ID}" --entitlements /dev/stdin "$APP_DIR" <<ENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>application-identifier</key>
+  <string>${TEAM_ID}.${BUNDLE_ID}</string>
+  <key>get-task-allow</key>
+  <true/>
+</dict>
+</plist>
+ENT
+
+# --- Deploy and run ---
+echo "==> Installing and launching on device $UDID..."
+xcrun devicectl device install app --device "$UDID" "$APP_DIR" 2>&1 || true
+
+echo "==> Launching..."
+xcrun devicectl device process launch --device "$UDID" --console "$BUNDLE_ID" 2>&1
+
+echo "==> Done"

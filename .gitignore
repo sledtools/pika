@@ -29,3 +29,4 @@ worktrees
 .env.local
 .cargo/config.toml
 .pika-cli-test
+ios/UITests/env.test

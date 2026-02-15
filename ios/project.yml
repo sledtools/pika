@@ -38,6 +38,9 @@ targets:
   PikaTests:
     type: bundle.unit-test
     platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     sources:
       - path: Tests
     dependencies:
@@ -46,8 +49,28 @@ targets:
   PikaUITests:
     type: bundle.ui-testing
     platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     sources:
       - path: UITests
+    postCompileScripts:
+      - name: "Copy .env into test bundle"
+        script: |
+          ENV_SRC="${SRCROOT}/../.env"
+          # Copy into the xctest bundle so Bundle(for:) can find it
+          XCTEST="${BUILT_PRODUCTS_DIR}/${FULL_PRODUCT_NAME}"
+          if [ -d "$XCTEST" ] && [ -f "$ENV_SRC" ]; then
+            cp "$ENV_SRC" "$XCTEST/env.test"
+            echo "Copied .env to $XCTEST/env.test"
+          elif [ -f "$ENV_SRC" ]; then
+            # Fallback: put it in BUILT_PRODUCTS_DIR
+            cp "$ENV_SRC" "${BUILT_PRODUCTS_DIR}/env.test"
+            echo "Copied .env to ${BUILT_PRODUCTS_DIR}/env.test (fallback)"
+          else
+            echo "warning: .env not found at $ENV_SRC"
+          fi
+        basedOnDependencyAnalysis: false
     dependencies:
       - target: Pika
 

@@ -35,6 +35,13 @@ pub struct NetworkRelay {
 
 impl NetworkRelay {
     pub fn new(moq_url: &str) -> Result<Self, MediaSessionError> {
+        Self::with_options(moq_url, false)
+    }
+
+    pub fn with_options(
+        moq_url: &str,
+        tls_disable_verify: bool,
+    ) -> Result<Self, MediaSessionError> {
         let url = Url::parse(moq_url)
             .map_err(|e| MediaSessionError::InvalidTrack(format!("invalid moq url: {e}")))?;
 
@@ -57,6 +64,7 @@ impl NetworkRelay {
                 let mut state = NetworkRelayState {
                     rt,
                     url,
+                    tls_disable_verify,
                     origin: Origin::produce(),
                     sub_origin: Origin::produce(),
                     session: None,
@@ -192,6 +200,7 @@ impl Drop for NetworkRelayWorker {
 struct NetworkRelayState {
     rt: Runtime,
     url: Url,
+    tls_disable_verify: bool,
     /// Local publish origin (for announcing our broadcast/tracks).
     origin: moq_lite::OriginProducer,
     /// Remote consume origin (for consuming broadcasts/tracks announced by the relay/server).
@@ -239,9 +248,15 @@ impl NetworkRelayState {
         let origin_cons = self.origin.consume();
         let sub_origin = self.sub_origin.clone();
 
+        let tls_disable_verify = self.tls_disable_verify;
         let session = self.rt.block_on(async {
-            tracing::info!("connect: initiating QUIC to {url}");
-            let client_config = moq_native::ClientConfig::default();
+            tracing::info!(
+                "connect: initiating QUIC to {url} (tls_disable_verify={tls_disable_verify})"
+            );
+            let mut client_config = moq_native::ClientConfig::default();
+            if tls_disable_verify {
+                client_config.tls.disable_verify = Some(true);
+            }
             let client = client_config.init().map_err(|e| {
                 tracing::error!("moq client init failed: {e:#}");
                 MediaSessionError::Unauthorized(format!("moq client init failed: {e}"))

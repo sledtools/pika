@@ -58,16 +58,41 @@ pub enum InternalEvent {
     // Async CreateChat fetch result
     PeerKeyPackageFetched {
         peer_pubkey: nostr_sdk::prelude::PublicKey,
+<<<<<<< HEAD
         // Relays we used (or discovered via kind 10051) when fetching the peer's key package.
         // These are valuable as an interop baseline: if the peer published their key package
         // there, they almost certainly have connectivity to them, so using them for the new
         // group's relay set increases the chance of immediate bidirectional message delivery.
         candidate_kp_relays: Vec<nostr_sdk::prelude::RelayUrl>,
+=======
+>>>>>>> b36ed4f (Remove NIP-42/NIP-70 and separate key-package relay infrastructure)
         key_package_event: Option<nostr_sdk::prelude::Event>,
         error: Option<String>,
     },
 
+<<<<<<< HEAD
     // Subscription recompute result. Kept internal because it carries nostr-sdk types.
+=======
+    // Async CreateGroupChat: all key packages collected
+    GroupKeyPackagesFetched {
+        peer_pubkeys: Vec<nostr_sdk::prelude::PublicKey>,
+        group_name: String,
+        key_package_events: Vec<nostr_sdk::prelude::Event>,
+        failed_peers: Vec<(nostr_sdk::prelude::PublicKey, String)>,
+    },
+
+    // Result of publishing a group evolution event (add/remove/leave/rename commit)
+    GroupEvolutionPublished {
+        chat_id: String,
+        mls_group_id: mdk_core::prelude::GroupId,
+        welcome_rumors: Option<Vec<nostr_sdk::prelude::UnsignedEvent>>,
+        added_pubkeys: Vec<nostr_sdk::prelude::PublicKey>,
+        ok: bool,
+        error: Option<String>,
+    },
+
+    // Subscription recompute result.
+>>>>>>> b36ed4f (Remove NIP-42/NIP-70 and separate key-package relay infrastructure)
     SubscriptionsRecomputed {
         token: u64,
         giftwrap_sub: Option<nostr_sdk::prelude::SubscriptionId>,

@@ -8,7 +8,6 @@ fn write_config(data_dir: &str, relay_url: &str) -> Result<()> {
     let v = serde_json::json!({
         "disable_network": false,
         "relay_urls": [relay_url],
-        "key_package_relay_urls": [relay_url],
     });
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).context("write pika_config.json")?;
     Ok(())

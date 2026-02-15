@@ -27,12 +27,12 @@ Scope: make `just pre-merge` green, reduce flake, align spec/impl enough to land
 
 ## P2: Spec drift cleanup (docs vs reality)
 
-- Signaling examples in `todos/pika-audio-calls-spec.md` omit `relay_auth` but impl includes it in `CallSessionParams` (`rust/src/core/call_control.rs:36`).
-- Spec says v0 plaintext + anonymous relay access (`todos/pika-audio-calls-spec.md:227` and `todos/pika-audio-calls-spec.md:245`), but current impl enforces MLS-derived frame crypto + opaque labels + relay-auth token shape.
-- Defaults: iOS/Android default `call_moq_url` to `https://us-east.moq.logos.surf/anon` (`ios/Sources/AppManager.swift:33`, `android/app/src/main/java/com/pika/app/AppManager.kt:69`) while current infra work targets `https://moq.justinmoon.com/anon`.
+- Protocol reality notes (ensure code + deployment agree):
+- Signaling includes `relay_auth` in `CallSessionParams` (`rust/src/core/call_control.rs:36`).
+- v0 plaintext docs are obsolete: current impl enforces MLS-derived frame crypto + opaque labels + relay-auth token shape.
+- Defaults drift: iOS/Android default `call_moq_url` to `https://us-east.moq.logos.surf/anon` (`ios/Sources/AppManager.swift:33`, `android/app/src/main/java/com/pika/app/AppManager.kt:69`) while some infra/bot references still mention `moq.justinmoon.com`.
 
 ## P3: “One-command” manual E2E
 
 - Make `todos/audio-calls-e2e-plan.md` Step 3/4 runnable and current (interop binary, env vars, relay URLs, bot relays).
 - Ensure deployed bot relays match client’s publish set (avoid split-brain).
-

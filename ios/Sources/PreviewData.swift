@@ -255,7 +255,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "m2",
@@ -269,7 +270,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "m3",
@@ -283,7 +285,8 @@ enum PreviewAppState {
                 delivery: failed ? .failed(reason: "Network timeout") : .pending,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
         ]
 
@@ -315,7 +318,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             )
         }
 
@@ -344,7 +348,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm2",
@@ -358,7 +363,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm3",
@@ -372,7 +378,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm4",
@@ -386,7 +393,8 @@ enum PreviewAppState {
                 delivery: .pending,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm5",
@@ -400,7 +408,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm6",
@@ -414,7 +423,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "gm7",
@@ -428,7 +438,8 @@ enum PreviewAppState {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
         ]
 

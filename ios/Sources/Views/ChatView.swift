@@ -482,18 +482,20 @@ private struct PikaPrompt: Decodable {
 private enum MessageSegment: Identifiable {
     case markdown(String)
     case pikaPrompt(PikaPrompt)
-    case pikaHtml(String)
+    case pikaHtml(id: String?, html: String, state: String?)
 
     var id: String {
         switch self {
         case .markdown(let text): return "md-\(text.hashValue)"
         case .pikaPrompt(let prompt): return "prompt-\(prompt.title.hashValue)"
-        case .pikaHtml(let html): return "html-\(html.hashValue)"
+        case .pikaHtml(let id, let html, _):
+            if let id { return "html-\(id)" }
+            return "html-\(html.hashValue)"
         }
     }
 }
 
-private func parseMessageSegments(_ content: String) -> [MessageSegment] {
+private func parseMessageSegments(_ content: String, htmlState: String? = nil) -> [MessageSegment] {
     var segments: [MessageSegment] = []
     let pattern = /```pika-([\w-]+)(?:[ \t]+(\S+))?\n([\s\S]*?)```/
     var remaining = content[...]
@@ -505,6 +507,7 @@ private func parseMessageSegments(_ content: String) -> [MessageSegment] {
         }
 
         let blockType = String(match.output.1)
+        let blockId = match.output.2.map(String.init)
         let blockBody = String(match.output.3).trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch blockType {
@@ -514,8 +517,8 @@ private func parseMessageSegments(_ content: String) -> [MessageSegment] {
                 segments.append(.pikaPrompt(prompt))
             }
         case "html":
-            segments.append(.pikaHtml(blockBody))
-        case "html-update", "prompt-response":
+            segments.append(.pikaHtml(id: blockId, html: blockBody, state: htmlState))
+        case "html-update", "html-state-update", "prompt-response":
             break // Consumed by Rust core; silently drop if one slips through.
         default:
             segments.append(.markdown("```\(blockType)\n\(blockBody)\n```"))
@@ -675,7 +678,7 @@ private struct MessageBubble: View {
 
     var body: some View {
         let hasReactions = !message.reactions.isEmpty
-        let segments = parseMessageSegments(message.displayContent)
+        let segments = parseMessageSegments(message.displayContent, htmlState: message.htmlState)
 
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
             ForEach(segments) { segment in
@@ -684,8 +687,8 @@ private struct MessageBubble: View {
                     markdownBubble(text: text)
                 case .pikaPrompt(let prompt):
                     PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
-                case .pikaHtml(let html):
-                    PikaHtmlView(html: html, onSendMessage: onSendMessage)
+                case .pikaHtml(_, let html, let state):
+                    PikaHtmlView(html: html, htmlState: state, onSendMessage: onSendMessage)
                 }
             }
             .onLongPressGesture {
@@ -878,13 +881,14 @@ private struct PikaPromptView: View {
 
 private struct PikaHtmlView: View {
     let html: String
+    let htmlState: String?
     let onSendMessage: @MainActor (String) -> Void
 
     @State private var contentHeight: CGFloat = 100
     @State private var showFullScreen = false
 
     var body: some View {
-        PikaWebView(html: html, contentHeight: $contentHeight, onSendMessage: onSendMessage, interactive: false)
+        PikaWebView(html: html, htmlState: htmlState, contentHeight: $contentHeight, onSendMessage: onSendMessage, interactive: false)
             .frame(height: min(contentHeight, 400))
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .background(Color.gray.opacity(0.1))
@@ -892,19 +896,20 @@ private struct PikaHtmlView: View {
             .contentShape(Rectangle())
             .onTapGesture { showFullScreen = true }
             .fullScreenCover(isPresented: $showFullScreen) {
-                PikaHtmlFullScreen(html: html, onSendMessage: onSendMessage, isPresented: $showFullScreen)
+                PikaHtmlFullScreen(html: html, htmlState: htmlState, onSendMessage: onSendMessage, isPresented: $showFullScreen)
             }
     }
 }
 
 private struct PikaHtmlFullScreen: View {
     let html: String
+    let htmlState: String?
     let onSendMessage: @MainActor (String) -> Void
     @Binding var isPresented: Bool
 
     var body: some View {
         NavigationStack {
-            PikaFullScreenWebView(html: html, onSendMessage: onSendMessage)
+            PikaFullScreenWebView(html: html, htmlState: htmlState, onSendMessage: onSendMessage)
                 .navigationTitle("HTML")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -918,6 +923,7 @@ private struct PikaHtmlFullScreen: View {
 
 private struct PikaFullScreenWebView: UIViewRepresentable {
     let html: String
+    let htmlState: String?
     let onSendMessage: @MainActor (String) -> Void
 
     func makeCoordinator() -> PikaWebView.Coordinator {
@@ -942,6 +948,10 @@ private struct PikaFullScreenWebView: UIViewRepresentable {
         webView.backgroundColor = .clear
         webView.navigationDelegate = context.coordinator
 
+        if let state = htmlState {
+            context.coordinator.pendingState = state
+        }
+
         let wrapped = """
         <!DOCTYPE html>
         <html>
@@ -959,11 +969,23 @@ private struct PikaFullScreenWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard let state = htmlState, state != context.coordinator.lastInjectedState else { return }
+        if !context.coordinator.pageLoaded {
+            context.coordinator.pendingState = state
+            return
+        }
+        context.coordinator.lastInjectedState = state
+        let escaped = state.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        webView.evaluateJavaScript("window.pikaState && window.pikaState(JSON.parse('\(escaped)'))")
+    }
 }
 
 private struct PikaWebView: UIViewRepresentable {
     let html: String
+    let htmlState: String?
     @Binding var contentHeight: CGFloat
     let onSendMessage: @MainActor (String) -> Void
     var interactive: Bool = true
@@ -993,6 +1015,10 @@ private struct PikaWebView: UIViewRepresentable {
         webView.isUserInteractionEnabled = interactive
         webView.navigationDelegate = context.coordinator
 
+        if let state = htmlState {
+            context.coordinator.pendingState = state
+        }
+
         let binding = $contentHeight
         context.coordinator.onHeightChange = { height in
             Task { @MainActor in
@@ -1018,11 +1044,26 @@ private struct PikaWebView: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard let state = htmlState, state != context.coordinator.lastInjectedState else { return }
+        if !context.coordinator.pageLoaded {
+            // Page still loading — stash for didFinish to inject.
+            context.coordinator.pendingState = state
+            return
+        }
+        context.coordinator.lastInjectedState = state
+        let escaped = state.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        webView.evaluateJavaScript("window.pikaState && window.pikaState(JSON.parse('\(escaped)'))")
+    }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let onSendMessage: @MainActor (String) -> Void
         var onHeightChange: ((CGFloat) -> Void)?
+        var lastInjectedState: String?
+        var pendingState: String?
+        var pageLoaded = false
         private var observation: NSKeyValueObservation?
 
         init(onSendMessage: @escaping @MainActor (String) -> Void) {
@@ -1047,6 +1088,20 @@ private struct PikaWebView: UIViewRepresentable {
                 }
             default:
                 break
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            pageLoaded = true
+            // Inject pending state after initial page load (handles case where
+            // updateUIView fires before the page is ready).
+            if let state = pendingState {
+                pendingState = nil
+                lastInjectedState = state
+                let escaped = state.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "'", with: "\\'")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                webView.evaluateJavaScript("window.pikaState && window.pikaState(JSON.parse('\(escaped)'))")
             }
         }
 
@@ -1106,7 +1161,8 @@ private enum ChatViewPreviewData {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "incoming-2",
@@ -1120,7 +1176,8 @@ private enum ChatViewPreviewData {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
         ]
     )
@@ -1144,7 +1201,8 @@ private enum ChatViewPreviewData {
                 delivery: .sent,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
             ChatMessage(
                 id: "outgoing-2",
@@ -1158,7 +1216,8 @@ private enum ChatViewPreviewData {
                 delivery: .pending,
                 reactions: [],
                 pollTally: [],
-                myPollVote: nil
+                myPollVote: nil,
+                htmlState: nil
             ),
         ]
     )

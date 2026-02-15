@@ -159,6 +159,7 @@ pub struct ChatMessage {
     pub reactions: Vec<ReactionSummary>,
     pub poll_tally: Vec<PollTally>,
     pub my_poll_vote: Option<String>,
+    pub html_state: Option<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

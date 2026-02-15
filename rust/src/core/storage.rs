@@ -128,6 +128,8 @@ impl AppCore {
                     "Voted in poll".to_string()
                 } else if msg.contains("```pika-html-update ") {
                     "Updated content".to_string()
+                } else if msg.contains("```pika-html-state-update ") {
+                    "Updated widget".to_string()
                 } else {
                     msg
                 }
@@ -379,6 +381,7 @@ impl AppCore {
                     reactions,
                     poll_tally: vec![],
                     my_poll_vote: None,
+                    html_state: None,
                 }
             })
             .collect();
@@ -414,6 +417,7 @@ impl AppCore {
                     reactions: vec![],
                     poll_tally: vec![],
                     my_poll_vote: None,
+                    html_state: None,
                 });
             }
             msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
@@ -427,6 +431,7 @@ impl AppCore {
         self.loaded_count.insert(chat_id.to_string(), storage_len);
 
         process_html_updates(&mut msgs);
+        process_html_state_updates(&mut msgs);
         process_poll_tallies(&mut msgs, &my_pubkey_hex);
 
         let is_admin = entry.admin_pubkeys.contains(&my_pubkey_hex);
@@ -529,6 +534,7 @@ impl AppCore {
                     reactions: vec![],
                     poll_tally: vec![],
                     my_poll_vote: None,
+                    html_state: None,
                 }
             })
             .collect();
@@ -541,6 +547,7 @@ impl AppCore {
                 self.loaded_count
                     .insert(chat_id.to_string(), offset + fetched_len);
                 process_html_updates(&mut cur.messages);
+                process_html_state_updates(&mut cur.messages);
                 process_poll_tallies(&mut cur.messages, &my_pubkey_hex);
                 self.emit_current_chat();
             }
@@ -720,6 +727,62 @@ fn process_html_updates(msgs: &mut Vec<ChatMessage>) {
     }
 }
 
+/// Extract `(target_id, state_body)` from a `pika-html-state-update <id>` block.
+fn parse_html_state_update(content: &str) -> Option<(String, String)> {
+    let marker = "```pika-html-state-update ";
+    let start = content.find(marker)?;
+    let rest = &content[start + marker.len()..];
+    let line_end = rest.find('\n')?;
+    let id = rest[..line_end].trim().to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let body_start = &rest[line_end + 1..];
+    let end = body_start.find("```")?;
+    let body = body_start[..end].trim().to_string();
+    Some((id, body))
+}
+
+/// Scan messages for `pika-html-state-update` blocks, store body in `html_state`
+/// on the matching original `pika-html` message, and remove the state-update messages.
+fn process_html_state_updates(msgs: &mut Vec<ChatMessage>) {
+    // Collect state updates: target_id -> (state_body, timestamp)
+    // Keep only the latest per target_id.
+    let mut latest_states: HashMap<String, (String, i64)> = HashMap::new();
+    let mut update_indices: Vec<usize> = Vec::new();
+
+    for (i, msg) in msgs.iter().enumerate() {
+        if let Some((target_id, state_body)) = parse_html_state_update(&msg.content) {
+            let dominated = latest_states
+                .get(&target_id)
+                .map(|(_, ts)| msg.timestamp > *ts)
+                .unwrap_or(true);
+            if dominated {
+                latest_states.insert(target_id, (state_body, msg.timestamp));
+            }
+            update_indices.push(i);
+        }
+    }
+
+    if update_indices.is_empty() {
+        return;
+    }
+
+    // Apply state to matching originals (do NOT touch content/display_content).
+    for msg in msgs.iter_mut() {
+        if let Some(html_id) = parse_html_id(&msg.content) {
+            if let Some((state_body, _)) = latest_states.get(&html_id) {
+                msg.html_state = Some(state_body.clone());
+            }
+        }
+    }
+
+    // Remove state-update messages (reverse order to preserve indices).
+    for i in update_indices.into_iter().rev() {
+        msgs.remove(i);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,6 +802,7 @@ mod tests {
             reactions: vec![],
             poll_tally: vec![],
             my_poll_vote: None,
+            html_state: None,
         }
     }
 
@@ -845,5 +909,81 @@ mod tests {
         // Update removed but original unchanged (no matching ID)
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].content.contains("No ID"));
+    }
+
+    #[test]
+    fn parse_html_state_update_extracts_id_and_body() {
+        let content = "```pika-html-state-update avatar\n{\"expression\":\"happy\"}\n```";
+        let (id, body) = parse_html_state_update(content).unwrap();
+        assert_eq!(id, "avatar");
+        assert_eq!(body, "{\"expression\":\"happy\"}");
+    }
+
+    #[test]
+    fn parse_html_state_update_no_match_for_plain_html() {
+        let content = "```pika-html avatar\n<h1>Hello</h1>\n```";
+        assert!(parse_html_state_update(content).is_none());
+    }
+
+    #[test]
+    fn parse_html_state_update_no_match_for_html_update() {
+        let content = "```pika-html-update avatar\n<h1>New</h1>\n```";
+        assert!(parse_html_state_update(content).is_none());
+    }
+
+    #[test]
+    fn process_html_state_updates_sets_state_preserves_content() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html avatar\n<h1>3D Avatar</h1>\n```", 100),
+            make_msg("m2", "Hello world", 101),
+            make_msg(
+                "m3",
+                "```pika-html-state-update avatar\n{\"expression\":\"happy\"}\n```",
+                102,
+            ),
+        ];
+
+        process_html_state_updates(&mut msgs);
+
+        // State-update message removed
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].id, "m1");
+        // Content and display_content are preserved
+        assert!(msgs[0].content.contains("3D Avatar"));
+        assert!(msgs[0].display_content.contains("3D Avatar"));
+        // html_state is set
+        assert_eq!(
+            msgs[0].html_state.as_deref(),
+            Some("{\"expression\":\"happy\"}")
+        );
+        assert_eq!(msgs[1].id, "m2");
+        assert!(msgs[1].html_state.is_none());
+    }
+
+    #[test]
+    fn process_html_state_updates_last_state_wins() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html dash\n<h1>Dashboard</h1>\n```", 100),
+            make_msg("m2", "```pika-html-state-update dash\n{\"v\":1}\n```", 101),
+            make_msg("m3", "```pika-html-state-update dash\n{\"v\":2}\n```", 102),
+        ];
+
+        process_html_state_updates(&mut msgs);
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].html_state.as_deref(), Some("{\"v\":2}"));
+    }
+
+    #[test]
+    fn process_html_state_updates_no_op_without_state_updates() {
+        let mut msgs = vec![
+            make_msg("m1", "```pika-html avatar\n<h1>Hello</h1>\n```", 100),
+            make_msg("m2", "Just a text message", 101),
+        ];
+
+        process_html_state_updates(&mut msgs);
+
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].html_state.is_none());
     }
 }

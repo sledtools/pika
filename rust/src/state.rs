@@ -156,8 +156,16 @@ pub struct ChatMessage {
     pub timestamp: i64,
     pub is_mine: bool,
     pub delivery: MessageDeliveryState,
+    pub reactions: Vec<ReactionSummary>,
     pub poll_tally: Vec<PollTally>,
     pub my_poll_vote: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ReactionSummary {
+    pub emoji: String,
+    pub count: u32,
+    pub reacted_by_me: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

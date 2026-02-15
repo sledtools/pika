@@ -1091,6 +1091,51 @@ impl AppCore {
                 self.refresh_chat_list_from_storage();
                 self.emit_router();
             }
+            AppAction::ReactToMessage {
+                chat_id,
+                message_id,
+                emoji,
+            } => {
+                if !self.is_logged_in() {
+                    return;
+                }
+                let Some(sess) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(group) = sess.groups.get(&chat_id).cloned() else {
+                    return;
+                };
+
+                let msg_event_id = match nostr_sdk::prelude::EventId::parse(&message_id) {
+                    Ok(id) => id,
+                    Err(_) => return,
+                };
+
+                let rumor = UnsignedEvent::new(
+                    sess.keys.public_key(),
+                    Timestamp::now(),
+                    Kind::Reaction,
+                    [Tag::event(msg_event_id)],
+                    emoji,
+                );
+
+                let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
+                    Ok(ev) => ev,
+                    Err(e) => {
+                        tracing::warn!(err = %e, "reaction create_message failed");
+                        return;
+                    }
+                };
+
+                // Fire-and-forget publish.
+                let client = sess.client.clone();
+                self.runtime.spawn(async move {
+                    let _ = client.send_event(&wrapper).await;
+                });
+
+                // Refresh chat to pick up the reaction from storage.
+                self.refresh_current_chat(&chat_id);
+            }
             AppAction::ClearToast => {
                 if self.state.toast.is_some() {
                     self.state.toast = None;

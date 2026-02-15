@@ -296,7 +296,37 @@ impl AppCore {
             .unwrap_or_default();
 
         let storage_len = messages.len();
-        let mut msgs: Vec<ChatMessage> = messages
+
+        // Separate reactions (kind 7) from regular messages.
+        // reaction_target_id -> Vec<(emoji, sender_pubkey)>
+        let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut regular_messages = Vec::new();
+        for m in &messages {
+            if m.kind == nostr_sdk::Kind::Reaction {
+                // Find the target event id from the `e` tag.
+                if let Some(target_id) = m.tags.iter().find_map(|t| {
+                    if t.kind() == nostr_sdk::TagKind::e() {
+                        t.content().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                }) {
+                    let emoji = if m.content.is_empty() || m.content == "+" {
+                        "\u{2764}\u{FE0F}".to_string()
+                    } else {
+                        m.content.clone()
+                    };
+                    reaction_map
+                        .entry(target_id)
+                        .or_default()
+                        .push((emoji, m.pubkey.to_hex()));
+                }
+                continue;
+            }
+            regular_messages.push(m);
+        }
+
+        let mut msgs: Vec<ChatMessage> = regular_messages
             .into_iter()
             .rev()
             .map(|m| {
@@ -311,16 +341,42 @@ impl AppCore {
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
                 let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
+
+                // Aggregate reactions for this message.
+                let reactions = if let Some(rxns) = reaction_map.get(&id) {
+                    let mut emoji_counts: HashMap<String, (u32, bool)> = HashMap::new();
+                    for (emoji, sender) in rxns {
+                        let entry = emoji_counts.entry(emoji.clone()).or_insert((0, false));
+                        entry.0 += 1;
+                        if sender == &my_pubkey_hex {
+                            entry.1 = true;
+                        }
+                    }
+                    emoji_counts
+                        .into_iter()
+                        .map(
+                            |(emoji, (count, reacted_by_me))| crate::state::ReactionSummary {
+                                emoji,
+                                count,
+                                reacted_by_me,
+                            },
+                        )
+                        .collect()
+                } else {
+                    vec![]
+                };
+
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,
                     sender_name,
-                    content: m.content,
+                    content: m.content.clone(),
                     display_content,
                     mentions,
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,
+                    reactions,
                     poll_tally: vec![],
                     my_poll_vote: None,
                 }
@@ -355,6 +411,7 @@ impl AppCore {
                     timestamp: lm.timestamp,
                     is_mine: true,
                     delivery,
+                    reactions: vec![],
                     poll_tally: vec![],
                     my_poll_vote: None,
                 });
@@ -469,6 +526,7 @@ impl AppCore {
                     timestamp: m.created_at.as_secs() as i64,
                     is_mine,
                     delivery,
+                    reactions: vec![],
                     poll_tally: vec![],
                     my_poll_vote: None,
                 }
@@ -678,6 +736,7 @@ mod tests {
             timestamp,
             is_mine: false,
             delivery: MessageDeliveryState::Sent,
+            reactions: vec![],
             poll_tally: vec![],
             my_poll_vote: None,
         }

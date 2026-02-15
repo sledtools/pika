@@ -75,6 +75,11 @@ pub enum AppAction {
     ArchiveChat {
         chat_id: String,
     },
+    ReactToMessage {
+        chat_id: String,
+        message_id: String,
+        emoji: String,
+    },
 
     // UI
     ClearToast,
@@ -131,6 +136,7 @@ impl AppAction {
 
             // Chat management
             AppAction::ArchiveChat { .. } => "ArchiveChat",
+            AppAction::ReactToMessage { .. } => "ReactToMessage",
 
             // UI
             AppAction::ClearToast => "ClearToast",

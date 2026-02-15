@@ -131,6 +131,9 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             },
             onTapSender: { pubkey in
                 manager.dispatch(.openPeerProfile(pubkey: pubkey))
+            },
+            onReact: { messageId, emoji in
+                manager.dispatch(.reactToMessage(chatId: chatId, messageId: messageId, emoji: emoji))
             }
         )
         .sheet(isPresented: Binding(

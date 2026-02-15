@@ -8,6 +8,7 @@ struct ChatView: View {
     let onSendMessage: @MainActor (String) -> Void
     let onGroupInfo: (@MainActor () -> Void)?
     let onTapSender: (@MainActor (String) -> Void)?
+    let onReact: (@MainActor (String, String) -> Void)?
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var showMentionPicker = false
@@ -17,12 +18,13 @@ struct ChatView: View {
 
     private let scrollButtonBottomPadding: CGFloat = 12
 
-    init(chatId: String, state: ChatScreenState, onSendMessage: @escaping @MainActor (String) -> Void, onGroupInfo: (@MainActor () -> Void)? = nil, onTapSender: (@MainActor (String) -> Void)? = nil) {
+    init(chatId: String, state: ChatScreenState, onSendMessage: @escaping @MainActor (String) -> Void, onGroupInfo: (@MainActor () -> Void)? = nil, onTapSender: (@MainActor (String) -> Void)? = nil, onReact: (@MainActor (String, String) -> Void)? = nil) {
         self.chatId = chatId
         self.state = state
         self.onSendMessage = onSendMessage
         self.onGroupInfo = onGroupInfo
         self.onTapSender = onTapSender
+        self.onReact = onReact
     }
 
     var body: some View {
@@ -32,7 +34,7 @@ struct ChatView: View {
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 8) {
                             ForEach(groupedMessages(chat)) { group in
-                                MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender)
+                                MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender, onReact: onReact)
                             }
                         }
                         .padding(.horizontal, 12)
@@ -299,6 +301,146 @@ private struct MentionPickerPopup: View {
     }
 }
 
+private struct QuickReactionBar: View {
+    let onSelect: (String) -> Void
+    let onMore: () -> Void
+    let onCopy: () -> Void
+
+    private let emojis = ["❤️", "👍", "👎", "😂", "😮", "😢"]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(emojis, id: \.self) { emoji in
+                Button {
+                    onSelect(emoji)
+                } label: {
+                    Text(emoji)
+                        .font(.title2)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+            }
+            Button {
+                onMore()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color.gray.opacity(0.2))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+    }
+}
+
+private struct ReactionChips: View {
+    let reactions: [ReactionSummary]
+    let messageId: String
+    var onReact: ((String, String) -> Void)?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(reactions, id: \.emoji) { reaction in
+                Button {
+                    onReact?(messageId, reaction.emoji)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(reaction.emoji)
+                            .font(.system(size: 13))
+                        if reaction.count > 1 {
+                            Text("\(reaction.count)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        reaction.reactedByMe
+                            ? Color.blue.opacity(0.85)
+                            : Color(white: 0.22)
+                    )
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1.5)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+private struct EmojiPickerSheet: View {
+    let onSelect: (String) -> Void
+    @State private var searchText = ""
+    @Environment(\.dismiss) private var dismiss
+
+    private let recentEmojis = ["❤️", "👍", "👎", "😂", "😮", "😢", "🔥", "🎉", "👀", "🙏", "💯", "🤔"]
+    private let allEmojis: [(String, [String])] = [
+        ("Smileys", ["😀", "😃", "😄", "😁", "😆", "🥹", "😅", "🤣", "😂", "🙂", "😊", "😇", "🥰", "😍", "🤩", "😘", "😗", "😚", "😙", "🥲", "😋", "😛", "😜", "🤪", "😝", "🤑", "🤗", "🤭", "🤫", "🤔", "🫡", "🤐", "🤨", "😐", "😑", "😶", "🫥", "😏", "😒", "🙄", "😬", "🤥", "😌", "😔", "😪", "🤤", "😴", "😷", "🤒", "🤕", "🤢", "🤮", "🥵", "🥶", "🥴", "😵", "🤯", "🤠", "🥳", "🥸", "😎", "🤓", "🧐", "😕", "🫤", "😟", "🙁", "😮", "😯", "😲", "😳", "🥺", "🥹", "😦", "😧", "😨", "😰", "😥", "😢", "😭", "😱", "😖", "😣", "😞", "😓", "😩", "😫", "🥱", "😤", "😡", "😠", "🤬", "😈", "👿", "💀", "☠️", "💩", "🤡", "👹", "👺", "👻", "👽", "👾", "🤖"]),
+        ("Gestures", ["👋", "🤚", "🖐️", "✋", "🖖", "🫱", "🫲", "🫳", "🫴", "👌", "🤌", "🤏", "✌️", "🤞", "🫰", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️", "🫵", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "🫶", "👐", "🤲", "🤝", "🙏", "💪"]),
+        ("Hearts", ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❤️‍🔥", "❤️‍🩹", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝"]),
+        ("Symbols", ["⭐", "🌟", "✨", "💫", "🔥", "💥", "💯", "💢", "💬", "👁️‍🗨️", "🗨️", "💭", "✅", "❌", "❓", "❗", "‼️", "⁉️", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫", "⚪", "🟤"]),
+    ]
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if searchText.isEmpty {
+                        emojiSection(title: "Recent", emojis: recentEmojis)
+                        ForEach(allEmojis, id: \.0) { title, emojis in
+                            emojiSection(title: title, emojis: emojis)
+                        }
+                    } else {
+                        let filtered = allEmojis.flatMap { $0.1 }
+                        emojiGrid(emojis: filtered)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Reactions")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search emoji")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func emojiSection(title: String, emojis: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            emojiGrid(emojis: emojis)
+        }
+    }
+
+    private func emojiGrid(emojis: [String]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 8), spacing: 8) {
+            ForEach(emojis, id: \.self) { emoji in
+                Button {
+                    onSelect(emoji)
+                } label: {
+                    Text(emoji)
+                        .font(.title2)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 private struct BottomVisibleKey: PreferenceKey {
     static var defaultValue: CGFloat? = nil
     static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
@@ -415,6 +557,8 @@ private struct MessageGroupRow: View {
     var showSender: Bool = false
     let onSendMessage: @MainActor (String) -> Void
     var onTapSender: (@MainActor (String) -> Void)?
+    var onReact: ((String, String) -> Void)?
+    @State private var activeReactionMessageId: String?
 
     private let avatarSize: CGFloat = 24
     private let avatarGutterWidth: CGFloat = 28
@@ -449,7 +593,7 @@ private struct MessageGroupRow: View {
                         .foregroundStyle(.secondary)
                         .onTapGesture { onTapSender?(group.senderPubkey) }
                 }
-                MessageBubbleStack(group: group, onSendMessage: onSendMessage)
+                MessageBubbleStack(group: group, onSendMessage: onSendMessage, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -462,7 +606,7 @@ private struct MessageGroupRow: View {
             Spacer(minLength: 24)
 
             VStack(alignment: .trailing, spacing: 3) {
-                MessageBubbleStack(group: group, onSendMessage: onSendMessage)
+                MessageBubbleStack(group: group, onSendMessage: onSendMessage, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
                 if let delivery = group.messages.last?.delivery {
                     Text(deliveryText(delivery))
                         .font(.caption2)
@@ -485,6 +629,8 @@ private struct MessageGroupRow: View {
 private struct MessageBubbleStack: View {
     let group: GroupedChatMessage
     let onSendMessage: @MainActor (String) -> Void
+    var onReact: ((String, String) -> Void)?
+    @Binding var activeReactionMessageId: String?
 
     var body: some View {
         VStack(alignment: group.isMine ? .trailing : .leading, spacing: 2) {
@@ -492,7 +638,9 @@ private struct MessageBubbleStack: View {
                 MessageBubble(
                     message: message,
                     position: bubblePosition(at: index, count: group.messages.count),
-                    onSendMessage: onSendMessage
+                    onSendMessage: onSendMessage,
+                    onReact: onReact,
+                    activeReactionMessageId: $activeReactionMessageId
                 )
                 .id(message.id)
             }
@@ -511,27 +659,88 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let position: GroupedBubblePosition
     let onSendMessage: @MainActor (String) -> Void
+    var onReact: ((String, String) -> Void)?
+    @Binding var activeReactionMessageId: String?
 
     private let roundedCornerRadius: CGFloat = 16
     private let groupedCornerRadius: CGFloat = 6
 
+    @State private var showEmojiPicker = false
+
+    private var isShowingReactionBar: Bool {
+        activeReactionMessageId == message.id
+    }
+
+    private let reactionChipOverlap: CGFloat = 10
+
     var body: some View {
+        let hasReactions = !message.reactions.isEmpty
         let segments = parseMessageSegments(message.displayContent)
-        ForEach(segments) { segment in
-            switch segment {
-            case .markdown(let text):
-                markdownBubble(text: text)
-            case .pikaPrompt(let prompt):
-                PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
-            case .pikaHtml(let html):
-                PikaHtmlView(html: html, onSendMessage: onSendMessage)
+
+        VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
+            ForEach(segments) { segment in
+                switch segment {
+                case .markdown(let text):
+                    markdownBubble(text: text)
+                case .pikaPrompt(let prompt):
+                    PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
+                case .pikaHtml(let html):
+                    PikaHtmlView(html: html, onSendMessage: onSendMessage)
+                }
             }
-        }
-        .contextMenu {
-            Button {
-                UIPasteboard.general.string = message.displayContent
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
+            .onLongPressGesture {
+                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                impactFeedback.impactOccurred()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                    activeReactionMessageId = message.id
+                }
+            }
+            .overlay(alignment: message.isMine ? .topTrailing : .topLeading) {
+                if isShowingReactionBar {
+                    QuickReactionBar(
+                        onSelect: { emoji in
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                activeReactionMessageId = nil
+                            }
+                            onReact?(message.id, emoji)
+                        },
+                        onMore: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                activeReactionMessageId = nil
+                            }
+                            showEmojiPicker = true
+                        },
+                        onCopy: {
+                            UIPasteboard.general.string = message.displayContent
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                activeReactionMessageId = nil
+                            }
+                        }
+                    )
+                    .transition(.scale(scale: 0.5, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity))
+                    .offset(y: -48)
+                }
+            }
+            .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
+                if hasReactions {
+                    ReactionChips(
+                        reactions: message.reactions,
+                        messageId: message.id,
+                        onReact: onReact
+                    )
+                    .offset(x: message.isMine ? -12 : 12, y: reactionChipOverlap)
+                }
+            }
+            .sheet(isPresented: $showEmojiPicker) {
+                EmojiPickerSheet { emoji in
+                    onReact?(message.id, emoji)
+                    showEmojiPicker = false
+                }
+                .presentationDetents([.medium, .large])
+            }
+
+            if hasReactions {
+                Spacer().frame(height: reactionChipOverlap + 4)
             }
         }
     }
@@ -895,6 +1104,7 @@ private enum ChatViewPreviewData {
                 timestamp: 1_709_100_001,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -908,6 +1118,7 @@ private enum ChatViewPreviewData {
                 timestamp: 1_709_100_002,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -931,6 +1142,7 @@ private enum ChatViewPreviewData {
                 timestamp: 1_709_100_010,
                 isMine: true,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -944,6 +1156,7 @@ private enum ChatViewPreviewData {
                 timestamp: 1_709_100_011,
                 isMine: true,
                 delivery: .pending,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),

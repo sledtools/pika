@@ -253,6 +253,7 @@ enum PreviewAppState {
                 timestamp: 1_709_000_001,
                 isMine: true,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -266,6 +267,7 @@ enum PreviewAppState {
                 timestamp: 1_709_000_050,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -279,6 +281,7 @@ enum PreviewAppState {
                 timestamp: 1_709_000_100,
                 isMine: true,
                 delivery: failed ? .failed(reason: "Network timeout") : .pending,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -310,6 +313,7 @@ enum PreviewAppState {
                 timestamp: Int64(1_709_000_200 + idx),
                 isMine: idx.isMultiple(of: 2),
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             )
@@ -338,6 +342,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_000,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -351,6 +356,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_005,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -364,6 +370,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_020,
                 isMine: true,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -377,6 +384,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_030,
                 isMine: true,
                 delivery: .pending,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -390,6 +398,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_040,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -403,6 +412,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_045,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),
@@ -416,6 +426,7 @@ enum PreviewAppState {
                 timestamp: 1_709_001_080,
                 isMine: false,
                 delivery: .sent,
+                reactions: [],
                 pollTally: [],
                 myPollVote: nil
             ),

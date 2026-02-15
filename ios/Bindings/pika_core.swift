@@ -838,12 +838,13 @@ public struct ChatMessage: Equatable, Hashable {
     public var timestamp: Int64
     public var isMine: Bool
     public var delivery: MessageDeliveryState
+    public var reactions: [ReactionSummary]
     public var pollTally: [PollTally]
     public var myPollVote: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, senderPubkey: String, senderName: String?, content: String, displayContent: String, mentions: [Mention], timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState, pollTally: [PollTally], myPollVote: String?) {
+    public init(id: String, senderPubkey: String, senderName: String?, content: String, displayContent: String, mentions: [Mention], timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState, reactions: [ReactionSummary], pollTally: [PollTally], myPollVote: String?) {
         self.id = id
         self.senderPubkey = senderPubkey
         self.senderName = senderName
@@ -853,6 +854,7 @@ public struct ChatMessage: Equatable, Hashable {
         self.timestamp = timestamp
         self.isMine = isMine
         self.delivery = delivery
+        self.reactions = reactions
         self.pollTally = pollTally
         self.myPollVote = myPollVote
     }
@@ -882,6 +884,7 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
                 timestamp: FfiConverterInt64.read(from: &buf), 
                 isMine: FfiConverterBool.read(from: &buf), 
                 delivery: FfiConverterTypeMessageDeliveryState.read(from: &buf), 
+                reactions: FfiConverterSequenceTypeReactionSummary.read(from: &buf), 
                 pollTally: FfiConverterSequenceTypePollTally.read(from: &buf), 
                 myPollVote: FfiConverterOptionString.read(from: &buf)
         )
@@ -897,6 +900,7 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
         FfiConverterInt64.write(value.timestamp, into: &buf)
         FfiConverterBool.write(value.isMine, into: &buf)
         FfiConverterTypeMessageDeliveryState.write(value.delivery, into: &buf)
+        FfiConverterSequenceTypeReactionSummary.write(value.reactions, into: &buf)
         FfiConverterSequenceTypePollTally.write(value.pollTally, into: &buf)
         FfiConverterOptionString.write(value.myPollVote, into: &buf)
     }
@@ -1438,6 +1442,64 @@ public func FfiConverterTypePollTally_lower(_ value: PollTally) -> RustBuffer {
 }
 
 
+public struct ReactionSummary: Equatable, Hashable {
+    public var emoji: String
+    public var count: UInt32
+    public var reactedByMe: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(emoji: String, count: UInt32, reactedByMe: Bool) {
+        self.emoji = emoji
+        self.count = count
+        self.reactedByMe = reactedByMe
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ReactionSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeReactionSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ReactionSummary {
+        return
+            try ReactionSummary(
+                emoji: FfiConverterString.read(from: &buf), 
+                count: FfiConverterUInt32.read(from: &buf), 
+                reactedByMe: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ReactionSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.emoji, into: &buf)
+        FfiConverterUInt32.write(value.count, into: &buf)
+        FfiConverterBool.write(value.reactedByMe, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReactionSummary_lift(_ buf: RustBuffer) throws -> ReactionSummary {
+    return try FfiConverterTypeReactionSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReactionSummary_lower(_ value: ReactionSummary) -> RustBuffer {
+    return FfiConverterTypeReactionSummary.lower(value)
+}
+
+
 public struct Router: Equatable, Hashable {
     public var defaultScreen: Screen
     public var screenStack: [Screen]
@@ -1533,6 +1595,8 @@ public enum AppAction: Equatable, Hashable {
     )
     case archiveChat(chatId: String
     )
+    case reactToMessage(chatId: String, messageId: String, emoji: String
+    )
     case clearToast
     case foregrounded
     case openPeerProfile(pubkey: String
@@ -1621,21 +1685,24 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 20: return .archiveChat(chatId: try FfiConverterString.read(from: &buf)
         )
         
-        case 21: return .clearToast
-        
-        case 22: return .foregrounded
-        
-        case 23: return .openPeerProfile(pubkey: try FfiConverterString.read(from: &buf)
+        case 21: return .reactToMessage(chatId: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf), emoji: try FfiConverterString.read(from: &buf)
         )
         
-        case 24: return .closePeerProfile
+        case 22: return .clearToast
         
-        case 25: return .refreshFollowList
+        case 23: return .foregrounded
         
-        case 26: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 24: return .openPeerProfile(pubkey: try FfiConverterString.read(from: &buf)
         )
         
-        case 27: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 25: return .closePeerProfile
+        
+        case 26: return .refreshFollowList
+        
+        case 27: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 28: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -1753,34 +1820,41 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(chatId, into: &buf)
             
         
-        case .clearToast:
+        case let .reactToMessage(chatId,messageId,emoji):
             writeInt(&buf, Int32(21))
+            FfiConverterString.write(chatId, into: &buf)
+            FfiConverterString.write(messageId, into: &buf)
+            FfiConverterString.write(emoji, into: &buf)
+            
         
-        
-        case .foregrounded:
+        case .clearToast:
             writeInt(&buf, Int32(22))
         
         
-        case let .openPeerProfile(pubkey):
+        case .foregrounded:
             writeInt(&buf, Int32(23))
+        
+        
+        case let .openPeerProfile(pubkey):
+            writeInt(&buf, Int32(24))
             FfiConverterString.write(pubkey, into: &buf)
             
         
         case .closePeerProfile:
-            writeInt(&buf, Int32(24))
-        
-        
-        case .refreshFollowList:
             writeInt(&buf, Int32(25))
         
         
-        case let .followUser(pubkey):
+        case .refreshFollowList:
             writeInt(&buf, Int32(26))
+        
+        
+        case let .followUser(pubkey):
+            writeInt(&buf, Int32(27))
             FfiConverterString.write(pubkey, into: &buf)
             
         
         case let .unfollowUser(pubkey):
-            writeInt(&buf, Int32(27))
+            writeInt(&buf, Int32(28))
             FfiConverterString.write(pubkey, into: &buf)
             
         }
@@ -2523,6 +2597,31 @@ fileprivate struct FfiConverterSequenceTypePollTally: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypePollTally.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeReactionSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [ReactionSummary]
+
+    public static func write(_ value: [ReactionSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeReactionSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ReactionSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ReactionSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeReactionSummary.read(from: &buf))
         }
         return seq
     }

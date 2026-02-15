@@ -30,7 +30,7 @@ final class AppManager: AppReconciler {
         let kpRelays = (env["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? env["PIKA_KP_RELAY_URLS"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let callMoqUrl = (env["PIKA_CALL_MOQ_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedCallMoqUrl = callMoqUrl.isEmpty ? "https://moq.justinmoon.com/anon" : callMoqUrl
+        let resolvedCallMoqUrl = callMoqUrl.isEmpty ? "https://us-east.moq.logos.surf/anon" : callMoqUrl
         let resolvedCallBroadcastPrefix = callBroadcastPrefix.isEmpty ? "pika/calls" : callBroadcastPrefix
         do {
             let relayItems = relays

@@ -753,7 +753,10 @@ fn run_marmotd_call_test(relay_url: &str) {
         .unwrap_or(0);
     eprintln!("[test] caller rx_frames={rx_frames}");
     if require_rx {
-        assert!(rx_frames > 0, "echo mode active but rx_frames=0");
+        assert!(
+            rx_frames >= 5,
+            "echo mode active but rx_frames={rx_frames} (need >=5; subscriber may be stalling)"
+        );
     }
 
     if !require_rx {

@@ -366,43 +366,102 @@ impl NetworkRelayState {
             let mut track_cons = broadcast_cons.subscribe_track(&track);
             let _ = ready_tx.send(Ok(()));
 
+            let subscribe_start = tokio::time::Instant::now();
             tracing::info!("subscriber: receiving on {broadcast_path}/{track_name}");
 
             let mut seq = 0u64;
+            let mut empty_groups = 0u64;
+            let mut read_errors = 0u64;
+            let mut last_group_seq: Option<u64> = None;
+            let mut skipped_groups = 0u64;
             loop {
                 match track_cons.next_group().await {
-                    Ok(Some(mut group)) => match group.read_frame().await {
-                        Ok(Some(data)) => {
-                            let frame = MediaFrame {
-                                seq,
-                                timestamp_us: seq * 20_000,
-                                keyframe: true,
-                                payload: data.to_vec(),
-                            };
-                            seq += 1;
-                            if tx.send(frame).is_err() {
-                                tracing::info!("subscriber: receiver dropped, stopping");
-                                break;
+                    Ok(Some(mut group)) => {
+                        let group_seq = group.info.sequence;
+
+                        // Track group sequence gaps (indicates relay-side drops)
+                        if let Some(prev) = last_group_seq {
+                            let expected = prev + 1;
+                            if group_seq > expected {
+                                let gap = group_seq - expected;
+                                skipped_groups += gap;
+                                tracing::debug!(
+                                    "subscriber: group gap prev={prev} cur={group_seq} skipped={gap} (total_skipped={skipped_groups})"
+                                );
                             }
                         }
-                        Ok(None) => continue,
-                        Err(e) => {
-                            tracing::debug!("subscriber: read_frame error (continuing): {e}");
-                            continue;
+                        last_group_seq = Some(group_seq);
+
+                        match group.read_frame().await {
+                            Ok(Some(data)) => {
+                                let frame = MediaFrame {
+                                    seq,
+                                    timestamp_us: seq * 20_000,
+                                    keyframe: true,
+                                    payload: data.to_vec(),
+                                };
+                                seq += 1;
+                                if seq == 1 {
+                                    let elapsed = subscribe_start.elapsed();
+                                    tracing::info!(
+                                        "subscriber: FIRST frame group_seq={group_seq} len={} latency={:.1}ms",
+                                        data.len(),
+                                        elapsed.as_secs_f64() * 1000.0,
+                                    );
+                                } else if seq % 50 == 0 {
+                                    let elapsed = subscribe_start.elapsed();
+                                    tracing::info!(
+                                        "subscriber: progress rx={seq} group_seq={group_seq} skipped={skipped_groups} elapsed={:.1}s",
+                                        elapsed.as_secs_f64(),
+                                    );
+                                }
+                                if tx.send(frame).is_err() {
+                                    tracing::warn!(
+                                        "subscriber: mpsc receiver dropped after {seq} frames, stopping"
+                                    );
+                                    break;
+                                }
+                            }
+                            Ok(None) => {
+                                empty_groups += 1;
+                                tracing::debug!(
+                                    "subscriber: empty group group_seq={group_seq} (empty_count={empty_groups})"
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                read_errors += 1;
+                                tracing::debug!(
+                                    "subscriber: read_frame error group_seq={group_seq}: {e} (err_count={read_errors})"
+                                );
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Ok(None) => {
-                        tracing::info!("subscriber: track closed (no more groups)");
+                        tracing::warn!(
+                            "subscriber: track closed (no more groups) after {seq} frames, \
+                             empty_groups={empty_groups}, read_errors={read_errors}, skipped_groups={skipped_groups}"
+                        );
                         break;
                     }
                     Err(e) => {
-                        tracing::warn!("subscriber: next_group error: {e}");
+                        tracing::warn!(
+                            "subscriber: next_group error after {seq} frames: {e}, \
+                             empty_groups={empty_groups}, read_errors={read_errors}, skipped_groups={skipped_groups}"
+                        );
                         break;
                     }
                 }
             }
 
-            tracing::info!("subscriber: loop ended after {seq} frames");
+            let total_elapsed = subscribe_start.elapsed();
+            tracing::info!(
+                "subscriber: loop ended — total_rx={seq}, empty_groups={empty_groups}, \
+                 read_errors={read_errors}, skipped_groups={skipped_groups}, \
+                 elapsed={:.1}s",
+                total_elapsed.as_secs_f64(),
+            );
         });
 
         Ok(SubscriptionParts {
@@ -416,5 +475,135 @@ impl NetworkRelayState {
             session.close(moq_lite::Error::Cancel);
         }
         self.broadcasts.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Validates moq-lite group semantics: write_frame() creates one group per
+    /// frame, and consume() starts at the LATEST group. This test catches the
+    /// scenario where a subscriber misses frames published before subscription.
+    #[tokio::test]
+    async fn moq_lite_write_frame_creates_one_group_per_frame() {
+        let mut producer = Track::new("audio0").produce();
+
+        // Publish 5 frames before creating the consumer
+        for i in 0..5u8 {
+            producer.write_frame(bytes::Bytes::from(vec![i]));
+        }
+
+        // Consumer created after 5 frames -- should start at latest (group 4)
+        let mut consumer = producer.consume();
+
+        // Publish 10 more frames
+        for i in 5..15u8 {
+            producer.write_frame(bytes::Bytes::from(vec![i]));
+        }
+        producer.close();
+
+        let mut received = Vec::new();
+        loop {
+            match consumer.next_group().await {
+                Ok(Some(mut group)) => {
+                    if let Ok(Some(data)) = group.read_frame().await {
+                        received.push(data[0]);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Key diagnostic: how many frames does the consumer actually see?
+        // If moq-lite starts at latest, we expect group 4 + groups 5..14 = 11 frames.
+        // If it skips to the very end, we might see fewer.
+        eprintln!(
+            "moq-lite test: published 15, consumer created after 5, received {} frames: {:?}",
+            received.len(),
+            received
+        );
+
+        // We must get at least the 10 frames published after subscribe
+        assert!(
+            received.len() >= 10,
+            "expected >=10 frames after subscribe, got {}: {:?}",
+            received.len(),
+            received
+        );
+    }
+
+    /// Validates that a consumer created BEFORE any publishing sees all frames.
+    #[tokio::test]
+    async fn moq_lite_consumer_before_publish_sees_all() {
+        let mut producer = Track::new("audio0").produce();
+        let mut consumer = producer.consume();
+
+        for i in 0..20u8 {
+            producer.write_frame(bytes::Bytes::from(vec![i]));
+        }
+        producer.close();
+
+        let mut received = Vec::new();
+        loop {
+            match consumer.next_group().await {
+                Ok(Some(mut group)) => {
+                    if let Ok(Some(data)) = group.read_frame().await {
+                        received.push(data[0]);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(
+            received.len(),
+            20,
+            "expected all 20 frames, got {}: {:?}",
+            received.len(),
+            received
+        );
+    }
+
+    /// Simulates the real subscribe pattern: concurrent publish + consume to
+    /// verify frames keep flowing and the loop doesn't stall after 1 frame.
+    #[tokio::test]
+    async fn moq_lite_concurrent_publish_consume() {
+        let mut producer = Track::new("audio0").produce();
+        let mut consumer = producer.consume();
+
+        let publish_handle = tokio::spawn(async move {
+            for i in 0..100u8 {
+                producer.write_frame(bytes::Bytes::from(vec![i]));
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            producer.close();
+        });
+
+        let mut received = 0u64;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let remaining = deadline - tokio::time::Instant::now();
+            match tokio::time::timeout(remaining, consumer.next_group()).await {
+                Ok(Ok(Some(mut group))) => {
+                    if let Ok(Some(_)) = group.read_frame().await {
+                        received += 1;
+                    }
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(_)) => break,
+                Err(_) => break, // timeout
+            }
+        }
+
+        publish_handle.await.unwrap();
+
+        eprintln!("concurrent test: published 100, received {received}");
+        assert!(
+            received >= 50,
+            "expected >=50 frames in concurrent test, got {received}"
+        );
     }
 }

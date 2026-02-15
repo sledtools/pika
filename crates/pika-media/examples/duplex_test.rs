@@ -163,11 +163,16 @@ fn main() {
     let bob_tx = bob.tx_frames.load(Ordering::Relaxed);
     let bob_rx = bob.rx_frames.load(Ordering::Relaxed);
 
-    let pass = alice_tx > 0 && alice_rx > 0 && bob_tx > 0 && bob_rx > 0;
+    // Require at least 10 rx frames per direction to catch the "1-frame" bug.
+    // With 10s at 20ms/frame, we expect ~500 frames; 10 is a very conservative floor.
+    let min_rx = 10;
+    let pass = alice_tx > 0 && alice_rx >= min_rx && bob_tx > 0 && bob_rx >= min_rx;
     if pass {
         println!("\nPASS: Full-duplex encrypted audio works over real MOQ relay");
     } else {
-        println!("\nFAIL: Not all directions have frames");
+        println!("\nFAIL: Insufficient frames (need rx>={min_rx} each direction)");
+        println!("  alice: tx={alice_tx} rx={alice_rx}");
+        println!("  bob:   tx={bob_tx} rx={bob_rx}");
         std::process::exit(1);
     }
 

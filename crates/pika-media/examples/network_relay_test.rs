@@ -65,45 +65,66 @@ fn main() {
     // Wait for subscription propagation
     std::thread::sleep(Duration::from_millis(2000));
 
-    // Now publish test frames
+    // Publish frames on a background thread while collecting on the main thread.
     let total = 20u64;
-    println!("publishing {total} frames...");
-    for i in 0..total {
-        let frame = MediaFrame {
-            seq: 100 + i,
-            timestamp_us: (100 + i) * 20_000,
-            keyframe: true,
-            payload: format!("frame-{i}").into_bytes(),
-        };
-        pub_relay.publish(&pub_track, frame).expect("publish");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let pub_relay_clone = pub_relay.clone();
+    let pub_track_clone = pub_track.clone();
+    let publish_handle = std::thread::spawn(move || {
+        for i in 0..total {
+            let frame = MediaFrame {
+                seq: 100 + i,
+                timestamp_us: (100 + i) * 20_000,
+                keyframe: true,
+                payload: format!("frame-{i}").into_bytes(),
+            };
+            pub_relay_clone
+                .publish(&pub_track_clone, frame)
+                .expect("publish");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("publishing done ({total} frames sent)");
+    });
 
-    println!("waiting for frames to arrive...");
-    std::thread::sleep(Duration::from_secs(2));
-
+    // Collect frames as they arrive.
+    // Budget: publish takes ~1s, plus extra time for stragglers.
+    println!("publishing {total} frames + collecting...");
+    let collect_deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut received = 0u32;
     loop {
-        match rx.try_recv() {
+        let remaining = collect_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
             Ok(frame) => {
                 let text = String::from_utf8_lossy(&frame.payload);
                 println!("  rx: seq={} payload={text}", frame.seq);
                 received += 1;
+                if received >= total as u32 {
+                    break;
+                }
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                println!("  rx channel disconnected after {received} frames");
+                break;
+            }
         }
     }
+    publish_handle.join().unwrap();
 
-    println!("\nReceived {received} frames");
+    println!("\nReceived {received}/{total} frames");
 
     pub_relay.disconnect();
     sub_relay.disconnect();
 
-    if received > 0 {
-        println!("PASS: NetworkRelay pub/sub works through real MOQ relay");
+    // QUIC/relay drops ~10-20% of groups under normal conditions.
+    // Require 50% as a floor to catch real regressions (e.g. subscriber stalling).
+    let min_expected = total / 2;
+    if received >= min_expected as u32 {
+        println!("PASS: NetworkRelay pub/sub works ({received}/{total} frames received)");
     } else {
-        println!("FAIL: No frames received through NetworkRelay");
+        println!("FAIL: Only {received}/{total} frames received (need at least {min_expected})");
         std::process::exit(1);
     }
 }

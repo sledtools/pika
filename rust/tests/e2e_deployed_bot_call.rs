@@ -272,15 +272,15 @@ fn call_deployed_bot_via_ffi_app() {
                 dbg.tx_frames, dbg.rx_frames, dbg.rx_dropped, dbg.jitter_buffer_ms
             );
         }
-        if max_rx >= 3 {
+        if max_rx >= 10 {
             break;
         }
         std::thread::sleep(Duration::from_secs(1));
     }
     eprintln!("[test] media window done: max_rx={max_rx}");
     assert!(
-        max_rx >= 1,
-        "expected at least 1 rx frame from bot, got {max_rx}"
+        max_rx >= 5,
+        "expected at least 5 rx frames from bot (got {max_rx}); subscriber may be stalling after 1 frame"
     );
     eprintln!("[test] PASS: rx frames received ({max_rx})");
 

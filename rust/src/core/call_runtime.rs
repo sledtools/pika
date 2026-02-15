@@ -223,6 +223,9 @@ impl CallRuntime {
             let mut tx_counter_exhausted = false;
             let mut tx_counter_exhausted_reported = false;
             let mut replay_window = ReplayWindow::default();
+            let mut rx_disconnected = false;
+            let mut rx_empty_ticks = 0u64;
+            let runtime_start = Instant::now();
 
             while !stop_for_thread.load(Ordering::Relaxed) {
                 if !muted_for_thread.load(Ordering::Relaxed) {
@@ -278,32 +281,55 @@ impl CallRuntime {
                     }
                 }
 
-                for _ in 0..MAX_RX_FRAMES_PER_TICK {
-                    match rx.try_recv() {
-                        Ok(inbound) => match decrypt_frame(&inbound.payload, &rx_keys) {
-                            Ok(decrypted) => {
-                                if !replay_window.allow(decrypted.info.group_seq) {
-                                    replay_rx_dropped = replay_rx_dropped.saturating_add(1);
-                                    continue;
+                let mut got_frame_this_tick = false;
+                if !rx_disconnected {
+                    for _ in 0..MAX_RX_FRAMES_PER_TICK {
+                        match rx.try_recv() {
+                            Ok(inbound) => {
+                                got_frame_this_tick = true;
+                                match decrypt_frame(&inbound.payload, &rx_keys) {
+                                    Ok(decrypted) => {
+                                        if !replay_window.allow(decrypted.info.group_seq) {
+                                            replay_rx_dropped = replay_rx_dropped.saturating_add(1);
+                                            continue;
+                                        }
+                                        rx_frames = rx_frames.saturating_add(1);
+                                        let pcm =
+                                            codec.decode_to_pcm_i16(&OpusPacket(decrypted.payload));
+                                        let _ = jitter.push(pcm);
+                                    }
+                                    Err(err) => {
+                                        crypto_rx_dropped = crypto_rx_dropped.saturating_add(1);
+                                        if !rx_crypto_error_reported {
+                                            rx_crypto_error_reported = true;
+                                            let _ = tx_for_thread.send(CoreMsg::Internal(
+                                                Box::new(InternalEvent::Toast(format!(
+                                                    "Call media decryption failed: {err}"
+                                                ))),
+                                            ));
+                                        }
+                                    }
                                 }
-                                rx_frames = rx_frames.saturating_add(1);
-                                let pcm = codec.decode_to_pcm_i16(&OpusPacket(decrypted.payload));
-                                let _ = jitter.push(pcm);
                             }
-                            Err(err) => {
-                                crypto_rx_dropped = crypto_rx_dropped.saturating_add(1);
-                                if !rx_crypto_error_reported {
-                                    rx_crypto_error_reported = true;
-                                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
-                                        InternalEvent::Toast(format!(
-                                            "Call media decryption failed: {err}"
-                                        )),
-                                    )));
-                                }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => {
+                                rx_disconnected = true;
+                                let elapsed = runtime_start.elapsed();
+                                let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                                    InternalEvent::Toast(format!(
+                                        "Call rx channel disconnected after {:.1}s (rx={rx_frames}, crypto_drop={crypto_rx_dropped})",
+                                        elapsed.as_secs_f64()
+                                    )),
+                                )));
+                                break;
                             }
-                        },
-                        Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                        }
                     }
+                }
+                if !got_frame_this_tick && !rx_disconnected {
+                    rx_empty_ticks = rx_empty_ticks.saturating_add(1);
+                } else if got_frame_this_tick {
+                    rx_empty_ticks = 0;
                 }
                 if let Some(playback_pcm) = jitter.pop_for_playout() {
                     audio_backend.play_pcm_frame(&playback_pcm);

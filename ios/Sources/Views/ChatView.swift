@@ -9,8 +9,7 @@ struct ChatView: View {
     let onGroupInfo: (@MainActor () -> Void)?
     let onTapSender: (@MainActor (String) -> Void)?
     @State private var messageText = ""
-    @State private var scrollPosition: String?
-    @State private var isAtBottom = false
+    @State private var isAtBottom = true
     @State private var showMentionPicker = false
     @State private var mentionQuery = ""
     @State private var insertedMentions: [(display: String, npub: String)] = []
@@ -28,43 +27,54 @@ struct ChatView: View {
 
     var body: some View {
         if let chat = state.chat, chat.chatId == chatId {
-            ScrollView {
-                VStack(spacing: 0) {
-                    LazyVStack(spacing: 8) {
-                        ForEach(groupedMessages(chat)) { group in
-                            MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        LazyVStack(spacing: 8) {
+                            ForEach(groupedMessages(chat)) { group in
+                                MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender)
+                            }
                         }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                }
-                .scrollTargetLayout()
-            }
-            .scrollPosition(id: $scrollPosition, anchor: .bottom)
-            .onChange(of: scrollPosition) { _, newPosition in
-                guard let bottomId = chat.messages.last?.id else {
-                    isAtBottom = true
-                    return
-                }
-                isAtBottom = newPosition == bottomId
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if let bottomId = chat.messages.last?.id, !isAtBottom {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            scrollPosition = bottomId
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: BottomVisibleKey.self,
+                                value: geo.frame(in: .named("chatScroll")).minY
+                            )
                         }
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.footnote.weight(.semibold))
-                            .padding(10)
+                        .frame(height: 1)
+                        .id("bottom-anchor")
                     }
-                    .foregroundStyle(.primary)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-                    .padding(.trailing, 16)
-                    .padding(.bottom, scrollButtonBottomPadding)
-                    .accessibilityLabel("Scroll to bottom")
+                }
+                .coordinateSpace(name: "chatScroll")
+                .defaultScrollAnchor(.bottom)
+                .onPreferenceChange(BottomVisibleKey.self) { minY in
+                    // The anchor is visible when its top edge is within the scroll view bounds.
+                    // Give some tolerance (100pt) to account for the input bar overlay.
+                    if let minY {
+                        isAtBottom = minY < UIScreen.main.bounds.height + 100
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !isAtBottom {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("bottom-anchor", anchor: .bottom)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.footnote.weight(.semibold))
+                                .padding(10)
+                        }
+                        .foregroundStyle(.primary)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                        .padding(.trailing, 16)
+                        .padding(.bottom, scrollButtonBottomPadding)
+                        .accessibilityLabel("Scroll to bottom")
+                    }
                 }
             }
             .modifier(FloatingInputBarModifier(content: { messageInputBar(chat: chat) }))
@@ -286,6 +296,13 @@ private struct MentionPickerPopup: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 12)
+    }
+}
+
+private struct BottomVisibleKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
     }
 }
 

@@ -1,0 +1,12 @@
+services:
+  relay:
+    image: ${RELAY_IMAGE:-scsibug/nostr-rs-relay@sha256:d54849aac0a47b2cede0aadf26d4777180fb9c669ee7e8ffd0992c7f8fe81bb6}
+    ports:
+      # Bind container port 8080 to a random localhost port to avoid conflicts.
+      - "127.0.0.1::8080"
+    volumes:
+      - ./relay/nostr-rs-relay-config.toml:/usr/src/app/config.toml:ro
+      - ./.state/relay/nostr-rs-relay-db:/usr/src/app/db
+    environment:
+      - RUST_LOG=warn
+    restart: unless-stopped

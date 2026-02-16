@@ -11,6 +11,7 @@ import com.pika.app.rust.AppReconciler
 import com.pika.app.rust.AppState
 import com.pika.app.rust.AppUpdate
 import com.pika.app.rust.FfiApp
+import com.pika.app.rust.MyProfileState
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
@@ -31,13 +32,17 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 screenStack = emptyList(),
             ),
             auth = com.pika.app.rust.AuthState.LoggedOut,
+            myProfile = MyProfileState(name = "", about = "", pictureUrl = null),
             busy = com.pika.app.rust.BusyState(
                 creatingAccount = false,
                 loggingIn = false,
                 creatingChat = false,
+                fetchingFollowList = false,
             ),
             chatList = emptyList(),
             currentChat = null,
+            followList = emptyList(),
+            peerProfile = null,
             activeCall = null,
             toast = null,
         ),
@@ -77,11 +82,6 @@ class AppManager private constructor(context: Context) : AppReconciler {
                     JSONObject()
                 }
             }.getOrElse { JSONObject() }
-
-        // Keep deterministic/offline behavior test-only (PikaTestRunner overwrites the file for instrumentation).
-        if (!obj.has("disable_network")) {
-            obj.put("disable_network", false)
-        }
 
         fun isMissingOrBlank(key: String): Boolean {
             if (!obj.has(key)) return true

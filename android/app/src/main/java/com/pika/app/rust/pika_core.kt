@@ -307,7 +307,7 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
         }
     }
 }
-// Initial value and increment amount for handles.
+// Initial value and increment amount for handles. 
 // These ensure that Kotlin-generated handles always have the lowest bit set
 private const val UNIFFI_HANDLEMAP_INITIAL = 1.toLong()
 private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
@@ -317,7 +317,7 @@ private const val UNIFFI_HANDLEMAP_DELTA = 2.toLong()
 // This is used pass an opaque 64-bit handle representing a foreign object to the Rust code.
 internal class UniffiHandleMap<T: Any> {
     private val map = ConcurrentHashMap<Long, T>()
-    // Start
+    // Start 
     private val counter = java.util.concurrent.atomic.AtomicLong(UNIFFI_HANDLEMAP_INITIAL)
 
     val size: Int
@@ -671,43 +671,43 @@ internal object IntegrityCheckingUniffiLib {
     external fun ffi_pika_core_uniffi_contract_version(
     ): Int
 
-
+        
 }
 
 internal object UniffiLib {
-
+    
     // The Cleaner for the whole library
     internal val CLEANER: UniffiCleaner by lazy {
         UniffiCleaner.create()
     }
-
+    
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "pika_core"))
         uniffiCallbackInterfaceAppReconciler.register(this)
-
+        
     }
-    external fun uniffi_pika_core_fn_clone_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_clone_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_pika_core_fn_free_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_free_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_pika_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_constructor_ffiapp_new(`dataDir`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_pika_core_fn_method_ffiapp_dispatch(`ptr`: Long,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_method_ffiapp_dispatch(`ptr`: Long,`action`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_pika_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_pika_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun uniffi_pika_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_pika_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
     ): Unit
-    external fun ffi_pika_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun ffi_pika_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun ffi_pika_core_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun ffi_pika_core_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_pika_core_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -715,7 +715,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_u8(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun ffi_pika_core_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -723,7 +723,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_i8(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun ffi_pika_core_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -731,7 +731,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_u16(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Short
     external fun ffi_pika_core_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -739,7 +739,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_i16(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Short
     external fun ffi_pika_core_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -747,7 +747,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_u32(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
     external fun ffi_pika_core_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -755,7 +755,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_i32(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Int
     external fun ffi_pika_core_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -763,7 +763,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_u64(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun ffi_pika_core_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -771,7 +771,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_i64(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun ffi_pika_core_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -779,7 +779,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_f32(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Float
     external fun ffi_pika_core_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -787,7 +787,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_f64(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Double
     external fun ffi_pika_core_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -795,7 +795,7 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_rust_buffer(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_pika_core_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
     ): Unit
@@ -803,10 +803,10 @@ internal object UniffiLib {
     ): Unit
     external fun ffi_pika_core_rust_future_free_void(`handle`: Long,
     ): Unit
-    external fun ffi_pika_core_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+    external fun ffi_pika_core_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
 
-
+        
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
@@ -910,7 +910,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/**
+/** 
  * Placeholder object used to signal that we're constructing an interface with a FFI handle.
  *
  * This is the first argument for interface constructors that input a raw handle. It exists is that
@@ -921,7 +921,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
  * */
 object UniffiWithHandle
 
-/**
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1269,13 +1269,13 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 
 public interface FfiAppInterface {
-
+    
     fun `dispatch`(`action`: AppAction)
-
+    
     fun `listenForUpdates`(`reconciler`: AppReconciler)
-
+    
     fun `state`(): AppState
-
+    
     companion object
 }
 
@@ -1304,10 +1304,10 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         this.cleanable = null
     }
     constructor(`dataDir`: kotlin.String) :
-        this(UniffiWithHandle,
+        this(UniffiWithHandle, 
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_pika_core_fn_constructor_ffiapp_new(
-
+    
         FfiConverterString.lower(`dataDir`),_status)
 }
     )
@@ -1384,7 +1384,7 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     }
 
     override fun `dispatch`(`action`: AppAction)
-        =
+        = 
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_pika_core_fn_method_ffiapp_dispatch(
@@ -1392,11 +1392,11 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         FfiConverterTypeAppAction.lower(`action`),_status)
 }
     }
-
-
+    
+    
 
     override fun `listenForUpdates`(`reconciler`: AppReconciler)
-        =
+        = 
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_pika_core_fn_method_ffiapp_listen_for_updates(
@@ -1404,8 +1404,8 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
         FfiConverterTypeAppReconciler.lower(`reconciler`),_status)
 }
     }
-
-
+    
+    
 
     override fun `state`(): AppState {
             return FfiConverterTypeAppState.lift(
@@ -1418,20 +1418,20 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     }
     )
     }
+    
+
+    
+
+    
 
 
-
-
-
-
-
-
-
+    
+    
     /**
      * @suppress
      */
     companion object
-
+    
 }
 
 
@@ -1462,33 +1462,33 @@ public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Long> {
 
 data class AppState (
     var `rev`: kotlin.ULong
-    ,
+    , 
     var `router`: Router
-    ,
+    , 
     var `auth`: AuthState
-    ,
+    , 
     var `myProfile`: MyProfileState
-    ,
+    , 
     var `busy`: BusyState
-    ,
+    , 
     var `chatList`: List<ChatSummary>
-    ,
+    , 
     var `currentChat`: ChatViewState?
-    ,
+    , 
     var `followList`: List<FollowListEntry>
-    ,
+    , 
     var `peerProfile`: PeerProfileState?
-    ,
+    , 
     var `activeCall`: CallState?
-    ,
+    , 
     var `toast`: kotlin.String?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1552,19 +1552,19 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
  */
 data class BusyState (
     var `creatingAccount`: kotlin.Boolean
-    ,
+    , 
     var `loggingIn`: kotlin.Boolean
-    ,
+    , 
     var `creatingChat`: kotlin.Boolean
-    ,
+    , 
     var `fetchingFollowList`: kotlin.Boolean
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1600,21 +1600,21 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
 
 data class CallDebugStats (
     var `txFrames`: kotlin.ULong
-    ,
+    , 
     var `rxFrames`: kotlin.ULong
-    ,
+    , 
     var `rxDropped`: kotlin.ULong
-    ,
+    , 
     var `jitterBufferMs`: kotlin.UInt
-    ,
+    , 
     var `lastRttMs`: kotlin.UInt?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1653,25 +1653,25 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
 
 data class CallState (
     var `callId`: kotlin.String
-    ,
+    , 
     var `chatId`: kotlin.String
-    ,
+    , 
     var `peerNpub`: kotlin.String
-    ,
+    , 
     var `status`: CallStatus
-    ,
+    , 
     var `startedAt`: kotlin.Long?
-    ,
+    , 
     var `isMuted`: kotlin.Boolean
-    ,
+    , 
     var `debug`: CallDebugStats?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1716,37 +1716,37 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
 
 data class ChatMessage (
     var `id`: kotlin.String
-    ,
+    , 
     var `senderPubkey`: kotlin.String
-    ,
+    , 
     var `senderName`: kotlin.String?
-    ,
+    , 
     var `content`: kotlin.String
-    ,
+    , 
     var `displayContent`: kotlin.String
-    ,
+    , 
     var `mentions`: List<Mention>
-    ,
+    , 
     var `timestamp`: kotlin.Long
-    ,
+    , 
     var `isMine`: kotlin.Boolean
-    ,
+    , 
     var `delivery`: MessageDeliveryState
-    ,
+    , 
     var `reactions`: List<ReactionSummary>
-    ,
+    , 
     var `pollTally`: List<PollTally>
-    ,
+    , 
     var `myPollVote`: kotlin.String?
-    ,
+    , 
     var `htmlState`: kotlin.String?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1809,25 +1809,25 @@ public object FfiConverterTypeChatMessage: FfiConverterRustBuffer<ChatMessage> {
 
 data class ChatSummary (
     var `chatId`: kotlin.String
-    ,
+    , 
     var `isGroup`: kotlin.Boolean
-    ,
+    , 
     var `groupName`: kotlin.String?
-    ,
+    , 
     var `members`: List<MemberInfo>
-    ,
+    , 
     var `lastMessage`: kotlin.String?
-    ,
+    , 
     var `lastMessageAt`: kotlin.Long?
-    ,
+    , 
     var `unreadCount`: kotlin.UInt
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1872,25 +1872,25 @@ public object FfiConverterTypeChatSummary: FfiConverterRustBuffer<ChatSummary> {
 
 data class ChatViewState (
     var `chatId`: kotlin.String
-    ,
+    , 
     var `isGroup`: kotlin.Boolean
-    ,
+    , 
     var `groupName`: kotlin.String?
-    ,
+    , 
     var `members`: List<MemberInfo>
-    ,
+    , 
     var `isAdmin`: kotlin.Boolean
-    ,
+    , 
     var `messages`: List<ChatMessage>
-    ,
+    , 
     var `canLoadOlder`: kotlin.Boolean
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1935,19 +1935,19 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
 
 data class FollowListEntry (
     var `pubkey`: kotlin.String
-    ,
+    , 
     var `npub`: kotlin.String
-    ,
+    , 
     var `name`: kotlin.String?
-    ,
+    , 
     var `pictureUrl`: kotlin.String?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -1983,19 +1983,19 @@ public object FfiConverterTypeFollowListEntry: FfiConverterRustBuffer<FollowList
 
 data class MemberInfo (
     var `pubkey`: kotlin.String
-    ,
+    , 
     var `npub`: kotlin.String
-    ,
+    , 
     var `name`: kotlin.String?
-    ,
+    , 
     var `pictureUrl`: kotlin.String?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2031,19 +2031,19 @@ public object FfiConverterTypeMemberInfo: FfiConverterRustBuffer<MemberInfo> {
 
 data class Mention (
     var `npub`: kotlin.String
-    ,
+    , 
     var `displayName`: kotlin.String
-    ,
+    , 
     var `start`: kotlin.UInt
-    ,
+    , 
     var `end`: kotlin.UInt
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2079,17 +2079,17 @@ public object FfiConverterTypeMention: FfiConverterRustBuffer<Mention> {
 
 data class MyProfileState (
     var `name`: kotlin.String
-    ,
+    , 
     var `about`: kotlin.String
-    ,
+    , 
     var `pictureUrl`: kotlin.String?
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2122,23 +2122,23 @@ public object FfiConverterTypeMyProfileState: FfiConverterRustBuffer<MyProfileSt
 
 data class PeerProfileState (
     var `pubkey`: kotlin.String
-    ,
+    , 
     var `npub`: kotlin.String
-    ,
+    , 
     var `name`: kotlin.String?
-    ,
+    , 
     var `about`: kotlin.String?
-    ,
+    , 
     var `pictureUrl`: kotlin.String?
-    ,
+    , 
     var `isFollowed`: kotlin.Boolean
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2180,17 +2180,17 @@ public object FfiConverterTypePeerProfileState: FfiConverterRustBuffer<PeerProfi
 
 data class PollTally (
     var `option`: kotlin.String
-    ,
+    , 
     var `count`: kotlin.UInt
-    ,
+    , 
     var `voterNames`: List<kotlin.String>
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2223,17 +2223,17 @@ public object FfiConverterTypePollTally: FfiConverterRustBuffer<PollTally> {
 
 data class ReactionSummary (
     var `emoji`: kotlin.String
-    ,
+    , 
     var `count`: kotlin.UInt
-    ,
+    , 
     var `reactedByMe`: kotlin.Boolean
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2266,15 +2266,15 @@ public object FfiConverterTypeReactionSummary: FfiConverterRustBuffer<ReactionSu
 
 data class Router (
     var `defaultScreen`: Screen
-    ,
+    , 
     var `screenStack`: List<Screen>
-
+    
 ){
+    
 
+    
 
-
-
-
+    
     companion object
 }
 
@@ -2303,267 +2303,267 @@ public object FfiConverterTypeRouter: FfiConverterRustBuffer<Router> {
 
 
 sealed class AppAction {
-
+    
     object CreateAccount : AppAction()
-
-
+    
+    
     data class Login(
         val `nsec`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class RestoreSession(
         val `nsec`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     object Logout : AppAction()
-
-
+    
+    
     object RefreshMyProfile : AppAction()
-
-
+    
+    
     data class SaveMyProfile(
-        val `name`: kotlin.String,
+        val `name`: kotlin.String, 
         val `about`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class UploadMyProfileImage(
-        val `imageBase64`: kotlin.String,
+        val `imageBase64`: kotlin.String, 
         val `mimeType`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class PushScreen(
         val `screen`: com.pika.app.rust.Screen) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class UpdateScreenStack(
         val `stack`: List<com.pika.app.rust.Screen>) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class CreateChat(
         val `peerNpub`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class SendMessage(
-        val `chatId`: kotlin.String,
+        val `chatId`: kotlin.String, 
         val `content`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class RetryMessage(
-        val `chatId`: kotlin.String,
+        val `chatId`: kotlin.String, 
         val `messageId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class OpenChat(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class LoadOlderMessages(
-        val `chatId`: kotlin.String,
-        val `beforeMessageId`: kotlin.String,
+        val `chatId`: kotlin.String, 
+        val `beforeMessageId`: kotlin.String, 
         val `limit`: kotlin.UInt) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class StartCall(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class AcceptCall(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class RejectCall(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     object EndCall : AppAction()
-
-
+    
+    
     object ToggleMute : AppAction()
-
-
+    
+    
     data class CreateGroupChat(
-        val `peerNpubs`: List<kotlin.String>,
+        val `peerNpubs`: List<kotlin.String>, 
         val `groupName`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class AddGroupMembers(
-        val `chatId`: kotlin.String,
+        val `chatId`: kotlin.String, 
         val `peerNpubs`: List<kotlin.String>) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class RemoveGroupMembers(
-        val `chatId`: kotlin.String,
+        val `chatId`: kotlin.String, 
         val `memberPubkeys`: List<kotlin.String>) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class LeaveGroup(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class RenameGroup(
-        val `chatId`: kotlin.String,
+        val `chatId`: kotlin.String, 
         val `name`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class ArchiveChat(
         val `chatId`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class ReactToMessage(
-        val `chatId`: kotlin.String,
-        val `messageId`: kotlin.String,
+        val `chatId`: kotlin.String, 
+        val `messageId`: kotlin.String, 
         val `emoji`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     object ClearToast : AppAction()
-
-
+    
+    
     object Foregrounded : AppAction()
-
-
+    
+    
     data class OpenPeerProfile(
         val `pubkey`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     object ClosePeerProfile : AppAction()
-
-
+    
+    
     object RefreshFollowList : AppAction()
-
-
+    
+    
     data class FollowUser(
         val `pubkey`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class UnfollowUser(
         val `pubkey`: kotlin.String) : AppAction()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3088,7 +3088,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
 
 
 sealed class AppUpdate {
-
+    
     /**
      * Primary update stream: always send a full state snapshot.
      *
@@ -3096,30 +3096,30 @@ sealed class AppUpdate {
      */
     data class FullState(
         val v1: com.pika.app.rust.AppState) : AppUpdate()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     data class AccountCreated(
-        val `rev`: kotlin.ULong,
-        val `nsec`: kotlin.String,
-        val `pubkey`: kotlin.String,
+        val `rev`: kotlin.ULong, 
+        val `nsec`: kotlin.String, 
+        val `pubkey`: kotlin.String, 
         val `npub`: kotlin.String) : AppUpdate()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3188,25 +3188,25 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
 
 
 sealed class AuthState {
-
+    
     object LoggedOut : AuthState()
-
-
+    
+    
     data class LoggedIn(
-        val `npub`: kotlin.String,
+        val `npub`: kotlin.String, 
         val `pubkey`: kotlin.String) : AuthState()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3265,33 +3265,33 @@ public object FfiConverterTypeAuthState : FfiConverterRustBuffer<AuthState>{
 
 
 sealed class CallStatus {
-
+    
     object Offering : CallStatus()
-
-
+    
+    
     object Ringing : CallStatus()
-
-
+    
+    
     object Connecting : CallStatus()
-
-
+    
+    
     object Active : CallStatus()
-
-
+    
+    
     data class Ended(
         val `reason`: kotlin.String) : CallStatus()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3380,27 +3380,27 @@ public object FfiConverterTypeCallStatus : FfiConverterRustBuffer<CallStatus>{
 
 
 sealed class MessageDeliveryState {
-
+    
     object Pending : MessageDeliveryState()
-
-
+    
+    
     object Sent : MessageDeliveryState()
-
-
+    
+    
     data class Failed(
         val `reason`: kotlin.String) : MessageDeliveryState()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3467,42 +3467,42 @@ public object FfiConverterTypeMessageDeliveryState : FfiConverterRustBuffer<Mess
 
 
 sealed class Screen {
-
+    
     object Login : Screen()
-
-
+    
+    
     object ChatList : Screen()
-
-
+    
+    
     data class Chat(
         val `chatId`: kotlin.String) : Screen()
-
+        
     {
-
+        
 
         companion object
     }
-
+    
     object NewChat : Screen()
-
-
+    
+    
     object NewGroupChat : Screen()
-
-
+    
+    
     data class GroupInfo(
         val `chatId`: kotlin.String) : Screen()
-
+        
     {
-
+        
 
         companion object
     }
+    
 
+    
 
-
-
-
-
+    
+    
 
 
     companion object
@@ -3608,9 +3608,9 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
 
 
 public interface AppReconciler {
-
+    
     fun `reconcile`(`update`: AppUpdate)
-
+    
     companion object
 }
 
@@ -4138,3 +4138,4 @@ public object FfiConverterSequenceTypeScreen: FfiConverterRustBuffer<List<Screen
         }
     }
 }
+

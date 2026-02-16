@@ -53,11 +53,11 @@ class PikaE2eUiTest {
         // Create + open chat via actions to avoid UI flakes.
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) }
         waitUntilState(180_000, ctx, "chat created") { st ->
-            st.chatList.any { it.peerNpub == botNpub }
+            st.chatList.any { !it.isGroup && it.members.any { m -> m.npub == botNpub } }
         }
         val chatId =
             runOnMain {
-                AppManager.getInstance(ctx).state.chatList.first { it.peerNpub == botNpub }.chatId
+                AppManager.getInstance(ctx).state.chatList.first { !it.isGroup && it.members.any { m -> m.npub == botNpub } }.chatId
             }
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.OpenChat(chatId)) }
         waitUntilState(60_000, ctx, "chat opened") { it.currentChat?.chatId == chatId }
@@ -117,11 +117,11 @@ class PikaE2eUiTest {
         // Create + open chat via actions to avoid UI flakes.
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) }
         waitUntilState(180_000, ctx, "chat created") { st ->
-            st.chatList.any { it.peerNpub == botNpub }
+            st.chatList.any { !it.isGroup && it.members.any { m -> m.npub == botNpub } }
         }
         val chatId =
             runOnMain {
-                AppManager.getInstance(ctx).state.chatList.first { it.peerNpub == botNpub }.chatId
+                AppManager.getInstance(ctx).state.chatList.first { !it.isGroup && it.members.any { m -> m.npub == botNpub } }.chatId
             }
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.OpenChat(chatId)) }
         waitUntilState(60_000, ctx, "chat opened") { it.currentChat?.chatId == chatId }

@@ -58,10 +58,10 @@ import androidx.compose.material.icons.filled.Person
 fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     val clipboard = LocalClipboardManager.current
     val (showMyNpub, setShowMyNpub) = remember { mutableStateOf(false) }
-    val myNpub =
+    val (myNpub, myPubkey) =
         when (val a = manager.state.auth) {
-            is AuthState.LoggedIn -> a.npub
-            else -> null
+            is AuthState.LoggedIn -> a.npub to a.pubkey
+            else -> null to null
         }
 
     Scaffold(
@@ -96,6 +96,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
             items(manager.state.chatList, key = { it.chatId }) { chat ->
                 ChatRow(
                     chat = chat,
+                    selfPubkey = myPubkey,
                     onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
                 )
             }
@@ -135,7 +136,8 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
 }
 
 @Composable
-private fun ChatRow(chat: ChatSummary, onClick: () -> Unit) {
+private fun ChatRow(chat: ChatSummary, selfPubkey: String?, onClick: () -> Unit) {
+    val title = chatTitle(chat, selfPubkey)
     Row(
         modifier =
             Modifier
@@ -161,7 +163,7 @@ private fun ChatRow(chat: ChatSummary, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    (chat.peerName ?: chat.peerNpub).take(1).uppercase(),
+                    title.take(1).uppercase(),
                     style = MaterialTheme.typography.titleMedium,
                     color = PikaBlue,
                 )
@@ -170,7 +172,7 @@ private fun ChatRow(chat: ChatSummary, onClick: () -> Unit) {
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = chat.peerName ?: chat.peerNpub,
+                text = title,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.titleMedium,
@@ -185,4 +187,14 @@ private fun ChatRow(chat: ChatSummary, onClick: () -> Unit) {
             )
         }
     }
+}
+
+private fun chatTitle(chat: ChatSummary, selfPubkey: String?): String {
+    if (chat.isGroup) {
+        return chat.groupName?.trim().takeIf { !it.isNullOrBlank() } ?: "Group chat"
+    }
+    val peer =
+        chat.members.firstOrNull { selfPubkey == null || it.pubkey != selfPubkey }
+            ?: chat.members.firstOrNull()
+    return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
 }

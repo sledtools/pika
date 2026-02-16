@@ -76,7 +76,12 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
 
     var draft by remember { mutableStateOf("") }
 
-    val title = chat.peerName ?: chat.peerNpub
+    val myPubkey =
+        when (val a = manager.state.auth) {
+            is com.pika.app.rust.AuthState.LoggedIn -> a.pubkey
+            else -> null
+        }
+    val title = chatTitle(chat, myPubkey)
 
     Scaffold(
         modifier = Modifier.padding(padding),
@@ -153,6 +158,16 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
             }
         }
     }
+}
+
+private fun chatTitle(chat: com.pika.app.rust.ChatViewState, selfPubkey: String?): String {
+    if (chat.isGroup) {
+        return chat.groupName?.trim().takeIf { !it.isNullOrBlank() } ?: "Group chat"
+    }
+    val peer =
+        chat.members.firstOrNull { selfPubkey == null || it.pubkey != selfPubkey }
+            ?: chat.members.firstOrNull()
+    return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
 }
 
 // Parsed segment of a message: either markdown text or a pika-* custom block.

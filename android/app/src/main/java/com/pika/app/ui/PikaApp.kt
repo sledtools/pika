@@ -18,8 +18,10 @@ import com.pika.app.rust.AppAction
 import com.pika.app.rust.Screen
 import com.pika.app.ui.screens.ChatListScreen
 import com.pika.app.ui.screens.ChatScreen
+import com.pika.app.ui.screens.GroupInfoScreen
 import com.pika.app.ui.screens.LoginScreen
 import com.pika.app.ui.screens.NewChatScreen
+import com.pika.app.ui.screens.NewGroupChatScreen
 
 @Composable
 fun PikaApp(manager: AppManager) {
@@ -56,7 +58,9 @@ fun PikaApp(manager: AppManager) {
                     when (screen) {
                         is Screen.ChatList -> ChatListScreen(manager = manager, padding = padding)
                         is Screen.NewChat -> NewChatScreen(manager = manager, padding = padding)
+                        is Screen.NewGroupChat -> NewGroupChatScreen(manager = manager, padding = padding)
                         is Screen.Chat -> ChatScreen(manager = manager, chatId = screen.chatId, padding = padding)
+                        is Screen.GroupInfo -> GroupInfoScreen(manager = manager, chatId = screen.chatId, padding = padding)
                         is Screen.Login -> LoginScreen(manager = manager, padding = padding)
                     }
                 }

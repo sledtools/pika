@@ -102,9 +102,37 @@ jobs:
 
       - run: nix develop .#rmp -c just pre-merge-rmp
 
+  check-notifications:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: nix develop .#default -c just pre-merge-notifications
+
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [check-pika, check-marmotd, check-rmp]
+    needs: [check-pika, check-marmotd, check-rmp, check-notifications]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -118,6 +146,10 @@ jobs:
           fi
           if [[ "${{ needs.check-rmp.result }}" != "success" ]]; then
             echo "check-rmp failed"
+            exit 1
+          fi
+          if [[ "${{ needs.check-notifications.result }}" != "success" ]]; then
+            echo "check-notifications failed"
             exit 1
           fi
 

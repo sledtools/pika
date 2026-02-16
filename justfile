@@ -140,6 +140,12 @@ pre-merge-pika: fmt
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"
 
+# CI-safe pre-merge for the notification server lane.
+pre-merge-notifications:
+  cargo clippy -p pika-notifications -- -D warnings
+  cargo test -p pika-notifications
+  @echo "pre-merge-notifications complete"
+
 # CI-safe pre-merge for the openclaw-marmot (marmotd) lane.
 pre-merge-marmotd:
   cargo clippy -p marmotd -- -D warnings
@@ -154,6 +160,7 @@ pre-merge-rmp:
 # Single CI entrypoint for the whole repo.
 pre-merge:
   just pre-merge-pika
+  just pre-merge-notifications
   just pre-merge-marmotd
   just pre-merge-rmp
   @echo "pre-merge complete"

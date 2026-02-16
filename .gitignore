@@ -44,6 +44,7 @@ secrets/zapstore-signing.env
 secrets/.age-key*.tmp
 secrets/.zapstore-sign-with.*
 .pika-cli/
+.pgdata/
 
 # Avoid accidentally staging enormous vendored build output.
 third_party/openclaw-marmot/target/

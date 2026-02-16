@@ -36,6 +36,10 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

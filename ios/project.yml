@@ -38,6 +38,7 @@ targets:
         INFOPLIST_FILE: Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        CODE_SIGN_ENTITLEMENTS: Pika.entitlements
     dependencies:
       - framework: Frameworks/PikaCore.xcframework
         embed: false

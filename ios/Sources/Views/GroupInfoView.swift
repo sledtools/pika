@@ -12,6 +12,7 @@ struct GroupInfoView: View {
     @State private var showScanner = false
     @State private var isEditing = false
     @State private var editedName = ""
+    @State private var copiedGroupId = false
 
     var body: some View {
         if let chat = state.chat {
@@ -44,6 +45,30 @@ struct GroupInfoView: View {
                             }
                         }
                     }
+                }
+
+                Section("Group ID") {
+                    Button {
+                        UIPasteboard.general.string = chat.chatId
+                        copiedGroupId = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            copiedGroupId = false
+                        }
+                    } label: {
+                        HStack {
+                            Text(chat.chatId)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Text(copiedGroupId ? "Copied!" : "Tap to copy")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 Section("Members (\(chat.members.count + 1))") {

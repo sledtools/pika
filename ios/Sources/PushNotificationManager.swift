@@ -11,9 +11,23 @@ final class PushNotificationManager: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.justinmoon.pika", category: "push")
     private let serverURL: URL
     private let deviceIdKey = "pika_push_device_id"
+    private let subscribedChatsKey = "pika_push_subscribed_chats"
 
     /// Persistent device ID for this install.
     private(set) var deviceId: String
+
+    /// Chat IDs we've already subscribed to on the server.
+    private(set) var subscribedChatIds: Set<String> {
+        get {
+            Set(UserDefaults.standard.stringArray(forKey: subscribedChatsKey) ?? [])
+        }
+        set {
+            UserDefaults.standard.set(Array(newValue), forKey: subscribedChatsKey)
+        }
+    }
+
+    /// Last chat count we synced against, to avoid re-diffing on every state update.
+    private var lastChatCount: Int = -1
 
     /// The real APNs device token, set after successful registration.
     @Published private(set) var apnsToken: String?
@@ -108,6 +122,65 @@ final class PushNotificationManager: NSObject, ObservableObject {
         } catch {
             logger.error("Failed to subscribe to groups: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Subscription Sync
+
+    /// Diffs the current chat list against the persisted subscriptions and subscribes/unsubscribes as needed.
+    /// Only does work when the chat count changes.
+    func syncSubscriptions(chatIds: [String]) {
+        guard chatIds.count != lastChatCount else { return }
+        lastChatCount = chatIds.count
+
+        let current = Set(chatIds)
+        let persisted = subscribedChatIds
+
+        let toSubscribe = Array(current.subtracting(persisted))
+        let toUnsubscribe = Array(persisted.subtracting(current))
+
+        if !toSubscribe.isEmpty {
+            Task {
+                await subscribeToGroups(toSubscribe)
+            }
+        }
+
+        if !toUnsubscribe.isEmpty {
+            Task {
+                await unsubscribeFromGroups(toUnsubscribe)
+            }
+        }
+
+        subscribedChatIds = current
+    }
+
+    /// Unsubscribe this device from a set of group IDs.
+    func unsubscribeFromGroups(_ groupIds: [String]) async {
+        guard !groupIds.isEmpty else { return }
+
+        let url = serverURL.appendingPathComponent("unsubscribe-groups")
+        let body: [String: Any] = [
+            "id": deviceId,
+            "group_ids": groupIds
+        ]
+
+        do {
+            let result = try await postJSON(url: url, body: body)
+            logger.info("Unsubscribed from groups \(groupIds): \(result)")
+        } catch {
+            logger.error("Failed to unsubscribe from groups: \(error.localizedDescription)")
+        }
+    }
+
+    /// Unsubscribe from all groups on the server and clear persisted state (for logout).
+    func clearSubscriptions() {
+        let ids = Array(subscribedChatIds)
+        if !ids.isEmpty {
+            Task {
+                await unsubscribeFromGroups(ids)
+            }
+        }
+        subscribedChatIds = []
+        lastChatCount = -1
     }
 
     // MARK: - Networking

@@ -42,6 +42,7 @@ final class AppManager: AppReconciler {
         if let nsec = nsecStore.getNsec(), !nsec.isEmpty {
             isRestoringSession = true
             core.dispatch(action: .restoreSession(nsec: nsec))
+            PushNotificationManager.shared.requestPermissionAndRegister()
         }
     }
 
@@ -114,6 +115,11 @@ final class AppManager: AppReconciler {
                     isRestoringSession = false
                 }
             }
+            // Auto-sync push notification subscriptions for all chats
+            if s.auth != .loggedOut {
+                let chatIds = s.chatList.map(\.chatId)
+                PushNotificationManager.shared.syncSubscriptions(chatIds: chatIds)
+            }
         case .accountCreated(_, let nsec, _, _):
             // Required by spec-v2: native stores nsec; Rust never persists it.
             if !nsec.isEmpty {
@@ -133,10 +139,12 @@ final class AppManager: AppReconciler {
             nsecStore.setNsec(nsec)
         }
         dispatch(.login(nsec: nsec))
+        PushNotificationManager.shared.requestPermissionAndRegister()
     }
 
     func logout() {
         nsecStore.clearNsec()
+        PushNotificationManager.shared.clearSubscriptions()
         dispatch(.logout)
     }
 

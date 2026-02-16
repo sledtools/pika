@@ -6,15 +6,10 @@ struct NotificationSettingsView: View {
     @State private var permissionStatus: UNAuthorizationStatus?
     @State private var isRegistering = false
     @State private var registrationResult: String?
-    @State private var isSubscribing = false
-    @State private var subscribeResult: String?
-    @State private var groupIdInput = ""
-
     var body: some View {
         List {
             permissionSection
             registrationSection
-            subscribeSection
             deviceInfoSection
         }
         .listStyle(.insetGrouped)
@@ -106,46 +101,6 @@ struct NotificationSettingsView: View {
     }
 
     @ViewBuilder
-    private var subscribeSection: some View {
-        Section {
-            TextField("Group ID", text: $groupIdInput)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-
-            Button {
-                let groupId = groupIdInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !groupId.isEmpty else { return }
-                isSubscribing = true
-                subscribeResult = nil
-                Task {
-                    await PushNotificationManager.shared.subscribeToGroups([groupId])
-                    isSubscribing = false
-                    subscribeResult = "Subscribed to \(groupId)"
-                }
-            } label: {
-                HStack {
-                    Text("Subscribe to Group")
-                    Spacer()
-                    if isSubscribing {
-                        ProgressView()
-                    }
-                }
-            }
-            .disabled(isSubscribing || groupIdInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            if let result = subscribeResult {
-                Text(result)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Group Subscriptions")
-        } footer: {
-            Text("Subscribe to a group ID to receive notifications for kind 445 events with matching #h tags.")
-        }
-    }
-
-    @ViewBuilder
     private var deviceInfoSection: some View {
         Section {
             HStack {
@@ -166,6 +121,14 @@ struct NotificationSettingsView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+            }
+
+            HStack {
+                Text("Subscribed Chats")
+                Spacer()
+                Text("\(PushNotificationManager.shared.subscribedChatIds.count)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Debug Info")

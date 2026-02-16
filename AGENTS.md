@@ -8,4 +8,4 @@ Run `./scripts/agent-brief` first thing to get a live context snapshot.
 | `sledtools/pika` | This repo. iOS + Android app, Rust core, pika-cli. |
 | `marmot-protocol/mdk` | Marmot Development Kit. Rust MLS library used by pika. |
 | `openclaw/openclaw` | OpenClaw gateway. The bot framework that hosts the marmot plugin. |
-| `justinmoon/infra` | NixOS deployment config for the Hetzner server (`openclaw-prod`). |
+| `justinmoon/infra` | NixOS configs for public MoQ relays and other infrastructure. |

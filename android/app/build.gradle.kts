@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersionName = rootProject.file("../VERSION").readText().trim()
+val appVersionMatch = Regex("""^(\d+)\.(\d+)\.(\d+)$""").matchEntire(appVersionName)
+    ?: throw GradleException("VERSION must be in x.y.z format (found: $appVersionName)")
+val (major, minor, patch) = appVersionMatch.destructured
+val appVersionCode = major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt()
+
 android {
     namespace = "com.pika.app"
     compileSdk = 35
@@ -12,12 +18,21 @@ android {
         applicationId = "com.justinmoon.pika"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
         testInstrumentationRunner = "com.pika.app.PikaTestRunner"
 
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("pika-release.jks")
+            storePassword = System.getenv("PIKA_KEYSTORE_PASSWORD")
+            keyAlias = "pika"
+            keyPassword = System.getenv("PIKA_KEYSTORE_PASSWORD")
         }
     }
 
@@ -30,6 +45,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

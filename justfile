@@ -247,6 +247,35 @@ android-local-properties:
   if [ -z "$SDK" ]; then echo "ANDROID_HOME/ANDROID_SDK_ROOT not set (run inside nix develop)"; exit 1; fi; \
   printf "sdk.dir=%s\n" "$SDK" > android/local.properties
 
+# Build signed Android release APK (arm64-v8a) and copy to dist/.
+android-release:
+  set -euo pipefail; \
+  abis="arm64-v8a"; \
+  version="$(./scripts/version-read --name)"; \
+  just gen-kotlin; \
+  rm -rf android/app/src/main/jniLibs; \
+  mkdir -p android/app/src/main/jniLibs; \
+  IFS=',' read -r -a abi_list <<<"$abis"; \
+  cargo_args=(); \
+  for abi in "${abi_list[@]}"; do \
+    abi="$(echo "$abi" | xargs)"; \
+    if [ -z "$abi" ]; then continue; fi; \
+    case "$abi" in \
+      arm64-v8a|armeabi-v7a|x86_64) cargo_args+=("-t" "$abi");; \
+      *) echo "error: unsupported ABI '$abi' (supported: arm64-v8a, armeabi-v7a, x86_64)"; exit 2;; \
+    esac; \
+  done; \
+  if [ "${#cargo_args[@]}" -eq 0 ]; then echo "error: no ABI targets configured"; exit 2; fi; \
+  cargo ndk -o android/app/src/main/jniLibs -P 26 "${cargo_args[@]}" build -p pika_core --release; \
+  just android-local-properties; \
+  ./scripts/decrypt-keystore; \
+  keystore_password="$(./scripts/read-keystore-password)"; \
+  (cd android && PIKA_KEYSTORE_PASSWORD="$keystore_password" ./gradlew :app:assembleRelease); \
+  unset keystore_password; \
+  mkdir -p dist; \
+  cp android/app/build/outputs/apk/release/app-release.apk "dist/pika-${version}-${abis}.apk"; \
+  echo "ok: built dist/pika-${version}-${abis}.apk"
+
 # Build Android debug APK.
 android-assemble: gen-kotlin android-rust android-local-properties
   cd android && ./gradlew :app:assembleDebug
@@ -268,6 +297,30 @@ android-ui-e2e-local:
 # Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
 android-ui-e2e:
   ./tools/ui-e2e-public --platform android
+
+# Create + push version tag (vX.Y.Z) after validating VERSION and clean tree.
+release VERSION:
+  set -euo pipefail; \
+  release_version="{{VERSION}}"; \
+  case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
+  current_version="$(./scripts/version-read --name)"; \
+  if [ "$release_version" != "$current_version" ]; then \
+    echo "error: release version ($release_version) does not match file VERSION ($current_version)"; \
+    exit 1; \
+  fi; \
+  if [ -n "$(git status --porcelain)" ]; then \
+    echo "error: git working tree is dirty"; \
+    git status --short; \
+    exit 1; \
+  fi; \
+  tag="v$release_version"; \
+  if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then \
+    echo "error: tag already exists: $tag"; \
+    exit 1; \
+  fi; \
+  git tag "$tag"; \
+  git push origin "$tag"; \
+  echo "ok: pushed $tag"
 
 # Generate Swift bindings via UniFFI.
 ios-gen-swift: rust-build-host

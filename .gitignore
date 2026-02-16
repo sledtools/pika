@@ -12,6 +12,8 @@ android/.gradle/
 android/**/build/
 android/app/src/main/jniLibs/
 android/local.properties
+*.jks
+!*.jks.age
 
 # iOS
 ios/.build/

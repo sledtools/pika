@@ -118,11 +118,19 @@
             pkgs.python3
             pkgs.curl
             pkgs.git
+            pkgs.gh
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.gnused
             cargoDinghy
             pkgs.nostr-rs-relay
             moq.packages.${system}.moq-relay
             pkgs.cargo-ndk
             pkgs.gradle
+            pkgs.age
+            pkgs.age-plugin-yubikey
+            pkgs.openssl
             rmp
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen

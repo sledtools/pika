@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION_FILE="$ROOT/VERSION"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/version-read [--name|--code]
+
+Reads VERSION at repo root (x.y.z).
+  --name  Print version name (e.g. 0.1.0)
+  --code  Print Android versionCode (major*10000 + minor*100 + patch)
+EOF
+}
+
+mode="${1:---name}"
+if [ "$#" -gt 1 ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ ! -f "$VERSION_FILE" ]; then
+  echo "error: missing VERSION file: $VERSION_FILE" >&2
+  exit 1
+fi
+
+version="$(tr -d '[:space:]' <"$VERSION_FILE")"
+if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  echo "error: VERSION must be x.y.z (got: $version)" >&2
+  exit 1
+fi
+
+major="${BASH_REMATCH[1]}"
+minor="${BASH_REMATCH[2]}"
+patch="${BASH_REMATCH[3]}"
+code=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
+
+case "$mode" in
+  --name)
+    echo "$version"
+    ;;
+  --code)
+    echo "$code"
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

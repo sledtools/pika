@@ -1,0 +1,146 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    if: github.actor == 'justinmoon' || github.actor == 'futurepaul'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - name: Validate tag matches VERSION
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "error: release workflow must run on a tag ref"
+            exit 1
+          fi
+          expected_tag="v$(./scripts/version-read --name)"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+            exit 1
+          fi
+
+      - run: nix develop .#default -c just pre-merge-pika
+
+  build:
+    if: github.actor == 'justinmoon' || github.actor == 'futurepaul'
+    needs: check
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - name: Validate tag matches VERSION
+        run: |
+          set -euo pipefail
+          expected_tag="v$(./scripts/version-read --name)"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+            exit 1
+          fi
+
+      - name: Build signed release APK
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+        run: nix develop .#default -c just android-release
+
+      - name: Generate checksums
+        run: sha256sum dist/*.apk > dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    if: github.actor == 'justinmoon' || github.actor == 'futurepaul'
+    needs: build
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-apk
+          path: dist
+
+      - name: Validate tag matches VERSION
+        run: |
+          set -euo pipefail
+          expected_tag="v$(./scripts/version-read --name)"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS

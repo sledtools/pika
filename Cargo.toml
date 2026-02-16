@@ -8,6 +8,7 @@ members = [
   "crates/pika-tls",
   "crates/marmotd",
   "crates/rmp-cli",
+  "crates/pika-notifications",
 ]
 
 [workspace.dependencies]

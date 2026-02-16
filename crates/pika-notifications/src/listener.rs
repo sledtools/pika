@@ -1,0 +1,273 @@
+use crate::models::group_subscription::GroupFilterInfo;
+use crate::models::subscription_info::SubscriptionInfo;
+use a2::request::notification::NotificationOptions;
+use a2::request::payload::{APSAlert, PayloadLike, APS};
+use a2::Client as ApnsClient;
+use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::PgConnection;
+use fcm_rs::client::FcmClient;
+use fcm_rs::models::{Message, Notification as FcmNotification};
+use nostr::event::tag::TagKind;
+use nostr::message::subscription::Alphabet;
+use nostr::{Event, Filter, Keys, Kind, Tag, Timestamp};
+use nostr_sdk::{Client, RelayPoolNotification};
+use serde::Serialize;
+use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch::Receiver;
+use tracing::{debug, error, info, trace, warn};
+
+/// Custom APNs payload that includes the nostr event JSON.
+/// The `mutable_content` flag tells iOS to pass this to a
+/// Notification Service Extension before displaying.
+#[derive(Serialize, Debug)]
+struct EventNotificationPayload<'a> {
+    aps: APS<'a>,
+    /// The raw nostr event JSON for the client to decrypt/process.
+    nostr_event: String,
+    #[serde(skip_serializing)]
+    options: NotificationOptions<'a>,
+    #[serde(skip_serializing)]
+    device_token: &'a str,
+}
+
+impl<'a> PayloadLike for EventNotificationPayload<'a> {
+    fn get_device_token(&self) -> &str {
+        self.device_token
+    }
+    fn get_options(&self) -> &NotificationOptions<'_> {
+        &self.options
+    }
+}
+
+pub async fn start_listener(
+    db_pool: Pool<ConnectionManager<PgConnection>>,
+    mut receiver: Receiver<GroupFilterInfo>,
+    apns_client: Option<Arc<ApnsClient>>,
+    fcm_client: Option<Arc<FcmClient>>,
+    apns_topic: String,
+    relays: Vec<String>,
+) -> anyhow::Result<()> {
+    let keys = Keys::generate();
+    loop {
+        let client = Client::new(&keys);
+
+        let filter: GroupFilterInfo = receiver.borrow().clone();
+        info!(
+            group_count = filter.group_ids.len(),
+            "Building subscription filter"
+        );
+        debug!("Group IDs: {:?}", filter.group_ids);
+
+        for relay in relays.iter() {
+            if relay.is_empty() {
+                continue;
+            }
+            if relay.contains("localhost") {
+                continue;
+            }
+
+            let proxy = if relay.contains(".onion") {
+                Some(SocketAddr::from_str("127.0.0.1:9050")?)
+            } else {
+                None
+            };
+
+            debug!(relay = %relay, "Adding relay");
+            client.add_relay(relay.as_str(), proxy).await?;
+        }
+        client.connect().await;
+        info!(relay_count = relays.len(), "Connected to relays");
+
+        let group_filter = Filter::new()
+            .kind(Kind::Custom(445))
+            .custom_tag(Alphabet::H, filter.group_ids)
+            .since(Timestamp::now());
+
+        debug!(?group_filter, "Subscribing");
+        client.subscribe(vec![group_filter]).await;
+
+        info!("Listening for kind 445 events...");
+
+        let mut notifications = client.notifications();
+        loop {
+            tokio::select! {
+                Ok(notification) = notifications.recv() => {
+                    match notification {
+                        RelayPoolNotification::Event(url, event) => {
+                            trace!(
+                                kind = event.kind.as_u64(),
+                                event_id = %event.id,
+                                relay = %url,
+                                "Received event"
+                            );
+                            if event.kind == Kind::Custom(445) {
+                                info!(
+                                    event_id = %event.id,
+                                    author = %event.pubkey,
+                                    relay = %url,
+                                    "Got kind 445 event"
+                                );
+                                debug!(tags = ?event.tags, "Event tags");
+                                tokio::spawn({
+                                    let db_pool = db_pool.clone();
+                                    let apns_client = apns_client.clone();
+                                    let fcm_client = fcm_client.clone();
+                                    let apns_topic = apns_topic.clone();
+                                    async move {
+                                        let fut = handle_event(
+                                            event,
+                                            db_pool,
+                                            apns_client,
+                                            fcm_client,
+                                            apns_topic,
+                                        );
+
+                                        match tokio::time::timeout(Duration::from_secs(30), fut).await {
+                                            Ok(Ok(_)) => {}
+                                            Ok(Err(e)) => error!("Handle event error: {e}"),
+                                            Err(_) => error!("Handle event timeout"),
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        RelayPoolNotification::Shutdown => {
+                            warn!("Relay pool shutdown");
+                            break;
+                        }
+                        RelayPoolNotification::RelayStatus { .. } => {}
+                        RelayPoolNotification::Stop => {}
+                        RelayPoolNotification::Message(url, msg) => {
+                            trace!(relay = %url, ?msg, "Relay message");
+                        }
+                    }
+                }
+                _ = receiver.changed() => {
+                    info!("Group filter changed, reconnecting...");
+                    break;
+                }
+            }
+        }
+
+        client.disconnect().await?;
+    }
+}
+
+async fn handle_event(
+    event: Event,
+    db_pool: Pool<ConnectionManager<PgConnection>>,
+    apns_client: Option<Arc<ApnsClient>>,
+    fcm_client: Option<Arc<FcmClient>>,
+    apns_topic: String,
+) -> anyhow::Result<()> {
+    let mut conn = db_pool.get()?;
+
+    let h_tags: Vec<String> = event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            if let Tag::Generic(TagKind::Custom(kind), values) = tag {
+                if kind == "h" {
+                    return values.first().cloned();
+                }
+            }
+            None
+        })
+        .collect();
+
+    debug!(event_id = %event.id, ?h_tags, "Extracted #h tags");
+
+    if h_tags.is_empty() {
+        info!(event_id = %event.id, "No #h tags found, skipping");
+        return Ok(());
+    }
+
+    let mut seen_ids = HashSet::new();
+    let mut sub_infos = Vec::new();
+    for group_id in &h_tags {
+        let subs = SubscriptionInfo::find_by_group(&mut conn, group_id)?;
+        debug!(group_id = %group_id, count = subs.len(), "Found subscriptions");
+        for sub in subs {
+            if seen_ids.insert(sub.id.clone()) {
+                sub_infos.push(sub);
+            }
+        }
+    }
+
+    if sub_infos.is_empty() {
+        info!(event_id = %event.id, ?h_tags, "No subscriptions found");
+        return Ok(());
+    }
+
+    info!(
+        event_id = %event.id,
+        subscription_count = sub_infos.len(),
+        ?h_tags,
+        "Sending notifications"
+    );
+
+    // Serialize the event once for all notifications
+    let event_json = serde_json::to_string(&event)?;
+
+    for sub_info in &sub_infos {
+        info!(
+            platform = %sub_info.platform,
+            subscription_id = %sub_info.id,
+            device_token = %sub_info.device_token,
+            ?h_tags,
+            "NOTIFY"
+        );
+
+        match sub_info.platform.as_str() {
+            "ios" => {
+                if let Some(ref client) = apns_client {
+                    let payload = EventNotificationPayload {
+                        aps: APS {
+                            alert: Some(APSAlert::Body("New message")),
+                            mutable_content: Some(1),
+                            ..Default::default()
+                        },
+                        nostr_event: event_json.clone(),
+                        options: NotificationOptions {
+                            apns_topic: Some(&apns_topic),
+                            ..Default::default()
+                        },
+                        device_token: &sub_info.device_token,
+                    };
+                    client.send(payload).await?;
+                    info!(subscription_id = %sub_info.id, "APNs sent");
+                } else {
+                    info!(subscription_id = %sub_info.id, "APNs not configured, skipping send");
+                }
+            }
+            "android" => {
+                if let Some(ref client) = fcm_client {
+                    let data = serde_json::json!({
+                        "nostr_event": event_json,
+                    });
+                    let message = Message {
+                        token: Some(sub_info.device_token.clone()),
+                        notification: Some(FcmNotification {
+                            title: Some("New message".to_string()),
+                            body: Some("You have a new message".to_string()),
+                        }),
+                        data: Some(data),
+                    };
+                    client.send(message).await?;
+                    info!(subscription_id = %sub_info.id, "FCM sent");
+                } else {
+                    info!(subscription_id = %sub_info.id, "FCM not configured, skipping send");
+                }
+            }
+            other => {
+                warn!(platform = %other, subscription_id = %sub_info.id, "Unknown platform");
+            }
+        }
+    }
+
+    Ok(())
+}

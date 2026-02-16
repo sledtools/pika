@@ -43,6 +43,7 @@ ios/UITests/env.test
 secrets/zapstore-signing.env
 secrets/.age-key*.tmp
 secrets/.zapstore-sign-with.*
+.pika-cli/
 
 # Avoid accidentally staging enormous vendored build output.
 third_party/openclaw-marmot/target/

@@ -1,6 +1,7 @@
 mod call_control;
 mod call_runtime;
 mod config;
+mod evolution;
 mod interop;
 mod profile;
 mod session;
@@ -962,70 +963,59 @@ impl AppCore {
                 ok,
                 error,
             } => {
-                if session_gen != self.evolution_session_gen {
+                let handler_input = evolution::EvolutionHandlerInput {
+                    current_session_gen: self.evolution_session_gen,
+                    pending_event: self
+                        .pending_evolutions
+                        .get(&mls_group_id)
+                        .map(|pe| (pe.event.id, pe.toasted)),
+                };
+                let has_welcomes = welcome_rumors
+                    .as_ref()
+                    .map(|r| !r.is_empty())
+                    .unwrap_or(false);
+                let fx = evolution::evaluate_evolution_callback(
+                    &handler_input,
+                    session_gen,
+                    evolution_event_id,
+                    &op,
+                    ok,
+                    error.as_deref(),
+                    has_welcomes,
+                );
+
+                if fx.ignore {
                     tracing::debug!("ignoring stale evolution publish result");
                     return;
                 }
 
-                let current_event_matches = self
-                    .pending_evolutions
-                    .get(&mls_group_id)
-                    .map(|pe| pe.event.id == evolution_event_id)
-                    .unwrap_or(true);
-                self.evolution_publish_in_flight.remove(&mls_group_id);
-
-                if !ok {
-                    if matches!(op, GroupEvolutionOp::SelfUpdate) {
-                        tracing::warn!(
-                            group_id = ?mls_group_id,
-                            error = ?error,
-                            "self-update publish failed, will retry"
-                        );
-                        if !current_event_matches {
-                            self.drain_pending_evolutions();
-                        }
-                        return;
-                    }
-                    // Standard op failure: toast once per event, keep queued for retry.
-                    if let Some(pe) = self.pending_evolutions.get_mut(&mls_group_id) {
-                        if pe.event.id == evolution_event_id && !pe.toasted {
-                            pe.toasted = true;
-                            self.toast(format!(
-                                "Group update failed: {}",
-                                error.unwrap_or_else(|| "unknown".into())
-                            ));
-                        }
-                    }
-                    if current_event_matches {
-                        self.set_busy(|b| b.creating_chat = false);
-                    } else {
-                        // Older callback lost race to newer queued event; publish it now.
-                        self.drain_pending_evolutions();
-                    }
-                    return;
-                }
-
-                // Success: conditionally clean up pending state.
-                // Only remove if the callback's event matches the currently queued event.
-                // If user re-triggered the same op type, a newer event may have replaced ours.
-                if current_event_matches {
-                    self.pending_evolutions.remove(&mls_group_id);
-                } else {
-                    tracing::debug!(
-                        "publish result for superseded evolution; keeping newer queued op"
+                // Log failures before applying effects.
+                if !ok && matches!(op, GroupEvolutionOp::SelfUpdate) {
+                    tracing::warn!(
+                        group_id = ?mls_group_id,
+                        error = ?error,
+                        "self-update publish failed, will retry"
                     );
                 }
-                // Only clear the self-update requirement when this callback's event is
-                // current. A superseded callback skips merge, so the requirement must
-                // persist for drain to re-create the self-update. Merge failure is
-                // handled separately via pending_merge_reconcile, not here.
-                if current_event_matches && matches!(op, GroupEvolutionOp::SelfUpdate) {
+
+                if fx.remove_in_flight {
+                    self.evolution_publish_in_flight.remove(&mls_group_id);
+                }
+                if fx.mark_toasted {
+                    if let Some(pe) = self.pending_evolutions.get_mut(&mls_group_id) {
+                        pe.toasted = true;
+                    }
+                }
+                if let Some(ref msg) = fx.toast {
+                    self.toast(msg.clone());
+                }
+                if fx.remove_pending {
+                    self.pending_evolutions.remove(&mls_group_id);
+                }
+                if fx.remove_self_update {
                     self.pending_self_updates.remove(&mls_group_id);
                 }
-
-                // Merge pending commit only if this callback matches the current queued event.
-                // A superseded callback should not merge — MDK's pending commit may belong to the newer op.
-                if current_event_matches {
+                if fx.attempt_merge {
                     if let Some(sess) = self.session.as_mut() {
                         match sess.mdk.merge_pending_commit(&mls_group_id) {
                             Ok(()) => {
@@ -1043,31 +1033,30 @@ impl AppCore {
                         }
                     }
                 }
-
-                // Send welcomes to newly added members.
-                if let Some(rumors) = welcome_rumors {
-                    if !rumors.is_empty() && self.network_enabled() {
-                        let fallback_relays = self.default_relays();
-                        let relays: Vec<RelayUrl> = self
-                            .session
-                            .as_ref()
-                            .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
-                            .map(|s| s.into_iter().collect())
-                            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                            .unwrap_or(fallback_relays);
-                        for pk in added_pubkeys {
-                            self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
+                if fx.send_welcomes {
+                    if let Some(rumors) = welcome_rumors {
+                        if !rumors.is_empty() && self.network_enabled() {
+                            let fallback_relays = self.default_relays();
+                            let relays: Vec<RelayUrl> = self
+                                .session
+                                .as_ref()
+                                .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
+                                .map(|s| s.into_iter().collect())
+                                .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                                .unwrap_or(fallback_relays);
+                            for pk in added_pubkeys {
+                                self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
+                            }
                         }
                     }
                 }
-
-                if current_event_matches {
+                if fx.clear_busy {
                     self.set_busy(|b| b.creating_chat = false);
                 }
-                self.refresh_all_from_storage();
-
-                // If a superseded op was kept, drain to publish it now.
-                if !current_event_matches {
+                if fx.refresh_storage {
+                    self.refresh_all_from_storage();
+                }
+                if fx.schedule_drain {
                     self.drain_pending_evolutions();
                 }
             }
@@ -2362,11 +2351,7 @@ impl AppCore {
                 toasted,
             },
         );
-        // New event supersedes old retry bookkeeping for this group.
-        // This also re-enables merge-reconcile retries for the new event.
-        // unwrap_or(true): if pending_evolutions was already cleaned up (prev processed
-        // successfully but merge failed), any stale reconcile counter must still be cleared.
-        if prev_event_id.map(|id| id != event.id).unwrap_or(true) {
+        if evolution::should_reset_reconcile(prev_event_id, event.id) {
             self.pending_merge_reconcile.remove(&mls_group_id);
         }
 

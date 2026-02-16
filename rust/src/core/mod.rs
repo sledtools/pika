@@ -20,7 +20,7 @@ use crate::state::{
     AuthState, BusyState, CallDebugStats, CallStatus, ChatMessage, ChatSummary, ChatViewState,
     MessageDeliveryState, MyProfileState, Screen,
 };
-use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
+use crate::updates::{AppUpdate, CoreMsg, GroupEvolutionOp, InternalEvent};
 
 use mdk_core::prelude::{GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
@@ -79,6 +79,16 @@ struct LocalOutgoing {
     seq: u64,
 }
 
+#[derive(Debug, Clone)]
+struct PendingEvolution {
+    chat_id: String,
+    event: Event,
+    welcome_rumors: Option<Vec<UnsignedEvent>>,
+    added_pubkeys: Vec<PublicKey>,
+    op: GroupEvolutionOp,
+    toasted: bool,
+}
+
 struct Session {
     keys: Keys,
     mdk: PikaMdk,
@@ -127,6 +137,14 @@ pub struct AppCore {
 
     // Archived chat IDs -- hidden from the chat list but data stays in MDK.
     archived_chats: HashSet<String>,
+    pending_self_updates: HashSet<GroupId>,
+    pending_evolutions: HashMap<GroupId, PendingEvolution>,
+    // Retry counter for failed merge_pending_commit calls. Entries at count >= 3 are
+    // intentionally kept (not removed) and skipped by drain — they stay dormant until
+    // a new superseding event clears the entry or session/auth reset clears the map.
+    pending_merge_reconcile: HashMap<GroupId, u8>,
+    evolution_publish_in_flight: HashSet<GroupId>,
+    evolution_session_gen: u64,
     call_runtime: call_runtime::CallRuntime,
     call_session_params: Option<call_control::CallSessionParams>,
 }
@@ -179,6 +197,11 @@ impl AppCore {
             profiles: HashMap::new(),
             my_metadata: None,
             archived_chats: HashSet::new(),
+            pending_self_updates: HashSet::new(),
+            pending_evolutions: HashMap::new(),
+            pending_merge_reconcile: HashMap::new(),
+            evolution_publish_in_flight: HashSet::new(),
+            evolution_session_gen: 0,
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
         };
@@ -342,6 +365,11 @@ impl AppCore {
             self.state.router.screen_stack.clear();
             self.state.active_call = None;
             self.call_session_params = None;
+            self.evolution_session_gen = self.evolution_session_gen.wrapping_add(1);
+            self.pending_self_updates.clear();
+            self.pending_evolutions.clear();
+            self.pending_merge_reconcile.clear();
+            self.evolution_publish_in_flight.clear();
             self.emit_router();
         } else {
             self.call_runtime.stop_all();
@@ -363,6 +391,11 @@ impl AppCore {
             self.state.peer_profile = None;
             self.call_session_params = None;
             self.last_outgoing_ts = 0;
+            self.evolution_session_gen = self.evolution_session_gen.wrapping_add(1);
+            self.pending_self_updates.clear();
+            self.pending_evolutions.clear();
+            self.pending_merge_reconcile.clear();
+            self.evolution_publish_in_flight.clear();
             self.emit_router();
             self.emit_busy();
             self.emit_chat_list();
@@ -442,6 +475,8 @@ impl AppCore {
                     self.subs_recompute_dirty = false;
                     self.recompute_subscriptions();
                 }
+
+                self.drain_pending_evolutions();
             }
             InternalEvent::Toast(ref msg) => {
                 tracing::info!(msg, "toast");
@@ -688,6 +723,31 @@ impl AppCore {
                 }
 
                 self.refresh_all_from_storage();
+
+                // MIP-02: self-update after welcome to rotate init_key material.
+                let mls_gid = welcome.mls_group_id.clone();
+                if self.network_enabled() {
+                    let su_result = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.mdk.self_update(&mls_gid).ok());
+                    if let Some(result) = su_result {
+                        self.pending_self_updates.insert(mls_gid.clone());
+                        self.publish_evolution_event(
+                            &nostr_group_hex,
+                            mls_gid,
+                            result.evolution_event,
+                            None,
+                            vec![],
+                            GroupEvolutionOp::SelfUpdate,
+                        );
+                    } else {
+                        tracing::warn!("post-join self-update failed or no session, will retry");
+                        self.pending_self_updates.insert(mls_gid);
+                    }
+                } else {
+                    self.pending_self_updates.insert(mls_gid);
+                }
             }
             InternalEvent::ProfilesFetched { profiles } => {
                 let now = now_seconds();
@@ -798,11 +858,8 @@ impl AppCore {
                         result.evolution_event,
                         result.welcome_rumors,
                         added,
+                        GroupEvolutionOp::Standard,
                     );
-                    // Clear busy immediately — relay confirmation, merge, and
-                    // welcome delivery continue in the background via
-                    // GroupEvolutionPublished handler.
-                    self.set_busy(|b| b.creating_chat = false);
                 } else {
                     // Create new group chat.
                     let kp_events: Vec<Event> = key_package_events
@@ -899,21 +956,87 @@ impl AppCore {
                 mls_group_id,
                 welcome_rumors,
                 added_pubkeys,
+                op,
+                session_gen,
+                evolution_event_id,
                 ok,
                 error,
             } => {
-                if !ok {
-                    self.toast(format!(
-                        "Group update failed: {}",
-                        error.unwrap_or_else(|| "unknown".into())
-                    ));
+                if session_gen != self.evolution_session_gen {
+                    tracing::debug!("ignoring stale evolution publish result");
                     return;
                 }
 
-                // Merge the pending commit now that relay confirmed.
-                if let Some(sess) = self.session.as_mut() {
-                    if let Err(e) = sess.mdk.merge_pending_commit(&mls_group_id) {
-                        tracing::error!(%e, "merge_pending_commit failed");
+                let current_event_matches = self
+                    .pending_evolutions
+                    .get(&mls_group_id)
+                    .map(|pe| pe.event.id == evolution_event_id)
+                    .unwrap_or(true);
+                self.evolution_publish_in_flight.remove(&mls_group_id);
+
+                if !ok {
+                    if matches!(op, GroupEvolutionOp::SelfUpdate) {
+                        tracing::warn!(
+                            group_id = ?mls_group_id,
+                            error = ?error,
+                            "self-update publish failed, will retry"
+                        );
+                        if !current_event_matches {
+                            self.drain_pending_evolutions();
+                        }
+                        return;
+                    }
+                    // Standard op failure: toast once per event, keep queued for retry.
+                    if let Some(pe) = self.pending_evolutions.get_mut(&mls_group_id) {
+                        if pe.event.id == evolution_event_id && !pe.toasted {
+                            pe.toasted = true;
+                            self.toast(format!(
+                                "Group update failed: {}",
+                                error.unwrap_or_else(|| "unknown".into())
+                            ));
+                        }
+                    }
+                    if current_event_matches {
+                        self.set_busy(|b| b.creating_chat = false);
+                    } else {
+                        // Older callback lost race to newer queued event; publish it now.
+                        self.drain_pending_evolutions();
+                    }
+                    return;
+                }
+
+                // Success: conditionally clean up pending state.
+                // Only remove if the callback's event matches the currently queued event.
+                // If user re-triggered the same op type, a newer event may have replaced ours.
+                if current_event_matches {
+                    self.pending_evolutions.remove(&mls_group_id);
+                } else {
+                    tracing::debug!(
+                        "publish result for superseded evolution; keeping newer queued op"
+                    );
+                }
+                if matches!(op, GroupEvolutionOp::SelfUpdate) {
+                    self.pending_self_updates.remove(&mls_group_id);
+                }
+
+                // Merge pending commit only if this callback matches the current queued event.
+                // A superseded callback should not merge — MDK's pending commit may belong to the newer op.
+                if current_event_matches {
+                    if let Some(sess) = self.session.as_mut() {
+                        match sess.mdk.merge_pending_commit(&mls_group_id) {
+                            Ok(()) => {
+                                self.pending_merge_reconcile.remove(&mls_group_id);
+                            }
+                            Err(e) => {
+                                self.pending_merge_reconcile
+                                    .entry(mls_group_id.clone())
+                                    .or_insert(1);
+                                tracing::warn!(
+                                    %e,
+                                    "merge_pending_commit failed, queued for reconcile retry"
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -934,7 +1057,15 @@ impl AppCore {
                     }
                 }
 
+                if current_event_matches {
+                    self.set_busy(|b| b.creating_chat = false);
+                }
                 self.refresh_all_from_storage();
+
+                // If a superseded op was kept, drain to publish it now.
+                if !current_event_matches {
+                    self.drain_pending_evolutions();
+                }
             }
             InternalEvent::FollowListFetched { entries } => {
                 let now = now_seconds();
@@ -2057,6 +2188,10 @@ impl AppCore {
                     self.toast("Please log in first");
                     return;
                 }
+                if !self.network_enabled() {
+                    self.toast("Network is offline");
+                    return;
+                }
                 let Some(sess) = self.session.as_mut() else {
                     return;
                 };
@@ -2090,11 +2225,16 @@ impl AppCore {
                     result.evolution_event,
                     None,
                     vec![],
+                    GroupEvolutionOp::Standard,
                 );
             }
             AppAction::LeaveGroup { chat_id } => {
                 if !self.is_logged_in() {
                     self.toast("Please log in first");
+                    return;
+                }
+                if !self.network_enabled() {
+                    self.toast("Network is offline");
                     return;
                 }
                 let Some(sess) = self.session.as_mut() else {
@@ -2119,6 +2259,7 @@ impl AppCore {
                     result.evolution_event,
                     None,
                     vec![],
+                    GroupEvolutionOp::Standard,
                 );
 
                 // Navigate back to chat list.
@@ -2133,6 +2274,10 @@ impl AppCore {
             AppAction::RenameGroup { chat_id, name } => {
                 if !self.is_logged_in() {
                     self.toast("Please log in first");
+                    return;
+                }
+                if !self.network_enabled() {
+                    self.toast("Network is offline");
                     return;
                 }
                 let Some(sess) = self.session.as_mut() else {
@@ -2158,6 +2303,7 @@ impl AppCore {
                     result.evolution_event,
                     None,
                     vec![],
+                    GroupEvolutionOp::Standard,
                 );
             }
         }
@@ -2186,11 +2332,50 @@ impl AppCore {
         event: Event,
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
+        op: GroupEvolutionOp,
     ) {
+        let chat_id = chat_id.to_string();
+        let evolution_event_id = event.id;
+
+        // Queue for retry. Only preserve toasted if same event (not a new user action).
+        let prev_event_id = self
+            .pending_evolutions
+            .get(&mls_group_id)
+            .map(|pe| pe.event.id);
+        let toasted = self
+            .pending_evolutions
+            .get(&mls_group_id)
+            .map(|pe| pe.event.id == event.id && pe.toasted)
+            .unwrap_or(false);
+        self.pending_evolutions.insert(
+            mls_group_id.clone(),
+            PendingEvolution {
+                chat_id: chat_id.clone(),
+                event: event.clone(),
+                welcome_rumors: welcome_rumors.clone(),
+                added_pubkeys: added_pubkeys.clone(),
+                op: op.clone(),
+                toasted,
+            },
+        );
+        // New event supersedes old retry bookkeeping for this group.
+        // This also re-enables merge-reconcile retries for the new event.
+        if prev_event_id.map(|id| id != event.id).unwrap_or(false) {
+            self.pending_merge_reconcile.remove(&mls_group_id);
+        }
+
+        if self.evolution_publish_in_flight.contains(&mls_group_id) {
+            return;
+        }
+
         let fallback_relays = self.default_relays();
         let Some(sess) = self.session.as_ref() else {
             return;
         };
+
+        self.evolution_publish_in_flight
+            .insert(mls_group_id.clone());
+
         let relays: Vec<RelayUrl> = sess
             .mdk
             .get_relays(&mls_group_id)
@@ -2201,8 +2386,8 @@ impl AppCore {
 
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
-        let chat_id = chat_id.to_string();
         let mls_group_id_clone = mls_group_id.clone();
+        let session_gen = self.evolution_session_gen;
 
         self.runtime.spawn(async move {
             // Retry with exponential backoff, matching key-package publish pattern.
@@ -2217,6 +2402,9 @@ impl AppCore {
                                 mls_group_id: mls_group_id_clone,
                                 welcome_rumors,
                                 added_pubkeys,
+                                op,
+                                session_gen,
+                                evolution_event_id,
                                 ok: true,
                                 error: None,
                             },
@@ -2255,11 +2443,104 @@ impl AppCore {
                     mls_group_id: mls_group_id_clone,
                     welcome_rumors,
                     added_pubkeys,
+                    op,
+                    session_gen,
+                    evolution_event_id,
                     ok: false,
                     error: last_err,
                 },
             )));
         });
+    }
+
+    fn drain_pending_evolutions(&mut self) {
+        if !self.network_enabled() {
+            return;
+        }
+
+        // Phase 0: retry failed merges (bounded: max 3 attempts total per queued event).
+        let reconcile_ids: Vec<GroupId> = self.pending_merge_reconcile.keys().cloned().collect();
+        let mut any_merged = false;
+        for gid in reconcile_ids {
+            // If already exhausted, stop retrying until a new queued event supersedes this group.
+            if self.pending_merge_reconcile.get(&gid).copied().unwrap_or(0) >= 3 {
+                continue;
+            }
+            if let Some(sess) = self.session.as_ref() {
+                if sess.mdk.merge_pending_commit(&gid).is_ok() {
+                    self.pending_merge_reconcile.remove(&gid);
+                    any_merged = true;
+                } else {
+                    let count = self.pending_merge_reconcile.entry(gid.clone()).or_insert(0);
+                    *count = count.saturating_add(1);
+                    if *count == 3 {
+                        tracing::error!(
+                            group_id = ?gid,
+                            "merge reconcile failed 3 times, giving up"
+                        );
+                        self.toast(
+                            "Group update needs manual refresh (local merge failed repeatedly)",
+                        );
+                    }
+                }
+            }
+        }
+        if any_merged {
+            self.refresh_all_from_storage();
+        }
+
+        // Phase 1: create self-update commits for groups that still need one.
+        let needs_su: Vec<GroupId> = self
+            .pending_self_updates
+            .iter()
+            .filter(|gid| !self.pending_evolutions.contains_key(*gid))
+            .cloned()
+            .collect();
+        for gid in needs_su {
+            let su_result = self
+                .session
+                .as_ref()
+                .and_then(|s| s.mdk.self_update(&gid).ok());
+            if let Some(result) = su_result {
+                let chat_id = self.lookup_chat_id(&gid);
+                self.publish_evolution_event(
+                    &chat_id,
+                    gid,
+                    result.evolution_event,
+                    None,
+                    vec![],
+                    GroupEvolutionOp::SelfUpdate,
+                );
+            } else {
+                tracing::warn!("deferred self-update failed, will retry next recompute");
+            }
+        }
+
+        // Phase 2: republish queued evolutions not currently in flight.
+        let to_publish: Vec<(GroupId, PendingEvolution)> = self
+            .pending_evolutions
+            .iter()
+            .filter(|(gid, _)| !self.evolution_publish_in_flight.contains(*gid))
+            .map(|(gid, pe)| (gid.clone(), pe.clone()))
+            .collect();
+        for (gid, pe) in to_publish {
+            self.publish_evolution_event(
+                &pe.chat_id,
+                gid,
+                pe.event,
+                pe.welcome_rumors,
+                pe.added_pubkeys,
+                pe.op,
+            );
+        }
+    }
+
+    fn lookup_chat_id(&self, gid: &GroupId) -> String {
+        self.session
+            .as_ref()
+            .and_then(|s| s.mdk.get_group(gid).ok().flatten())
+            .map(|g| hex::encode(g.nostr_group_id))
+            .unwrap_or_default()
     }
 }
 

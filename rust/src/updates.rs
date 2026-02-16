@@ -31,6 +31,12 @@ pub enum CoreMsg {
     Internal(Box<InternalEvent>),
 }
 
+#[derive(Debug, Clone)]
+pub enum GroupEvolutionOp {
+    Standard,
+    SelfUpdate,
+}
+
 #[derive(Debug)]
 pub enum InternalEvent {
     // Nostr receive path
@@ -80,6 +86,9 @@ pub enum InternalEvent {
         mls_group_id: mdk_core::prelude::GroupId,
         welcome_rumors: Option<Vec<nostr_sdk::prelude::UnsignedEvent>>,
         added_pubkeys: Vec<nostr_sdk::prelude::PublicKey>,
+        op: GroupEvolutionOp,
+        session_gen: u64,
+        evolution_event_id: nostr_sdk::prelude::EventId,
         ok: bool,
         error: Option<String>,
     },

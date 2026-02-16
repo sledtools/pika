@@ -78,6 +78,12 @@ impl AppCore {
         self.subs_recompute_in_flight = false;
         self.subs_recompute_dirty = false;
 
+        self.evolution_session_gen = self.evolution_session_gen.wrapping_add(1);
+        self.pending_self_updates.clear();
+        self.pending_evolutions.clear();
+        self.pending_merge_reconcile.clear();
+        self.evolution_publish_in_flight.clear();
+
         if let Some(sess) = self.session.take() {
             sess.alive.store(false, Ordering::SeqCst);
             if self.network_enabled() {

@@ -1017,7 +1017,8 @@ impl AppCore {
                 }
                 // Only clear the self-update requirement when this callback's event is
                 // current. A superseded callback skips merge, so the requirement must
-                // persist until a matching callback actually merges successfully.
+                // persist for drain to re-create the self-update. Merge failure is
+                // handled separately via pending_merge_reconcile, not here.
                 if current_event_matches && matches!(op, GroupEvolutionOp::SelfUpdate) {
                     self.pending_self_updates.remove(&mls_group_id);
                 }

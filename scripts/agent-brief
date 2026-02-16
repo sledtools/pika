@@ -77,6 +77,15 @@ printf "# Agent Brief\n\n"
 printf "Live context snapshot for AI agents.\n\n"
 printf "_Generated:_ %s\n\n" "$(date -u +"%Y-%m-%d %H:%M:%SZ")"
 
+# --- Private context (gitignored) ---
+
+private_md="${repo_root}/AGENTS.private.md"
+if [[ -f "${private_md}" ]]; then
+  printf '## Private context\n\n'
+  cat "${private_md}"
+  printf '\n\n'
+fi
+
 for i in "${!cmds[@]}"; do
   printf '## %s\n\n' "${titles[$i]}"
   printf '_Command:_ `%s`\n\n' "${cmds[$i]}"

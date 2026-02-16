@@ -43,3 +43,4 @@ ios/UITests/env.test
 
 # Avoid accidentally staging enormous vendored build output.
 third_party/openclaw-marmot/target/
+AGENTS.private.md

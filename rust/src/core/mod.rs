@@ -1015,7 +1015,10 @@ impl AppCore {
                         "publish result for superseded evolution; keeping newer queued op"
                     );
                 }
-                if matches!(op, GroupEvolutionOp::SelfUpdate) {
+                // Only clear the self-update requirement when this callback's event is
+                // current. A superseded callback skips merge, so the requirement must
+                // persist until a matching callback actually merges successfully.
+                if current_event_matches && matches!(op, GroupEvolutionOp::SelfUpdate) {
                     self.pending_self_updates.remove(&mls_group_id);
                 }
 
@@ -2360,7 +2363,9 @@ impl AppCore {
         );
         // New event supersedes old retry bookkeeping for this group.
         // This also re-enables merge-reconcile retries for the new event.
-        if prev_event_id.map(|id| id != event.id).unwrap_or(false) {
+        // unwrap_or(true): if pending_evolutions was already cleaned up (prev processed
+        // successfully but merge failed), any stale reconcile counter must still be cleared.
+        if prev_event_id.map(|id| id != event.id).unwrap_or(true) {
             self.pending_merge_reconcile.remove(&mls_group_id);
         }
 

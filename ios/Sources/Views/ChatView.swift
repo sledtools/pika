@@ -19,6 +19,9 @@ struct ChatView: View {
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var activeReactionMessageId: String?
+    @State private var contextMenuMessage: ChatMessage?
+    @State private var showContextActionCard = false
+    @State private var showContextEmojiPicker = false
     @State private var showMentionPicker = false
     @State private var mentionQuery = ""
     @State private var insertedMentions: [(display: String, npub: String)] = []
@@ -42,7 +45,21 @@ struct ChatView: View {
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 8) {
                             ForEach(groupedMessages(chat)) { group in
-                                MessageGroupRow(group: group, showSender: chat.isGroup, onSendMessage: onSendMessage, onTapSender: onTapSender, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
+                                MessageGroupRow(
+                                    group: group,
+                                    showSender: chat.isGroup,
+                                    onSendMessage: onSendMessage,
+                                    onTapSender: onTapSender,
+                                    onReact: onReact,
+                                    activeReactionMessageId: $activeReactionMessageId,
+                                    onLongPressMessage: { message in
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                            activeReactionMessageId = message.id
+                                            contextMenuMessage = message
+                                            showContextActionCard = true
+                                        }
+                                    }
+                                )
                             }
                         }
                         .padding(.horizontal, 12)
@@ -56,17 +73,6 @@ struct ChatView: View {
                         }
                         .frame(height: 1)
                         .id("bottom-anchor")
-                    }
-                }
-                .overlay {
-                    if activeReactionMessageId != nil {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.15)) {
-                                    activeReactionMessageId = nil
-                                }
-                            }
                     }
                 }
                 .coordinateSpace(name: "chatScroll")
@@ -99,6 +105,8 @@ struct ChatView: View {
                 }
             }
             .modifier(FloatingInputBarModifier(content: { messageInputBar(chat: chat) }))
+            .blur(radius: contextMenuMessage == nil ? 0 : 24)
+            .allowsHitTesting(contextMenuMessage == nil)
             .navigationTitle(chat.isGroup ? chatTitle(chat) : "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -130,6 +138,85 @@ struct ChatView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+            }
+            .overlay {
+                if let message = contextMenuMessage {
+                    GeometryReader { geo in
+                        ZStack {
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .ignoresSafeArea()
+                                .onTapGesture {
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        contextMenuMessage = nil
+                                        activeReactionMessageId = nil
+                                        showContextActionCard = false
+                                    }
+                                }
+
+                            VStack(alignment: message.isMine ? .trailing : .leading, spacing: 12) {
+                                QuickReactionBar(
+                                    onSelect: { emoji in
+                                        onReact?(message.id, emoji)
+                                        withAnimation(.easeOut(duration: 0.18)) {
+                                            contextMenuMessage = nil
+                                            activeReactionMessageId = nil
+                                            showContextActionCard = false
+                                        }
+                                    },
+                                    onMore: {
+                                        withAnimation(.easeOut(duration: 0.18)) {
+                                            showContextActionCard = false
+                                        }
+                                        showContextEmojiPicker = true
+                                    },
+                                    onActions: {
+                                        withAnimation(.easeOut(duration: 0.18)) {
+                                            showContextActionCard.toggle()
+                                        }
+                                    }
+                                )
+
+                                FocusedMessageCard(
+                                    message: message,
+                                    maxWidth: min(geo.size.width * 0.82, 360),
+                                    maxHeight: geo.size.height * 0.4
+                                )
+
+                                if showContextActionCard {
+                                    MessageActionCard(
+                                        onCopy: {
+                                            UIPasteboard.general.string = message.displayContent
+                                            withAnimation(.easeOut(duration: 0.15)) {
+                                                contextMenuMessage = nil
+                                                activeReactionMessageId = nil
+                                                showContextActionCard = false
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: message.isMine ? .topTrailing : .topLeading)
+                            .padding(.top, max(geo.safeAreaInsets.top + 14, 34))
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 24)
+                        }
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .sheet(isPresented: $showContextEmojiPicker) {
+                if let message = contextMenuMessage {
+                    EmojiPickerSheet { emoji in
+                        onReact?(message.id, emoji)
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            contextMenuMessage = nil
+                            activeReactionMessageId = nil
+                            showContextActionCard = false
+                        }
+                    }
+                    .presentationDetents([.medium, .large])
                 }
             }
         } else {
@@ -323,7 +410,7 @@ private struct MentionPickerPopup: View {
 private struct QuickReactionBar: View {
     let onSelect: (String) -> Void
     let onMore: () -> Void
-    let onCopy: () -> Void
+    let onActions: () -> Void
 
     private let emojis = ["❤️", "👍", "👎", "😂", "😮", "😢"]
 
@@ -350,11 +437,90 @@ private struct QuickReactionBar: View {
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            Button {
+                onActions()
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color.gray.opacity(0.2))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .accessibilityIdentifier(TestIds.chatReactionBar)
+    }
+}
+
+private struct MessageActionCard: View {
+    let onCopy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                onCopy()
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+                    .font(.body.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(TestIds.chatActionCopy)
+
+            // TODO: Add Reply / Forward / Info actions here once corresponding
+            // Rust core actions and app wiring exist.
+        }
+        .padding(14)
+        .frame(width: 220, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 6)
+        .accessibilityIdentifier(TestIds.chatActionCard)
+    }
+}
+
+private struct FocusedMessageCard: View {
+    let message: ChatMessage
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
+
+    var body: some View {
+        VStack(alignment: message.isMine ? .trailing : .leading, spacing: 6) {
+            if isLikelyLongMessage {
+                ScrollView(showsIndicators: false) {
+                    markdownContent
+                }
+                .frame(maxHeight: maxHeight)
+            } else {
+                markdownContent
+            }
+
+            Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)).formatted(date: .omitted, time: .shortened))
+                .font(.caption2)
+                .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+        .background(message.isMine ? Color.blue : Color(uiColor: .systemGray5))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: maxWidth, alignment: message.isMine ? .trailing : .leading)
+    }
+
+    private var markdownContent: some View {
+        Markdown(message.displayContent)
+            .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+            .multilineTextAlignment(message.isMine ? .trailing : .leading)
+            .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
+    }
+
+    private var isLikelyLongMessage: Bool {
+        let lineCount = message.displayContent.split(whereSeparator: \.isNewline).count
+        return message.displayContent.count > 240 || lineCount > 6
     }
 }
 
@@ -581,6 +747,7 @@ private struct MessageGroupRow: View {
     var onTapSender: (@MainActor (String) -> Void)?
     var onReact: ((String, String) -> Void)?
     @Binding var activeReactionMessageId: String?
+    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
 
     private let avatarSize: CGFloat = 24
     private let avatarGutterWidth: CGFloat = 28
@@ -615,7 +782,13 @@ private struct MessageGroupRow: View {
                         .foregroundStyle(.secondary)
                         .onTapGesture { onTapSender?(group.senderPubkey) }
                 }
-                MessageBubbleStack(group: group, onSendMessage: onSendMessage, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
+                MessageBubbleStack(
+                    group: group,
+                    onSendMessage: onSendMessage,
+                    onReact: onReact,
+                    activeReactionMessageId: $activeReactionMessageId,
+                    onLongPressMessage: onLongPressMessage
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -628,7 +801,13 @@ private struct MessageGroupRow: View {
             Spacer(minLength: 24)
 
             VStack(alignment: .trailing, spacing: 3) {
-                MessageBubbleStack(group: group, onSendMessage: onSendMessage, onReact: onReact, activeReactionMessageId: $activeReactionMessageId)
+                MessageBubbleStack(
+                    group: group,
+                    onSendMessage: onSendMessage,
+                    onReact: onReact,
+                    activeReactionMessageId: $activeReactionMessageId,
+                    onLongPressMessage: onLongPressMessage
+                )
                 if let delivery = group.messages.last?.delivery {
                     Text(deliveryText(delivery))
                         .font(.caption2)
@@ -653,6 +832,7 @@ private struct MessageBubbleStack: View {
     let onSendMessage: @MainActor (String) -> Void
     var onReact: ((String, String) -> Void)?
     @Binding var activeReactionMessageId: String?
+    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: group.isMine ? .trailing : .leading, spacing: 2) {
@@ -662,7 +842,8 @@ private struct MessageBubbleStack: View {
                     position: bubblePosition(at: index, count: group.messages.count),
                     onSendMessage: onSendMessage,
                     onReact: onReact,
-                    activeReactionMessageId: $activeReactionMessageId
+                    activeReactionMessageId: $activeReactionMessageId,
+                    onLongPressMessage: onLongPressMessage
                 )
                 .id(message.id)
             }
@@ -683,15 +864,10 @@ private struct MessageBubble: View {
     let onSendMessage: @MainActor (String) -> Void
     var onReact: ((String, String) -> Void)?
     @Binding var activeReactionMessageId: String?
+    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
 
     private let roundedCornerRadius: CGFloat = 16
     private let groupedCornerRadius: CGFloat = 6
-
-    @State private var showEmojiPicker = false
-
-    private var isShowingReactionBar: Bool {
-        activeReactionMessageId == message.id
-    }
 
     private let reactionChipOverlap: CGFloat = 10
 
@@ -700,49 +876,19 @@ private struct MessageBubble: View {
         let segments = parseMessageSegments(message.displayContent, htmlState: message.htmlState)
 
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
-            VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
-                ForEach(segments) { segment in
-                    switch segment {
-                    case .markdown(let text):
-                        markdownBubble(text: text)
-                            .onLongPressGesture {
-                                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
-                                impactFeedback.impactOccurred()
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    activeReactionMessageId = message.id
-                                }
-                            }
-                    case .pikaPrompt(let prompt):
-                        PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
-                    case .pikaHtml(_, let html, let state):
-                        PikaHtmlView(html: html, htmlState: state, onSendMessage: onSendMessage)
-                    }
-                }
-            }
-            .overlay(alignment: message.isMine ? .topTrailing : .topLeading) {
-                if isShowingReactionBar {
-                    QuickReactionBar(
-                        onSelect: { emoji in
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                activeReactionMessageId = nil
-                            }
-                            onReact?(message.id, emoji)
-                        },
-                        onMore: {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                activeReactionMessageId = nil
-                            }
-                            showEmojiPicker = true
-                        },
-                        onCopy: {
-                            UIPasteboard.general.string = message.displayContent
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                activeReactionMessageId = nil
-                            }
+            ForEach(segments) { segment in
+                switch segment {
+                case .markdown(let text):
+                    markdownBubble(text: text)
+                        .onLongPressGesture {
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                            impactFeedback.impactOccurred()
+                            onLongPressMessage?(message)
                         }
-                    )
-                    .transition(.scale(scale: 0.5, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity))
-                    .offset(y: -48)
+                case .pikaPrompt(let prompt):
+                    PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
+                case .pikaHtml(_, let html, let state):
+                    PikaHtmlView(html: html, htmlState: state, onSendMessage: onSendMessage)
                 }
             }
             .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
@@ -755,18 +901,13 @@ private struct MessageBubble: View {
                     .offset(x: message.isMine ? -12 : 12, y: reactionChipOverlap)
                 }
             }
-            .sheet(isPresented: $showEmojiPicker) {
-                EmojiPickerSheet { emoji in
-                    onReact?(message.id, emoji)
-                    showEmojiPicker = false
-                }
-                .presentationDetents([.medium, .large])
-            }
 
             if hasReactions {
                 Spacer().frame(height: reactionChipOverlap + 4)
             }
         }
+        .opacity(activeReactionMessageId == message.id ? 0 : 1)
+        .animation(.easeInOut(duration: 0.15), value: activeReactionMessageId == message.id)
     }
 
     private func markdownBubble(text: String) -> some View {
@@ -829,6 +970,7 @@ private struct MessageBubble: View {
             return roundedCornerRadius
         }
     }
+
 }
 
 private func deliveryText(_ d: MessageDeliveryState) -> String {

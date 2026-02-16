@@ -227,6 +227,84 @@ final class PikaUITests: XCTestCase {
                        "Chat with 'persist-test' message not found after relaunch")
     }
 
+    func testLongPressMessage_showsActionsAndDismisses() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
+        app.launch()
+
+        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+        if createAccount.waitForExistence(timeout: 2) {
+            createAccount.tap()
+        }
+
+        let chatsNavBar = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
+
+        // Read our own npub so we can create a deterministic note-to-self chat.
+        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
+        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
+        myNpubBtn.tap()
+
+        let myNpubNavBar = app.navigationBars["Profile"]
+        XCTAssertTrue(myNpubNavBar.waitForExistence(timeout: 5))
+
+        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
+        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
+        let myNpub = npubValue.label
+        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
+
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists { close.tap() }
+        else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
+
+        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
+        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
+        newChat.tap()
+
+        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 10))
+
+        let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: 10))
+        peer.tap()
+        peer.typeText(myNpub)
+
+        let start = app.buttons.matching(identifier: "newchat_start").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+
+        let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
+        let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch
+        let composer = msgField.exists ? msgField : msgFieldFallback
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+
+        let msg = "longpress-ui-test-message"
+        composer.typeText(msg)
+
+        let send = app.buttons.matching(identifier: "chat_send").firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+        XCTAssertTrue(app.staticTexts[msg].waitForExistence(timeout: 10))
+
+        // Long-press message text to open reactions + action card.
+        app.staticTexts[msg].press(forDuration: 1.0)
+
+        let reactionBar = app.otherElements.matching(identifier: "chat_reaction_bar").firstMatch
+        XCTAssertTrue(reactionBar.waitForExistence(timeout: 5))
+
+        let actionCard = app.otherElements.matching(identifier: "chat_action_card").firstMatch
+        XCTAssertTrue(actionCard.waitForExistence(timeout: 5))
+
+        let copy = app.buttons.matching(identifier: "chat_action_copy").firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+
+        // Tap outside overlays to dismiss.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+
+        XCTAssertFalse(app.buttons.matching(identifier: "chat_action_copy").firstMatch.waitForExistence(timeout: 1.5))
+    }
+
     func testE2E_deployedRustBot_pingPong() throws {
         // Opt-in test: run it explicitly via xcodebuild `-only-testing:`. This hits public relays,
         // so it is intentionally not part of the deterministic smoke suite.

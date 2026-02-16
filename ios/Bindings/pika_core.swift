@@ -841,10 +841,11 @@ public struct ChatMessage: Equatable, Hashable {
     public var reactions: [ReactionSummary]
     public var pollTally: [PollTally]
     public var myPollVote: String?
+    public var htmlState: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, senderPubkey: String, senderName: String?, content: String, displayContent: String, mentions: [Mention], timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState, reactions: [ReactionSummary], pollTally: [PollTally], myPollVote: String?) {
+    public init(id: String, senderPubkey: String, senderName: String?, content: String, displayContent: String, mentions: [Mention], timestamp: Int64, isMine: Bool, delivery: MessageDeliveryState, reactions: [ReactionSummary], pollTally: [PollTally], myPollVote: String?, htmlState: String?) {
         self.id = id
         self.senderPubkey = senderPubkey
         self.senderName = senderName
@@ -857,6 +858,7 @@ public struct ChatMessage: Equatable, Hashable {
         self.reactions = reactions
         self.pollTally = pollTally
         self.myPollVote = myPollVote
+        self.htmlState = htmlState
     }
 
     
@@ -886,7 +888,8 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
                 delivery: FfiConverterTypeMessageDeliveryState.read(from: &buf), 
                 reactions: FfiConverterSequenceTypeReactionSummary.read(from: &buf), 
                 pollTally: FfiConverterSequenceTypePollTally.read(from: &buf), 
-                myPollVote: FfiConverterOptionString.read(from: &buf)
+                myPollVote: FfiConverterOptionString.read(from: &buf), 
+                htmlState: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -903,6 +906,7 @@ public struct FfiConverterTypeChatMessage: FfiConverterRustBuffer {
         FfiConverterSequenceTypeReactionSummary.write(value.reactions, into: &buf)
         FfiConverterSequenceTypePollTally.write(value.pollTally, into: &buf)
         FfiConverterOptionString.write(value.myPollVote, into: &buf)
+        FfiConverterOptionString.write(value.htmlState, into: &buf)
     }
 }
 

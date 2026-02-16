@@ -277,16 +277,7 @@ ios-gen-swift: rust-build-host
     --language swift \
     --out-dir ios/Bindings \
     --config rust/uniffi.toml
-  python3 - <<'PY'
-from pathlib import Path
-
-path = Path("ios/Bindings/pika_core.swift")
-data = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-lines = [line.rstrip(" \t") for line in data.split("\n")]
-while lines and lines[-1] == "":
-    lines.pop()
-path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
+  python3 -c 'from pathlib import Path; p=Path("ios/Bindings/pika_core.swift"); data=p.read_text(encoding="utf-8").replace("\\r\\n","\\n").replace("\\r","\\n"); lines=[ln.rstrip(" \\t") for ln in data.split("\\n")];\nwhile lines and lines[-1]=="": lines.pop();\np.write_text("\\n".join(lines)+"\\n", encoding="utf-8")'
 
 # Cross-compile Rust core for iOS (device + simulator).
 ios-rust:

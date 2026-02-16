@@ -1303,7 +1303,53 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
 }
 
 fn new_mdk(state_dir: &Path, label: &str) -> anyhow::Result<MDK<MdkSqliteStorage>> {
+    // OpenMLS serialization blobs are not guaranteed to be stable across OpenMLS versions.
+    // We store a small version stamp next to the DB; if it mismatches, wipe the DB deterministically.
+    //
+    // User-visible effect: existing MLS groups disappear and must be re-created via re-invite.
+    const MLS_STATE_VERSION: u32 = 1;
+
+    ensure_dir(state_dir).context("create mdk state dir")?;
     let db_path = state_dir.join("mdk.sqlite");
+    let wal_path = state_dir.join("mdk.sqlite-wal");
+    let shm_path = state_dir.join("mdk.sqlite-shm");
+    let version_path = state_dir.join("mls.version");
+
+    let found_version = std::fs::read_to_string(&version_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let needs_wipe = found_version != Some(MLS_STATE_VERSION);
+    if needs_wipe {
+        if found_version.is_none() {
+            info!(
+                "[mdk] mls.version missing/unparseable; initializing version={} and wiping any existing DB",
+                MLS_STATE_VERSION
+            );
+        } else {
+            warn!(
+                "[mdk] mls state version mismatch: found={:?} current={}; wiping DB (groups will disappear)",
+                found_version,
+                MLS_STATE_VERSION
+            );
+        }
+
+        for path in [&db_path, &wal_path, &shm_path] {
+            match std::fs::remove_file(path) {
+                Ok(()) => info!("[mdk] removed {:?}", path),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("remove {:?}", path)),
+            }
+        }
+
+        // Write atomically (best-effort) so we don't partially update version state.
+        let tmp = state_dir.join("mls.version.tmp");
+        std::fs::write(&tmp, format!("{MLS_STATE_VERSION}\n")).context("write mls.version.tmp")?;
+        std::fs::rename(&tmp, &version_path).or_else(|_| {
+            // Fallback for platforms/filesystems that don't support rename-overwrite.
+            std::fs::write(&version_path, format!("{MLS_STATE_VERSION}\n"))
+        })?;
+    }
+
     // Phase 1 uses unencrypted SQLite so all state stays inspectable under `.state/`.
     // (This is dev/test harness code, not production.)
     let _ = label; // keep the call-sites explicit; label helps when we switch to encrypted DBs.

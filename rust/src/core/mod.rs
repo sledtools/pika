@@ -989,7 +989,7 @@ impl AppCore {
                     return;
                 }
 
-                // Log failures before applying effects.
+                // Observability: log before applying effects.
                 if !ok && matches!(op, GroupEvolutionOp::SelfUpdate) {
                     tracing::warn!(
                         group_id = ?mls_group_id,
@@ -997,7 +997,14 @@ impl AppCore {
                         "self-update publish failed, will retry"
                     );
                 }
+                if ok && !fx.remove_pending {
+                    tracing::debug!(
+                        "publish result for superseded evolution; keeping newer queued op"
+                    );
+                }
 
+                // Apply effects. Ordering constraint: mark_toasted must precede
+                // remove_pending (toasted writes to the entry remove_pending deletes).
                 if fx.remove_in_flight {
                     self.evolution_publish_in_flight.remove(&mls_group_id);
                 }

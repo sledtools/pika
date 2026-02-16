@@ -434,4 +434,117 @@ mod tests {
         let eid = event_id(1);
         assert!(!should_reset_reconcile(Some(eid), eid));
     }
+
+    // ── Applier safety invariants ──────────────────────────────────
+    //
+    // The applier in handle_internal applies effects sequentially.
+    // These tests verify the reducer never produces effect combinations
+    // that would be unsafe under the applier's ordering:
+    //   mark_toasted → toast → remove_pending → remove_self_update
+    //   → attempt_merge → send_welcomes → clear_busy → refresh
+    //   → schedule_drain
+
+    /// mark_toasted writes to the pending_evolutions entry that
+    /// remove_pending deletes. The reducer must never set both.
+    #[test]
+    fn invariant_mark_toasted_and_remove_pending_are_exclusive() {
+        let cases: Vec<(EvolutionHandlerInput, bool, Option<&str>, &GroupEvolutionOp)> = vec![
+            // All failure paths where mark_toasted could fire.
+            (
+                input(1, Some((event_id(1), false))),
+                false,
+                Some("err"),
+                &GroupEvolutionOp::Standard,
+            ),
+            (
+                input(1, Some((event_id(1), true))),
+                false,
+                Some("err"),
+                &GroupEvolutionOp::Standard,
+            ),
+            (
+                input(1, Some((event_id(2), false))),
+                false,
+                Some("err"),
+                &GroupEvolutionOp::Standard,
+            ),
+            (
+                input(1, Some((event_id(1), false))),
+                false,
+                Some("err"),
+                &GroupEvolutionOp::SelfUpdate,
+            ),
+            (
+                input(1, None),
+                false,
+                Some("err"),
+                &GroupEvolutionOp::Standard,
+            ),
+            // All success paths where remove_pending could fire.
+            (
+                input(1, Some((event_id(1), false))),
+                true,
+                None,
+                &GroupEvolutionOp::Standard,
+            ),
+            (
+                input(1, Some((event_id(2), false))),
+                true,
+                None,
+                &GroupEvolutionOp::Standard,
+            ),
+            (
+                input(1, Some((event_id(1), false))),
+                true,
+                None,
+                &GroupEvolutionOp::SelfUpdate,
+            ),
+            (input(1, None), true, None, &GroupEvolutionOp::Standard),
+        ];
+        for (state, ok, error, op) in cases {
+            let fx = evaluate_evolution_callback(&state, 1, event_id(1), op, ok, error, false);
+            assert!(
+                !(fx.mark_toasted && fx.remove_pending),
+                "mark_toasted and remove_pending must not both be true: \
+                 ok={ok}, pending={:?}, op={op:?}",
+                state.pending_event,
+            );
+        }
+    }
+
+    /// On any failure path, the reducer must never request merge or
+    /// storage refresh (the commit isn't confirmed).
+    #[test]
+    fn invariant_failure_never_merges_or_refreshes() {
+        let states = vec![
+            input(1, Some((event_id(1), false))),
+            input(1, Some((event_id(1), true))),
+            input(1, Some((event_id(2), false))),
+            input(1, None),
+        ];
+        let ops = [GroupEvolutionOp::Standard, GroupEvolutionOp::SelfUpdate];
+        for state in &states {
+            for op in &ops {
+                let fx = evaluate_evolution_callback(
+                    state,
+                    1,
+                    event_id(1),
+                    op,
+                    false,
+                    Some("err"),
+                    false,
+                );
+                assert!(
+                    !fx.attempt_merge,
+                    "failure must not merge: pending={:?}, op={op:?}",
+                    state.pending_event,
+                );
+                assert!(
+                    !fx.refresh_storage,
+                    "failure must not refresh: pending={:?}, op={op:?}",
+                    state.pending_event,
+                );
+            }
+        }
+    }
 }

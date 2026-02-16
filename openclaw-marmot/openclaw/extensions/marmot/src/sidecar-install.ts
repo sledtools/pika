@@ -23,7 +23,7 @@ type GitHubRelease = {
 };
 
 // marmotd is built and released from this monorepo.
-const DEFAULT_REPO = "justinmoon/pika";
+const DEFAULT_REPO = "sledtools/pika";
 const DEFAULT_BINARY_NAME = "marmotd";
 
 function hasPathSeparator(input: string): boolean {

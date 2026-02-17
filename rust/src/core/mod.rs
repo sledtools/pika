@@ -129,6 +129,7 @@ pub struct AppCore {
     archived_chats: HashSet<String>,
     call_runtime: call_runtime::CallRuntime,
     call_session_params: Option<call_control::CallSessionParams>,
+    call_timeline_logged_keys: HashSet<String>,
 }
 
 impl AppCore {
@@ -181,6 +182,7 @@ impl AppCore {
             archived_chats: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
+            call_timeline_logged_keys: HashSet::new(),
         };
 
         if run_moq_probe {
@@ -285,8 +287,86 @@ impl AppCore {
         self.emit_state();
     }
 
+    fn emit_call_state_with_previous(&mut self, previous_call: Option<crate::state::CallState>) {
+        let current = self.state.active_call.clone();
+        self.record_call_timeline_transition(previous_call.as_ref(), current.as_ref());
+        self.emit_state();
+    }
+
     fn emit_call_state(&mut self) {
         self.emit_state();
+    }
+
+    fn record_call_timeline_transition(
+        &mut self,
+        old: Option<&crate::state::CallState>,
+        new: Option<&crate::state::CallState>,
+    ) {
+        let Some(new) = new else { return };
+        let now = now_seconds();
+
+        let is_live = matches!(
+            new.status,
+            CallStatus::Offering
+                | CallStatus::Ringing
+                | CallStatus::Connecting
+                | CallStatus::Active
+        );
+
+        if is_live {
+            self.append_call_timeline_event(
+                format!("{}:started", new.call_id),
+                new.chat_id.clone(),
+                "Call started".to_string(),
+                now,
+            );
+            return;
+        }
+
+        if let CallStatus::Ended { ref reason } = new.status {
+            let previous_status = if old.map(|o| o.call_id.as_str()) == Some(&new.call_id) {
+                old.map(|o| &o.status)
+            } else {
+                None
+            };
+            let text = call_timeline_ended_text(reason, previous_status, new.started_at);
+            self.append_call_timeline_event(
+                format!("{}:ended", new.call_id),
+                new.chat_id.clone(),
+                text,
+                now,
+            );
+        }
+    }
+
+    fn append_call_timeline_event(
+        &mut self,
+        key: String,
+        chat_id: String,
+        text: String,
+        timestamp: i64,
+    ) {
+        if !self.call_timeline_logged_keys.insert(key.clone()) {
+            return;
+        }
+        self.state
+            .call_timeline
+            .push(crate::state::CallTimelineEvent {
+                id: key,
+                chat_id,
+                text,
+                timestamp,
+            });
+        // Cap at 20 events per chat to avoid unbounded growth.
+        let max_per_chat = 20;
+        let total = self.state.call_timeline.len();
+        if total > max_per_chat * 10 {
+            // Prune oldest events globally when the list gets large.
+            self.state.call_timeline = self
+                .state
+                .call_timeline
+                .split_off(total - max_per_chat * 10);
+        }
     }
 
     fn emit_account_created(&mut self, nsec: String, pubkey: String, npub: String) {
@@ -349,6 +429,7 @@ impl AppCore {
             self.state.router.screen_stack.clear();
             self.state.current_chat = None;
             self.state.active_call = None;
+            self.state.call_timeline = vec![];
             self.state.chat_list = vec![];
             self.state.busy = BusyState::idle();
             self.loaded_count.clear();
@@ -362,6 +443,7 @@ impl AppCore {
             self.state.follow_list = vec![];
             self.state.peer_profile = None;
             self.call_session_params = None;
+            self.call_timeline_logged_keys.clear();
             self.last_outgoing_ts = 0;
             self.emit_router();
             self.emit_busy();
@@ -448,13 +530,15 @@ impl AppCore {
                 self.toast(msg.clone());
             }
             InternalEvent::CallRuntimeConnected { call_id } => {
-                if let Some(call) = self.state.active_call.as_mut() {
+                if let Some(call) = self.state.active_call.as_ref() {
                     if call.call_id == call_id && matches!(call.status, CallStatus::Connecting) {
+                        let previous = self.state.active_call.clone();
+                        let call = self.state.active_call.as_mut().unwrap();
                         call.status = CallStatus::Active;
                         if call.started_at.is_none() {
                             call.started_at = Some(now_seconds());
                         }
-                        self.emit_call_state();
+                        self.emit_call_state_with_previous(previous);
                     }
                 }
             }
@@ -466,8 +550,10 @@ impl AppCore {
                 jitter_buffer_ms,
                 last_rtt_ms,
             } => {
-                if let Some(call) = self.state.active_call.as_mut() {
+                if let Some(call) = self.state.active_call.as_ref() {
                     if call.call_id == call_id {
+                        let previous = self.state.active_call.clone();
+                        let call = self.state.active_call.as_mut().unwrap();
                         if matches!(call.status, CallStatus::Connecting) {
                             call.status = CallStatus::Active;
                             if call.started_at.is_none() {
@@ -481,7 +567,7 @@ impl AppCore {
                             jitter_buffer_ms,
                             last_rtt_ms,
                         });
-                        self.emit_call_state();
+                        self.emit_call_state_with_previous(previous);
                     }
                 }
             }
@@ -2261,6 +2347,54 @@ impl AppCore {
             )));
         });
     }
+}
+
+fn call_timeline_ended_text(
+    reason: &str,
+    previous_status: Option<&CallStatus>,
+    started_at: Option<i64>,
+) -> String {
+    if matches!(previous_status, Some(CallStatus::Ringing)) && reason == "busy" {
+        return "Missed call".to_string();
+    }
+    if reason == "declined" {
+        return "Call declined".to_string();
+    }
+
+    let mut text = "Call ended".to_string();
+    if reason != "user_hangup" {
+        let display = reason.replace('_', " ");
+        let capitalized = display
+            .split_whitespace()
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        text.push_str(&format!(": {capitalized}"));
+    }
+
+    if let Some(start) = started_at {
+        if start > 0 {
+            let elapsed = now_seconds() - start;
+            if elapsed > 0 {
+                let hours = elapsed / 3600;
+                let minutes = (elapsed % 3600) / 60;
+                let secs = elapsed % 60;
+                let duration = if hours > 0 {
+                    format!("{hours}:{minutes:02}:{secs:02}")
+                } else {
+                    format!("{minutes:02}:{secs:02}")
+                };
+                text.push_str(&format!(" ({duration})"));
+            }
+        }
+    }
+    text
 }
 
 // (Config + interop helpers live in `config.rs` and `interop.rs`.)

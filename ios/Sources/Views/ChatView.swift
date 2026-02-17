@@ -366,7 +366,7 @@ struct ChatView: View {
             case .message(_, let message):
                 return Date(timeIntervalSince1970: TimeInterval(message.timestamp))
             case .callEvent(_, let event):
-                return event.timestamp
+                return event.date
             }
         }
 

@@ -44,6 +44,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             followList = emptyList(),
             peerProfile = null,
             activeCall = null,
+            callTimeline = emptyList(),
             toast = null,
         ),
     )

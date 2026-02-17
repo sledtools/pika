@@ -548,20 +548,22 @@ impl AppCore {
     }
 
     fn update_call_status(&mut self, status: CallStatus) {
+        let previous = self.state.active_call.clone();
         if let Some(call) = self.state.active_call.as_mut() {
             call.status = status;
-            self.emit_call_state();
+            self.emit_call_state_with_previous(previous);
         }
     }
 
     fn end_call_local(&mut self, reason: String) {
+        let previous = self.state.active_call.clone();
         if let Some(call) = self.state.active_call.as_mut() {
             call.status = CallStatus::Ended {
                 reason: reason.clone(),
             };
             self.call_runtime.on_call_ended(&call.call_id);
             self.call_session_params = None;
-            self.emit_call_state();
+            self.emit_call_state_with_previous(previous);
         }
     }
 
@@ -591,6 +593,7 @@ impl AppCore {
         };
 
         if !network_enabled {
+            let previous = self.state.active_call.clone();
             self.state.active_call = Some(crate::state::CallState {
                 call_id: call_id.clone(),
                 chat_id: chat_id.to_string(),
@@ -601,7 +604,7 @@ impl AppCore {
                 debug: None,
             });
             self.call_session_params = Some(session);
-            self.emit_call_state();
+            self.emit_call_state_with_previous(previous);
             tracing::info!(call_id = %call_id, "call_start_offline");
             return;
         }
@@ -631,6 +634,7 @@ impl AppCore {
             }
         };
 
+        let previous = self.state.active_call.clone();
         self.state.active_call = Some(crate::state::CallState {
             call_id: call_id.clone(),
             chat_id: chat_id.to_string(),
@@ -641,7 +645,7 @@ impl AppCore {
             debug: None,
         });
         self.call_session_params = Some(session.clone());
-        self.emit_call_state();
+        self.emit_call_state_with_previous(previous);
 
         let payload = match build_call_signal_json(&call_id, OutgoingCallSignal::Invite(&session)) {
             Ok(v) => v,
@@ -883,6 +887,7 @@ impl AppCore {
                     return;
                 }
                 self.call_session_params = Some(session);
+                let previous = self.state.active_call.clone();
                 self.state.active_call = Some(crate::state::CallState {
                     call_id,
                     chat_id: chat_id.to_string(),
@@ -892,7 +897,7 @@ impl AppCore {
                     is_muted: false,
                     debug: None,
                 });
-                self.emit_call_state();
+                self.emit_call_state_with_previous(previous);
             }
             ParsedCallSignal::Accept { call_id, session } => {
                 let Some(active) = self.state.active_call.clone() else {

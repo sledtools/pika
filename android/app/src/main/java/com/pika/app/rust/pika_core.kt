@@ -1481,6 +1481,8 @@ data class AppState (
     , 
     var `activeCall`: CallState?
     , 
+    var `callTimeline`: List<CallTimelineEvent>
+    , 
     var `toast`: kotlin.String?
     
 ){
@@ -1508,6 +1510,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeFollowListEntry.read(buf),
             FfiConverterOptionalTypePeerProfileState.read(buf),
             FfiConverterOptionalTypeCallState.read(buf),
+            FfiConverterSequenceTypeCallTimelineEvent.read(buf),
             FfiConverterOptionalString.read(buf),
         )
     }
@@ -1523,6 +1526,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeFollowListEntry.allocationSize(value.`followList`) +
             FfiConverterOptionalTypePeerProfileState.allocationSize(value.`peerProfile`) +
             FfiConverterOptionalTypeCallState.allocationSize(value.`activeCall`) +
+            FfiConverterSequenceTypeCallTimelineEvent.allocationSize(value.`callTimeline`) +
             FfiConverterOptionalString.allocationSize(value.`toast`)
     )
 
@@ -1537,6 +1541,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeFollowListEntry.write(value.`followList`, buf)
             FfiConverterOptionalTypePeerProfileState.write(value.`peerProfile`, buf)
             FfiConverterOptionalTypeCallState.write(value.`activeCall`, buf)
+            FfiConverterSequenceTypeCallTimelineEvent.write(value.`callTimeline`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
     }
 }
@@ -1709,6 +1714,54 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterOptionalLong.write(value.`startedAt`, buf)
             FfiConverterBoolean.write(value.`isMuted`, buf)
             FfiConverterOptionalTypeCallDebugStats.write(value.`debug`, buf)
+    }
+}
+
+
+
+data class CallTimelineEvent (
+    var `id`: kotlin.String
+    , 
+    var `chatId`: kotlin.String
+    , 
+    var `text`: kotlin.String
+    , 
+    var `timestamp`: kotlin.Long
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCallTimelineEvent: FfiConverterRustBuffer<CallTimelineEvent> {
+    override fun read(buf: ByteBuffer): CallTimelineEvent {
+        return CallTimelineEvent(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CallTimelineEvent) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`chatId`) +
+            FfiConverterString.allocationSize(value.`text`) +
+            FfiConverterLong.allocationSize(value.`timestamp`)
+    )
+
+    override fun write(value: CallTimelineEvent, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`chatId`, buf)
+            FfiConverterString.write(value.`text`, buf)
+            FfiConverterLong.write(value.`timestamp`, buf)
     }
 }
 
@@ -3911,6 +3964,34 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeCallTimelineEvent: FfiConverterRustBuffer<List<CallTimelineEvent>> {
+    override fun read(buf: ByteBuffer): List<CallTimelineEvent> {
+        val len = buf.getInt()
+        return List<CallTimelineEvent>(len) {
+            FfiConverterTypeCallTimelineEvent.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<CallTimelineEvent>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeCallTimelineEvent.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<CallTimelineEvent>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeCallTimelineEvent.write(it, buf)
         }
     }
 }

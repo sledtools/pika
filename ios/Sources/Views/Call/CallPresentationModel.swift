@@ -83,22 +83,4 @@ func formattedCallDebugStats(_ debug: CallDebugStats) -> String {
     "tx \(debug.txFrames)  rx \(debug.rxFrames)  drop \(debug.rxDropped)"
 }
 
-func callEndedTimelineText(reason: String, previousStatus: CallStatus?, startedAt: Int64?) -> String {
-    if case .ringing = previousStatus, reason == "busy" {
-        return "Missed call"
-    }
 
-    if reason == "declined" {
-        return "Call declined"
-    }
-
-    var base = "Call ended"
-    if reason != "user_hangup" {
-        base += ": \(callReasonText(reason))"
-    }
-
-    if let duration = callDurationText(startedAt: startedAt), duration != "00:00" {
-        base += " (\(duration))"
-    }
-    return base
-}

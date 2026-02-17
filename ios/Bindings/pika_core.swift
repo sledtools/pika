@@ -691,11 +691,12 @@ public struct AppState: Equatable, Hashable {
     public var followList: [FollowListEntry]
     public var peerProfile: PeerProfileState?
     public var activeCall: CallState?
+    public var callTimeline: [CallTimelineEvent]
     public var toast: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, followList: [FollowListEntry], peerProfile: PeerProfileState?, activeCall: CallState?, toast: String?) {
+    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, followList: [FollowListEntry], peerProfile: PeerProfileState?, activeCall: CallState?, callTimeline: [CallTimelineEvent], toast: String?) {
         self.rev = rev
         self.router = router
         self.auth = auth
@@ -706,6 +707,7 @@ public struct AppState: Equatable, Hashable {
         self.followList = followList
         self.peerProfile = peerProfile
         self.activeCall = activeCall
+        self.callTimeline = callTimeline
         self.toast = toast
     }
 
@@ -735,6 +737,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 followList: FfiConverterSequenceTypeFollowListEntry.read(from: &buf),
                 peerProfile: FfiConverterOptionTypePeerProfileState.read(from: &buf),
                 activeCall: FfiConverterOptionTypeCallState.read(from: &buf),
+                callTimeline: FfiConverterSequenceTypeCallTimelineEvent.read(from: &buf),
                 toast: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -750,6 +753,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterSequenceTypeFollowListEntry.write(value.followList, into: &buf)
         FfiConverterOptionTypePeerProfileState.write(value.peerProfile, into: &buf)
         FfiConverterOptionTypeCallState.write(value.activeCall, into: &buf)
+        FfiConverterSequenceTypeCallTimelineEvent.write(value.callTimeline, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
     }
 }
@@ -976,6 +980,68 @@ public func FfiConverterTypeCallState_lift(_ buf: RustBuffer) throws -> CallStat
 #endif
 public func FfiConverterTypeCallState_lower(_ value: CallState) -> RustBuffer {
     return FfiConverterTypeCallState.lower(value)
+}
+
+
+public struct CallTimelineEvent: Equatable, Hashable {
+    public var id: String
+    public var chatId: String
+    public var text: String
+    public var timestamp: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, chatId: String, text: String, timestamp: Int64) {
+        self.id = id
+        self.chatId = chatId
+        self.text = text
+        self.timestamp = timestamp
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CallTimelineEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCallTimelineEvent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CallTimelineEvent {
+        return
+            try CallTimelineEvent(
+                id: FfiConverterString.read(from: &buf),
+                chatId: FfiConverterString.read(from: &buf),
+                text: FfiConverterString.read(from: &buf),
+                timestamp: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CallTimelineEvent, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.chatId, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterInt64.write(value.timestamp, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallTimelineEvent_lift(_ buf: RustBuffer) throws -> CallTimelineEvent {
+    return try FfiConverterTypeCallTimelineEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCallTimelineEvent_lower(_ value: CallTimelineEvent) -> RustBuffer {
+    return FfiConverterTypeCallTimelineEvent.lower(value)
 }
 
 
@@ -2809,6 +2875,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCallTimelineEvent: FfiConverterRustBuffer {
+    typealias SwiftType = [CallTimelineEvent]
+
+    public static func write(_ value: [CallTimelineEvent], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCallTimelineEvent.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CallTimelineEvent] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CallTimelineEvent]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCallTimelineEvent.read(from: &buf))
         }
         return seq
     }

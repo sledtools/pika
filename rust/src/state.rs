@@ -1,4 +1,12 @@
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct CallTimelineEvent {
+    pub id: String,
+    pub chat_id: String,
+    pub text: String,
+    pub timestamp: i64,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
     pub router: Router,
@@ -10,6 +18,7 @@ pub struct AppState {
     pub follow_list: Vec<FollowListEntry>,
     pub peer_profile: Option<PeerProfileState>,
     pub active_call: Option<CallState>,
+    pub call_timeline: Vec<CallTimelineEvent>,
     pub toast: Option<String>,
 }
 
@@ -29,6 +38,7 @@ impl AppState {
             follow_list: vec![],
             peer_profile: None,
             active_call: None,
+            call_timeline: vec![],
             toast: None,
         }
     }

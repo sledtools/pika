@@ -12,6 +12,9 @@ final class AppManagerTests: XCTestCase {
             chatList: [],
             currentChat: nil,
             followList: [],
+            peerProfile: nil,
+            activeCall: nil,
+            callTimeline: [],
             toast: toast
         )
     }

@@ -1,17 +1,11 @@
 import Foundation
 import SwiftUI
 
-struct CallTimelineEvent: Identifiable, Equatable, Hashable {
-    let id: String
-    let chatId: String
-    let text: String
-    let timestamp: Date
+extension CallTimelineEvent: Identifiable {}
 
-    init(id: String, chatId: String, text: String, timestamp: Date = .now) {
-        self.id = id
-        self.chatId = chatId
-        self.text = text
-        self.timestamp = timestamp
+extension CallTimelineEvent {
+    var date: Date {
+        Date(timeIntervalSince1970: TimeInterval(timestamp))
     }
 }
 

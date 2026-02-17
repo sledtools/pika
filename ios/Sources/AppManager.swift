@@ -27,8 +27,6 @@ final class AppManager: AppReconciler {
     /// True while we're waiting for a stored session to be restored by Rust.
     var isRestoringSession: Bool = false
     private let callAudioSession = CallAudioSessionCoordinator()
-    var callTimelineEventsByChatId: [String: [CallTimelineEvent]] = [:]
-    private var loggedCallTimelineKeys: Set<String> = []
 
     init(core: AppCore, nsecStore: NsecStore) {
         self.core = core
@@ -107,14 +105,8 @@ final class AppManager: AppReconciler {
         lastRevApplied = updateRev
         switch update {
         case .fullState(let s):
-            let previousState = state
             state = s
             callAudioSession.apply(activeCall: s.activeCall)
-            recordCallTimelineTransition(from: previousState.activeCall, to: s.activeCall)
-            if previousState.auth != .loggedOut, s.auth == .loggedOut {
-                callTimelineEventsByChatId = [:]
-                loggedCallTimelineKeys = []
-            }
             if isRestoringSession {
                 // Clear once we've transitioned away from login (success) or if
                 // the router settles on login (restore failed / nsec invalid).
@@ -173,41 +165,6 @@ final class AppManager: AppReconciler {
 
     func getNsec() -> String? {
         nsecStore.getNsec()
-    }
-
-    private func recordCallTimelineTransition(from old: CallState?, to new: CallState?) {
-        guard let new else { return }
-
-        if new.status.isLive {
-            appendCallTimelineEventIfNeeded(
-                key: "\(new.callId):started",
-                chatId: new.chatId,
-                text: "Call started"
-            )
-            return
-        }
-
-        guard case let .ended(reason) = new.status else { return }
-        let previousStatus = old?.callId == new.callId ? old?.status : nil
-        appendCallTimelineEventIfNeeded(
-            key: "\(new.callId):ended",
-            chatId: new.chatId,
-            text: callEndedTimelineText(
-                reason: reason,
-                previousStatus: previousStatus,
-                startedAt: new.startedAt
-            )
-        )
-    }
-
-    private func appendCallTimelineEventIfNeeded(key: String, chatId: String, text: String) {
-        guard loggedCallTimelineKeys.insert(key).inserted else { return }
-        var events = callTimelineEventsByChatId[chatId] ?? []
-        events.append(CallTimelineEvent(id: key, chatId: chatId, text: text))
-        if events.count > 20 {
-            events.removeFirst(events.count - 20)
-        }
-        callTimelineEventsByChatId[chatId] = events
     }
 }
 

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_REPO_URL="https://github.com/sledtools/pika"
+DEFAULT_ZAPSTORE_APP_URL="https://zapstore.dev/app/com.justinmoon.pika"
+
+usage() {
+  cat <<'USAGE'
+usage: ./scripts/post-release-announcement <tag> [repo-url] [zapstore-app-url]
+
+Publishes a kind-1 Nostr release announcement for a Git tag release.
+
+Arguments:
+  tag               Release tag (e.g. v0.2.5)
+  repo-url          Optional repository URL (default: https://github.com/sledtools/pika)
+  zapstore-app-url  Optional Zapstore app URL (default: https://zapstore.dev/app/com.justinmoon.pika)
+
+Environment:
+  PIKA_ANNOUNCE_RELAYS  Space-delimited relay list override
+USAGE
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing command: $1" >&2
+    exit 1
+  fi
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+  usage >&2
+  exit 2
+fi
+
+need_cmd nak
+need_cmd tr
+
+tag="$1"
+repo_url="${2:-$DEFAULT_REPO_URL}"
+zapstore_app_url="${3:-$DEFAULT_ZAPSTORE_APP_URL}"
+
+if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "error: invalid tag format: $tag (expected vX.Y.Z)" >&2
+  exit 1
+fi
+
+sign_with="$(cd "$ROOT" && ./scripts/read-zapstore-sign-with | tr -d '\r\n')"
+if [ -z "$sign_with" ]; then
+  echo "error: decrypted Zapstore signing value is empty" >&2
+  exit 1
+fi
+
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  printf '::add-mask::%s\n' "$sign_with"
+fi
+
+content="Pika Android ${tag} is live.
+Install on Zapstore: ${zapstore_app_url}
+GitHub release: ${repo_url}/releases/tag/${tag}"
+
+if [ -n "${PIKA_ANNOUNCE_RELAYS:-}" ]; then
+  IFS=' ' read -r -a relays <<<"${PIKA_ANNOUNCE_RELAYS}"
+else
+  relays=(
+    "wss://relay.primal.net"
+    "wss://relay.damus.io"
+    "wss://relay.zapstore.dev"
+    "wss://nos.lol"
+    "wss://relay.nostr.band"
+  )
+fi
+
+if [ "${#relays[@]}" -eq 0 ]; then
+  echo "error: no relays configured for announcement" >&2
+  exit 1
+fi
+
+NOSTR_SECRET_KEY="$sign_with" nak -q event -k 1 -c "$content" "${relays[@]}"
+unset sign_with

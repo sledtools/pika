@@ -14,6 +14,7 @@ This repo has three independent release pipelines, all tag-driven:
 |--------|------------|-------------|-----------|
 | Android APK | `v*` (e.g. `v0.2.2`) | `release.yml` | Signed APK + SHA256SUMS on GitHub Releases |
 | Zapstore publish | `v*` (e.g. `v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
+| Nostr announcement | `v*` (e.g. `v0.2.2`) | `release.yml` (`announce-release` job) | Kind-1 release announcement note |
 | marmotd (OpenClaw extension) | `marmotd-v*` (e.g. `marmotd-v0.3.2`) | `marmotd-release.yml` | Linux + macOS binaries on GitHub Releases, npm package |
 
 **Important:** All release tags must be created from the `master` branch. Tags on
@@ -88,6 +89,9 @@ gh release view v0.3.0
 - Publish helper:
   - `./scripts/zapstore-publish <apk-path> [repo-url]`
   - used by both `just zapstore-publish` and CI to centralize secret handling
+- Release announcement helper:
+  - `./scripts/post-release-announcement <tag> [repo-url] [zapstore-app-url]`
+  - publishes concise kind-1 release announcements to popular relays
 - Optional for local hardware-key decrypt:
   - `PIKA_AGE_IDENTITY_FILE` (defaults to `~/configs/yubikeys/keys.txt`)
 
@@ -116,6 +120,7 @@ Jobs:
 2. `build` - runs `just android-release`, uploads APK + `SHA256SUMS`
 3. `publish` - creates GitHub Release with uploaded assets
 4. `publish-zapstore` - publishes the built APK artifact to Zapstore relays
+5. `announce-release` - publishes a kind-1 release announcement (Zapstore + GitHub links)
 
 `publish-zapstore` is gated on `secrets/zapstore-signing.env.age` existing in
 git. It decrypts `ZAPSTORE_SIGN_WITH` via `AGE_SECRET_KEY`, uses centralized

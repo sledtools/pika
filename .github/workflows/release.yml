@@ -199,7 +199,6 @@ jobs:
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ZAPSTORE_SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
         run: |
           set -euo pipefail
           set +x
@@ -211,3 +210,38 @@ jobs:
           fi
           apk_path="$(find dist -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           nix develop .#default -c ./scripts/zapstore-publish "$apk_path" "https://github.com/${GITHUB_REPOSITORY}"
+
+  announce-release:
+    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
+    needs: publish
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure announcement signing secret exists
+        run: |
+          set -euo pipefail
+          if [ ! -f secrets/zapstore-signing.env.age ]; then
+            echo "error: missing secrets/zapstore-signing.env.age (required for release announcement signing)"
+            exit 1
+          fi
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Publish release announcement (kind 1)
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          repo_url="https://github.com/${GITHUB_REPOSITORY}"
+          nix develop .#default -c ./scripts/post-release-announcement "${GITHUB_REF_NAME}" "$repo_url"

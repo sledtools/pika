@@ -20,6 +20,7 @@ pub fn run(
         crate::cli::RunPlatform::Android => {
             run_android(root, json, verbose, args.android, args.release)
         }
+        crate::cli::RunPlatform::Iced => run_iced(root, json, verbose, args.release),
     }
 }
 
@@ -557,6 +558,57 @@ fn run_android(
     Ok(())
 }
 
+fn run_iced(root: &Path, json: bool, verbose: bool, release: bool) -> Result<(), CliError> {
+    let cfg = load_rmp_toml(root)?;
+    let desktop = cfg
+        .desktop
+        .ok_or_else(|| CliError::user("rmp.toml missing [desktop] section"))?;
+
+    if !desktop
+        .targets
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("iced"))
+    {
+        return Err(CliError::user(
+            "desktop target `iced` is not enabled in rmp.toml ([desktop].targets)",
+        ));
+    }
+
+    let package = desktop
+        .iced
+        .and_then(|i| i.package)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default_iced_package_name(&cfg.project.name));
+
+    human_log(verbose, format!("cargo run -p {package}"));
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(root).arg("run").arg("-p").arg(&package);
+    if release {
+        cmd.arg("--release");
+    }
+    let status = cmd
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| CliError::operational(format!("failed to run cargo: {e}")))?;
+    if !status.success() {
+        return Err(CliError::operational(format!(
+            "cargo run failed for desktop package `{package}`"
+        )));
+    }
+
+    if json {
+        json_print(&JsonOk {
+            ok: true,
+            data: serde_json::json!({"platform":"iced","package":package}),
+        });
+    } else {
+        eprintln!("ok: iced app exited");
+    }
+
+    Ok(())
+}
+
 pub(crate) fn ensure_android_emulator(
     root: &Path,
     avd: &str,
@@ -782,6 +834,19 @@ fn build_profile(release: bool) -> BuildProfile {
     } else {
         BuildProfile::Debug
     }
+}
+
+fn default_iced_package_name(project_name: &str) -> String {
+    let mut out = String::new();
+    for c in project_name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    if out.is_empty() {
+        out.push_str("app");
+    }
+    format!("{out}_desktop_iced")
 }
 
 fn ios_sim_target_for_host() -> Result<(&'static str, &'static str), CliError> {

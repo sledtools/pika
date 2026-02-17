@@ -10,9 +10,10 @@ pub fn init(
 ) -> Result<(), CliError> {
     let include_ios = resolve_toggle(args.ios, args.no_ios, true);
     let include_android = resolve_toggle(args.android, args.no_android, true);
-    if !include_ios && !include_android {
+    let include_iced = resolve_toggle(args.iced, args.no_iced, false);
+    if !include_ios && !include_android && !include_iced {
         return Err(CliError::user(
-            "at least one platform must be enabled (use --ios or --android)",
+            "at least one platform must be enabled (use --ios, --android, or --iced)",
         ));
     }
 
@@ -53,6 +54,7 @@ pub fn init(
     // Derive Rust crate/lib name from the project name.
     let crate_name = rust_crate_name(&project_dir_name);
     let lib_name = crate_name.replace('-', "_");
+    let iced_package = format!("{crate_name}_desktop_iced");
 
     // Kotlin package path segments from the app_id (e.g., "com.example.myapp" → "com/example/myapp").
     let kotlin_pkg = &app_id;
@@ -72,7 +74,7 @@ pub fn init(
 
     // ── Root files ──────────────────────────────────────────────────────
     write_text(&dest.join(".gitignore"), &tpl_gitignore())?;
-    write_text(&dest.join("Cargo.toml"), &tpl_workspace_toml(&crate_name))?;
+    write_text(&dest.join("Cargo.toml"), &tpl_workspace_toml(include_iced))?;
     write_text(
         &dest.join("rmp.toml"),
         &tpl_rmp_toml(
@@ -83,15 +85,17 @@ pub fn init(
             &app_id,
             include_ios,
             include_android,
+            include_iced,
+            &iced_package,
         ),
     )?;
     write_text(
         &dest.join("justfile"),
-        &tpl_justfile(include_ios, include_android),
+        &tpl_justfile(include_ios, include_android, include_iced),
     )?;
     write_text(
         &dest.join("README.md"),
-        &tpl_readme(&display_name, include_ios, include_android),
+        &tpl_readme(&display_name, include_ios, include_android, include_iced),
     )?;
 
     // ── Rust core ───────────────────────────────────────────────────────
@@ -227,6 +231,21 @@ pub fn init(
         write_gradlew(&android_dir)?;
     }
 
+    // ── Desktop (ICED) ────────────────────────────────────────────────────
+    if include_iced {
+        let desktop_dir = dest.join("desktop/iced");
+        std::fs::create_dir_all(desktop_dir.join("src"))
+            .map_err(|e| CliError::operational(format!("create desktop/iced/src: {e}")))?;
+        write_text(
+            &desktop_dir.join("Cargo.toml"),
+            &tpl_desktop_iced_cargo(&iced_package, &crate_name),
+        )?;
+        write_text(
+            &desktop_dir.join("src/main.rs"),
+            &tpl_desktop_iced_main(&display_name, &lib_name),
+        )?;
+    }
+
     // ── Done ────────────────────────────────────────────────────────────
     if json {
         let mut platforms: Vec<&str> = vec![];
@@ -235,6 +254,9 @@ pub fn init(
         }
         if include_android {
             platforms.push("android");
+        }
+        if include_iced {
+            platforms.push("iced");
         }
         json_print(&JsonOk {
             ok: true,
@@ -246,6 +268,7 @@ pub fn init(
                     "bundle_id": bundle_id,
                     "app_id": app_id,
                     "crate_name": crate_name,
+                    "iced_package": iced_package,
                 },
                 "platforms": platforms,
             }),
@@ -257,6 +280,9 @@ pub fn init(
         }
         if include_android {
             eprintln!("  android app id: {app_id}");
+        }
+        if include_iced {
+            eprintln!("  desktop package: {iced_package}");
         }
         eprintln!("  next: cd {} && rmp doctor", dest.to_string_lossy());
     }
@@ -395,15 +421,14 @@ android/local.properties
     .to_string()
 }
 
-fn tpl_workspace_toml(_crate_name: &str) -> String {
+fn tpl_workspace_toml(include_iced: bool) -> String {
+    let mut members = vec!["  \"rust\",", "  \"uniffi-bindgen\","];
+    if include_iced {
+        members.push("  \"desktop/iced\",");
+    }
     format!(
-        r#"[workspace]
-resolver = "2"
-members = [
-  "rust",
-  "uniffi-bindgen",
-]
-"#
+        "[workspace]\nresolver = \"2\"\nmembers = [\n{}\n]\n",
+        members.join("\n")
     )
 }
 
@@ -415,6 +440,8 @@ fn tpl_rmp_toml(
     app_id: &str,
     include_ios: bool,
     include_android: bool,
+    include_iced: bool,
+    iced_package: &str,
 ) -> String {
     let mut out = format!(
         r#"[project]
@@ -445,10 +472,22 @@ app_id = "{app_id}"
         ));
     }
 
+    if include_iced {
+        out.push_str(&format!(
+            r#"
+[desktop]
+targets = ["iced"]
+
+[desktop.iced]
+package = "{iced_package}"
+"#
+        ));
+    }
+
     out
 }
 
-fn tpl_justfile(include_ios: bool, include_android: bool) -> String {
+fn tpl_justfile(include_ios: bool, include_android: bool, include_iced: bool) -> String {
     let mut lines = vec![
         "set shell := [\"bash\", \"-c\"]",
         "",
@@ -468,11 +507,19 @@ fn tpl_justfile(include_ios: bool, include_android: bool) -> String {
     if include_android {
         lines.extend_from_slice(&["", "run-android:", "  rmp run android"]);
     }
+    if include_iced {
+        lines.extend_from_slice(&["", "run-iced:", "  rmp run iced"]);
+    }
     lines.push("");
     lines.join("\n")
 }
 
-fn tpl_readme(display_name: &str, include_ios: bool, include_android: bool) -> String {
+fn tpl_readme(
+    display_name: &str,
+    include_ios: bool,
+    include_android: bool,
+    include_iced: bool,
+) -> String {
     let mut s = format!(
         r#"# {display_name}
 
@@ -490,6 +537,9 @@ rmp bindings all
     }
     if include_android {
         s.push_str("rmp run android\n");
+    }
+    if include_iced {
+        s.push_str("rmp run iced\n");
     }
     s.push_str("```\n");
     s
@@ -679,6 +729,87 @@ publish = false
 uniffi = { version = "0.31.0", features = ["cli"] }
 "#
     .to_string()
+}
+
+// ── Desktop (ICED) templates ───────────────────────────────────────────────
+
+fn tpl_desktop_iced_cargo(package: &str, core_crate: &str) -> String {
+    format!(
+        r#"[package]
+name = "{package}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+{core_crate} = {{ path = "../../rust" }}
+iced = "0.13"
+"#
+    )
+}
+
+fn tpl_desktop_iced_main(display_name: &str, core_lib: &str) -> String {
+    format!(
+        r#"use iced::Center;
+use iced::widget::{{Column, button, column, text, text_input}};
+use std::sync::Arc;
+
+fn main() -> iced::Result {{
+    iced::run("{display_name} (ICED)", App::update, App::view)
+}}
+
+struct App {{
+    ffi: Arc<{core_lib}::FfiApp>,
+    name: String,
+    greeting: String,
+}}
+
+#[derive(Debug, Clone)]
+enum Message {{
+    NameChanged(String),
+    Apply,
+}}
+
+impl Default for App {{
+    fn default() -> Self {{
+        let ffi = {core_lib}::FfiApp::new(".".to_string());
+        let greeting = ffi.state().greeting;
+        Self {{
+            ffi,
+            name: String::new(),
+            greeting,
+        }}
+    }}
+}}
+
+impl App {{
+    fn update(&mut self, message: Message) {{
+        match message {{
+            Message::NameChanged(name) => {{
+                self.name = name;
+            }}
+            Message::Apply => {{
+                self.ffi
+                    .dispatch({core_lib}::AppAction::SetName {{ name: self.name.clone() }});
+                self.greeting = self.ffi.state().greeting;
+            }}
+        }}
+    }}
+
+    fn view(&self) -> Column<'_, Message> {{
+        column![
+            text("{display_name} (ICED)").size(24),
+            text(&self.greeting).size(20),
+            text_input("Enter a name", &self.name).on_input(Message::NameChanged),
+            button("Apply").on_press(Message::Apply),
+        ]
+        .padding(24)
+        .spacing(12)
+        .align_x(Center)
+    }}
+}}
+"#
+    )
 }
 
 // ── iOS templates ───────────────────────────────────────────────────────────

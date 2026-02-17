@@ -26,6 +26,7 @@ pub struct RmpToml {
     pub core: RmpCore,
     pub ios: Option<RmpIos>,
     pub android: Option<RmpAndroid>,
+    pub desktop: Option<RmpDesktop>,
 }
 
 #[allow(dead_code)]
@@ -55,6 +56,20 @@ pub struct RmpIos {
 pub struct RmpAndroid {
     pub app_id: String,
     pub avd_name: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct RmpDesktop {
+    #[serde(default)]
+    pub targets: Vec<String>,
+    pub iced: Option<RmpDesktopIced>,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct RmpDesktopIced {
+    pub package: Option<String>,
 }
 
 pub fn load_rmp_toml(root: &Path) -> Result<RmpToml, CliError> {

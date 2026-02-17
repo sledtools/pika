@@ -42,6 +42,8 @@ info:
   @echo "    just rmp run ios"
   @echo "  Run Android emulator:"
   @echo "    just rmp run android"
+  @echo "  Run desktop (ICED):"
+  @echo "    just rmp run iced"
   @echo "  List devices:"
   @echo "    just rmp devices list"
   @echo "  Generate bindings:"
@@ -58,11 +60,12 @@ rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
   ROOT="$PWD"; \
   BIN="$ROOT/target/debug/rmp"; \
   TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-smoke.XXXXXX")"; \
+  TARGET="$TMP/target"; \
   cargo build -p rmp-cli; \
   "$BIN" init "$TMP/{{NAME}}" --yes --org "{{ORG}}"; \
   cd "$TMP/{{NAME}}"; \
   "$BIN" doctor --json >/dev/null; \
-  cargo check; \
+  CARGO_TARGET_DIR="$TARGET" cargo check; \
   echo "ok: rmp init smoke passed ($TMP/{{NAME}})"
 
 # End-to-end launch check for a freshly initialized project.
@@ -82,13 +85,18 @@ rmp-init-smoke-ci ORG="com.example":
   ROOT="$PWD"; \
   BIN="$ROOT/target/debug/rmp"; \
   TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX")"; \
+  TARGET="$TMP/target"; \
   cargo build -p rmp-cli; \
+  "$BIN" init "$TMP/rmp-mobile-no-iced" --yes --org "{{ORG}}" --no-iced --json >/dev/null; \
+  (cd "$TMP/rmp-mobile-no-iced" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
   "$BIN" init "$TMP/rmp-all" --yes --org "{{ORG}}" --json >/dev/null; \
-  (cd "$TMP/rmp-all" && cargo check >/dev/null); \
+  (cd "$TMP/rmp-all" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
   "$BIN" init "$TMP/rmp-android" --yes --org "{{ORG}}" --no-ios --json >/dev/null; \
-  (cd "$TMP/rmp-android" && cargo check >/dev/null); \
+  (cd "$TMP/rmp-android" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
   "$BIN" init "$TMP/rmp-ios" --yes --org "{{ORG}}" --no-android --json >/dev/null; \
-  (cd "$TMP/rmp-ios" && cargo check >/dev/null); \
+  (cd "$TMP/rmp-ios" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
+  "$BIN" init "$TMP/rmp-iced" --yes --org "{{ORG}}" --no-ios --no-android --iced --json >/dev/null; \
+  (cd "$TMP/rmp-iced" && CARGO_TARGET_DIR="$TARGET" cargo check -p rmp-iced_core_desktop_iced >/dev/null); \
   echo "ok: rmp init ci smoke passed"
 
 # Nightly Linux lane: scaffold + Android emulator run.

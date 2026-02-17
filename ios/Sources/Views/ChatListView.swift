@@ -12,6 +12,7 @@ struct ChatListView: View {
     let onSaveProfile: @MainActor (_ name: String, _ about: String) -> Void
     let onUploadProfilePhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
     let nsecProvider: @MainActor () -> String?
+    let onSetTimezoneDisplay: @MainActor (TimezoneDisplay) -> Void
     @State private var showMyNpub = false
 
     var body: some View {
@@ -101,7 +102,9 @@ struct ChatListView: View {
                             onRefreshProfile: onRefreshProfile,
                             onSaveProfile: onSaveProfile,
                             onUploadPhoto: onUploadProfilePhoto,
-                            onLogout: onLogout
+                            onLogout: onLogout,
+                            timezoneDisplay: state.timezoneDisplay,
+                            onSetTimezoneDisplay: onSetTimezoneDisplay
                         )
                     }
                 }
@@ -164,7 +167,7 @@ struct ChatListView: View {
     private func chatListTimestamp(_ epochSeconds: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(epochSeconds))
         let formatter = DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.timeZone = state.timezoneDisplay == .utc ? TimeZone(identifier: "UTC") : .current
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
@@ -177,7 +180,8 @@ struct ChatListView: View {
             state: ChatListViewState(
                 chats: PreviewAppState.chatListEmpty.chatList,
                 myNpub: PreviewAppState.sampleNpub,
-                myProfile: PreviewAppState.chatListEmpty.myProfile
+                myProfile: PreviewAppState.chatListEmpty.myProfile,
+                timezoneDisplay: .utc
             ),
             onLogout: {},
             onOpenChat: { _ in },
@@ -187,7 +191,8 @@ struct ChatListView: View {
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
-            nsecProvider: { nil }
+            nsecProvider: { nil },
+            onSetTimezoneDisplay: { _ in }
         )
     }
 }
@@ -198,7 +203,8 @@ struct ChatListView: View {
             state: ChatListViewState(
                 chats: PreviewAppState.chatListPopulated.chatList,
                 myNpub: PreviewAppState.sampleNpub,
-                myProfile: PreviewAppState.chatListPopulated.myProfile
+                myProfile: PreviewAppState.chatListPopulated.myProfile,
+                timezoneDisplay: .utc
             ),
             onLogout: {},
             onOpenChat: { _ in },
@@ -208,7 +214,8 @@ struct ChatListView: View {
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
-            nsecProvider: { nil }
+            nsecProvider: { nil },
+            onSetTimezoneDisplay: { _ in }
         )
     }
 }
@@ -219,7 +226,8 @@ struct ChatListView: View {
             state: ChatListViewState(
                 chats: PreviewAppState.chatListLongNames.chatList,
                 myNpub: PreviewAppState.sampleNpub,
-                myProfile: PreviewAppState.chatListLongNames.myProfile
+                myProfile: PreviewAppState.chatListLongNames.myProfile,
+                timezoneDisplay: .utc
             ),
             onLogout: {},
             onOpenChat: { _ in },
@@ -229,7 +237,8 @@ struct ChatListView: View {
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
-            nsecProvider: { nil }
+            nsecProvider: { nil },
+            onSetTimezoneDisplay: { _ in }
         )
     }
 }

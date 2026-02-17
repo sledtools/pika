@@ -45,6 +45,8 @@ import com.pika.app.rust.AuthState
 import com.pika.app.rust.ChatSummary
 import com.pika.app.rust.Screen
 import com.pika.app.ui.Avatar
+import com.pika.app.rust.TimezoneDisplay
+import com.pika.app.rust.UserPreferences
 import com.pika.app.ui.QrCode
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -103,6 +105,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                 ChatRow(
                     chat = chat,
                     selfPubkey = myPubkey,
+                    timezoneDisplay = manager.state.preferences.timezoneDisplay,
                     onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
                 )
             }
@@ -111,6 +114,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
 
     if (showMyNpub && myNpub != null) {
         val qr = remember(myNpub) { QrCode.encode(myNpub, 512).asImageBitmap() }
+        val currentTz = manager.state.preferences.timezoneDisplay
         AlertDialog(
             onDismissRequest = { setShowMyNpub(false) },
             title = { Text("My npub") },
@@ -122,6 +126,28 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                         modifier = Modifier.size(220.dp).clip(MaterialTheme.shapes.medium),
                     )
                     Text(myNpub)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Timezone:", style = MaterialTheme.typography.bodyMedium)
+                        TextButton(
+                            onClick = {
+                                val newTz = when (currentTz) {
+                                    is TimezoneDisplay.Utc -> TimezoneDisplay.Local
+                                    is TimezoneDisplay.Local -> TimezoneDisplay.Utc
+                                }
+                                manager.dispatch(AppAction.SetTimezoneDisplay(newTz))
+                            },
+                        ) {
+                            Text(
+                                when (currentTz) {
+                                    is TimezoneDisplay.Utc -> "UTC"
+                                    is TimezoneDisplay.Local -> "Local"
+                                },
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -142,7 +168,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
 }
 
 @Composable
-private fun ChatRow(chat: ChatSummary, selfPubkey: String?, onClick: () -> Unit) {
+private fun ChatRow(chat: ChatSummary, selfPubkey: String?, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc, onClick: () -> Unit) {
     val title = chatTitle(chat, selfPubkey)
     val peer = if (!chat.isGroup) {
         chat.members.firstOrNull { selfPubkey == null || it.pubkey != selfPubkey }
@@ -183,7 +209,7 @@ private fun ChatRow(chat: ChatSummary, selfPubkey: String?, onClick: () -> Unit)
                 chat.lastMessageAt?.let { ts ->
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = formatChatListTimestamp(ts),
+                        text = formatChatListTimestamp(ts, timezoneDisplay),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -211,8 +237,11 @@ private fun chatTitle(chat: ChatSummary, selfPubkey: String?): String {
     return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
 }
 
-private fun formatChatListTimestamp(epochSeconds: Long): String {
+private fun formatChatListTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc): String {
     val fmt = SimpleDateFormat("HH:mm", Locale.US)
-    fmt.timeZone = TimeZone.getTimeZone("UTC")
+    fmt.timeZone = when (timezoneDisplay) {
+        is TimezoneDisplay.Utc -> TimeZone.getTimeZone("UTC")
+        is TimezoneDisplay.Local -> TimeZone.getDefault()
+    }
     return fmt.format(Date(epochSeconds * 1000))
 }

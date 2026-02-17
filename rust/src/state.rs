@@ -1,3 +1,22 @@
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TimezoneDisplay {
+    Utc,
+    Local,
+}
+
+#[derive(uniffi::Record, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UserPreferences {
+    pub timezone_display: TimezoneDisplay,
+}
+
+impl Default for UserPreferences {
+    fn default() -> Self {
+        Self {
+            timezone_display: TimezoneDisplay::Utc,
+        }
+    }
+}
+
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct CallTimelineEvent {
     pub id: String,
@@ -20,6 +39,7 @@ pub struct AppState {
     pub active_call: Option<CallState>,
     pub call_timeline: Vec<CallTimelineEvent>,
     pub toast: Option<String>,
+    pub preferences: UserPreferences,
 }
 
 impl AppState {
@@ -40,6 +60,7 @@ impl AppState {
             active_call: None,
             call_timeline: vec![],
             toast: None,
+            preferences: UserPreferences::default(),
         }
     }
 }

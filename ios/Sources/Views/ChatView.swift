@@ -9,11 +9,25 @@ import WebKit
 // TODO: Change to a pika related domain
 private let webViewBaseURL = URL(string: "https://webview.benthecarman.com")!
 
+// MARK: - Timezone Environment Key
+
+private struct TimezoneDisplayEnvironmentKey: EnvironmentKey {
+    static let defaultValue: TimezoneDisplay = .utc
+}
+
+extension EnvironmentValues {
+    var timezoneDisplay: TimezoneDisplay {
+        get { self[TimezoneDisplayEnvironmentKey.self] }
+        set { self[TimezoneDisplayEnvironmentKey.self] = newValue }
+    }
+}
+
 struct ChatView: View {
     let chatId: String
     let state: ChatScreenState
     let activeCall: CallState?
     let callEvents: [CallTimelineEvent]
+    let timezoneDisplay: TimezoneDisplay
     let onSendMessage: @MainActor (String) -> Void
     let onStartCall: @MainActor () -> Void
     let onOpenCallScreen: @MainActor () -> Void
@@ -38,6 +52,7 @@ struct ChatView: View {
         state: ChatScreenState,
         activeCall: CallState?,
         callEvents: [CallTimelineEvent],
+        timezoneDisplay: TimezoneDisplay = .utc,
         onSendMessage: @escaping @MainActor (String) -> Void,
         onStartCall: @escaping @MainActor () -> Void,
         onOpenCallScreen: @escaping @MainActor () -> Void,
@@ -49,6 +64,7 @@ struct ChatView: View {
         self.state = state
         self.activeCall = activeCall
         self.callEvents = callEvents
+        self.timezoneDisplay = timezoneDisplay
         self.onSendMessage = onSendMessage
         self.onStartCall = onStartCall
         self.onOpenCallScreen = onOpenCallScreen
@@ -58,11 +74,14 @@ struct ChatView: View {
     }
 
     var body: some View {
-        if let chat = state.chat, chat.chatId == chatId {
-            loadedChat(chat)
-        } else {
-            loadingView
+        Group {
+            if let chat = state.chat, chat.chatId == chatId {
+                loadedChat(chat)
+            } else {
+                loadingView
+            }
         }
+        .environment(\.timezoneDisplay, timezoneDisplay)
     }
 
     @ViewBuilder
@@ -637,6 +656,7 @@ private struct FocusedMessageCard: View {
     let message: ChatMessage
     let maxWidth: CGFloat
     let maxHeight: CGFloat
+    @Environment(\.timezoneDisplay) private var timezoneDisplay
 
     var body: some View {
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 6) {
@@ -652,7 +672,7 @@ private struct FocusedMessageCard: View {
             Text({
                 let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
                 let formatter = DateFormatter()
-                formatter.timeZone = TimeZone(identifier: "UTC")
+                formatter.timeZone = timezoneDisplay == .utc ? TimeZone(identifier: "UTC") : .current
                 formatter.dateFormat = "HH:mm"
                 return formatter.string(from: date)
             }())
@@ -1021,6 +1041,7 @@ private struct MessageBubble: View {
     var onReact: ((String, String) -> Void)?
     @Binding var activeReactionMessageId: String?
     var onLongPressMessage: ((ChatMessage) -> Void)? = nil
+    @Environment(\.timezoneDisplay) private var timezoneDisplay
 
     private let roundedCornerRadius: CGFloat = 16
     private let groupedCornerRadius: CGFloat = 6
@@ -1086,7 +1107,7 @@ private struct MessageBubble: View {
     private var timestampText: String {
         let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
         let formatter = DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.timeZone = timezoneDisplay == .utc ? TimeZone(identifier: "UTC") : .current
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
@@ -1568,7 +1589,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-1",
-            state: ChatScreenState(chat: PreviewAppState.chatDetail.currentChat),
+            state: ChatScreenState(chat: PreviewAppState.chatDetail.currentChat, timezoneDisplay: .utc),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1582,7 +1603,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-1",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailFailed.currentChat),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailFailed.currentChat, timezoneDisplay: .utc),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1596,7 +1617,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-empty",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailEmpty.currentChat),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailEmpty.currentChat, timezoneDisplay: .utc),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1610,7 +1631,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-long",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailLongThread.currentChat),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailLongThread.currentChat, timezoneDisplay: .utc),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1624,7 +1645,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-grouped",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailGrouped.currentChat),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailGrouped.currentChat, timezoneDisplay: .utc),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },

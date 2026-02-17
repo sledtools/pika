@@ -12,6 +12,8 @@ struct MyNpubQrSheet: View {
     let onSaveProfile: @MainActor (_ name: String, _ about: String) -> Void
     let onUploadPhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
     let onLogout: @MainActor () -> Void
+    let timezoneDisplay: TimezoneDisplay
+    let onSetTimezoneDisplay: @MainActor (TimezoneDisplay) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var showNsec = false
@@ -34,6 +36,8 @@ struct MyNpubQrSheet: View {
         onSaveProfile: @MainActor @escaping (_ name: String, _ about: String) -> Void,
         onUploadPhoto: @MainActor @escaping (_ data: Data, _ mimeType: String) -> Void,
         onLogout: @MainActor @escaping () -> Void,
+        timezoneDisplay: TimezoneDisplay = .utc,
+        onSetTimezoneDisplay: @MainActor @escaping (TimezoneDisplay) -> Void = { _ in },
         showLogoutConfirm: Bool = false
     ) {
         self.npub = npub
@@ -43,6 +47,8 @@ struct MyNpubQrSheet: View {
         self.onSaveProfile = onSaveProfile
         self.onUploadPhoto = onUploadPhoto
         self.onLogout = onLogout
+        self.timezoneDisplay = timezoneDisplay
+        self.onSetTimezoneDisplay = onSetTimezoneDisplay
         self._showLogoutConfirm = State(initialValue: showLogoutConfirm)
     }
 
@@ -198,9 +204,28 @@ struct MyNpubQrSheet: View {
     }
 
     @ViewBuilder
+    private var timezoneSection: some View {
+        Section {
+            Picker("Timestamps", selection: Binding(
+                get: { timezoneDisplay },
+                set: { onSetTimezoneDisplay($0) }
+            )) {
+                Text("UTC").tag(TimezoneDisplay.utc)
+                Text("Local").tag(TimezoneDisplay.local)
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Timezone")
+        } footer: {
+            Text("Controls how timestamps are displayed throughout the app.")
+        }
+    }
+
+    @ViewBuilder
     private var content: some View {
         photoSection
         profileSection
+        timezoneSection
         npubSection
         qrSection
         if let nsec = nsecProvider() {

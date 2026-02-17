@@ -195,7 +195,10 @@ private func screenView(
             onUploadProfilePhoto: { data, mimeType in
                 manager.uploadMyProfileImage(data: data, mimeType: mimeType)
             },
-            nsecProvider: { manager.getNsec() }
+            nsecProvider: { manager.getNsec() },
+            onSetTimezoneDisplay: { tz in
+                manager.dispatch(.setTimezoneDisplay(timezone: tz))
+            }
         )
     case .newChat:
         NewChatView(
@@ -217,6 +220,7 @@ private func screenView(
             state: chatScreenState(from: state),
             activeCall: state.activeCall,
             callEvents: state.callTimeline.filter { $0.chatId == chatId },
+            timezoneDisplay: state.preferences.timezoneDisplay,
             onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0)) },
             onStartCall: { manager.dispatch(.startCall(chatId: chatId)) },
             onOpenCallScreen: {
@@ -293,7 +297,8 @@ private func chatListState(from state: AppState) -> ChatListViewState {
     ChatListViewState(
         chats: state.chatList,
         myNpub: myNpub(from: state),
-        myProfile: state.myProfile
+        myProfile: state.myProfile,
+        timezoneDisplay: state.preferences.timezoneDisplay
     )
 }
 
@@ -317,7 +322,7 @@ private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
 
 @MainActor
 private func chatScreenState(from state: AppState) -> ChatScreenState {
-    ChatScreenState(chat: state.currentChat)
+    ChatScreenState(chat: state.currentChat, timezoneDisplay: state.preferences.timezoneDisplay)
 }
 
 @MainActor

@@ -18,7 +18,7 @@ use crate::mdk_support::{open_mdk, PikaMdk};
 use crate::state::now_seconds;
 use crate::state::{
     AuthState, BusyState, CallDebugStats, CallStatus, ChatMessage, ChatSummary, ChatViewState,
-    MessageDeliveryState, MyProfileState, Screen,
+    MessageDeliveryState, MyProfileState, Screen, UserPreferences,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
@@ -201,6 +201,9 @@ impl AppCore {
             }
         }
 
+        // Load user preferences (timezone, etc.) before the initial snapshot.
+        this.load_user_preferences();
+
         // Ensure FfiApp.state() has an immediately-available snapshot.
         let snapshot = this.state.clone();
         this.commit_state_snapshot(&snapshot);
@@ -223,6 +226,26 @@ impl AppCore {
     fn save_archived_chats(&self) {
         let path = self.archived_chats_path();
         if let Ok(json) = serde_json::to_string(&self.archived_chats) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    fn preferences_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("user_preferences.json")
+    }
+
+    fn load_user_preferences(&mut self) {
+        let path = self.preferences_path();
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(prefs) = serde_json::from_str::<UserPreferences>(&data) {
+                self.state.preferences = prefs;
+            }
+        }
+    }
+
+    fn save_user_preferences(&self) {
+        let path = self.preferences_path();
+        if let Ok(json) = serde_json::to_string(&self.state.preferences) {
             let _ = std::fs::write(&path, json);
         }
     }
@@ -2245,6 +2268,13 @@ impl AppCore {
                     None,
                     vec![],
                 );
+            }
+
+            // Settings
+            AppAction::SetTimezoneDisplay { timezone } => {
+                self.state.preferences.timezone_display = timezone;
+                self.save_user_preferences();
+                self.emit_state();
             }
         }
     }

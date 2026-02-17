@@ -215,7 +215,8 @@ enum PreviewAppState {
         followList: [FollowListEntry] = [],
         activeCall: CallState? = nil,
         callTimeline: [CallTimelineEvent] = [],
-        toast: String? = nil
+        toast: String? = nil,
+        preferences: UserPreferences = UserPreferences(timezoneDisplay: .utc)
     ) -> AppState {
         AppState(
             rev: rev,
@@ -229,7 +230,8 @@ enum PreviewAppState {
             peerProfile: nil,
             activeCall: activeCall,
             callTimeline: callTimeline,
-            toast: toast
+            toast: toast,
+            preferences: preferences
         )
     }
 

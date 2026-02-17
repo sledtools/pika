@@ -9,6 +9,7 @@ struct ChatListViewState: Equatable {
     let chats: [ChatSummary]
     let myNpub: String?
     let myProfile: MyProfileState
+    let timezoneDisplay: TimezoneDisplay
 }
 
 struct NewChatViewState: Equatable {
@@ -25,6 +26,7 @@ struct NewGroupChatViewState: Equatable {
 
 struct ChatScreenState: Equatable {
     let chat: ChatViewState?
+    let timezoneDisplay: TimezoneDisplay
 }
 
 struct GroupInfoViewState: Equatable {

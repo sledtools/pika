@@ -679,6 +679,106 @@ public func FfiConverterTypeFfiApp_lower(_ value: FfiApp) -> UInt64 {
 
 
 
+public enum TimezoneDisplay: Equatable, Hashable {
+
+    case utc
+    case local
+
+
+}
+
+#if compiler(>=6)
+extension TimezoneDisplay: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTimezoneDisplay: FfiConverterRustBuffer {
+    typealias SwiftType = TimezoneDisplay
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TimezoneDisplay {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .utc
+
+        case 2: return .local
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TimezoneDisplay, into buf: inout [UInt8]) {
+        switch value {
+
+        case .utc:
+            writeInt(&buf, Int32(1))
+
+        case .local:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTimezoneDisplay_lift(_ buf: RustBuffer) throws -> TimezoneDisplay {
+    return try FfiConverterTypeTimezoneDisplay.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTimezoneDisplay_lower(_ value: TimezoneDisplay) -> RustBuffer {
+    return FfiConverterTypeTimezoneDisplay.lower(value)
+}
+
+
+public struct UserPreferences: Equatable, Hashable {
+    public var timezoneDisplay: TimezoneDisplay
+
+    public init(timezoneDisplay: TimezoneDisplay) {
+        self.timezoneDisplay = timezoneDisplay
+    }
+}
+
+#if compiler(>=6)
+extension UserPreferences: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUserPreferences: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UserPreferences {
+        return
+            try UserPreferences(
+                timezoneDisplay: FfiConverterTypeTimezoneDisplay.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UserPreferences, into buf: inout [UInt8]) {
+        FfiConverterTypeTimezoneDisplay.write(value.timezoneDisplay, into: &buf)
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUserPreferences_lift(_ buf: RustBuffer) throws -> UserPreferences {
+    return try FfiConverterTypeUserPreferences.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUserPreferences_lower(_ value: UserPreferences) -> RustBuffer {
+    return FfiConverterTypeUserPreferences.lower(value)
+}
+
 
 public struct AppState: Equatable, Hashable {
     public var rev: UInt64
@@ -693,10 +793,11 @@ public struct AppState: Equatable, Hashable {
     public var activeCall: CallState?
     public var callTimeline: [CallTimelineEvent]
     public var toast: String?
+    public var preferences: UserPreferences
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, followList: [FollowListEntry], peerProfile: PeerProfileState?, activeCall: CallState?, callTimeline: [CallTimelineEvent], toast: String?) {
+    public init(rev: UInt64, router: Router, auth: AuthState, myProfile: MyProfileState, busy: BusyState, chatList: [ChatSummary], currentChat: ChatViewState?, followList: [FollowListEntry], peerProfile: PeerProfileState?, activeCall: CallState?, callTimeline: [CallTimelineEvent], toast: String?, preferences: UserPreferences) {
         self.rev = rev
         self.router = router
         self.auth = auth
@@ -709,6 +810,7 @@ public struct AppState: Equatable, Hashable {
         self.activeCall = activeCall
         self.callTimeline = callTimeline
         self.toast = toast
+        self.preferences = preferences
     }
 
 
@@ -738,7 +840,8 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
                 peerProfile: FfiConverterOptionTypePeerProfileState.read(from: &buf),
                 activeCall: FfiConverterOptionTypeCallState.read(from: &buf),
                 callTimeline: FfiConverterSequenceTypeCallTimelineEvent.read(from: &buf),
-                toast: FfiConverterOptionString.read(from: &buf)
+                toast: FfiConverterOptionString.read(from: &buf),
+                preferences: FfiConverterTypeUserPreferences.read(from: &buf)
         )
     }
 
@@ -755,6 +858,7 @@ public struct FfiConverterTypeAppState: FfiConverterRustBuffer {
         FfiConverterOptionTypeCallState.write(value.activeCall, into: &buf)
         FfiConverterSequenceTypeCallTimelineEvent.write(value.callTimeline, into: &buf)
         FfiConverterOptionString.write(value.toast, into: &buf)
+        FfiConverterTypeUserPreferences.write(value.preferences, into: &buf)
     }
 }
 
@@ -1836,6 +1940,8 @@ public enum AppAction: Equatable, Hashable {
     )
     case unfollowUser(pubkey: String
     )
+    case setTimezoneDisplay(timezone: TimezoneDisplay
+    )
 
 
 
@@ -1945,6 +2051,9 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         )
 
         case 33: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
+        )
+
+        case 34: return .setTimezoneDisplay(timezone: try FfiConverterTypeTimezoneDisplay.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2121,6 +2230,11 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case let .unfollowUser(pubkey):
             writeInt(&buf, Int32(33))
             FfiConverterString.write(pubkey, into: &buf)
+
+
+        case let .setTimezoneDisplay(timezone):
+            writeInt(&buf, Int32(34))
+            FfiConverterTypeTimezoneDisplay.write(timezone, into: &buf)
 
         }
     }

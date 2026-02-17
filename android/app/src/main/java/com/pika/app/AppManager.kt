@@ -46,6 +46,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             activeCall = null,
             callTimeline = emptyList(),
             toast = null,
+            preferences = com.pika.app.rust.UserPreferences(timezoneDisplay = com.pika.app.rust.TimezoneDisplay.Utc),
         ),
     )
         private set

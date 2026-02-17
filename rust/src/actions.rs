@@ -1,4 +1,4 @@
-use crate::state::Screen;
+use crate::state::{Screen, TimezoneDisplay};
 
 #[derive(uniffi::Enum, Debug, Clone)]
 pub enum AppAction {
@@ -112,6 +112,11 @@ pub enum AppAction {
     UnfollowUser {
         pubkey: String,
     },
+
+    // Settings
+    SetTimezoneDisplay {
+        timezone: TimezoneDisplay,
+    },
 }
 
 impl AppAction {
@@ -168,6 +173,9 @@ impl AppAction {
             AppAction::RefreshFollowList => "RefreshFollowList",
             AppAction::FollowUser { .. } => "FollowUser",
             AppAction::UnfollowUser { .. } => "UnfollowUser",
+
+            // Settings
+            AppAction::SetTimezoneDisplay { .. } => "SetTimezoneDisplay",
         }
     }
 }

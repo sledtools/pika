@@ -56,6 +56,7 @@ import com.pika.app.rust.CallState
 import com.pika.app.rust.CallStatus
 import com.pika.app.rust.ChatMessage
 import com.pika.app.rust.MessageDeliveryState
+import com.pika.app.rust.TimezoneDisplay
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
@@ -140,6 +141,7 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
                 items(reversed, key = { it.id }) { msg ->
                     MessageBubble(
                         message = msg,
+                        timezoneDisplay = manager.state.preferences.timezoneDisplay,
                         onSendMessage = { text ->
                             manager.dispatch(AppAction.SendMessage(chat.chatId, text))
                         },
@@ -378,7 +380,7 @@ private fun isLiveCallStatus(status: CallStatus): Boolean =
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, onSendMessage: (String) -> Unit) {
+private fun MessageBubble(message: ChatMessage, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc, onSendMessage: (String) -> Unit) {
     val isMine = message.isMine
     val bubbleColor = if (isMine) PikaBlue else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
@@ -417,7 +419,7 @@ private fun MessageBubble(message: ChatMessage, onSendMessage: (String) -> Unit)
                                     },
                                 )
                                 Text(
-                                    text = formatTimestamp(message.timestamp),
+                                    text = formatTimestamp(message.timestamp, timezoneDisplay),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (isMine) Color.White.copy(alpha = 0.78f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                 )
@@ -526,8 +528,11 @@ private fun PikaPromptCard(title: String, options: List<String>, message: ChatMe
     }
 }
 
-private fun formatTimestamp(epochSeconds: Long): String {
+private fun formatTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc): String {
     val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
-    fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+    fmt.timeZone = when (timezoneDisplay) {
+        is TimezoneDisplay.Utc -> java.util.TimeZone.getTimeZone("UTC")
+        is TimezoneDisplay.Local -> java.util.TimeZone.getDefault()
+    }
     return fmt.format(Date(epochSeconds * 1000))
 }

@@ -15,7 +15,8 @@ final class AppManagerTests: XCTestCase {
             peerProfile: nil,
             activeCall: nil,
             callTimeline: [],
-            toast: toast
+            toast: toast,
+            preferences: UserPreferences(timezoneDisplay: .utc)
         )
     }
 

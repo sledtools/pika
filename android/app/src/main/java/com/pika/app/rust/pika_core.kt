@@ -1460,6 +1460,99 @@ public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Long> {
 
 
 
+sealed class TimezoneDisplay {
+    
+    object Utc : TimezoneDisplay()
+    
+    
+    object Local : TimezoneDisplay()
+    
+    
+
+    
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTimezoneDisplay : FfiConverterRustBuffer<TimezoneDisplay>{
+    override fun read(buf: ByteBuffer): TimezoneDisplay {
+        return when(buf.getInt()) {
+            1 -> TimezoneDisplay.Utc
+            2 -> TimezoneDisplay.Local
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: TimezoneDisplay) = when(value) {
+        is TimezoneDisplay.Utc -> {
+            (
+                4UL
+            )
+        }
+        is TimezoneDisplay.Local -> {
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: TimezoneDisplay, buf: ByteBuffer) {
+        when(value) {
+            is TimezoneDisplay.Utc -> {
+                buf.putInt(1)
+                Unit
+            }
+            is TimezoneDisplay.Local -> {
+                buf.putInt(2)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+data class UserPreferences (
+    var `timezoneDisplay`: TimezoneDisplay
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeUserPreferences: FfiConverterRustBuffer<UserPreferences> {
+    override fun read(buf: ByteBuffer): UserPreferences {
+        return UserPreferences(
+            FfiConverterTypeTimezoneDisplay.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: UserPreferences) = (
+            FfiConverterTypeTimezoneDisplay.allocationSize(value.`timezoneDisplay`)
+    )
+
+    override fun write(value: UserPreferences, buf: ByteBuffer) {
+            FfiConverterTypeTimezoneDisplay.write(value.`timezoneDisplay`, buf)
+    }
+}
+
+
+
 data class AppState (
     var `rev`: kotlin.ULong
     , 
@@ -1484,6 +1577,8 @@ data class AppState (
     var `callTimeline`: List<CallTimelineEvent>
     , 
     var `toast`: kotlin.String?
+    , 
+    var `preferences`: UserPreferences
     
 ){
     
@@ -1512,6 +1607,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypeCallState.read(buf),
             FfiConverterSequenceTypeCallTimelineEvent.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterTypeUserPreferences.read(buf),
         )
     }
 
@@ -1527,7 +1623,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypePeerProfileState.allocationSize(value.`peerProfile`) +
             FfiConverterOptionalTypeCallState.allocationSize(value.`activeCall`) +
             FfiConverterSequenceTypeCallTimelineEvent.allocationSize(value.`callTimeline`) +
-            FfiConverterOptionalString.allocationSize(value.`toast`)
+            FfiConverterOptionalString.allocationSize(value.`toast`) +
+            FfiConverterTypeUserPreferences.allocationSize(value.`preferences`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -1543,6 +1640,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypeCallState.write(value.`activeCall`, buf)
             FfiConverterSequenceTypeCallTimelineEvent.write(value.`callTimeline`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
+            FfiConverterTypeUserPreferences.write(value.`preferences`, buf)
     }
 }
 
@@ -2612,6 +2710,26 @@ sealed class AppAction {
         companion object
     }
     
+    data class SetTimezoneDisplay(
+        val `timezone`: com.pika.app.rust.TimezoneDisplay) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+    
+
+    
+    
+
+
+    companion object
+}
+    
 
     
 
@@ -2720,6 +2838,9 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             33 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
+                )
+            34 -> AppAction.SetTimezoneDisplay(
+                FfiConverterTypeTimezoneDisplay.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -2960,6 +3081,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`pubkey`)
             )
         }
+        is AppAction.SetTimezoneDisplay -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeTimezoneDisplay.allocationSize(value.`timezone`)
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -3130,6 +3258,11 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.UnfollowUser -> {
                 buf.putInt(33)
                 FfiConverterString.write(value.`pubkey`, buf)
+                Unit
+            }
+            is AppAction.SetTimezoneDisplay -> {
+                buf.putInt(34)
+                FfiConverterTypeTimezoneDisplay.write(value.`timezone`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

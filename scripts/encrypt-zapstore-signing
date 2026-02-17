@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_ENCRYPTED="$ROOT/secrets/zapstore-signing.env.age"
+OUTPUT_ENCRYPTED_NEXT="$ROOT/secrets/zapstore-signing.env.age.next"
+CI_KEY_TMP="$ROOT/secrets/.age-key.ci.tmp"
+
+# Defaults from ~/configs/secrets/secrets.nix; can be overridden via env.
+YUBIKEY_PRIMARY="${PIKA_YUBIKEY_PRIMARY_RECIPIENT:-age1yubikey1q0zhu9e7zrj48zmnpx4fg07c0drt9f57e26uymgxa4h3fczwutzjjp5a6y5}"
+YUBIKEY_BACKUP="${PIKA_YUBIKEY_BACKUP_RECIPIENT:-age1yubikey1qtdv7spad78v4yhrtrts6tvv5wc80vw6mah6g64m9cr9l3ryxsf2jdx8gs9}"
+CI_RECIPIENT="${PIKA_CI_AGE_RECIPIENT:-}"
+
+usage() {
+  cat <<'USAGE'
+usage: ./scripts/encrypt-zapstore-signing
+
+Encrypts `secrets/zapstore-signing.env.age` with:
+  - YubiKey primary recipient
+  - YubiKey backup recipient
+  - CI recipient (from PIKA_CI_AGE_RECIPIENT, AGE_SECRET_KEY, `server` in configs, or prompt)
+
+Input:
+  - `PIKA_ZAPSTORE_SIGN_WITH` (recommended)
+  - or interactive prompt
+
+Environment overrides:
+  PIKA_ZAPSTORE_SIGN_WITH
+  PIKA_CI_AGE_RECIPIENT
+  PIKA_YUBIKEY_PRIMARY_RECIPIENT
+  PIKA_YUBIKEY_BACKUP_RECIPIENT
+USAGE
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing command: $1" >&2
+    exit 1
+  fi
+}
+
+load_recipients_from_configs() {
+  local cfg="$HOME/configs/secrets/secrets.nix"
+  local candidate=""
+  if [ ! -f "$cfg" ]; then
+    return 0
+  fi
+
+  candidate="$(grep -E 'yubikey_primary = "age1' "$cfg" | head -n 1 | sed -E 's/.*"(age1[^"]+)".*/\1/')"
+  if [ -z "${PIKA_YUBIKEY_PRIMARY_RECIPIENT:-}" ] && [ -n "$candidate" ]; then
+    YUBIKEY_PRIMARY="$candidate"
+  fi
+
+  candidate="$(grep -E 'yubikey_backup = "age1' "$cfg" | head -n 1 | sed -E 's/.*"(age1[^"]+)".*/\1/')"
+  if [ -z "${PIKA_YUBIKEY_BACKUP_RECIPIENT:-}" ] && [ -n "$candidate" ]; then
+    YUBIKEY_BACKUP="$candidate"
+  fi
+
+  if [ -z "${PIKA_CI_AGE_RECIPIENT:-}" ] && [ -z "$CI_RECIPIENT" ]; then
+    candidate="$(grep -E 'server = "age1' "$cfg" | head -n 1 | sed -E 's/.*"(age1[^"]+)".*/\1/')"
+    if [ -n "$candidate" ]; then
+      CI_RECIPIENT="$candidate"
+    fi
+  fi
+}
+
+cleanup() {
+  rm -f "$CI_KEY_TMP" "$OUTPUT_ENCRYPTED_NEXT"
+}
+trap cleanup EXIT INT TERM
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+if [ "$#" -ne 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+need_cmd age
+need_cmd age-keygen
+need_cmd grep
+need_cmd sed
+
+load_recipients_from_configs
+
+if [ -z "$CI_RECIPIENT" ] && [ -n "${AGE_SECRET_KEY:-}" ]; then
+  umask 077
+  printf '%s\n' "$AGE_SECRET_KEY" >"$CI_KEY_TMP"
+  CI_RECIPIENT="$(age-keygen -y "$CI_KEY_TMP")"
+fi
+
+if [ -z "$CI_RECIPIENT" ]; then
+  if [ -t 0 ]; then
+    read -r -p "Enter CI age recipient (age1...): " CI_RECIPIENT
+  else
+    echo "error: set PIKA_CI_AGE_RECIPIENT, AGE_SECRET_KEY, or configure server recipient in ~/configs/secrets/secrets.nix" >&2
+    exit 1
+  fi
+fi
+
+if ! printf '%s\n' "$CI_RECIPIENT" | grep -Eq '^age1[023456789acdefghjklmnpqrstuvwxyz]+$'; then
+  echo "error: invalid CI recipient format (expected age1...)" >&2
+  exit 1
+fi
+
+sign_with="${PIKA_ZAPSTORE_SIGN_WITH:-}"
+if [ -z "$sign_with" ]; then
+  if [ ! -t 0 ]; then
+    echo "error: set PIKA_ZAPSTORE_SIGN_WITH when running non-interactively" >&2
+    exit 1
+  fi
+  read -r -s -p "Enter Zapstore SIGN_WITH (nsec or bunker URL): " sign_with
+  printf '\n'
+fi
+
+if [ -z "$sign_with" ]; then
+  echo "error: missing Zapstore SIGN_WITH value" >&2
+  exit 1
+fi
+
+mkdir -p "$ROOT/secrets"
+umask 077
+
+{
+  printf 'ZAPSTORE_SIGN_WITH=%s\n' "$sign_with"
+} | age -e \
+  -r "$YUBIKEY_PRIMARY" \
+  -r "$YUBIKEY_BACKUP" \
+  -r "$CI_RECIPIENT" \
+  -o "$OUTPUT_ENCRYPTED_NEXT"
+
+chmod 600 "$OUTPUT_ENCRYPTED_NEXT"
+mv "$OUTPUT_ENCRYPTED_NEXT" "$OUTPUT_ENCRYPTED"
+
+unset sign_with
+
+echo "ok: wrote $OUTPUT_ENCRYPTED"
+echo "ok: recipients:"
+echo "  - $YUBIKEY_PRIMARY"
+echo "  - $YUBIKEY_BACKUP"
+echo "  - $CI_RECIPIENT (CI)"

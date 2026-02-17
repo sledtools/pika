@@ -103,6 +103,28 @@
             mainProgram = "cargo-dinghy";
           };
         };
+
+        zsp = pkgs.buildGoModule rec {
+          pname = "zsp";
+          version = "0.3.3";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "zapstore";
+            repo = "zsp";
+            rev = "v${version}";
+            hash = "sha256-OiCk+LatiD+W0MR9klEWZ/bx/9QK1+MjO4lKyHSOFn8=";
+          };
+
+          vendorHash = "sha256-INIDPettuY0y4h6NF8ltF9r/AMQx9Each9JVBe9+CGo=";
+          doCheck = false;
+
+          meta = with pkgs.lib; {
+            description = "CLI tool for publishing Android apps to Nostr relays";
+            homepage = "https://github.com/zapstore/zsp";
+            license = licenses.mit;
+            mainProgram = "zsp";
+          };
+        };
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -131,6 +153,7 @@
             pkgs.age
             pkgs.age-plugin-yubikey
             pkgs.openssl
+            zsp
             rmp
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen

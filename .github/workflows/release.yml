@@ -145,3 +145,53 @@ jobs:
           files: |
             dist/*.apk
             dist/SHA256SUMS
+
+  publish-zapstore:
+    if: (github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman') && hashFiles('secrets/zapstore-signing.env.age') != ''
+    needs: [build, publish]
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-apk
+          path: dist
+
+      - name: Validate tag matches VERSION
+        run: |
+          set -euo pipefail
+          expected_tag="v$(./scripts/version-read --name)"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+            exit 1
+          fi
+
+      - name: Publish to Zapstore
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          apk_count="$(find dist -maxdepth 1 -type f -name '*.apk' | wc -l | xargs)"
+          if [ "$apk_count" -ne 1 ]; then
+            echo "error: expected exactly one APK artifact in dist/, found $apk_count"
+            find dist -maxdepth 1 -type f -name '*.apk' -print
+            exit 1
+          fi
+          apk_path="$(find dist -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          sign_with="$(nix develop .#default -c ./scripts/read-zapstore-sign-with)"
+          echo "::add-mask::$sign_with"
+          nix develop .#default -c env SIGN_WITH="$sign_with" zsp publish -y --skip-preview --quiet "$apk_path" -r "https://github.com/${GITHUB_REPOSITORY}"
+          unset sign_with

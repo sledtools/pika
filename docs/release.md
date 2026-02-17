@@ -8,11 +8,12 @@ read_when:
 
 # Release
 
-This repo has two independent release pipelines, both tag-driven:
+This repo has three independent release pipelines, all tag-driven:
 
 | Target | Tag pattern | CI workflow | Artifacts |
 |--------|------------|-------------|-----------|
 | Android APK | `v*` (e.g. `v0.2.2`) | `release.yml` | Signed APK + SHA256SUMS on GitHub Releases |
+| Zapstore publish | `v*` (e.g. `v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
 | marmotd (OpenClaw extension) | `marmotd-v*` (e.g. `marmotd-v0.3.2`) | `marmotd-release.yml` | Linux + macOS binaries on GitHub Releases, npm package |
 
 **Important:** All release tags must be created from the `master` branch. Tags on
@@ -69,13 +70,20 @@ gh release view v0.3.0
 
 - Commit only encrypted keystore: `android/pika-release.jks.age`.
 - Commit only encrypted signing env: `secrets/android-signing.env.age`.
+- Commit only encrypted Zapstore signing env: `secrets/zapstore-signing.env.age`.
 - Keep plaintext `android/pika-release.jks` out of git.
-- Encrypt both artifacts to all required recipients:
+- Keep plaintext Zapstore signing env (`secrets/zapstore-signing.env`) out of git.
+- Encrypt all encrypted artifacts to all required recipients:
   - YubiKey primary: `age1yubikey1q0zhu9e7zrj48zmnpx4fg07c0drt9f57e26uymgxa4h3fczwutzjjp5a6y5`
   - YubiKey backup: `age1yubikey1qtdv7spad78v4yhrtrts6tvv5wc80vw6mah6g64m9cr9l3ryxsf2jdx8gs9`
   - CI age public key (dedicated release key)
 - CI env var required:
-  - `AGE_SECRET_KEY` (decrypts both encrypted artifacts in CI)
+  - `AGE_SECRET_KEY` (decrypts all encrypted artifacts in CI)
+- Zapstore encrypted env format:
+  - `ZAPSTORE_SIGN_WITH=nsec1...` (or NIP-46 bunker URL)
+- Helper command:
+  - `just zapstore-encrypt-signing`
+  - or include in full bootstrap: `PIKA_ZAPSTORE_SIGN_WITH='nsec1...' ./scripts/init-release-secrets`
 - Optional for local hardware-key decrypt:
   - `PIKA_AGE_IDENTITY_FILE` (defaults to `~/configs/yubikeys/keys.txt`)
 
@@ -88,6 +96,11 @@ Jobs:
 1. `check` - validates tag/version match and runs `just pre-merge-pika`
 2. `build` - runs `just android-release`, uploads APK + `SHA256SUMS`
 3. `publish` - creates GitHub Release with uploaded assets
+4. `publish-zapstore` - publishes the built APK artifact to Zapstore relays
+
+`publish-zapstore` is gated on `secrets/zapstore-signing.env.age` existing in
+git. It decrypts `ZAPSTORE_SIGN_WITH` via `AGE_SECRET_KEY`, masks it in logs,
+and passes it to `zsp` only for the publish command.
 
 ---
 

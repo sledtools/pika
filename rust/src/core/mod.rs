@@ -121,6 +121,12 @@ pub struct AppCore {
     // immediately and reliably (e.g., offline note-to-self).
     local_outbox: HashMap<String, HashMap<String, LocalOutgoing>>, // chat_id -> message_id -> message
 
+    // Typing indicator state: chat_id -> (sender_pubkey -> expires_at_unix_secs).
+    // Purely in-memory; never persisted.
+    typing_state: HashMap<String, HashMap<String, i64>>,
+    // Timestamp of the last typing indicator *we* sent per chat, to debounce.
+    last_typing_sent: HashMap<String, i64>,
+
     // Nostr kind:0 profile cache (survives across session refreshes).
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached profile
     my_metadata: Option<Metadata>,
@@ -176,6 +182,8 @@ impl AppCore {
             delivery_overrides: HashMap::new(),
             pending_sends: HashMap::new(),
             local_outbox: HashMap::new(),
+            typing_state: HashMap::new(),
+            last_typing_sent: HashMap::new(),
             profiles: HashMap::new(),
             my_metadata: None,
             archived_chats: HashSet::new(),
@@ -222,6 +230,51 @@ impl AppCore {
         let path = self.archived_chats_path();
         if let Ok(json) = serde_json::to_string(&self.archived_chats) {
             let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Returns the list of members currently typing in the given chat (pruning expired entries).
+    fn get_active_typers(&mut self, chat_id: &str) -> Vec<crate::state::TypingMember> {
+        let now = now_seconds();
+        let typers = match self.typing_state.get_mut(chat_id) {
+            Some(map) => {
+                map.retain(|_, expires| *expires > now);
+                map.keys().cloned().collect::<Vec<_>>()
+            }
+            None => vec![],
+        };
+
+        // Resolve display names from the group member list.
+        let members: Option<&[(PublicKey, Option<String>, Option<String>)]> = self
+            .session
+            .as_ref()
+            .and_then(|s| s.groups.get(chat_id))
+            .map(|g| g.members.as_slice());
+
+        typers
+            .into_iter()
+            .map(|pk_hex| {
+                let name = members.and_then(|ms| {
+                    ms.iter()
+                        .find(|(pk, _, _)| pk.to_hex() == pk_hex)
+                        .and_then(|(_, n, _)| n.clone())
+                });
+                crate::state::TypingMember {
+                    pubkey: pk_hex,
+                    name,
+                }
+            })
+            .collect()
+    }
+
+    /// Record that `sender_pubkey_hex` is typing in `chat_id` until `expires_at`.
+    /// Clears the indicator for that sender when a real message arrives (pass expires_at = 0).
+    fn update_typing(&mut self, chat_id: &str, sender_pubkey_hex: &str, expires_at: i64) {
+        let map = self.typing_state.entry(chat_id.to_string()).or_default();
+        if expires_at <= now_seconds() {
+            map.remove(sender_pubkey_hex);
+        } else {
+            map.insert(sender_pubkey_hex.to_string(), expires_at);
         }
     }
 
@@ -1042,11 +1095,24 @@ impl AppCore {
                     matches!(result, MessageProcessingResult::ApplicationMessage(_));
                 let mut app_sender: Option<PublicKey> = None;
                 let mut app_content: Option<String> = None;
+                let mut is_typing_indicator = false;
 
                 let mls_group_id: Option<GroupId> = match &result {
                     MessageProcessingResult::ApplicationMessage(msg) => {
-                        app_sender = Some(msg.pubkey);
-                        app_content = Some(msg.content.clone());
+                        // Detect typing indicator: kind 30078, content "typing", d tag "pika"
+                        if msg.kind == Kind::ApplicationSpecificData
+                            && msg.content == "typing"
+                            && msg.tags.iter().any(|t| {
+                                t.kind() == TagKind::d()
+                                    && t.content().map(|c| c == "pika").unwrap_or(false)
+                            })
+                        {
+                            is_typing_indicator = true;
+                            app_sender = Some(msg.pubkey);
+                        } else {
+                            app_sender = Some(msg.pubkey);
+                            app_content = Some(msg.content.clone());
+                        }
                         Some(msg.mls_group_id.clone())
                     }
                     MessageProcessingResult::Proposal(update) => Some(update.mls_group_id.clone()),
@@ -1078,26 +1144,51 @@ impl AppCore {
                         }
                     };
                     if let Some(chat_id) = chat_id {
-                        let mut is_call_signal = false;
-                        if let (Some(sender), Some(content)) = (app_sender, app_content.as_deref())
-                        {
-                            if let Some(signal) = self.maybe_parse_call_signal(&sender, content) {
-                                self.handle_incoming_call_signal(&chat_id, &sender, signal);
-                                is_call_signal = true;
+                        if is_typing_indicator {
+                            // Handle typing indicator: update in-memory state, refresh chat.
+                            if let Some(sender) = app_sender {
+                                let sender_hex = sender.to_hex();
+                                let my_hex = self
+                                    .session
+                                    .as_ref()
+                                    .map(|s| s.keys.public_key().to_hex());
+                                // Ignore our own typing indicators.
+                                if my_hex.as_deref() != Some(sender_hex.as_str()) {
+                                    self.update_typing(&chat_id, &sender_hex, now_seconds() + 10);
+                                    self.refresh_current_chat_if_open(&chat_id);
+                                }
                             }
-                        }
+                        } else {
+                            // Normal message: clear typing indicator for sender.
+                            if let Some(sender) = app_sender {
+                                self.update_typing(&chat_id, &sender.to_hex(), 0);
+                            }
 
-                        let current = self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                        if current != Some(chat_id.as_str()) && !is_call_signal {
-                            *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
-                        } else if is_app_message && !is_call_signal {
-                            self.loaded_count
-                                .entry(chat_id.clone())
-                                .and_modify(|n| *n += 1)
-                                .or_insert(51);
+                            let mut is_call_signal = false;
+                            if let (Some(sender), Some(content)) =
+                                (app_sender, app_content.as_deref())
+                            {
+                                if let Some(signal) =
+                                    self.maybe_parse_call_signal(&sender, content)
+                                {
+                                    self.handle_incoming_call_signal(&chat_id, &sender, signal);
+                                    is_call_signal = true;
+                                }
+                            }
+
+                            let current =
+                                self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
+                            if current != Some(chat_id.as_str()) && !is_call_signal {
+                                *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
+                            } else if is_app_message && !is_call_signal {
+                                self.loaded_count
+                                    .entry(chat_id.clone())
+                                    .and_modify(|n| *n += 1)
+                                    .or_insert(51);
+                            }
+                            self.refresh_chat_list_from_storage();
+                            self.refresh_current_chat_if_open(&chat_id);
                         }
-                        self.refresh_chat_list_from_storage();
-                        self.refresh_current_chat_if_open(&chat_id);
                     } else {
                         // Fallback: refresh everything if metadata lookup fails.
                         self.refresh_all_from_storage();
@@ -1234,6 +1325,62 @@ impl AppCore {
 
                 // Refresh chat to pick up the reaction from storage.
                 self.refresh_current_chat(&chat_id);
+            }
+            AppAction::TypingStarted { chat_id } => {
+                if !self.is_logged_in() {
+                    return;
+                }
+
+                // Debounce: don't send more than once every 5 seconds per chat.
+                let now = now_seconds();
+                if let Some(&last) = self.last_typing_sent.get(&chat_id) {
+                    if now - last < 5 {
+                        return;
+                    }
+                }
+                self.last_typing_sent.insert(chat_id.clone(), now);
+
+                let Some(sess) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(group) = sess.groups.get(&chat_id).cloned() else {
+                    return;
+                };
+
+                let expires_at = now as u64 + 10;
+                let rumor = UnsignedEvent::new(
+                    sess.keys.public_key(),
+                    Timestamp::now(),
+                    Kind::ApplicationSpecificData,
+                    [
+                        Tag::custom(TagKind::d(), ["pika"]),
+                        Tag::expiration(Timestamp::from_secs(expires_at)),
+                    ],
+                    "typing",
+                );
+
+                let options = mdk_core::messages::CreateMessageOptions {
+                    skip_storage: true,
+                    extra_wrapper_tags: vec![
+                        Tag::expiration(Timestamp::from_secs(expires_at)),
+                    ],
+                };
+
+                let wrapper = match sess
+                    .mdk
+                    .create_message_with_options(&group.mls_group_id, rumor, options)
+                {
+                    Ok(ev) => ev,
+                    Err(e) => {
+                        tracing::warn!(err = %e, "typing indicator create_message failed");
+                        return;
+                    }
+                };
+
+                let client = sess.client.clone();
+                self.runtime.spawn(async move {
+                    let _ = client.send_event(&wrapper).await;
+                });
             }
             AppAction::ClearToast => {
                 if self.state.toast.is_some() {

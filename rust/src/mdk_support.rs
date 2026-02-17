@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use anyhow::{anyhow, Context, Result};
 use mdk_core::{MdkConfig, MDK};
 use mdk_sqlite_storage::MdkSqliteStorage;
-use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::prelude::{Kind, PublicKey};
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
 
@@ -102,8 +102,15 @@ pub fn open_mdk(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMdk> {
     };
 
     Ok(MDK::builder(storage)
-        .with_config(MdkConfig::default())
+        .with_config(mdk_config())
         .build())
+}
+
+fn mdk_config() -> MdkConfig {
+    MdkConfig {
+        ephemeral_kinds: vec![Kind::ApplicationSpecificData],
+        ..Default::default()
+    }
 }
 
 #[cfg(all(target_os = "ios", target_env = "sim"))]
@@ -164,6 +171,6 @@ fn open_mdk_ios_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMdk> 
             })?;
 
     Ok(MDK::builder(storage)
-        .with_config(MdkConfig::default())
+        .with_config(mdk_config())
         .build())
 }

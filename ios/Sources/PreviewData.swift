@@ -162,7 +162,8 @@ enum PreviewAppState {
                 members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Empty Chat", pictureUrl: nil)],
                 isAdmin: false,
                 messages: [],
-                canLoadOlder: false
+                canLoadOlder: false,
+                typingMembers: []
             )
         )
     }
@@ -299,7 +300,8 @@ enum PreviewAppState {
             members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil)],
             isAdmin: false,
             messages: messages,
-            canLoadOlder: true
+            canLoadOlder: true,
+            typingMembers: []
         )
     }
 
@@ -332,7 +334,8 @@ enum PreviewAppState {
             members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Long Thread", pictureUrl: nil)],
             isAdmin: false,
             messages: messages,
-            canLoadOlder: true
+            canLoadOlder: true,
+            typingMembers: []
         )
     }
 
@@ -465,7 +468,8 @@ enum PreviewAppState {
             ],
             isAdmin: true,
             messages: messages,
-            canLoadOlder: true
+            canLoadOlder: true,
+            typingMembers: []
         )
     }
 

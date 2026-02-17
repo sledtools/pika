@@ -458,6 +458,8 @@ impl AppCore {
             })
             .collect();
 
+        let typing = self.get_active_typers(chat_id);
+
         self.state.current_chat = Some(ChatViewState {
             chat_id: chat_id.to_string(),
             is_group: entry.is_group,
@@ -466,6 +468,7 @@ impl AppCore {
             is_admin,
             messages: msgs,
             can_load_older,
+            typing_members: typing,
         });
         self.emit_current_chat();
     }

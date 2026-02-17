@@ -20,6 +20,7 @@ struct ChatView: View {
     let onGroupInfo: (@MainActor () -> Void)?
     let onTapSender: (@MainActor (String) -> Void)?
     let onReact: (@MainActor (String, String) -> Void)?
+    let onTypingStarted: (@MainActor () -> Void)?
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var activeReactionMessageId: String?
@@ -43,7 +44,8 @@ struct ChatView: View {
         onOpenCallScreen: @escaping @MainActor () -> Void,
         onGroupInfo: (@MainActor () -> Void)? = nil,
         onTapSender: (@MainActor (String) -> Void)? = nil,
-        onReact: (@MainActor (String, String) -> Void)? = nil
+        onReact: (@MainActor (String, String) -> Void)? = nil,
+        onTypingStarted: (@MainActor () -> Void)? = nil
     ) {
         self.chatId = chatId
         self.state = state
@@ -55,6 +57,7 @@ struct ChatView: View {
         self.onGroupInfo = onGroupInfo
         self.onTapSender = onTapSender
         self.onReact = onReact
+        self.onTypingStarted = onTypingStarted
     }
 
     var body: some View {
@@ -238,9 +241,18 @@ struct ChatView: View {
                         ForEach(callEvents) { event in
                             CallTimelineEventRow(event: event)
                         }
+
+                        if !chat.typingMembers.isEmpty {
+                            TypingIndicatorRow(
+                                typingMembers: chat.typingMembers,
+                                members: chat.members
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
+                    .animation(.easeInOut(duration: 0.2), value: chat.typingMembers.map(\.pubkey))
 
                     GeometryReader { geo in
                         Color.clear.preference(
@@ -414,6 +426,9 @@ struct ChatView: View {
                                 showMentionPicker = false
                                 mentionQuery = ""
                             }
+                        }
+                        if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            onTypingStarted?()
                         }
                     }
                     .accessibilityIdentifier(TestIds.chatMessageInput)
@@ -1558,3 +1573,83 @@ private enum ChatViewPreviewData {
         .padding(16)
 }
 #endif
+
+// MARK: - Typing Indicator
+
+private struct TypingIndicatorRow: View {
+    let typingMembers: [TypingMember]
+    let members: [MemberInfo]
+
+    private let avatarSize: CGFloat = 24
+    private let avatarGutterWidth: CGFloat = 28
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            if let first = typingMembers.first,
+               let member = members.first(where: { $0.pubkey == first.pubkey }) {
+                AvatarView(
+                    name: member.name,
+                    npub: member.npub,
+                    pictureUrl: member.pictureUrl,
+                    size: avatarSize
+                )
+                .frame(width: avatarGutterWidth, alignment: .leading)
+            } else {
+                Color.clear
+                    .frame(width: avatarGutterWidth, height: avatarSize)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                TypingBubble()
+                Text(typingLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 24)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var typingLabel: String {
+        let names = typingMembers.compactMap { tm -> String? in
+            if let n = tm.name, !n.isEmpty { return n }
+            if let m = members.first(where: { $0.pubkey == tm.pubkey }) {
+                return m.name ?? String(m.npub.prefix(8))
+            }
+            return String(tm.pubkey.prefix(8))
+        }
+        switch names.count {
+        case 0: return ""
+        case 1: return "\(names[0]) is typing"
+        case 2: return "\(names[0]) and \(names[1]) are typing"
+        default: return "\(names[0]) and \(names.count - 1) others are typing"
+        }
+    }
+}
+
+private struct TypingBubble: View {
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle()
+                        .fill(Color.secondary.opacity(0.5))
+                        .frame(width: 7, height: 7)
+                        .offset(y: dotOffset(time: t, index: i))
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func dotOffset(time: Double, index: Int) -> CGFloat {
+        let period: Double = 1.2
+        let delay = Double(index) * 0.2
+        let phase = (time + delay).truncatingRemainder(dividingBy: period) / period
+        return -4 * sin(phase * 2 * .pi)
+    }
+}

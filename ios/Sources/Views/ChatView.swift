@@ -649,7 +649,13 @@ private struct FocusedMessageCard: View {
                 markdownContent
             }
 
-            Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)).formatted(date: .omitted, time: .shortened))
+            Text({
+                let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
+                let formatter = DateFormatter()
+                formatter.timeZone = TimeZone(identifier: "UTC")
+                formatter.dateFormat = "HH:mm"
+                return formatter.string(from: date)
+            }())
                 .font(.caption2)
                 .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
         }
@@ -1078,8 +1084,11 @@ private struct MessageBubble: View {
     }
 
     private var timestampText: String {
-        Date(timeIntervalSince1970: TimeInterval(message.timestamp))
-            .formatted(date: .omitted, time: .shortened)
+        let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     private var bubbleRadii: RectangleCornerRadii {

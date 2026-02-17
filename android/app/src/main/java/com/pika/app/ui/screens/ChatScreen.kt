@@ -64,6 +64,8 @@ import com.pika.app.ui.theme.PikaBlue
 import com.pika.app.ui.TestTags
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import org.json.JSONObject
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -405,14 +407,21 @@ private fun MessageBubble(message: ChatMessage, onSendMessage: (String) -> Unit)
                                     .padding(horizontal = 12.dp, vertical = 9.dp)
                                     .widthIn(max = 280.dp),
                         ) {
-                            MarkdownText(
-                                markdown = segment.text.trim(),
-                                style = MaterialTheme.typography.bodyLarge.copy(color = textColor),
-                                enableSoftBreakAddsNewLine = true,
-                                afterSetMarkdown = { textView ->
-                                    textView.includeFontPadding = false
-                                },
-                            )
+                            Column {
+                                MarkdownText(
+                                    markdown = segment.text.trim(),
+                                    style = MaterialTheme.typography.bodyLarge.copy(color = textColor),
+                                    enableSoftBreakAddsNewLine = true,
+                                    afterSetMarkdown = { textView ->
+                                        textView.includeFontPadding = false
+                                    },
+                                )
+                                Text(
+                                    text = formatTimestamp(message.timestamp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isMine) Color.White.copy(alpha = 0.78f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                            }
                         }
                         if (isMine) {
                             Spacer(Modifier.width(6.dp))
@@ -515,4 +524,10 @@ private fun PikaPromptCard(title: String, options: List<String>, message: ChatMe
             }
         }
     }
+}
+
+private fun formatTimestamp(epochSeconds: Long): String {
+    val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+    fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+    return fmt.format(Date(epochSeconds * 1000))
 }

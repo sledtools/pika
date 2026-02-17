@@ -31,9 +31,17 @@ struct ChatListView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(displayName)
-                        .font(.headline)
-                        .lineLimit(1)
+                    HStack {
+                        Text(displayName)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if let ts = chat.lastMessageAt {
+                            Text(chatListTimestamp(ts))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                     if let subtitle {
                         Text(subtitle)
                             .font(.caption)
@@ -151,6 +159,14 @@ struct ChatListView: View {
     private func truncatedNpub(_ npub: String) -> String {
         if npub.count <= 16 { return npub }
         return String(npub.prefix(12)) + "..."
+    }
+
+    private func chatListTimestamp(_ epochSeconds: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(epochSeconds))
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 }
 

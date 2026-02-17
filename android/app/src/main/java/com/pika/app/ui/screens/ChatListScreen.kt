@@ -46,6 +46,10 @@ import com.pika.app.rust.ChatSummary
 import com.pika.app.rust.Screen
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.QrCode
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
@@ -168,12 +172,23 @@ private fun ChatRow(chat: ChatSummary, selfPubkey: String?, onClick: () -> Unit)
         }
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                chat.lastMessageAt?.let { ts ->
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = formatChatListTimestamp(ts),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = chat.lastMessage ?: "No messages yet",
@@ -194,4 +209,10 @@ private fun chatTitle(chat: ChatSummary, selfPubkey: String?): String {
         chat.members.firstOrNull { selfPubkey == null || it.pubkey != selfPubkey }
             ?: chat.members.firstOrNull()
     return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
+}
+
+private fun formatChatListTimestamp(epochSeconds: Long): String {
+    val fmt = SimpleDateFormat("HH:mm", Locale.US)
+    fmt.timeZone = TimeZone.getTimeZone("UTC")
+    return fmt.format(Date(epochSeconds * 1000))
 }

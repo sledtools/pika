@@ -147,7 +147,7 @@ jobs:
             dist/SHA256SUMS
 
   publish-zapstore:
-    if: (github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman') && hashFiles('secrets/zapstore-signing.env.age') != ''
+    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
     needs: [build, publish]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
@@ -179,6 +179,7 @@ jobs:
           fi
 
       - name: Publish to Zapstore
+        if: hashFiles('secrets/zapstore-signing.env.age') != ''
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

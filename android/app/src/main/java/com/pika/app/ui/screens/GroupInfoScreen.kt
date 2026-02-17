@@ -1,5 +1,6 @@
 package com.pika.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -202,6 +203,7 @@ fun GroupInfoScreen(manager: AppManager, chatId: String, padding: PaddingValues)
                     member = member,
                     isAdmin = isAdmin,
                     onRemove = { memberToRemove = member },
+                    onTap = { manager.dispatch(AppAction.OpenPeerProfile(member.pubkey)) },
                 )
             }
 
@@ -312,9 +314,13 @@ private fun MemberRow(
     member: MemberInfo,
     isAdmin: Boolean,
     onRemove: () -> Unit,
+    onTap: () -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onTap() }
+            .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

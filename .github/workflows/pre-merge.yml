@@ -241,21 +241,74 @@ jobs:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
     needs: [nightly-linux, nightly-pika, nightly-marmotd, nightly-pika-ui-android]
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
-      - run: |
+      - name: Check nightly results
+        id: check
+        run: |
+          failed=""
           if [[ "${{ needs.nightly-linux.result }}" != "success" ]]; then
             echo "nightly-linux failed"
-            exit 1
+            failed="${failed}- **nightly-linux**: ${{ needs.nightly-linux.result }}\n"
           fi
           if [[ "${{ needs.nightly-pika.result }}" != "success" ]]; then
             echo "nightly-pika failed"
-            exit 1
+            failed="${failed}- **nightly-pika**: ${{ needs.nightly-pika.result }}\n"
           fi
           if [[ "${{ needs.nightly-marmotd.result }}" != "success" ]]; then
             echo "nightly-marmotd failed"
-            exit 1
+            failed="${failed}- **nightly-marmotd**: ${{ needs.nightly-marmotd.result }}\n"
           fi
           if [[ "${{ needs.nightly-pika-ui-android.result }}" != "success" ]]; then
             echo "nightly-pika-ui-android failed"
-            exit 1
+            failed="${failed}- **nightly-pika-ui-android**: ${{ needs.nightly-pika-ui-android.result }}\n"
           fi
+          if [[ -n "$failed" ]]; then
+            echo "failed<<EOF" >> "$GITHUB_OUTPUT"
+            echo -e "$failed" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            echo "has_failures=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open issue on failure
+        if: steps.check.outputs.has_failures == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Skip creating a duplicate if an open nightly-failure issue already exists
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "nightly-failure" \
+            --state open \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          date=$(date -u +%Y-%m-%d)
+
+          if [[ -n "$existing" ]]; then
+            # Append a comment to the existing issue instead of opening a new one
+            gh issue comment "$existing" \
+              --repo "${{ github.repository }}" \
+              --body "### Nightly still failing — ${date}
+
+          ${{ steps.check.outputs.failed }}
+          [Run log](${run_url})"
+          else
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "Nightly failure — ${date}" \
+              --label "nightly-failure" \
+              --body "## Nightly CI failed
+
+          ${{ steps.check.outputs.failed }}
+          **Run:** ${run_url}
+
+          This issue was auto-opened by CI. It will stop receiving comments once all nightly lanes pass again."
+          fi
+
+      - name: Fail the job
+        if: steps.check.outputs.has_failures == 'true'
+        run: exit 1

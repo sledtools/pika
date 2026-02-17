@@ -595,6 +595,12 @@ impl AppCore {
                     ));
                 }
             }
+            InternalEvent::PushSubscriptionsSynced { groups } => {
+                self.handle_push_subscriptions_synced(groups);
+            }
+            InternalEvent::PushUnsubscriptionsSynced { groups } => {
+                self.handle_push_unsubscriptions_synced(groups);
+            }
             InternalEvent::PublishMessageResult {
                 chat_id,
                 rumor_id,

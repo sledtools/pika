@@ -15,8 +15,8 @@ diesel = { version = "2.1", features = ["postgres", "r2d2", "chrono", "numeric"]
 diesel_migrations = "2.1.0"
 dotenv = "0.15.0"
 futures = "0.3.28"
-nostr = { version = "0.24.0", default-features = false }
-nostr-sdk = "0.24.0"
+nostr = "0.44"
+nostr-sdk = { version = "0.44", features = ["nip59"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = "1.0"

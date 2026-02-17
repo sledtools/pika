@@ -7,14 +7,9 @@ use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::PgConnection;
 use fcm_rs::client::FcmClient;
 use fcm_rs::models::{Message, Notification as FcmNotification};
-use nostr::event::tag::TagKind;
-use nostr::message::subscription::Alphabet;
-use nostr::{Event, Filter, Keys, Kind, Tag, Timestamp};
-use nostr_sdk::{Client, RelayPoolNotification};
+use nostr_sdk::prelude::*;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
@@ -53,7 +48,7 @@ pub async fn start_listener(
 ) -> anyhow::Result<()> {
     let keys = Keys::generate();
     loop {
-        let client = Client::new(&keys);
+        let client = Client::new(keys.clone());
 
         let filter: GroupFilterInfo = receiver.borrow().clone();
         info!(
@@ -63,32 +58,22 @@ pub async fn start_listener(
         debug!("Group IDs: {:?}", filter.group_ids);
 
         for relay in relays.iter() {
-            if relay.is_empty() {
+            if relay.is_empty() || relay.contains("localhost") {
                 continue;
             }
-            if relay.contains("localhost") {
-                continue;
-            }
-
-            let proxy = if relay.contains(".onion") {
-                Some(SocketAddr::from_str("127.0.0.1:9050")?)
-            } else {
-                None
-            };
-
             debug!(relay = %relay, "Adding relay");
-            client.add_relay(relay.as_str(), proxy).await?;
+            client.add_relay(relay.as_str()).await?;
         }
         client.connect().await;
         info!(relay_count = relays.len(), "Connected to relays");
 
         let group_filter = Filter::new()
             .kind(Kind::Custom(445))
-            .custom_tag(Alphabet::H, filter.group_ids)
+            .custom_tags(SingleLetterTag::lowercase(Alphabet::H), filter.group_ids)
             .since(Timestamp::now());
 
         debug!(?group_filter, "Subscribing");
-        client.subscribe(vec![group_filter]).await;
+        client.subscribe(group_filter, None).await?;
 
         info!("Listening for kind 445 events...");
 
@@ -97,18 +82,18 @@ pub async fn start_listener(
             tokio::select! {
                 Ok(notification) = notifications.recv() => {
                     match notification {
-                        RelayPoolNotification::Event(url, event) => {
+                        RelayPoolNotification::Event { event, relay_url, .. } => {
                             trace!(
-                                kind = event.kind.as_u64(),
+                                kind = event.kind.as_u16(),
                                 event_id = %event.id,
-                                relay = %url,
+                                relay = %relay_url,
                                 "Received event"
                             );
                             if event.kind == Kind::Custom(445) {
                                 info!(
                                     event_id = %event.id,
                                     author = %event.pubkey,
-                                    relay = %url,
+                                    relay = %relay_url,
                                     "Got kind 445 event"
                                 );
                                 debug!(tags = ?event.tags, "Event tags");
@@ -119,7 +104,7 @@ pub async fn start_listener(
                                     let apns_topic = apns_topic.clone();
                                     async move {
                                         let fut = handle_event(
-                                            event,
+                                            *event,
                                             db_pool,
                                             apns_client,
                                             fcm_client,
@@ -139,10 +124,8 @@ pub async fn start_listener(
                             warn!("Relay pool shutdown");
                             break;
                         }
-                        RelayPoolNotification::RelayStatus { .. } => {}
-                        RelayPoolNotification::Stop => {}
-                        RelayPoolNotification::Message(url, msg) => {
-                            trace!(relay = %url, ?msg, "Relay message");
+                        RelayPoolNotification::Message { relay_url, message } => {
+                            trace!(relay = %relay_url, ?message, "Relay message");
                         }
                     }
                 }
@@ -153,7 +136,7 @@ pub async fn start_listener(
             }
         }
 
-        client.disconnect().await?;
+        client.disconnect().await;
     }
 }
 
@@ -170,12 +153,11 @@ async fn handle_event(
         .tags
         .iter()
         .filter_map(|tag| {
-            if let Tag::Generic(TagKind::Custom(kind), values) = tag {
-                if kind == "h" {
-                    return values.first().cloned();
-                }
+            if tag.kind() == TagKind::custom("h") {
+                tag.content().map(|s| s.to_string())
+            } else {
+                None
             }
-            None
         })
         .collect();
 
@@ -228,6 +210,7 @@ async fn handle_event(
                     let payload = EventNotificationPayload {
                         aps: APS {
                             alert: Some(APSAlert::Body("New message")),
+                            sound: Some(a2::request::payload::APSSound::Sound("default")),
                             mutable_content: Some(1),
                             ..Default::default()
                         },

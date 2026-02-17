@@ -66,6 +66,9 @@ impl AppCore {
         tracing::info!("push: APNs token received");
         self.push_apns_token = Some(token);
         self.register_push_device();
+        // Sync subscriptions immediately — the token may arrive after the initial
+        // chat list refresh, so without this the device would never subscribe.
+        self.sync_push_subscriptions();
     }
 
     pub(super) fn register_push_device(&self) {
@@ -122,20 +125,28 @@ impl AppCore {
         let base_url = self.notification_url();
         let device_id = self.push_device_id.clone();
         let client = self.http_client.clone();
+        let tx = self.core_sender.clone();
 
         if !to_subscribe.is_empty() {
             let url = format!("{}/subscribe-groups", base_url);
             let client = client.clone();
             let device_id = device_id.clone();
             let groups = to_subscribe.clone();
+            let tx = tx.clone();
             self.runtime.spawn(async move {
                 let body = serde_json::json!({
                     "id": device_id,
                     "group_ids": groups
                 });
                 match client.post(&url).json(&body).send().await {
-                    Ok(resp) => {
+                    Ok(resp) if resp.status().is_success() => {
                         tracing::info!(status = %resp.status(), count = groups.len(), "push: subscribed to groups");
+                        let _ = tx.send(crate::updates::CoreMsg::Internal(Box::new(
+                            crate::updates::InternalEvent::PushSubscriptionsSynced { groups },
+                        )));
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(status = %resp.status(), "push: subscribe returned non-success");
                     }
                     Err(e) => {
                         tracing::warn!(%e, "push: failed to subscribe to groups");
@@ -147,14 +158,21 @@ impl AppCore {
         if !to_unsubscribe.is_empty() {
             let url = format!("{}/unsubscribe-groups", base_url);
             let groups = to_unsubscribe.clone();
+            let tx = tx.clone();
             self.runtime.spawn(async move {
                 let body = serde_json::json!({
                     "id": device_id,
                     "group_ids": groups
                 });
                 match client.post(&url).json(&body).send().await {
-                    Ok(resp) => {
+                    Ok(resp) if resp.status().is_success() => {
                         tracing::info!(status = %resp.status(), count = groups.len(), "push: unsubscribed from groups");
+                        let _ = tx.send(crate::updates::CoreMsg::Internal(Box::new(
+                            crate::updates::InternalEvent::PushUnsubscriptionsSynced { groups },
+                        )));
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(status = %resp.status(), "push: unsubscribe returned non-success");
                     }
                     Err(e) => {
                         tracing::warn!(%e, "push: failed to unsubscribe from groups");
@@ -162,8 +180,19 @@ impl AppCore {
                 }
             });
         }
+    }
 
-        self.push_subscribed_chat_ids = current_ids;
+    pub(super) fn handle_push_subscriptions_synced(&mut self, groups: Vec<String>) {
+        for g in groups {
+            self.push_subscribed_chat_ids.insert(g);
+        }
+        self.save_push_subscriptions();
+    }
+
+    pub(super) fn handle_push_unsubscriptions_synced(&mut self, groups: Vec<String>) {
+        for g in &groups {
+            self.push_subscribed_chat_ids.remove(g);
+        }
         self.save_push_subscriptions();
     }
 

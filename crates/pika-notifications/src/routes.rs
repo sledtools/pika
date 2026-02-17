@@ -112,6 +112,11 @@ async fn unsubscribe_groups_impl(
     let mut conn = state.db_pool.get()?;
     GroupSubscription::unsubscribe(&mut conn, &payload.id, &payload.group_ids)?;
 
+    // Refresh the listener filter — groups with no remaining subscribers should be removed.
+    let updated = GroupSubscription::get_filter_info(&mut conn)?;
+    let filter_info = state.channel.lock().await;
+    filter_info.send_replace(updated);
+
     info!(
         "Unsubscribed id={} from {} group(s): {:?}",
         payload.id,

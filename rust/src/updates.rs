@@ -53,6 +53,12 @@ pub enum InternalEvent {
         ok: bool,
         error: Option<String>,
     },
+    PushSubscriptionsSynced {
+        groups: Vec<String>,
+    },
+    PushUnsubscriptionsSynced {
+        groups: Vec<String>,
+    },
     Toast(String),
 
     // Async CreateChat fetch result (1:1)

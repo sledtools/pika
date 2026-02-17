@@ -86,6 +86,45 @@ pub struct InitArgs {
 pub enum DevicesCmd {
     /// List devices/simulators/emulators.
     List,
+
+    /// Start a simulator/emulator target and wait until ready.
+    Start(DevicesStartArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct DevicesStartArgs {
+    #[arg(value_enum)]
+    pub platform: DeviceStartPlatform,
+
+    #[command(flatten)]
+    pub ios: DevicesStartIosArgs,
+
+    #[command(flatten)]
+    pub android: DevicesStartAndroidArgs,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum DeviceStartPlatform {
+    Ios,
+    Android,
+}
+
+#[derive(clap::Args, Debug, Default)]
+pub struct DevicesStartIosArgs {
+    /// iOS simulator UDID to target.
+    #[arg(long)]
+    pub udid: Option<String>,
+}
+
+#[derive(clap::Args, Debug, Default)]
+pub struct DevicesStartAndroidArgs {
+    /// Android emulator serial to target.
+    #[arg(long)]
+    pub serial: Option<String>,
+
+    /// Android AVD name to start if no emulator is running.
+    #[arg(long)]
+    pub avd: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]

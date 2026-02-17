@@ -174,7 +174,7 @@ fn run_ios(
     Ok(())
 }
 
-fn ensure_ios_simulator(
+pub(crate) fn ensure_ios_simulator(
     dev_dir: &Path,
     explicit_udid: Option<&str>,
     verbose: bool,
@@ -557,7 +557,7 @@ fn run_android(
     Ok(())
 }
 
-fn ensure_android_emulator(
+pub(crate) fn ensure_android_emulator(
     root: &Path,
     avd: &str,
     explicit_serial: Option<&str>,

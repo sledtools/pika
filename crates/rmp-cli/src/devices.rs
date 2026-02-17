@@ -3,8 +3,9 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::cli::{human_log, json_print, CliError, JsonOk};
+use crate::cli::{human_log, json_print, CliError, DeviceStartPlatform, DevicesStartArgs, JsonOk};
 use crate::config::load_rmp_toml;
+use crate::run::{ensure_android_emulator, ensure_ios_simulator};
 use crate::util::{discover_xcode_dev_dir, run_capture};
 
 #[derive(Serialize)]
@@ -21,6 +22,15 @@ struct DeviceItem {
     os: Option<String>,
     boot_state: Option<String>, // booted|shutdown (simulators/emulators)
     connection_state: Option<String>, // connected|... (devices)
+}
+
+#[derive(Serialize)]
+struct DeviceStartJson {
+    platform: String,
+    kind: String,
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avd: Option<String>,
 }
 
 #[derive(Debug)]
@@ -318,5 +328,69 @@ pub fn devices_list(root: &Path, json: bool, verbose: bool) -> Result<(), CliErr
         }
     }
 
+    Ok(())
+}
+
+pub fn devices_start(
+    root: &Path,
+    json: bool,
+    verbose: bool,
+    args: DevicesStartArgs,
+) -> Result<(), CliError> {
+    let cfg = load_rmp_toml(root)?;
+    match args.platform {
+        DeviceStartPlatform::Android => {
+            let android = cfg
+                .android
+                .ok_or_else(|| CliError::user("rmp.toml missing [android] section"))?;
+            let avd = args
+                .android
+                .avd
+                .or(android.avd_name)
+                .unwrap_or_else(|| "pika_api35".into());
+            let serial =
+                ensure_android_emulator(root, &avd, args.android.serial.as_deref(), verbose)?;
+
+            if json {
+                json_print(&JsonOk {
+                    ok: true,
+                    data: DeviceStartJson {
+                        platform: "android".into(),
+                        kind: if serial.starts_with("emulator-") {
+                            "emulator".into()
+                        } else {
+                            "device".into()
+                        },
+                        id: serial,
+                        avd: Some(avd),
+                    },
+                });
+            } else {
+                eprintln!("ok: android target ready");
+            }
+        }
+        DeviceStartPlatform::Ios => {
+            let _ios = cfg
+                .ios
+                .ok_or_else(|| CliError::user("rmp.toml missing [ios] section"))?;
+            let dev_dir = discover_xcode_dev_dir()?;
+            let udid = ensure_ios_simulator(&dev_dir, args.ios.udid.as_deref(), verbose)?;
+            let _ = Command::new("open").arg("-a").arg("Simulator").status();
+
+            if json {
+                json_print(&JsonOk {
+                    ok: true,
+                    data: DeviceStartJson {
+                        platform: "ios".into(),
+                        kind: "simulator".into(),
+                        id: udid,
+                        avd: None,
+                    },
+                });
+            } else {
+                eprintln!("ok: ios simulator ready");
+            }
+        }
+    }
     Ok(())
 }

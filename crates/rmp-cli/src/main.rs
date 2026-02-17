@@ -28,6 +28,9 @@ fn main() -> ExitCode {
                 cli::Cmd::Devices {
                     cmd: cli::DevicesCmd::List,
                 } => devices::devices_list(&root, args.json, args.verbose),
+                cli::Cmd::Devices {
+                    cmd: cli::DevicesCmd::Start(s),
+                } => devices::devices_start(&root, args.json, args.verbose, s),
                 cli::Cmd::Bindings(b) => bindings::bindings(&root, args.json, args.verbose, b),
                 cli::Cmd::Run(r) => run::run(&root, args.json, args.verbose, r),
                 cli::Cmd::Init(_) => unreachable!(),

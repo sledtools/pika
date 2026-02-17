@@ -1,7 +1,6 @@
 import SwiftUI
 import MarkdownUI
 import WebKit
-import AVFAudio
 
 // WKWebView requires a resolvable HTTPS baseURL for loadHTMLString to allow
 // fetching external subresources (images, scripts, etc.). The domain must
@@ -14,12 +13,10 @@ struct ChatView: View {
     let chatId: String
     let state: ChatScreenState
     let activeCall: CallState?
+    let callEvents: [CallTimelineEvent]
     let onSendMessage: @MainActor (String) -> Void
     let onStartCall: @MainActor () -> Void
-    let onAcceptCall: @MainActor () -> Void
-    let onRejectCall: @MainActor () -> Void
-    let onEndCall: @MainActor () -> Void
-    let onToggleMute: @MainActor () -> Void
+    let onOpenCallScreen: @MainActor () -> Void
     let onGroupInfo: (@MainActor () -> Void)?
     let onTapSender: (@MainActor (String) -> Void)?
     let onReact: (@MainActor (String, String) -> Void)?
@@ -33,8 +30,6 @@ struct ChatView: View {
     @State private var mentionQuery = ""
     @State private var insertedMentions: [(display: String, npub: String)] = []
     @FocusState private var isInputFocused: Bool
-    @State private var pendingMicAction: PendingMicAction?
-    @State private var showMicDeniedAlert = false
 
     private let scrollButtonBottomPadding: CGFloat = 12
 
@@ -42,12 +37,10 @@ struct ChatView: View {
         chatId: String,
         state: ChatScreenState,
         activeCall: CallState?,
+        callEvents: [CallTimelineEvent],
         onSendMessage: @escaping @MainActor (String) -> Void,
         onStartCall: @escaping @MainActor () -> Void,
-        onAcceptCall: @escaping @MainActor () -> Void,
-        onRejectCall: @escaping @MainActor () -> Void,
-        onEndCall: @escaping @MainActor () -> Void,
-        onToggleMute: @escaping @MainActor () -> Void,
+        onOpenCallScreen: @escaping @MainActor () -> Void,
         onGroupInfo: (@MainActor () -> Void)? = nil,
         onTapSender: (@MainActor (String) -> Void)? = nil,
         onReact: (@MainActor (String, String) -> Void)? = nil
@@ -55,12 +48,10 @@ struct ChatView: View {
         self.chatId = chatId
         self.state = state
         self.activeCall = activeCall
+        self.callEvents = callEvents
         self.onSendMessage = onSendMessage
         self.onStartCall = onStartCall
-        self.onAcceptCall = onAcceptCall
-        self.onRejectCall = onRejectCall
-        self.onEndCall = onEndCall
-        self.onToggleMute = onToggleMute
+        self.onOpenCallScreen = onOpenCallScreen
         self.onGroupInfo = onGroupInfo
         self.onTapSender = onTapSender
         self.onReact = onReact
@@ -77,8 +68,16 @@ struct ChatView: View {
     @ViewBuilder
     private func loadedChat(_ chat: ChatViewState) -> some View {
         VStack(spacing: 8) {
-            if !chat.isGroup {
-                callControls(chat: chat)
+            if let liveCall = callFor(chat), liveCall.status.isLive {
+                ActiveCallPill(
+                    call: liveCall,
+                    peerName: chatTitle(chat),
+                    onTap: {
+                        onOpenCallScreen()
+                    }
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
             }
             messageList(chat)
         }
@@ -115,6 +114,19 @@ struct ChatView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    ChatCallToolbarButton(
+                        callForChat: callFor(chat),
+                        hasLiveCallElsewhere: hasLiveCallElsewhere(chat: chat),
+                        onStartCall: {
+                            onStartCall()
+                        },
+                        onOpenCallScreen: {
+                            onOpenCallScreen()
+                        }
+                    )
                 }
             }
         }
@@ -222,6 +234,10 @@ struct ChatView: View {
                                 }
                             )
                         }
+
+                        ForEach(callEvents) { event in
+                            CallTimelineEventRow(event: event)
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -322,141 +338,14 @@ struct ChatView: View {
         insertedMentions = []
     }
 
-    private func isLiveStatus(_ status: CallStatus) -> Bool {
-        switch status {
-        case .offering, .ringing, .connecting, .active:
-            return true
-        case .ended:
-            return false
-        }
+    private func callFor(_ chat: ChatViewState) -> CallState? {
+        guard activeCall?.chatId == chat.chatId else { return nil }
+        return activeCall
     }
 
-    @ViewBuilder
-    private func callControls(chat: ChatViewState) -> some View {
-        let callForChat = activeCall?.chatId == chat.chatId ? activeCall : nil
-        let hasLiveCallElsewhere = activeCall.map { $0.chatId != chat.chatId && isLiveStatus($0.status) } ?? false
-        let dispatchWithMicPermission: (PendingMicAction) -> Void = { action in
-            let session = AVAudioSession.sharedInstance()
-            switch session.recordPermission {
-            case .granted:
-                dispatchMicAction(action)
-            case .denied:
-                showMicDeniedAlert = true
-            case .undetermined:
-                pendingMicAction = action
-                session.requestRecordPermission { granted in
-                    Task { @MainActor in
-                        let pending = pendingMicAction
-                        pendingMicAction = nil
-                        if granted, let pending {
-                            dispatchMicAction(pending)
-                        } else {
-                            showMicDeniedAlert = true
-                        }
-                    }
-                }
-            @unknown default:
-                showMicDeniedAlert = true
-            }
-        }
-
-        if let call = callForChat {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(callStatusText(call.status))
-                    .font(.subheadline.weight(.semibold))
-
-                if let debug = call.debug {
-                    Text("tx \(debug.txFrames)  rx \(debug.rxFrames)  drop \(debug.rxDropped)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 8) {
-                    switch call.status {
-                    case .ringing:
-                        Button("Accept") {
-                            dispatchWithMicPermission(.accept)
-                        }
-                        .accessibilityIdentifier(TestIds.chatCallAccept)
-                        Button("Reject", role: .destructive) {
-                            onRejectCall()
-                        }
-                        .accessibilityIdentifier(TestIds.chatCallReject)
-                    case .offering, .connecting, .active:
-                        Button(call.isMuted ? "Unmute" : "Mute") {
-                            onToggleMute()
-                        }
-                        .accessibilityIdentifier(TestIds.chatCallMute)
-                        Button("End", role: .destructive) {
-                            onEndCall()
-                        }
-                        .accessibilityIdentifier(TestIds.chatCallEnd)
-                    case .ended:
-                        Button("Start Again") {
-                            dispatchWithMicPermission(.start)
-                        }
-                        .accessibilityIdentifier(TestIds.chatCallStart)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .alert("Microphone Permission Needed", isPresented: $showMicDeniedAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Microphone permission is required for calls.")
-            }
-        } else {
-            HStack {
-                Button("Start Call") {
-                    dispatchWithMicPermission(.start)
-                }
-                .disabled(hasLiveCallElsewhere)
-                .accessibilityIdentifier(TestIds.chatCallStart)
-                if hasLiveCallElsewhere {
-                    Text("Another call is active")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .alert("Microphone Permission Needed", isPresented: $showMicDeniedAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Microphone permission is required for calls.")
-            }
-        }
-    }
-
-    private enum PendingMicAction {
-        case start
-        case accept
-    }
-
-    private func dispatchMicAction(_ action: PendingMicAction) {
-        switch action {
-        case .start:
-            onStartCall()
-        case .accept:
-            onAcceptCall()
-        }
-    }
-
-    private func callStatusText(_ status: CallStatus) -> String {
-        switch status {
-        case .offering:
-            return "Calling…"
-        case .ringing:
-            return "Incoming call"
-        case .connecting:
-            return "Connecting…"
-        case .active:
-            return "Call active"
-        case let .ended(reason):
-            return "Call ended: \(reason)"
-        }
+    private func hasLiveCallElsewhere(chat: ChatViewState) -> Bool {
+        guard let activeCall else { return false }
+        return activeCall.chatId != chat.chatId && activeCall.status.isLive
     }
 
     @ViewBuilder
@@ -1595,12 +1484,10 @@ private enum ChatViewPreviewData {
             chatId: "chat-1",
             state: ChatScreenState(chat: PreviewAppState.chatDetail.currentChat),
             activeCall: nil,
+            callEvents: [],
             onSendMessage: { _ in },
             onStartCall: {},
-            onAcceptCall: {},
-            onRejectCall: {},
-            onEndCall: {},
-            onToggleMute: {}
+            onOpenCallScreen: {}
         )
     }
 }
@@ -1611,12 +1498,10 @@ private enum ChatViewPreviewData {
             chatId: "chat-1",
             state: ChatScreenState(chat: PreviewAppState.chatDetailFailed.currentChat),
             activeCall: nil,
+            callEvents: [],
             onSendMessage: { _ in },
             onStartCall: {},
-            onAcceptCall: {},
-            onRejectCall: {},
-            onEndCall: {},
-            onToggleMute: {}
+            onOpenCallScreen: {}
         )
     }
 }
@@ -1627,12 +1512,10 @@ private enum ChatViewPreviewData {
             chatId: "chat-empty",
             state: ChatScreenState(chat: PreviewAppState.chatDetailEmpty.currentChat),
             activeCall: nil,
+            callEvents: [],
             onSendMessage: { _ in },
             onStartCall: {},
-            onAcceptCall: {},
-            onRejectCall: {},
-            onEndCall: {},
-            onToggleMute: {}
+            onOpenCallScreen: {}
         )
     }
 }
@@ -1643,12 +1526,10 @@ private enum ChatViewPreviewData {
             chatId: "chat-long",
             state: ChatScreenState(chat: PreviewAppState.chatDetailLongThread.currentChat),
             activeCall: nil,
+            callEvents: [],
             onSendMessage: { _ in },
             onStartCall: {},
-            onAcceptCall: {},
-            onRejectCall: {},
-            onEndCall: {},
-            onToggleMute: {}
+            onOpenCallScreen: {}
         )
     }
 }
@@ -1659,12 +1540,10 @@ private enum ChatViewPreviewData {
             chatId: "chat-grouped",
             state: ChatScreenState(chat: PreviewAppState.chatDetailGrouped.currentChat),
             activeCall: nil,
+            callEvents: [],
             onSendMessage: { _ in },
             onStartCall: {},
-            onAcceptCall: {},
-            onRejectCall: {},
-            onEndCall: {},
-            onToggleMute: {}
+            onOpenCallScreen: {}
         )
     }
 }

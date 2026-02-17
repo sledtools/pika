@@ -250,10 +250,8 @@ android-rust:
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   ABIS="${PIKA_ANDROID_ABIS:-arm64-v8a armeabi-v7a x86_64}"; \
-  PROFILE_FLAG=(); \
   case "$PROFILE" in \
-    release) PROFILE_FLAG=(--release) ;; \
-    debug) PROFILE_FLAG=() ;; \
+    release|debug) ;; \
     *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
   esac; \
   rm -rf android/app/src/main/jniLibs; \
@@ -261,7 +259,7 @@ android-rust:
   cmd=(cargo ndk -o android/app/src/main/jniLibs -P 26); \
   for abi in $ABIS; do cmd+=(-t "$abi"); done; \
   cmd+=(build -p pika_core); \
-  cmd+=("${PROFILE_FLAG[@]}"); \
+  if [ "$PROFILE" = "release" ]; then cmd+=(--release); fi; \
   "${cmd[@]}"
 
 # Write android/local.properties with SDK path.
@@ -376,10 +374,8 @@ ios-rust:
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGETS="${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"; \
-  PROFILE_FLAG=(); \
   case "$PROFILE" in \
-    release) PROFILE_FLAG=(--release) ;; \
-    debug) PROFILE_FLAG=() ;; \
+    release|debug) ;; \
     *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
   esac; \
   DEV_DIR="$(./tools/xcode-dev-dir)"; \
@@ -402,10 +398,17 @@ ios-rust:
       aarch64-apple-ios-sim|x86_64-apple-ios) SDKROOT="$SDKROOT_SIM"; MIN_FLAG="-mios-simulator-version-min=" ;; \
       *) echo "error: unsupported iOS Rust target: $target"; exit 2 ;; \
     esac; \
-    "${base_env[@]}" \
-      SDKROOT="$SDKROOT" \
-      RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
-      cargo build -p pika_core --lib --target "$target" "${PROFILE_FLAG[@]}"; \
+    if [ "$PROFILE" = "release" ]; then \
+      "${base_env[@]}" \
+        SDKROOT="$SDKROOT" \
+        RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
+        cargo build -p pika_core --lib --target "$target" --release; \
+    else \
+      "${base_env[@]}" \
+        SDKROOT="$SDKROOT" \
+        RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
+        cargo build -p pika_core --lib --target "$target"; \
+    fi; \
   done
 
 # Build PikaCore.xcframework (device + simulator slices).

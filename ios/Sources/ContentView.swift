@@ -1,68 +1,77 @@
 import SwiftUI
 
+@MainActor
 struct ContentView: View {
     @Bindable var manager: AppManager
     @State private var visibleToast: String? = nil
     @State private var navPath: [Screen] = []
+    @State private var isCallScreenPresented = false
 
     var body: some View {
         let appState = manager.state
         let router = appState.router
+
         Group {
             if manager.isRestoringSession {
                 LoadingView()
             } else {
-            switch router.defaultScreen {
-            case .login:
-                LoginView(
-                    state: loginState(from: appState),
-                    onCreateAccount: { manager.dispatch(.createAccount) },
-                    onLogin: { manager.login(nsec: $0) }
-                )
-            default:
-                NavigationStack(path: $navPath) {
-                    screenView(manager: manager, state: appState, screen: router.defaultScreen)
+                switch router.defaultScreen {
+                case .login:
+                    LoginView(
+                        state: loginState(from: appState),
+                        onCreateAccount: { manager.dispatch(.createAccount) },
+                        onLogin: { manager.login(nsec: $0) }
+                    )
+                default:
+                    NavigationStack(path: $navPath) {
+                        screenView(
+                            manager: manager,
+                            state: appState,
+                            screen: router.defaultScreen,
+                            onOpenCallScreen: {
+                                isCallScreenPresented = true
+                            }
+                        )
                         .navigationDestination(for: Screen.self) { screen in
-                            screenView(manager: manager, state: appState, screen: screen)
+                            screenView(
+                                manager: manager,
+                                state: appState,
+                                screen: screen,
+                                onOpenCallScreen: {
+                                    isCallScreenPresented = true
+                                }
+                            )
                         }
-                }
-                .onAppear {
-                    // Initial mount: seed the path from Rust.
-                    navPath = manager.state.router.screenStack
-                }
-                // Drive native navigation from Rust's router, but avoid feeding those changes
-                // back to Rust as "platform pops".
-                .onChange(of: manager.state.router.screenStack) { _, new in
-                    navPath = new
-                }
-                .onChange(of: navPath) { old, new in
-                    // Ignore Rust-driven syncs.
-                    if new == manager.state.router.screenStack { return }
-                    // Only report platform-initiated pops (e.g. swipe-back).
-                    if new.count < old.count {
-                        manager.dispatch(.updateScreenStack(stack: new))
+                    }
+                    .onAppear {
+                        // Initial mount: seed the path from Rust.
+                        navPath = manager.state.router.screenStack
+                    }
+                    // Drive native navigation from Rust's router, but avoid feeding those changes
+                    // back to Rust as "platform pops".
+                    .onChange(of: manager.state.router.screenStack) { _, new in
+                        navPath = new
+                    }
+                    .onChange(of: navPath) { old, new in
+                        // Ignore Rust-driven syncs.
+                        if new == manager.state.router.screenStack { return }
+                        // Only report platform-initiated pops (e.g. swipe-back).
+                        if new.count < old.count {
+                            manager.dispatch(.updateScreenStack(stack: new))
+                        }
                     }
                 }
             }
-            }
         }
         .overlay(alignment: .top) {
-            if let toast = visibleToast {
-                Text(toast)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 24)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .accessibilityIdentifier("pika_toast")
-                    .onTapGesture { withAnimation { visibleToast = nil } }
-                    .allowsHitTesting(true)
-            }
+            toastOverlay
         }
         .animation(.easeInOut(duration: 0.25), value: visibleToast)
+        .onAppear {
+            if let call = manager.state.activeCall, call.status.shouldAutoPresentCallScreen {
+                isCallScreenPresented = true
+            }
+        }
         .onChange(of: manager.state.toast) { _, new in
             guard let message = new else { return }
             // Show the non-blocking overlay and immediately clear Rust state so it
@@ -78,11 +87,92 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: manager.state.activeCall) { old, new in
+            guard let new else {
+                isCallScreenPresented = false
+                return
+            }
+
+            if !new.status.isLive {
+                isCallScreenPresented = false
+                return
+            }
+
+            guard new.status.shouldAutoPresentCallScreen else { return }
+            let callChanged = old?.callId != new.callId
+            let statusChanged = old?.status != new.status
+            if callChanged || statusChanged {
+                isCallScreenPresented = true
+            }
+        }
+        .fullScreenCover(isPresented: $isCallScreenPresented) {
+            callScreenOverlay(state: manager.state)
+        }
+    }
+
+    @ViewBuilder
+    private var toastOverlay: some View {
+        if let toast = visibleToast {
+            Button {
+                withAnimation {
+                    visibleToast = nil
+                }
+            } label: {
+                Text(toast)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 24)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .accessibilityIdentifier("pika_toast")
+                    .allowsHitTesting(true)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func callScreenOverlay(state: AppState) -> some View {
+        if let call = state.activeCall {
+            CallScreenView(
+                call: call,
+                peerName: callPeerDisplayName(for: call, in: state),
+                onAcceptCall: {
+                    manager.dispatch(.openChat(chatId: call.chatId))
+                    manager.dispatch(.acceptCall(chatId: call.chatId))
+                },
+                onRejectCall: {
+                    manager.dispatch(.rejectCall(chatId: call.chatId))
+                },
+                onEndCall: {
+                    manager.dispatch(.endCall)
+                },
+                onToggleMute: {
+                    manager.dispatch(.toggleMute)
+                },
+                onStartAgain: {
+                    manager.dispatch(.openChat(chatId: call.chatId))
+                    manager.dispatch(.startCall(chatId: call.chatId))
+                },
+                onDismiss: {
+                    isCallScreenPresented = false
+                }
+            )
+        }
     }
 }
 
+@MainActor
 @ViewBuilder
-private func screenView(manager: AppManager, state: AppState, screen: Screen) -> some View {
+private func screenView(
+    manager: AppManager,
+    state: AppState,
+    screen: Screen,
+    onOpenCallScreen: @escaping @MainActor () -> Void
+) -> some View {
     switch screen {
     case .login:
         LoginView(
@@ -126,12 +216,12 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
             chatId: chatId,
             state: chatScreenState(from: state),
             activeCall: state.activeCall,
+            callEvents: manager.callTimelineEventsByChatId[chatId] ?? [],
             onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0)) },
             onStartCall: { manager.dispatch(.startCall(chatId: chatId)) },
-            onAcceptCall: { manager.dispatch(.acceptCall(chatId: chatId)) },
-            onRejectCall: { manager.dispatch(.rejectCall(chatId: chatId)) },
-            onEndCall: { manager.dispatch(.endCall) },
-            onToggleMute: { manager.dispatch(.toggleMute) },
+            onOpenCallScreen: {
+                onOpenCallScreen()
+            },
             onGroupInfo: {
                 manager.dispatch(.pushScreen(screen: .groupInfo(chatId: chatId)))
             },
@@ -190,6 +280,7 @@ private func screenView(manager: AppManager, state: AppState, screen: Screen) ->
     }
 }
 
+@MainActor
 private func loginState(from state: AppState) -> LoginViewState {
     LoginViewState(
         creatingAccount: state.busy.creatingAccount,
@@ -197,6 +288,7 @@ private func loginState(from state: AppState) -> LoginViewState {
     )
 }
 
+@MainActor
 private func chatListState(from state: AppState) -> ChatListViewState {
     ChatListViewState(
         chats: state.chatList,
@@ -205,6 +297,7 @@ private func chatListState(from state: AppState) -> ChatListViewState {
     )
 }
 
+@MainActor
 private func newChatState(from state: AppState) -> NewChatViewState {
     NewChatViewState(
         isCreatingChat: state.busy.creatingChat,
@@ -213,6 +306,7 @@ private func newChatState(from state: AppState) -> NewChatViewState {
     )
 }
 
+@MainActor
 private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
     NewGroupChatViewState(
         isCreatingChat: state.busy.creatingChat,
@@ -221,14 +315,17 @@ private func newGroupChatState(from state: AppState) -> NewGroupChatViewState {
     )
 }
 
+@MainActor
 private func chatScreenState(from state: AppState) -> ChatScreenState {
     ChatScreenState(chat: state.currentChat)
 }
 
+@MainActor
 private func groupInfoState(from state: AppState) -> GroupInfoViewState {
     GroupInfoViewState(chat: state.currentChat)
 }
 
+@MainActor
 private func myNpub(from state: AppState) -> String? {
     switch state.auth {
     case .loggedIn(let npub, _):
@@ -236,6 +333,35 @@ private func myNpub(from state: AppState) -> String? {
     default:
         return nil
     }
+}
+
+@MainActor
+private func callPeerDisplayName(for call: CallState, in state: AppState) -> String {
+    if let currentChat = state.currentChat, currentChat.chatId == call.chatId {
+        if currentChat.isGroup {
+            return currentChat.groupName ?? "Group"
+        }
+        if let peer = currentChat.members.first {
+            return peer.name ?? shortenedNpub(peer.npub)
+        }
+    }
+
+    if let summary = state.chatList.first(where: { $0.chatId == call.chatId }) {
+        if summary.isGroup {
+            return summary.groupName ?? "Group"
+        }
+        if let peer = summary.members.first {
+            return peer.name ?? shortenedNpub(peer.npub)
+        }
+    }
+
+    return shortenedNpub(call.peerNpub)
+}
+
+@MainActor
+private func shortenedNpub(_ npub: String) -> String {
+    guard npub.count > 16 else { return npub }
+    return "\(npub.prefix(8))...\(npub.suffix(4))"
 }
 
 #if DEBUG

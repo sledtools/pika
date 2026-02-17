@@ -45,8 +45,12 @@ enum TestIds {
     static let groupInfoAddButton = "groupinfo_add_button"
     static let groupInfoLeave = "groupinfo_leave"
     static let chatCallStart = "chat_call_start"
+    static let chatCallOpen = "chat_call_open"
     static let chatCallAccept = "chat_call_accept"
     static let chatCallReject = "chat_call_reject"
     static let chatCallEnd = "chat_call_end"
     static let chatCallMute = "chat_call_mute"
+    static let callScreenDismiss = "call_screen_dismiss"
+    static let callReturnToCall = "call_return_to_call"
+    static let callTimelineEvent = "call_timeline_event"
 }

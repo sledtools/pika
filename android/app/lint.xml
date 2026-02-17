@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- UniFFI output is generated from Rust and not manually maintained. -->
+    <issue id="all">
+        <ignore regexp=".*/src/main/java/com/pika/app/rust/.*" />
+    </issue>
+</lint>

@@ -136,6 +136,9 @@
             androidSdk
             pkgs.jdk17_headless
             pkgs.just
+            pkgs.ktlint
+            pkgs.detekt
+            pkgs.swiftformat
             pkgs.nodejs_22
             pkgs.python3
             pkgs.curl
@@ -156,6 +159,7 @@
             zsp
             rmp
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.swiftlint
             pkgs.xcodegen
           ];
 

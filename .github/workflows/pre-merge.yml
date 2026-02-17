@@ -44,6 +44,16 @@ jobs:
 
       - run: nix develop .#default -c just pre-merge-pika
 
+  check-ios:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - run: nix develop .#default -c just pre-merge-ios
+
   check-marmotd:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -104,12 +114,16 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [check-pika, check-marmotd, check-rmp]
+    needs: [check-pika, check-ios, check-marmotd, check-rmp]
     runs-on: ubuntu-latest
     steps:
       - run: |
           if [[ "${{ needs.check-pika.result }}" != "success" ]]; then
             echo "check-pika failed"
+            exit 1
+          fi
+          if [[ "${{ needs.check-ios.result }}" != "success" ]]; then
+            echo "check-ios failed"
             exit 1
           fi
           if [[ "${{ needs.check-marmotd.result }}" != "success" ]]; then

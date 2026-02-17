@@ -70,6 +70,11 @@ android {
         jvmTarget = "17"
     }
 
+    lint {
+        lintConfig = file("lint.xml")
+        abortOnError = true
+    }
+
     packaging {
         resources.excludes.addAll(
             listOf(

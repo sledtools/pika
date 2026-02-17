@@ -231,7 +231,11 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - run: nix develop .#default -c just android-ui-e2e-local
+      - run: |
+          nix develop .#default -c ./tools/android-avd-ensure
+          PIKA_ANDROID_FORCE_GUI=0 \
+          PIKA_ANDROID_EMULATOR_ARGS="-no-window" \
+          nix develop .#default -c just android-ui-e2e-local
 
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))

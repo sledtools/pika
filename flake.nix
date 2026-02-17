@@ -158,7 +158,9 @@
             # We converge it on shell entry so emulator behavior is reproducible across
             # worktrees and machines (notably keyboard input and home/back key handling).
             export PIKA_ANDROID_AVD_NAME="''${PIKA_ANDROID_AVD_NAME:-pika_api35}"
-            if [ "''${PIKA_ANDROID_AVD_ENSURE_ON_SHELL:-1}" = "1" ] && [ -x "$PWD/tools/android-avd-ensure" ]; then
+            # CI runners are headless and some lanes intentionally skip Android UI
+            # when no pre-provisioned AVD exists; don't auto-create there.
+            if [ "''${CI:-}" != "true" ] && [ "''${PIKA_ANDROID_AVD_ENSURE_ON_SHELL:-1}" = "1" ] && [ -x "$PWD/tools/android-avd-ensure" ]; then
               if ! "$PWD/tools/android-avd-ensure"; then
                 echo "warning: android-avd-ensure failed; continuing shell startup" >&2
               fi

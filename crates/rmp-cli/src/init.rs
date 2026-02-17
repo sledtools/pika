@@ -236,12 +236,22 @@ pub fn init(
         let desktop_dir = dest.join("desktop/iced");
         std::fs::create_dir_all(desktop_dir.join("src"))
             .map_err(|e| CliError::operational(format!("create desktop/iced/src: {e}")))?;
+        let src_dir = desktop_dir.join("src");
         write_text(
             &desktop_dir.join("Cargo.toml"),
             &tpl_desktop_iced_cargo(&iced_package, &crate_name),
         )?;
         write_text(
-            &desktop_dir.join("src/main.rs"),
+            &src_dir.join("app_manager.rs"),
+            &tpl_desktop_iced_app_manager(&lib_name),
+        )?;
+        write_text(
+            &src_dir.join("router_projection.rs"),
+            &tpl_desktop_iced_router_projection(&lib_name),
+        )?;
+        write_text(&src_dir.join("ui.rs"), &tpl_desktop_iced_ui(&lib_name))?;
+        write_text(
+            &src_dir.join("main.rs"),
             &tpl_desktop_iced_main(&display_name, &lib_name),
         )?;
     }
@@ -1188,6 +1198,7 @@ publish = false
 
 [dependencies]
 {core_crate} = {{ path = "../../rust" }}
+flume = "0.11"
 iced = "0.13"
 "#
     )
@@ -1195,63 +1206,449 @@ iced = "0.13"
 
 fn tpl_desktop_iced_main(display_name: &str, core_lib: &str) -> String {
     format!(
-        r#"use iced::Center;
-use iced::widget::{{Column, button, column, text, text_input}};
-use std::sync::Arc;
+        r#"mod app_manager;
+mod router_projection;
+mod ui;
+
+use app_manager::AppManager;
+use iced::{{Subscription, Task}};
+use router_projection::project_desktop;
+use {core_lib} as core;
 
 fn main() -> iced::Result {{
-    iced::run("{display_name} (ICED)", App::update, App::view)
+    iced::application("{display_name} (ICED)", DesktopApp::update, DesktopApp::view)
+        .subscription(DesktopApp::subscription)
+        .run_with(|| (DesktopApp::new(), Task::none()))
 }}
 
-struct App {{
-    ffi: Arc<{core_lib}::FfiApp>,
-    name: String,
-    greeting: String,
+pub struct DesktopApp {{
+    manager: AppManager,
+    login_nsec: String,
+    compose_text: String,
 }}
 
 #[derive(Debug, Clone)]
-enum Message {{
-    NameChanged(String),
-    Apply,
+pub enum Message {{
+    Tick,
+    LoginNsecChanged(String),
+    ComposeChanged(String),
+    CreateAccount,
+    Login,
+    Logout,
+    Refresh,
+    OpenCompose,
+    CloseCompose,
+    PublishCompose,
+    SelectNote(String),
+    DeselectNote,
+    OpenSettings,
+    CloseSettings,
+    ClearToast,
 }}
 
-impl Default for App {{
-    fn default() -> Self {{
-        let ffi = {core_lib}::FfiApp::new(".".to_string());
-        let greeting = ffi.state().greeting;
+impl DesktopApp {{
+    fn new() -> Self {{
+        let mut manager = AppManager::new();
+        let _ = manager.drain_updates();
+        Self {{
+            manager,
+            login_nsec: String::new(),
+            compose_text: String::new(),
+        }}
+    }}
+
+    fn subscription(&self) -> Subscription<Message> {{
+        iced::event::listen().map(|_| Message::Tick)
+    }}
+
+    fn update(&mut self, message: Message) -> Task<Message> {{
+        match message {{
+            Message::Tick => {{
+                let _ = self.manager.drain_updates();
+            }}
+            Message::LoginNsecChanged(value) => {{
+                self.login_nsec = value;
+            }}
+            Message::ComposeChanged(value) => {{
+                self.compose_text = value;
+            }}
+            Message::CreateAccount => {{
+                self.dispatch(core::AppAction::CreateAccount);
+            }}
+            Message::Login => {{
+                self.dispatch(core::AppAction::Login {{
+                    nsec: self.login_nsec.clone(),
+                }});
+            }}
+            Message::Logout => {{
+                self.dispatch(core::AppAction::Logout);
+            }}
+            Message::Refresh => {{
+                self.dispatch(core::AppAction::RefreshTimeline);
+            }}
+            Message::OpenCompose => {{
+                self.dispatch(core::AppAction::OpenCompose);
+            }}
+            Message::CloseCompose => {{
+                self.dispatch(core::AppAction::CloseCompose);
+            }}
+            Message::PublishCompose => {{
+                self.dispatch(core::AppAction::PublishNote {{
+                    content: self.compose_text.clone(),
+                }});
+                self.compose_text.clear();
+            }}
+            Message::SelectNote(note_id) => {{
+                self.dispatch(core::AppAction::SelectNote {{ note_id }});
+            }}
+            Message::DeselectNote => {{
+                self.dispatch(core::AppAction::DeselectNote);
+            }}
+            Message::OpenSettings => {{
+                self.dispatch(core::AppAction::OpenSettings);
+            }}
+            Message::CloseSettings => {{
+                self.dispatch(core::AppAction::CloseSettings);
+            }}
+            Message::ClearToast => {{
+                self.dispatch(core::AppAction::ClearToast);
+            }}
+        }}
+
+        Task::none()
+    }}
+
+    fn view(&self) -> iced::Element<'_, Message> {{
+        let route = project_desktop(&self.manager.state);
+        ui::root_view(
+            &self.manager.state,
+            route,
+            &self.login_nsec,
+            &self.compose_text,
+        )
+    }}
+
+    fn dispatch(&mut self, action: core::AppAction) {{
+        self.manager.dispatch(action);
+        let _ = self.manager.drain_updates();
+    }}
+}}
+"#
+    )
+}
+
+fn tpl_desktop_iced_app_manager(core_lib: &str) -> String {
+    format!(
+        r#"use std::sync::Arc;
+
+use flume::{{Receiver, Sender}};
+use {core_lib} as core;
+
+struct UpdateBridge {{
+    tx: Sender<core::AppUpdate>,
+}}
+
+impl core::AppReconciler for UpdateBridge {{
+    fn reconcile(&self, update: core::AppUpdate) {{
+        let _ = self.tx.send(update);
+    }}
+}}
+
+pub struct AppManager {{
+    ffi: Arc<core::FfiApp>,
+    updates_rx: Receiver<core::AppUpdate>,
+    pub state: core::AppState,
+    last_rev: u64,
+}}
+
+impl AppManager {{
+    pub fn new() -> Self {{
+        let ffi = core::FfiApp::new(".".to_string());
+        let (tx, rx) = flume::unbounded();
+        ffi.listen_for_updates(Box::new(UpdateBridge {{ tx }}));
+
+        let state = ffi.state();
+        let last_rev = state.rev;
         Self {{
             ffi,
-            name: String::new(),
-            greeting,
+            updates_rx: rx,
+            state,
+            last_rev,
+        }}
+    }}
+
+    pub fn dispatch(&self, action: core::AppAction) {{
+        self.ffi.dispatch(action);
+    }}
+
+    pub fn drain_updates(&mut self) -> bool {{
+        let mut changed = false;
+        while let Ok(update) = self.updates_rx.try_recv() {{
+            if self.apply_update(update) {{
+                changed = true;
+            }}
+        }}
+        changed
+    }}
+
+    fn apply_update(&mut self, update: core::AppUpdate) -> bool {{
+        match update {{
+            core::AppUpdate::FullState(next) => {{
+                if next.rev <= self.last_rev {{
+                    return false;
+                }}
+                self.last_rev = next.rev;
+                self.state = next;
+                true
+            }}
         }}
     }}
 }}
+"#
+    )
+}
 
-impl App {{
-    fn update(&mut self, message: Message) {{
-        match message {{
-            Message::NameChanged(name) => {{
-                self.name = name;
+fn tpl_desktop_iced_router_projection(core_lib: &str) -> String {
+    format!(
+        r#"use {core_lib} as core;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopShell {{
+    Login,
+    Main,
+}}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopOverlay {{
+    None,
+    Compose,
+    Settings,
+}}
+
+#[derive(Debug, Clone)]
+pub struct DesktopRoute {{
+    pub shell: DesktopShell,
+    pub selected_note_id: Option<String>,
+    pub overlay: DesktopOverlay,
+    pub route_label: String,
+}}
+
+pub fn project_desktop(state: &core::AppState) -> DesktopRoute {{
+    let shell = if state.is_logged_in {{
+        DesktopShell::Main
+    }} else {{
+        DesktopShell::Login
+    }};
+
+    let overlay = match state.overlay.as_str() {{
+        "compose" => DesktopOverlay::Compose,
+        "settings" => DesktopOverlay::Settings,
+        _ => DesktopOverlay::None,
+    }};
+
+    DesktopRoute {{
+        shell,
+        selected_note_id: if state.is_logged_in {{
+            state.selected_note_id.clone()
+        }} else {{
+            None
+        }},
+        overlay,
+        route_label: state.desktop_route.clone(),
+    }}
+}}
+"#
+    )
+}
+
+fn tpl_desktop_iced_ui(core_lib: &str) -> String {
+    format!(
+        r#"use iced::widget::{{button, column, container, row, scrollable, text, text_input, Column}};
+use iced::{{Center, Element, Fill, Length}};
+
+use crate::router_projection::{{DesktopOverlay, DesktopRoute, DesktopShell}};
+use crate::Message;
+use {core_lib} as core;
+
+pub fn root_view<'a>(
+    state: &'a core::AppState,
+    route: DesktopRoute,
+    login_nsec: &'a str,
+    compose_text: &'a str,
+) -> Element<'a, Message> {{
+    let body: Element<'a, Message> = match route.shell {{
+        DesktopShell::Login => login_view(state, login_nsec),
+        DesktopShell::Main => main_shell_view(state, &route, compose_text),
+    }};
+
+    if let Some(toast) = state.toast.as_ref() {{
+        column![
+            body,
+            row![
+                text(toast),
+                button("Dismiss").on_press(Message::ClearToast),
+            ]
+            .spacing(8)
+            .align_y(Center),
+        ]
+        .spacing(12)
+        .padding(12)
+        .into()
+    }} else {{
+        body
+    }}
+}}
+
+fn login_view<'a>(state: &'a core::AppState, login_nsec: &'a str) -> Element<'a, Message> {{
+    container(
+        column![
+            text("Desktop One-Feed Demo").size(28),
+            text("Phase 3 shell: Login + Timeline + Detail + Compose"),
+            text_input("Paste nsec...", login_nsec).on_input(Message::LoginNsecChanged),
+            row![
+                button("Create Account").on_press(Message::CreateAccount),
+                button("Login").on_press(Message::Login),
+            ]
+            .spacing(8),
+            text(format!("rev: {{}}", state.rev)),
+        ]
+        .spacing(12)
+        .max_width(560),
+    )
+    .center(Fill)
+    .into()
+}}
+
+fn main_shell_view<'a>(
+    state: &'a core::AppState,
+    route: &DesktopRoute,
+    compose_text: &'a str,
+) -> Element<'a, Message> {{
+    let npub = state.npub.as_deref().unwrap_or("unknown");
+
+    let sidebar = container(
+        column![
+            text("Account").size(20),
+            text(short(npub, 26)),
+            text(format!("route: {{}}", route.route_label)),
+            row![
+                button("Refresh").on_press(Message::Refresh),
+                button("Compose").on_press(Message::OpenCompose),
+            ]
+            .spacing(8),
+            row![
+                button("Settings").on_press(Message::OpenSettings),
+                button("Logout").on_press(Message::Logout),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10),
+    )
+    .width(Length::FillPortion(1))
+    .padding(12);
+
+    let mut timeline_col = Column::new().spacing(8);
+    if state.timeline.is_empty() {{
+        timeline_col = timeline_col.push(text("Timeline is empty."));
+    }} else {{
+        for note in &state.timeline {{
+            let mut label = short(&note.content, 52);
+            if route.selected_note_id.as_deref() == Some(note.id.as_str()) {{
+                label = String::from("* ") + &label;
             }}
-            Message::Apply => {{
-                self.ffi
-                    .dispatch({core_lib}::AppAction::SetName {{ name: self.name.clone() }});
-                self.greeting = self.ffi.state().greeting;
-            }}
+            timeline_col =
+                timeline_col.push(button(text(label)).on_press(Message::SelectNote(note.id.clone())));
         }}
     }}
 
-    fn view(&self) -> Column<'_, Message> {{
+    let timeline = container(
         column![
-            text("{display_name} (ICED)").size(24),
-            text(&self.greeting).size(20),
-            text_input("Enter a name", &self.name).on_input(Message::NameChanged),
-            button("Apply").on_press(Message::Apply),
+            text("Timeline").size(20),
+            scrollable(timeline_col).height(Fill),
         ]
-        .padding(24)
-        .spacing(12)
-        .align_x(Center)
+        .spacing(10),
+    )
+    .width(Length::FillPortion(2))
+    .padding(12);
+
+    let detail_body = if let Some(selected_id) = route.selected_note_id.as_ref() {{
+        if let Some(note) = state.timeline.iter().find(|n| &n.id == selected_id) {{
+            column![
+                text("Note Detail").size(20),
+                text(format!("id: {{}}", note.id)),
+                text(format!("author: {{}}", short(&note.author_npub, 20))),
+                text(&note.content),
+                button("Close Detail").on_press(Message::DeselectNote),
+            ]
+            .spacing(10)
+        }} else {{
+            column![
+                text("Note Detail").size(20),
+                text("Selected note was not found."),
+                button("Clear Selection").on_press(Message::DeselectNote),
+            ]
+            .spacing(10)
+        }}
+    }} else {{
+        column![
+            text("Note Detail").size(20),
+            text("Select a note from the timeline."),
+        ]
+        .spacing(10)
+    }};
+
+    let mut detail_col = Column::new().spacing(12).push(detail_body);
+    match route.overlay {{
+        DesktopOverlay::Compose => {{
+            detail_col = detail_col.push(
+                column![
+                    text("Compose").size(20),
+                    text_input("Write a short note...", compose_text)
+                        .on_input(Message::ComposeChanged)
+                        .on_submit(Message::PublishCompose),
+                    row![
+                        button("Publish").on_press(Message::PublishCompose),
+                        button("Cancel").on_press(Message::CloseCompose),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(8),
+            );
+        }}
+        DesktopOverlay::Settings => {{
+            detail_col = detail_col.push(
+                column![
+                    text("Settings").size(20),
+                    text("No settings in this demo."),
+                    button("Close Settings").on_press(Message::CloseSettings),
+                ]
+                .spacing(8),
+            );
+        }}
+        DesktopOverlay::None => {{}}
     }}
+
+    let detail = container(detail_col)
+        .width(Length::FillPortion(2))
+        .padding(12);
+
+    row![sidebar, timeline, detail]
+        .height(Fill)
+        .spacing(8)
+        .into()
+}}
+
+fn short(value: &str, max_chars: usize) -> String {{
+    if value.chars().count() <= max_chars {{
+        return value.to_string();
+    }}
+
+    let mut out = String::new();
+    for ch in value.chars().take(max_chars.saturating_sub(3)) {{
+        out.push(ch);
+    }}
+    out.push_str("...");
+    out
 }}
 "#
     )

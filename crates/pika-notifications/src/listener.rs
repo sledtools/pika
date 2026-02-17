@@ -68,7 +68,7 @@ pub async fn start_listener(
         info!(relay_count = relays.len(), "Connected to relays");
 
         let group_filter = Filter::new()
-            .kind(Kind::Custom(445))
+            .kind(Kind::MlsGroupMessage)
             .custom_tags(SingleLetterTag::lowercase(Alphabet::H), filter.group_ids)
             .since(Timestamp::now());
 
@@ -89,7 +89,21 @@ pub async fn start_listener(
                                 relay = %relay_url,
                                 "Received event"
                             );
-                            if event.kind == Kind::Custom(445) {
+                            if event.kind == Kind::MlsGroupMessage {
+                                // Skip events expiring within 30 seconds (e.g. call signals, typing indicators).
+                                let expiration = event.tags.iter().find_map(|tag| {
+                                    if tag.kind() == TagKind::Expiration {
+                                        tag.content().and_then(|s| s.parse::<u64>().ok())
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if let Some(exp) = expiration {
+                                    if exp <= Timestamp::now().as_secs() + 30 {
+                                        debug!(event_id = %event.id, "Skipping near-expired event");
+                                        continue;
+                                    }
+                                }
                                 info!(
                                     event_id = %event.id,
                                     author = %event.pubkey,

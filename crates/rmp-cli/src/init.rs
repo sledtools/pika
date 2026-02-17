@@ -557,6 +557,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 flume = "0.11"
+nostr = "0.44.2"
 uniffi = "0.31.0"
 "#
     )
@@ -568,22 +569,48 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 use flume::{Receiver, Sender};
+use nostr::{EventBuilder, Keys, ToBech32};
 
 uniffi::setup_scaffolding!();
 
 // ── State ───────────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Record, Clone, Debug)]
+pub struct NoteSummary {
+    pub id: String,
+    pub author_npub: String,
+    pub content: String,
+    pub created_at: u64,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
 pub struct AppState {
     pub rev: u64,
+    // Legacy greeting kept so current mobile wrappers still compile in this phase.
     pub greeting: String,
+    pub is_logged_in: bool,
+    pub npub: Option<String>,
+    pub timeline: Vec<NoteSummary>,
+    pub selected_note_id: Option<String>,
+    pub overlay: String,
+    pub mobile_route: String,
+    pub desktop_route: String,
+    pub toast: Option<String>,
 }
 
 impl AppState {
     fn empty() -> Self {
         Self {
             rev: 0,
-            greeting: "Hello from Rust! 🦀".to_string(),
+            greeting: "Hello from Rust!".to_string(),
+            is_logged_in: false,
+            npub: None,
+            timeline: vec![],
+            selected_note_id: None,
+            overlay: "none".to_string(),
+            mobile_route: "login".to_string(),
+            desktop_route: "login".to_string(),
+            toast: None,
         }
     }
 }
@@ -592,12 +619,370 @@ impl AppState {
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppAction {
+    // Legacy action kept for current wrapper compatibility.
     SetName { name: String },
+    CreateAccount,
+    Login { nsec: String },
+    RestoreSession { nsec: String },
+    Logout,
+    RefreshTimeline,
+    PublishNote { content: String },
+    SelectNote { note_id: String },
+    DeselectNote,
+    OpenCompose,
+    CloseCompose,
+    OpenSettings,
+    CloseSettings,
+    ClearToast,
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppUpdate {
     FullState(AppState),
+}
+
+// ── Semantic router + projections (internal) ───────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SessionState {
+    LoggedOut,
+    LoggedIn { npub: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OverlayState {
+    None,
+    Compose,
+    Settings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NavState {
+    session: SessionState,
+    selected_note_id: Option<String>,
+    overlay: OverlayState,
+}
+
+impl NavState {
+    fn new() -> Self {
+        Self {
+            session: SessionState::LoggedOut,
+            selected_note_id: None,
+            overlay: OverlayState::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MobileRoot {
+    Login,
+    Timeline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MobileStack {
+    NoteDetail(String),
+    Compose,
+    Settings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MobileRouteState {
+    root: MobileRoot,
+    stack: Vec<MobileStack>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DesktopShell {
+    Login,
+    MainShell,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DesktopRouteState {
+    shell: DesktopShell,
+    selected_note_id: Option<String>,
+    modal: Option<OverlayState>,
+}
+
+fn project_mobile(nav: &NavState) -> MobileRouteState {
+    let mut stack = vec![];
+    let root = match nav.session {
+        SessionState::LoggedOut => MobileRoot::Login,
+        SessionState::LoggedIn { .. } => {
+            if let Some(note_id) = nav.selected_note_id.as_ref() {
+                stack.push(MobileStack::NoteDetail(note_id.clone()));
+            }
+            match nav.overlay {
+                OverlayState::None => {}
+                OverlayState::Compose => stack.push(MobileStack::Compose),
+                OverlayState::Settings => stack.push(MobileStack::Settings),
+            }
+            MobileRoot::Timeline
+        }
+    };
+    MobileRouteState { root, stack }
+}
+
+fn project_desktop(nav: &NavState) -> DesktopRouteState {
+    match nav.session {
+        SessionState::LoggedOut => DesktopRouteState {
+            shell: DesktopShell::Login,
+            selected_note_id: None,
+            modal: None,
+        },
+        SessionState::LoggedIn { .. } => DesktopRouteState {
+            shell: DesktopShell::MainShell,
+            selected_note_id: nav.selected_note_id.clone(),
+            modal: match nav.overlay {
+                OverlayState::None => None,
+                OverlayState::Compose => Some(OverlayState::Compose),
+                OverlayState::Settings => Some(OverlayState::Settings),
+            },
+        },
+    }
+}
+
+fn summarize_mobile(route: &MobileRouteState) -> String {
+    let mut out = match route.root {
+        MobileRoot::Login => "login".to_string(),
+        MobileRoot::Timeline => "timeline".to_string(),
+    };
+    for entry in &route.stack {
+        let seg = match entry {
+            MobileStack::NoteDetail(note_id) => format!("note:{note_id}"),
+            MobileStack::Compose => "compose".to_string(),
+            MobileStack::Settings => "settings".to_string(),
+        };
+        out.push('>');
+        out.push_str(&seg);
+    }
+    out
+}
+
+fn summarize_desktop(route: &DesktopRouteState) -> String {
+    match route.shell {
+        DesktopShell::Login => "login".to_string(),
+        DesktopShell::MainShell => {
+            let sel = route
+                .selected_note_id
+                .clone()
+                .unwrap_or_else(|| "none".to_string());
+            let modal = match route.modal {
+                None => "none",
+                Some(OverlayState::Compose) => "compose",
+                Some(OverlayState::Settings) => "settings",
+                Some(OverlayState::None) => "none",
+            };
+            format!("main:selected={sel}:modal={modal}")
+        }
+    }
+}
+
+fn overlay_label(overlay: &OverlayState) -> String {
+    match overlay {
+        OverlayState::None => "none".to_string(),
+        OverlayState::Compose => "compose".to_string(),
+        OverlayState::Settings => "settings".to_string(),
+    }
+}
+
+fn trim_preview(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max {
+        t.to_string()
+    } else {
+        let mut out = String::new();
+        for ch in t.chars().take(max.saturating_sub(1)) {
+            out.push(ch);
+        }
+        out.push_str("...");
+        out
+    }
+}
+
+// ── Core model ──────────────────────────────────────────────────────────────
+
+struct CoreState {
+    app: AppState,
+    nav: NavState,
+    keys: Option<Keys>,
+}
+
+impl CoreState {
+    fn new() -> Self {
+        let mut out = Self {
+            app: AppState::empty(),
+            nav: NavState::new(),
+            keys: None,
+        };
+        out.refresh_routes();
+        out
+    }
+
+    fn refresh_routes(&mut self) {
+        self.app.selected_note_id = self.nav.selected_note_id.clone();
+        self.app.overlay = overlay_label(&self.nav.overlay);
+        self.app.mobile_route = summarize_mobile(&project_mobile(&self.nav));
+        self.app.desktop_route = summarize_desktop(&project_desktop(&self.nav));
+        match &self.nav.session {
+            SessionState::LoggedOut => {
+                self.app.is_logged_in = false;
+                self.app.npub = None;
+            }
+            SessionState::LoggedIn { npub } => {
+                self.app.is_logged_in = true;
+                self.app.npub = Some(npub.clone());
+            }
+        }
+    }
+
+    fn bump_rev(&mut self) {
+        self.app.rev = self.app.rev.saturating_add(1);
+    }
+
+    fn seed_timeline_if_empty(&mut self, npub: &str) {
+        if !self.app.timeline.is_empty() {
+            return;
+        }
+        self.app.timeline.push(NoteSummary {
+            id: "demo-welcome".to_string(),
+            author_npub: npub.to_string(),
+            content: "Welcome to the one-feed demo.".to_string(),
+            created_at: 1,
+        });
+    }
+
+    fn set_logged_in(&mut self, keys: Keys) {
+        let pubkey = keys.public_key();
+        let npub = pubkey.to_bech32().unwrap_or_else(|_| pubkey.to_hex());
+        self.keys = Some(keys);
+        self.nav.session = SessionState::LoggedIn { npub: npub.clone() };
+        self.nav.overlay = OverlayState::None;
+        self.seed_timeline_if_empty(&npub);
+        self.app.greeting = format!("Logged in as {}", trim_preview(&npub, 16));
+        self.app.toast = Some("Session ready (demo)".to_string());
+    }
+
+    fn add_demo_sync_note(&mut self) {
+        let Some(npub) = self.app.npub.clone() else {
+            self.app.toast = Some("Login required".to_string());
+            return;
+        };
+        let id = format!("sync-{}-{}", self.app.rev.saturating_add(1), self.app.timeline.len());
+        self.app.timeline.insert(
+            0,
+            NoteSummary {
+                id,
+                author_npub: npub,
+                content: "Fetched latest notes (demo stub).".to_string(),
+                created_at: self.app.rev.saturating_add(1),
+            },
+        );
+        self.app.toast = Some("Timeline refreshed".to_string());
+    }
+
+    fn publish_local_note(&mut self, content: String) {
+        let trimmed = content.trim().to_string();
+        if trimmed.is_empty() {
+            self.app.toast = Some("Cannot publish an empty note".to_string());
+            return;
+        }
+        let Some(keys) = self.keys.as_ref() else {
+            self.app.toast = Some("Login required".to_string());
+            return;
+        };
+        match EventBuilder::text_note(trimmed).sign_with_keys(keys) {
+            Ok(event) => {
+                let npub = keys
+                    .public_key()
+                    .to_bech32()
+                    .unwrap_or_else(|_| keys.public_key().to_hex());
+                self.app.timeline.insert(
+                    0,
+                    NoteSummary {
+                        id: event.id.to_hex(),
+                        author_npub: npub,
+                        content: event.content,
+                        created_at: event.created_at.as_secs(),
+                    },
+                );
+                self.nav.overlay = OverlayState::None;
+                self.app.toast = Some("Published note (demo local insert)".to_string());
+            }
+            Err(e) => {
+                self.app.toast = Some(format!("Publish failed: {e}"));
+            }
+        }
+    }
+
+    fn apply_action(&mut self, action: AppAction) {
+        match action {
+            AppAction::SetName { name } => {
+                if name.trim().is_empty() {
+                    self.app.greeting = "Hello from Rust!".to_string();
+                } else {
+                    self.app.greeting = format!("Hello, {}!", name.trim());
+                }
+            }
+            AppAction::CreateAccount => {
+                self.set_logged_in(Keys::generate());
+            }
+            AppAction::Login { nsec } | AppAction::RestoreSession { nsec } => {
+                let nsec = nsec.trim();
+                if nsec.is_empty() {
+                    self.app.toast = Some("Enter an nsec".to_string());
+                } else {
+                    match Keys::parse(nsec) {
+                        Ok(keys) => self.set_logged_in(keys),
+                        Err(e) => self.app.toast = Some(format!("Invalid nsec: {e}")),
+                    }
+                }
+            }
+            AppAction::Logout => {
+                self.keys = None;
+                self.nav.session = SessionState::LoggedOut;
+                self.nav.selected_note_id = None;
+                self.nav.overlay = OverlayState::None;
+                self.app.toast = Some("Logged out".to_string());
+                self.app.greeting = "Hello from Rust!".to_string();
+            }
+            AppAction::RefreshTimeline => {
+                self.add_demo_sync_note();
+            }
+            AppAction::PublishNote { content } => {
+                self.publish_local_note(content);
+            }
+            AppAction::SelectNote { note_id } => {
+                self.nav.selected_note_id = if note_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(note_id)
+                };
+            }
+            AppAction::DeselectNote => {
+                self.nav.selected_note_id = None;
+            }
+            AppAction::OpenCompose => {
+                self.nav.overlay = OverlayState::Compose;
+            }
+            AppAction::CloseCompose => {
+                self.nav.overlay = OverlayState::None;
+            }
+            AppAction::OpenSettings => {
+                self.nav.overlay = OverlayState::Settings;
+            }
+            AppAction::CloseSettings => {
+                self.nav.overlay = OverlayState::None;
+            }
+            AppAction::ClearToast => {
+                self.app.toast = None;
+            }
+        }
+
+        self.refresh_routes();
+        self.bump_rev();
+    }
 }
 
 // ── Callback interface ──────────────────────────────────────────────────────
@@ -633,12 +1018,11 @@ impl FfiApp {
 
         let shared_for_core = shared_state.clone();
         thread::spawn(move || {
-            let mut state = AppState::empty();
-            let mut rev: u64 = 0;
+            let mut core = CoreState::new();
 
             // Emit initial state.
             {
-                let snapshot = state.clone();
+                let snapshot = core.app.clone();
                 match shared_for_core.write() {
                     Ok(mut g) => *g = snapshot.clone(),
                     Err(p) => *p.into_inner() = snapshot.clone(),
@@ -648,23 +1032,15 @@ impl FfiApp {
 
             while let Ok(msg) = core_rx.recv() {
                 match msg {
-                    CoreMsg::Action(action) => match action {
-                        AppAction::SetName { name } => {
-                            rev += 1;
-                            state.rev = rev;
-                            if name.trim().is_empty() {
-                                state.greeting = "Hello from Rust! 🦀".to_string();
-                            } else {
-                                state.greeting = format!("Hello, {}! 🦀", name.trim());
-                            }
-                            let snapshot = state.clone();
-                            match shared_for_core.write() {
-                                Ok(mut g) => *g = snapshot.clone(),
-                                Err(p) => *p.into_inner() = snapshot.clone(),
-                            }
-                            let _ = update_tx.send(AppUpdate::FullState(snapshot));
+                    CoreMsg::Action(action) => {
+                        core.apply_action(action);
+                        let snapshot = core.app.clone();
+                        match shared_for_core.write() {
+                            Ok(mut g) => *g = snapshot.clone(),
+                            Err(p) => *p.into_inner() = snapshot.clone(),
                         }
-                    },
+                        let _ = update_tx.send(AppUpdate::FullState(snapshot));
+                    }
                 }
             }
         });
@@ -703,6 +1079,75 @@ impl FfiApp {
                 reconciler.reconcile(update);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_projection_logged_out_has_login_root() {
+        let nav = NavState::new();
+        let route = project_mobile(&nav);
+        assert_eq!(route.root, MobileRoot::Login);
+        assert!(route.stack.is_empty());
+    }
+
+    #[test]
+    fn mobile_projection_logged_in_can_stack_note_and_compose() {
+        let nav = NavState {
+            session: SessionState::LoggedIn {
+                npub: "npub1demo".to_string(),
+            },
+            selected_note_id: Some("note-1".to_string()),
+            overlay: OverlayState::Compose,
+        };
+        let route = project_mobile(&nav);
+        assert_eq!(route.root, MobileRoot::Timeline);
+        assert_eq!(route.stack.len(), 2);
+        assert_eq!(route.stack[0], MobileStack::NoteDetail("note-1".to_string()));
+        assert_eq!(route.stack[1], MobileStack::Compose);
+    }
+
+    #[test]
+    fn desktop_projection_keeps_split_view_selection() {
+        let nav = NavState {
+            session: SessionState::LoggedIn {
+                npub: "npub1desktop".to_string(),
+            },
+            selected_note_id: Some("abc".to_string()),
+            overlay: OverlayState::Settings,
+        };
+        let route = project_desktop(&nav);
+        assert_eq!(route.shell, DesktopShell::MainShell);
+        assert_eq!(route.selected_note_id, Some("abc".to_string()));
+        assert_eq!(route.modal, Some(OverlayState::Settings));
+    }
+
+    #[test]
+    fn reducer_updates_routes_and_rev_monotonically() {
+        let mut core = CoreState::new();
+        assert_eq!(core.app.rev, 0);
+
+        core.apply_action(AppAction::OpenCompose);
+        assert_eq!(core.app.rev, 1);
+        assert_eq!(core.app.overlay, "compose");
+        assert_eq!(core.app.mobile_route, "login");
+        assert_eq!(core.app.desktop_route, "login");
+
+        core.apply_action(AppAction::CreateAccount);
+        assert_eq!(core.app.rev, 2);
+        assert!(core.app.is_logged_in);
+        assert!(core.app.npub.is_some());
+
+        core.apply_action(AppAction::SelectNote {
+            note_id: "demo-welcome".to_string(),
+        });
+        assert_eq!(core.app.rev, 3);
+        assert_eq!(core.app.selected_note_id, Some("demo-welcome".to_string()));
+        assert!(core.app.mobile_route.contains("note:demo-welcome"));
+        assert!(core.app.desktop_route.contains("selected=demo-welcome"));
     }
 }
 "#

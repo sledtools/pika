@@ -39,6 +39,10 @@ final class AppManager: AppReconciler {
 
         core.listenForUpdates(reconciler: self)
 
+        PushNotificationManager.shared.onTokenReceived = { [weak self] token in
+            self?.dispatch(.setPushToken(token: token))
+        }
+
         if let nsec = nsecStore.getNsec(), !nsec.isEmpty {
             isRestoringSession = true
             core.dispatch(action: .restoreSession(nsec: nsec))
@@ -68,6 +72,7 @@ final class AppManager: AppReconciler {
         let callMoqUrl = (env["PIKA_CALL_MOQ_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let moqProbeOnStart = (env["PIKA_MOQ_PROBE_ON_START"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let notificationUrl = (env["PIKA_NOTIFICATION_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         ensureDefaultConfig(
             dataDirUrl: dataDirUrl,
             uiTestReset: uiTestReset,
@@ -75,7 +80,8 @@ final class AppManager: AppReconciler {
             kpRelays: kpRelays,
             callMoqUrl: callMoqUrl,
             callBroadcastPrefix: callBroadcastPrefix,
-            moqProbeOnStart: moqProbeOnStart
+            moqProbeOnStart: moqProbeOnStart,
+            notificationUrl: notificationUrl
         )
 
         let core = FfiApp(dataDir: dataDir)
@@ -115,11 +121,6 @@ final class AppManager: AppReconciler {
                     isRestoringSession = false
                 }
             }
-            // Auto-sync push notification subscriptions for all chats
-            if s.auth != .loggedOut {
-                let chatIds = s.chatList.map(\.chatId)
-                PushNotificationManager.shared.syncSubscriptions(chatIds: chatIds)
-            }
         case .accountCreated(_, let nsec, _, _):
             // Required by spec-v2: native stores nsec; Rust never persists it.
             if !nsec.isEmpty {
@@ -144,7 +145,6 @@ final class AppManager: AppReconciler {
 
     func logout() {
         nsecStore.clearNsec()
-        PushNotificationManager.shared.clearSubscriptions()
         dispatch(.logout)
     }
 
@@ -192,7 +192,8 @@ private func ensureDefaultConfig(
     kpRelays: String,
     callMoqUrl: String,
     callBroadcastPrefix: String,
-    moqProbeOnStart: String
+    moqProbeOnStart: String,
+    notificationUrl: String
 ) {
     // Ensure call config exists even when no env overrides are set (call runtime requires `call_moq_url`).
     // If the file already exists, only fill missing keys to avoid clobbering user/tooling overrides.
@@ -208,6 +209,7 @@ private func ensureDefaultConfig(
         || !callMoqUrl.isEmpty
         || !callBroadcastPrefix.isEmpty
         || moqProbeOnStart == "1"
+        || !notificationUrl.isEmpty
 
     let path = dataDirUrl.appendingPathComponent("pika_config.json")
     var obj: [String: Any] = [:]
@@ -259,6 +261,11 @@ private func ensureDefaultConfig(
         if !relayItems.isEmpty {
             obj["relay_urls"] = relayItems
             obj["key_package_relay_urls"] = kpItems
+            changed = true
+        }
+
+        if !notificationUrl.isEmpty {
+            obj["notification_url"] = notificationUrl
             changed = true
         }
     }

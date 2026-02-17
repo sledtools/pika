@@ -168,6 +168,7 @@ impl AppCore {
         sess.groups = index;
         self.state.chat_list = list;
         self.emit_chat_list();
+        self.sync_push_subscriptions();
 
         // Fetch missing profiles asynchronously.
         if !missing_profile_pubkeys.is_empty() && self.network_enabled() {

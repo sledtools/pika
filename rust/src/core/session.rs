@@ -69,6 +69,8 @@ impl AppCore {
             self.recompute_subscriptions();
         }
 
+        self.register_push_device();
+
         Ok(())
     }
 

@@ -104,16 +104,6 @@ struct NotificationSettingsView: View {
     private var deviceInfoSection: some View {
         Section {
             HStack {
-                Text("Device ID")
-                Spacer()
-                Text(PushNotificationManager.shared.deviceId)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            HStack {
                 Text("APNs Token")
                 Spacer()
                 Text(PushNotificationManager.shared.apnsToken ?? "Not registered")
@@ -121,14 +111,6 @@ struct NotificationSettingsView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-
-            HStack {
-                Text("Subscribed Chats")
-                Spacer()
-                Text("\(PushNotificationManager.shared.subscribedChatIds.count)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Debug Info")

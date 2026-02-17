@@ -3795,6 +3795,7 @@ dependencies = [
  "pika-media",
  "pika-tls",
  "rand 0.8.5",
+ "reqwest 0.12.28",
  "rustls 0.23.36",
  "serde",
  "serde_json",

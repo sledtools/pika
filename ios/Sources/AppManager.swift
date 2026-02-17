@@ -52,9 +52,14 @@ final class AppManager: AppReconciler {
 
     convenience init() {
         let fm = FileManager.default
-        let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
+            .appendingPathComponent("Library/Application Support")
         let dataDir = dataDirUrl.path
         let nsecStore = KeychainNsecStore()
+
+        // One-time migration: move existing data from the old app-private container
+        // to the shared App Group container so the NSE can access the MLS database.
+        Self.migrateDataDirIfNeeded(fm: fm, newDir: dataDirUrl)
 
         // UI tests need a clean slate and a way to inject relay overrides without relying on
         // external scripts.
@@ -173,6 +178,35 @@ final class AppManager: AppReconciler {
 
     func getNsec() -> String? {
         nsecStore.getNsec()
+    }
+
+    /// Moves existing data from the old app-private Application Support directory
+    /// to the shared App Group container. Runs once; a sentinel file prevents re-runs.
+    private static func migrateDataDirIfNeeded(fm: FileManager, newDir: URL) {
+        let sentinel = newDir.appendingPathComponent(".migrated_to_app_group")
+        if fm.fileExists(atPath: sentinel.path) { return }
+
+        let oldDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard fm.fileExists(atPath: oldDir.path) else {
+            // Nothing to migrate – first install.
+            try? fm.createDirectory(at: newDir, withIntermediateDirectories: true)
+            fm.createFile(atPath: sentinel.path, contents: nil)
+            return
+        }
+
+        try? fm.createDirectory(at: newDir, withIntermediateDirectories: true)
+
+        // Move each item from old dir to new dir.
+        if let items = try? fm.contentsOfDirectory(atPath: oldDir.path) {
+            for item in items {
+                let src = oldDir.appendingPathComponent(item)
+                let dst = newDir.appendingPathComponent(item)
+                if fm.fileExists(atPath: dst.path) { continue }
+                try? fm.moveItem(at: src, to: dst)
+            }
+        }
+
+        fm.createFile(atPath: sentinel.path, contents: nil)
     }
 }
 

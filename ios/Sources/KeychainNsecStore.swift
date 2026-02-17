@@ -10,6 +10,16 @@ private let keychainLog = Logger(subsystem: "com.pika.app", category: "Keychain"
 final class KeychainNsecStore {
     private let service = "com.pika.app"
     private let account = "nsec"
+    /// The keychain access group shared between the main app and the NSE.
+    /// On simulator, nil (shared groups aren't supported). On device, the full
+    /// qualified group: "<TeamID>.com.justinmoon.pika.shared".
+    private let accessGroup: String? = {
+        #if targetEnvironment(simulator)
+        return nil
+        #else
+        return "6JWFWV65BL.com.justinmoon.pika.shared"
+        #endif
+    }()
 
     /// Controls whether the file fallback is permitted.
     /// Default: `true` on simulator, `false` on device (compile-time).
@@ -36,19 +46,28 @@ final class KeychainNsecStore {
         }
     }
 
+    /// Build a base keychain query dict, conditionally including the access group.
+    private func baseQuery() -> [String: Any] {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        if let group = accessGroup {
+            q[kSecAttrAccessGroup as String] = group
+        }
+        return q
+    }
+
     // MARK: - Public API
 
     func getNsec() -> String? {
         if useFileFallback {
             return fileGet()
         }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -71,16 +90,11 @@ final class KeychainNsecStore {
             return
         }
         let data = Data(nsec.utf8)
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let base = baseQuery()
 
-        let addQuery = baseQuery.merging([
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]) { $1 }
+        var addQuery = base
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(addQuery as CFDictionary, nil)
         if status == errSecSuccess {
             keychainLog.info("setNsec: stored via SecItemAdd (keychain)")
@@ -88,7 +102,7 @@ final class KeychainNsecStore {
         }
         if status == errSecDuplicateItem {
             let attrs: [String: Any] = [kSecValueData as String: data]
-            let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attrs as CFDictionary)
+            let updateStatus = SecItemUpdate(base as CFDictionary, attrs as CFDictionary)
             if updateStatus == errSecSuccess {
                 keychainLog.info("setNsec: updated via SecItemUpdate (keychain)")
             } else {
@@ -106,12 +120,7 @@ final class KeychainNsecStore {
 
     func clearNsec() {
         // Clear both stores so state is consistent regardless of which was active.
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(baseQuery() as CFDictionary)
         keychainLog.info("clearNsec: keychain OSStatus=\(status)")
 
         if let url = fileFallbackURL() {
@@ -173,4 +182,3 @@ final class KeychainNsecStore {
         }
     }
 }
-

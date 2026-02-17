@@ -1349,6 +1349,7 @@ impl AppCore {
             AppAction::Foregrounded => {
                 // Native should send lifecycle signals as actions. Rust owns all state changes.
                 if self.is_logged_in() {
+                    self.reopen_mdk(); // Pick up NSE's ratchet changes
                     self.refresh_all_from_storage();
                     self.refresh_my_profile(false);
                     self.refresh_follow_list();

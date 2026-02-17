@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @MainActor
 struct ContentView: View {
@@ -232,6 +233,12 @@ private func screenView(
                 manager.dispatch(.reactToMessage(chatId: chatId, messageId: messageId, emoji: emoji))
             }
         )
+        .onAppear {
+            clearDeliveredNotifications(forChatId: chatId)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            clearDeliveredNotifications(forChatId: chatId)
+        }
         .sheet(isPresented: Binding(
             get: { state.peerProfile != nil },
             set: { if !$0 { manager.dispatch(.closePeerProfile) } }
@@ -323,6 +330,19 @@ private func chatScreenState(from state: AppState) -> ChatScreenState {
 @MainActor
 private func groupInfoState(from state: AppState) -> GroupInfoViewState {
     GroupInfoViewState(chat: state.currentChat)
+}
+
+/// Remove delivered notifications that belong to the given chat.
+private func clearDeliveredNotifications(forChatId chatId: String) {
+    let center = UNUserNotificationCenter.current()
+    center.getDeliveredNotifications { notifications in
+        let ids = notifications
+            .filter { $0.request.content.threadIdentifier == chatId }
+            .map { $0.request.identifier }
+        if !ids.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: ids)
+        }
+    }
 }
 
 @MainActor

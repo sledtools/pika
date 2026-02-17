@@ -35,8 +35,12 @@ fn init_keyring_inner() -> Result<()> {
     // We guard it via `OnceLock` above.
     #[cfg(target_os = "ios")]
     {
-        let store = apple_native_keyring_store::protected::Store::new()
-            .context("failed to create Apple protected keyring store")?;
+        let mut config = std::collections::HashMap::new();
+        config.insert("access-group", "6JWFWV65BL.com.justinmoon.pika.shared");
+        let store = apple_native_keyring_store::protected::Store::new_with_configuration(&config)
+            .context(
+            "failed to create Apple protected keyring store with shared access group",
+        )?;
         keyring_core::set_default_store(store);
         return Ok(());
     }

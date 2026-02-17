@@ -3763,6 +3763,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-nse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apple-native-keyring-store",
+ "hex",
+ "keyring-core",
+ "libsqlite3-sys",
+ "mdk-core",
+ "mdk-sqlite-storage",
+ "mdk-storage-traits",
+ "nostr 0.44.2",
+ "pika-tls",
+ "serde",
+ "serde_json",
+ "uniffi",
+]
+
+[[package]]
 name = "pika-tls"
 version = "0.1.0"
 dependencies = [

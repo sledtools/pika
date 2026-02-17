@@ -28,13 +28,14 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    // Show notifications even when the app is in the foreground (if enabled)
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        if UserDefaults.standard.bool(forKey: "pika_push_foreground") {
+        // Only show notifications the NSE successfully decrypted (marked with chat_id).
+        // Unprocessed notifications (e.g. self-messages while app is in foreground) are suppressed.
+        if notification.request.content.userInfo["chat_id"] != nil {
             completionHandler([.banner, .sound, .badge])
         } else {
             completionHandler([])

@@ -13,9 +13,6 @@ settings:
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0
-  configs:
-    Debug:
-      PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.dev
 
 packages:
   MarkdownUI:
@@ -43,6 +40,29 @@ targets:
       - framework: Frameworks/PikaCore.xcframework
         embed: false
       - package: MarkdownUI
+      - target: PikaNotificationService
+
+  PikaNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+      - path: NSEBindings
+        excludes:
+          - "*.h"
+          - "*.modulemap"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NotificationService/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.notification-service
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.dev.notification-service
+    dependencies:
+      - framework: Frameworks/PikaNSE.xcframework
+        embed: false
 
   PikaTests:
     type: bundle.unit-test

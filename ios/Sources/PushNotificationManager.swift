@@ -14,12 +14,6 @@ final class PushNotificationManager: NSObject, ObservableObject {
     /// The real APNs device token, set after successful registration.
     @Published private(set) var apnsToken: String?
 
-    /// Whether to show notification banners when the app is in the foreground.
-    var showInForeground: Bool {
-        get { UserDefaults.standard.bool(forKey: "pika_push_foreground") }
-        set { UserDefaults.standard.set(newValue, forKey: "pika_push_foreground") }
-    }
-
     /// Callback invoked when an APNs token is received. Set by AppManager to
     /// forward the token to Rust via `AppAction.setPushToken`.
     var onTokenReceived: ((String) -> Void)?

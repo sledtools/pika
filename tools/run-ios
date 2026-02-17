@@ -34,7 +34,7 @@ if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
   exec nix develop -c bash -lc "cd \"$ROOT\"; ./tools/run-ios ${qargs[*]}"
 fi
 
-IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika}"
 IOS_TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:-}"
 MODE="sim"
 CONSOLE="${PIKA_IOS_CONSOLE:-0}"
@@ -197,7 +197,6 @@ if [ "$MODE" = "device" ]; then
 
   # Build signed device .app (must unset LD/CC/CXX inside Nix shells).
   signing_settings=()
-  signing_settings+=("PRODUCT_BUNDLE_IDENTIFIER=$IOS_BUNDLE_ID")
   signing_settings+=("DEVELOPMENT_TEAM=$IOS_TEAM_ID")
   signing_settings+=("CODE_SIGN_STYLE=Automatic")
 

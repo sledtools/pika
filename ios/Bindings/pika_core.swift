@@ -1831,6 +1831,8 @@ public enum AppAction: Equatable, Hashable {
     case openPeerProfile(pubkey: String
     )
     case closePeerProfile
+    case setPushToken(token: String
+    )
     case refreshFollowList
     case followUser(pubkey: String
     )
@@ -1939,12 +1941,15 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
 
         case 30: return .closePeerProfile
 
-        case 31: return .refreshFollowList
-
-        case 32: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 31: return .setPushToken(token: try FfiConverterString.read(from: &buf)
         )
 
-        case 33: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 32: return .refreshFollowList
+
+        case 33: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        )
+
+        case 34: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2109,17 +2114,22 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             writeInt(&buf, Int32(30))
 
 
-        case .refreshFollowList:
+        case let .setPushToken(token):
             writeInt(&buf, Int32(31))
+            FfiConverterString.write(token, into: &buf)
+
+
+        case .refreshFollowList:
+            writeInt(&buf, Int32(32))
 
 
         case let .followUser(pubkey):
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(33))
             FfiConverterString.write(pubkey, into: &buf)
 
 
         case let .unfollowUser(pubkey):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(34))
             FfiConverterString.write(pubkey, into: &buf)
 
         }

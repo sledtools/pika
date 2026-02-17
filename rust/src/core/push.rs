@@ -1,9 +1,19 @@
 // Push notification subscription management.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use serde::Serialize;
+
 use super::AppCore;
+
+#[derive(Serialize)]
+struct ProfileCacheEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    picture: Option<String>,
+}
 
 const DEFAULT_NOTIFICATION_URL: &str = "https://test.notifs.benthecarman.com";
 
@@ -182,5 +192,40 @@ impl AppCore {
         // Clear persisted file.
         let path = Path::new(&self.data_dir).join("push_subscribed_chats.json");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Write a JSON cache of `{ hex_pubkey: { name, picture } }` for the NSE to resolve
+    /// sender names and profile pictures without network access.
+    pub(super) fn write_profiles_cache(&self) {
+        let mut cache: HashMap<String, ProfileCacheEntry> = HashMap::new();
+
+        // Start with known profiles.
+        for (hex, profile) in &self.profiles {
+            cache.insert(
+                hex.clone(),
+                ProfileCacheEntry {
+                    name: profile.name.clone(),
+                    picture: profile.picture_url.clone(),
+                },
+            );
+        }
+
+        // Include group member names/pictures from the session index (fill gaps).
+        if let Some(sess) = self.session.as_ref() {
+            for entry in sess.groups.values() {
+                for (pk, name, pic) in &entry.members {
+                    let hex = pk.to_hex();
+                    cache.entry(hex).or_insert_with(|| ProfileCacheEntry {
+                        name: name.clone(),
+                        picture: pic.clone(),
+                    });
+                }
+            }
+        }
+
+        let path = Path::new(&self.data_dir).join("profiles_cache.json");
+        if let Ok(json) = serde_json::to_string(&cache) {
+            let _ = std::fs::write(&path, json);
+        }
     }
 }

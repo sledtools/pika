@@ -22,6 +22,7 @@ import com.pika.app.ui.screens.GroupInfoScreen
 import com.pika.app.ui.screens.LoginScreen
 import com.pika.app.ui.screens.NewChatScreen
 import com.pika.app.ui.screens.NewGroupChatScreen
+import com.pika.app.ui.screens.PeerProfileSheet
 
 @Composable
 fun PikaApp(manager: AppManager) {
@@ -66,5 +67,13 @@ fun PikaApp(manager: AppManager) {
                 }
             }
         }
+    }
+
+    state.peerProfile?.let { profile ->
+        PeerProfileSheet(
+            manager = manager,
+            profile = profile,
+            onDismiss = {},
+        )
     }
 }

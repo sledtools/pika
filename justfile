@@ -140,6 +140,12 @@ pre-merge-pika: fmt
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"
 
+# CI-safe pre-merge for the notification server lane.
+pre-merge-notifications:
+  cargo clippy -p pika-notifications -- -D warnings
+  cargo test -p pika-notifications -- --test-threads=1
+  @echo "pre-merge-notifications complete"
+
 # CI-safe pre-merge for the openclaw-marmot (marmotd) lane.
 pre-merge-marmotd:
   cargo clippy -p marmotd -- -D warnings
@@ -154,6 +160,7 @@ pre-merge-rmp:
 # Single CI entrypoint for the whole repo.
 pre-merge:
   just pre-merge-pika
+  just pre-merge-notifications
   just pre-merge-marmotd
   just pre-merge-rmp
   @echo "pre-merge complete"
@@ -217,13 +224,13 @@ e2e-local-marmotd:
     PIKA_E2E_LOCAL=1 \
     cargo test -p pika_core --test e2e_local_marmotd_call -- --ignored --nocapture
 
-# Build Rust core for the host platform.
+# Build Rust core + NSE for the host platform.
 rust-build-host:
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   case "$PROFILE" in \
-    release) cargo build -p pika_core --release ;; \
-    debug) cargo build -p pika_core ;; \
+    release) cargo build -p pika_core -p pika-nse --release ;; \
+    debug) cargo build -p pika_core -p pika-nse ;; \
     *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
   esac
 
@@ -363,7 +370,7 @@ release VERSION:
 
 # Generate Swift bindings via UniFFI.
 ios-gen-swift: rust-build-host
-  mkdir -p ios/Bindings
+  mkdir -p ios/Bindings ios/NSEBindings
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGET_DIR="target/$PROFILE"; \
@@ -378,6 +385,20 @@ ios-gen-swift: rust-build-host
     --out-dir ios/Bindings \
     --config rust/uniffi.toml
   python3 -c 'from pathlib import Path; import re; p=Path("ios/Bindings/pika_core.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
+  set -euo pipefail; \
+  PROFILE="${PIKA_RUST_PROFILE:-release}"; \
+  TARGET_DIR="target/$PROFILE"; \
+  NSE_LIB=""; \
+  for cand in "$TARGET_DIR/libpika_nse.dylib" "$TARGET_DIR/libpika_nse.so" "$TARGET_DIR/libpika_nse.dll"; do \
+    if [ -f "$cand" ]; then NSE_LIB="$cand"; break; fi; \
+  done; \
+  if [ -z "$NSE_LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_nse.*"; exit 1; fi; \
+  cargo run -q -p uniffi-bindgen -- generate \
+    --library "$NSE_LIB" \
+    --language swift \
+    --out-dir ios/NSEBindings \
+    --config crates/pika-nse/uniffi.toml
+  python3 -c 'from pathlib import Path; import re; p=Path("ios/NSEBindings/pika_nse.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
 
 # Cross-compile Rust core for iOS (device + simulator).
 # Keep `PIKA_IOS_RUST_TARGETS` aligned with destination (device vs simulator) to avoid link errors.
@@ -415,32 +436,40 @@ ios-rust:
       "${base_env[@]}" \
         SDKROOT="$SDKROOT" \
         RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
-        cargo build -p pika_core --lib --target "$target" --release; \
+        cargo build -p pika_core -p pika-nse --lib --target "$target" --release; \
     else \
       "${base_env[@]}" \
         SDKROOT="$SDKROOT" \
         RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
-        cargo build -p pika_core --lib --target "$target"; \
+        cargo build -p pika_core -p pika-nse --lib --target "$target"; \
     fi; \
   done
 
-# Build PikaCore.xcframework (device + simulator slices).
+# Build PikaCore.xcframework and PikaNSE.xcframework (device + simulator slices).
 ios-xcframework: ios-gen-swift ios-rust
   set -euo pipefail; \
   PROFILE="${PIKA_RUST_PROFILE:-release}"; \
   TARGETS="${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"; \
-  rm -rf ios/Frameworks/PikaCore.xcframework ios/.build; \
-  mkdir -p ios/.build/headers ios/Frameworks; \
-  cp ios/Bindings/pika_coreFFI.h ios/.build/headers/pika_coreFFI.h; \
-  cp ios/Bindings/pika_coreFFI.modulemap ios/.build/headers/module.modulemap; \
+  rm -rf ios/Frameworks/PikaCore.xcframework ios/Frameworks/PikaNSE.xcframework ios/.build; \
+  mkdir -p ios/.build/headers/pika_coreFFI ios/.build/nse-headers/pika_nseFFI ios/Frameworks; \
+  cp ios/Bindings/pika_coreFFI.h ios/.build/headers/pika_coreFFI/pika_coreFFI.h; \
+  cp ios/Bindings/pika_coreFFI.modulemap ios/.build/headers/pika_coreFFI/module.modulemap; \
+  cp ios/NSEBindings/pika_nseFFI.h ios/.build/nse-headers/pika_nseFFI/pika_nseFFI.h; \
+  cp ios/NSEBindings/pika_nseFFI.modulemap ios/.build/nse-headers/pika_nseFFI/module.modulemap; \
   cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
+  nse_cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
   for target in $TARGETS; do \
     lib="target/$target/$PROFILE/libpika_core.a"; \
     if [ ! -f "$lib" ]; then echo "error: missing iOS static lib: $lib"; exit 1; fi; \
     cmd+=(-library "$lib" -headers ios/.build/headers); \
+    nse_lib="target/$target/$PROFILE/libpika_nse.a"; \
+    if [ ! -f "$nse_lib" ]; then echo "error: missing iOS static lib: $nse_lib"; exit 1; fi; \
+    nse_cmd+=(-library "$nse_lib" -headers ios/.build/nse-headers); \
   done; \
   cmd+=(-output ios/Frameworks/PikaCore.xcframework); \
-  "${cmd[@]}"
+  "${cmd[@]}"; \
+  nse_cmd+=(-output ios/Frameworks/PikaNSE.xcframework); \
+  "${nse_cmd[@]}"
 
 # Generate Xcode project via xcodegen.
 ios-xcodeproj:

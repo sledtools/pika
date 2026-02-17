@@ -39,17 +39,27 @@ final class AppManager: AppReconciler {
 
         core.listenForUpdates(reconciler: self)
 
+        PushNotificationManager.shared.onTokenReceived = { [weak self] token in
+            self?.dispatch(.setPushToken(token: token))
+        }
+
         if let nsec = nsecStore.getNsec(), !nsec.isEmpty {
             isRestoringSession = true
             core.dispatch(action: .restoreSession(nsec: nsec))
+            PushNotificationManager.shared.requestPermissionAndRegister()
         }
     }
 
     convenience init() {
         let fm = FileManager.default
-        let dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
+            .appendingPathComponent("Library/Application Support")
         let dataDir = dataDirUrl.path
         let nsecStore = KeychainNsecStore()
+
+        // One-time migration: move existing data from the old app-private container
+        // to the shared App Group container so the NSE can access the MLS database.
+        Self.migrateDataDirIfNeeded(fm: fm, newDir: dataDirUrl)
 
         // UI tests need a clean slate and a way to inject relay overrides without relying on
         // external scripts.
@@ -67,6 +77,7 @@ final class AppManager: AppReconciler {
         let callMoqUrl = (env["PIKA_CALL_MOQ_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let moqProbeOnStart = (env["PIKA_MOQ_PROBE_ON_START"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let notificationUrl = (env["PIKA_NOTIFICATION_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         ensureDefaultConfig(
             dataDirUrl: dataDirUrl,
             uiTestReset: uiTestReset,
@@ -74,7 +85,8 @@ final class AppManager: AppReconciler {
             kpRelays: kpRelays,
             callMoqUrl: callMoqUrl,
             callBroadcastPrefix: callBroadcastPrefix,
-            moqProbeOnStart: moqProbeOnStart
+            moqProbeOnStart: moqProbeOnStart,
+            notificationUrl: notificationUrl
         )
 
         let core = FfiApp(dataDir: dataDir)
@@ -133,6 +145,7 @@ final class AppManager: AppReconciler {
             nsecStore.setNsec(nsec)
         }
         dispatch(.login(nsec: nsec))
+        PushNotificationManager.shared.requestPermissionAndRegister()
     }
 
     func logout() {
@@ -166,6 +179,35 @@ final class AppManager: AppReconciler {
     func getNsec() -> String? {
         nsecStore.getNsec()
     }
+
+    /// Moves existing data from the old app-private Application Support directory
+    /// to the shared App Group container. Runs once; a sentinel file prevents re-runs.
+    private static func migrateDataDirIfNeeded(fm: FileManager, newDir: URL) {
+        let sentinel = newDir.appendingPathComponent(".migrated_to_app_group")
+        if fm.fileExists(atPath: sentinel.path) { return }
+
+        let oldDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard fm.fileExists(atPath: oldDir.path) else {
+            // Nothing to migrate – first install.
+            try? fm.createDirectory(at: newDir, withIntermediateDirectories: true)
+            fm.createFile(atPath: sentinel.path, contents: nil)
+            return
+        }
+
+        try? fm.createDirectory(at: newDir, withIntermediateDirectories: true)
+
+        // Move each item from old dir to new dir.
+        if let items = try? fm.contentsOfDirectory(atPath: oldDir.path) {
+            for item in items {
+                let src = oldDir.appendingPathComponent(item)
+                let dst = newDir.appendingPathComponent(item)
+                if fm.fileExists(atPath: dst.path) { continue }
+                try? fm.moveItem(at: src, to: dst)
+            }
+        }
+
+        fm.createFile(atPath: sentinel.path, contents: nil)
+    }
 }
 
 private extension AppUpdate {
@@ -184,7 +226,8 @@ private func ensureDefaultConfig(
     kpRelays: String,
     callMoqUrl: String,
     callBroadcastPrefix: String,
-    moqProbeOnStart: String
+    moqProbeOnStart: String,
+    notificationUrl: String
 ) {
     // Ensure call config exists even when no env overrides are set (call runtime requires `call_moq_url`).
     // If the file already exists, only fill missing keys to avoid clobbering user/tooling overrides.
@@ -200,6 +243,7 @@ private func ensureDefaultConfig(
         || !callMoqUrl.isEmpty
         || !callBroadcastPrefix.isEmpty
         || moqProbeOnStart == "1"
+        || !notificationUrl.isEmpty
 
     let path = dataDirUrl.appendingPathComponent("pika_config.json")
     var obj: [String: Any] = [:]
@@ -251,6 +295,11 @@ private func ensureDefaultConfig(
         if !relayItems.isEmpty {
             obj["relay_urls"] = relayItems
             obj["key_package_relay_urls"] = kpItems
+            changed = true
+        }
+
+        if !notificationUrl.isEmpty {
+            obj["notification_url"] = notificationUrl
             changed = true
         }
     }

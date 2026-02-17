@@ -69,7 +69,25 @@ impl AppCore {
             self.recompute_subscriptions();
         }
 
+        self.register_push_device();
+
         Ok(())
+    }
+
+    /// Re-open the MDK database to pick up any ratchet state changes made by the
+    /// Notification Service Extension while the app was in the background.
+    pub(super) fn reopen_mdk(&mut self) {
+        let Some(sess) = self.session.as_mut() else {
+            return;
+        };
+        match open_mdk(&self.data_dir, &sess.keys.public_key()) {
+            Ok(new_mdk) => {
+                sess.mdk = new_mdk;
+            }
+            Err(e) => {
+                tracing::warn!(%e, "failed to reopen mdk");
+            }
+        }
     }
 
     pub(super) fn stop_session(&mut self) {

@@ -156,6 +156,10 @@
             zsp
             pkgs.nak
             rmp
+            pkgs.postgresql
+            pkgs.diesel-cli
+            pkgs.openssl
+            pkgs.pkg-config
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen
           ];
@@ -218,11 +222,32 @@
             sdk.dir=$ANDROID_HOME
 EOF
 
+            # PostgreSQL for pika-notifications
+            export PGDATA="$PWD/crates/pika-notifications/.pgdata"
+            export PGHOST="$PGDATA"
+            export DATABASE_URL="postgresql:///pika_notifications?host=$PGDATA"
+
+            if [ ! -d "$PGDATA" ]; then
+              echo "Initializing PostgreSQL database..."
+              initdb --no-locale --encoding=UTF8 -D "$PGDATA" > /dev/null
+              cat >> "$PGDATA/postgresql.conf" <<PGEOF
+listen_addresses = '''
+unix_socket_directories = '$PGDATA'
+PGEOF
+            fi
+
+            pg_ctl status -D "$PGDATA" > /dev/null 2>&1 || pg_ctl start -D "$PGDATA" -l "$PGDATA/postgres.log" -o "-k $PGDATA"
+
+            if ! psql -lqt 2>/dev/null | grep -qw pika_notifications; then
+              createdb pika_notifications
+            fi
+
             echo ""
             echo "Pika dev environment ready"
-            echo "  Rust:    $(rustc --version)"
-            echo "  Android: $ANDROID_HOME"
-            echo "  NDK:     $ANDROID_NDK_HOME"
+            echo "  Rust:         $(rustc --version)"
+            echo "  Android:      $ANDROID_HOME"
+            echo "  NDK:          $ANDROID_NDK_HOME"
+            echo "  DATABASE_URL: $DATABASE_URL"
             echo ""
           '';
         };

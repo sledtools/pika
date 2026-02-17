@@ -104,6 +104,11 @@ pub enum AppAction {
     },
     ClosePeerProfile,
 
+    // Push notifications
+    SetPushToken {
+        token: String,
+    },
+
     // Follow list
     RefreshFollowList,
     FollowUser {
@@ -163,6 +168,9 @@ impl AppAction {
             // Peer profile
             AppAction::OpenPeerProfile { .. } => "OpenPeerProfile",
             AppAction::ClosePeerProfile => "ClosePeerProfile",
+
+            // Push notifications
+            AppAction::SetPushToken { .. } => "SetPushToken",
 
             // Follow list
             AppAction::RefreshFollowList => "RefreshFollowList",

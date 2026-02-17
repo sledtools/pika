@@ -198,6 +198,15 @@ struct MyNpubQrSheet: View {
     }
 
     @ViewBuilder
+    private var notificationsSection: some View {
+        Section {
+            NavigationLink("Notifications") {
+                NotificationSettingsView()
+            }
+        }
+    }
+
+    @ViewBuilder
     private var content: some View {
         photoSection
         profileSection
@@ -206,6 +215,7 @@ struct MyNpubQrSheet: View {
         if let nsec = nsecProvider() {
             nsecSection(nsec)
         }
+        notificationsSection
         logoutSection
     }
 

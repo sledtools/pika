@@ -32,6 +32,7 @@ pub(super) struct AppConfig {
     pub(super) call_moq_url: Option<String>,
     pub(super) call_broadcast_prefix: Option<String>,
     pub(super) call_audio_backend: Option<String>,
+    pub(super) notification_url: Option<String>,
     // Dev-only: run a one-shot QUIC+TLS probe on startup and log PASS/FAIL.
     pub(super) moq_probe_on_start: Option<bool>,
 }

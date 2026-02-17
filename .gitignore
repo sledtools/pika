@@ -21,6 +21,12 @@ ios/build/
 ios/build-device/
 ios/Frameworks/
 ios/**/xcuserdata/
+ios/Bindings/*.swift
+ios/Bindings/*.h
+ios/Bindings/*.modulemap
+ios/NSEBindings/*.swift
+ios/NSEBindings/*.h
+ios/NSEBindings/*.modulemap
 
 # Misc
 .android-avd/
@@ -43,6 +49,8 @@ ios/UITests/env.test
 secrets/zapstore-signing.env
 secrets/.age-key*.tmp
 secrets/.zapstore-sign-with.*
+.pika-cli/
+.pgdata/
 
 # Avoid accidentally staging enormous vendored build output.
 third_party/openclaw-marmot/target/

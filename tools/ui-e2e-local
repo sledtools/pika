@@ -259,10 +259,12 @@ fi
 
 case "$platform" in
   android)
+    # Default to the full class locally; allow CI or callers to narrow to a stable method.
+    TEST_CLASS="${PIKA_ANDROID_E2E_TEST_CLASS:-com.pika.app.PikaE2eUiTest}"
     ./tools/android-emulator-ensure >/dev/null
     just gen-kotlin android-rust android-local-properties >/dev/null
     (cd android && ./gradlew :app:connectedDebugAndroidTest \
-      -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
+      -Pandroid.testInstrumentationRunnerArguments.class="${TEST_CLASS}" \
       -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
       -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \
       -Pandroid.testInstrumentationRunnerArguments.pika_reset=1 \

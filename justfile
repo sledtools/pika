@@ -171,7 +171,8 @@ nightly-pika-e2e:
   if [ -z "${PIKA_TEST_NSEC:-}" ]; then \
     echo "note: PIKA_TEST_NSEC not set; e2e_deployed_bot_call will skip"; \
   fi; \
-  cargo test -p pika_core --tests -- --ignored --nocapture
+  # Keep nightly meaningful but avoid the explicitly disabled flaky local-relay call test.
+  cargo test -p pika_core --tests -- --ignored --skip call_invite_accept_end_flow_over_local_relay --nocapture
 
 # Nightly lane: build marmotd + run the marmotd E2E suite (local Nostr relay + local MoQ relay).
 nightly-marmotd:

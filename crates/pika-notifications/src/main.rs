@@ -32,8 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -114,7 +113,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Database migrations applied");
 
     let filter_info = GroupSubscription::get_filter_info(&mut connection)?;
-    info!("Loaded {} existing group filter(s)", filter_info.group_ids.len());
+    info!(
+        "Loaded {} existing group filter(s)",
+        filter_info.group_ids.len()
+    );
     let (sender, receiver) = watch::channel(filter_info);
     let channel = Arc::new(Mutex::new(sender));
 

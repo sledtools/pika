@@ -143,7 +143,7 @@ pre-merge-pika: fmt
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
   cargo clippy -p pika-notifications -- -D warnings
-  cargo test -p pika-notifications
+  cargo test -p pika-notifications -- --test-threads=1
   @echo "pre-merge-notifications complete"
 
 # CI-safe pre-merge for the openclaw-marmot (marmotd) lane.

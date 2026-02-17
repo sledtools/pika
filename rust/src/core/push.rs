@@ -88,8 +88,12 @@ impl AppCore {
             return;
         }
 
-        let current_ids: HashSet<String> =
-            self.state.chat_list.iter().map(|c| c.chat_id.clone()).collect();
+        let current_ids: HashSet<String> = self
+            .state
+            .chat_list
+            .iter()
+            .map(|c| c.chat_id.clone())
+            .collect();
 
         let to_subscribe: Vec<String> = current_ids
             .difference(&self.push_subscribed_chat_ids)

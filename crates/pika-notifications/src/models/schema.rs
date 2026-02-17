@@ -19,7 +19,4 @@ diesel::table! {
 
 diesel::joinable!(group_subscriptions -> subscription_info (id));
 
-diesel::allow_tables_to_appear_in_same_query!(
-    group_subscriptions,
-    subscription_info,
-);
+diesel::allow_tables_to_appear_in_same_query!(group_subscriptions, subscription_info,);

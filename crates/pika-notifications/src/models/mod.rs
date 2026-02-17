@@ -74,13 +74,9 @@ mod test {
         assert_eq!(id, expected_id);
 
         // test update with new device token
-        let id = SubscriptionInfo::register(
-            &mut conn,
-            expected_id,
-            "new_device_token_xyz",
-            "android",
-        )
-        .unwrap();
+        let id =
+            SubscriptionInfo::register(&mut conn, expected_id, "new_device_token_xyz", "android")
+                .unwrap();
 
         assert_eq!(id, expected_id);
 

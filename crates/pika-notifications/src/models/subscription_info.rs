@@ -50,10 +50,7 @@ impl SubscriptionInfo {
         Ok(items)
     }
 
-    pub fn find_by_group(
-        conn: &mut PgConnection,
-        group_id: &str,
-    ) -> anyhow::Result<Vec<Self>> {
+    pub fn find_by_group(conn: &mut PgConnection, group_id: &str) -> anyhow::Result<Vec<Self>> {
         let results = subscription_info::table
             .inner_join(group_subscriptions::table)
             .filter(group_subscriptions::group_id.eq(group_id))

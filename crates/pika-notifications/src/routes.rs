@@ -5,8 +5,8 @@ use a2::{DefaultNotificationBuilder, NotificationBuilder, NotificationOptions};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use fcm_rs::models::{Message, Notification as FcmNotification};
-use tracing::{debug, error, info};
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
@@ -47,7 +47,10 @@ async fn register_impl(state: &State, payload: RegisterRequest) -> anyhow::Resul
         &payload.platform,
     )?;
 
-    info!("Registered subscription: id={id} platform={}", payload.platform);
+    info!(
+        "Registered subscription: id={id} platform={}",
+        payload.platform
+    );
 
     Ok(id)
 }
@@ -67,11 +70,7 @@ async fn subscribe_groups_impl(
     payload: SubscribeGroupsRequest,
 ) -> anyhow::Result<()> {
     let mut conn = state.db_pool.get()?;
-    GroupSubscription::subscribe(
-        &mut conn,
-        &payload.id,
-        &payload.group_ids,
-    )?;
+    GroupSubscription::subscribe(&mut conn, &payload.id, &payload.group_ids)?;
 
     // notify new group subscriptions
     let filter_info = state.channel.lock().await;
@@ -111,11 +110,7 @@ async fn unsubscribe_groups_impl(
     payload: UnsubscribeGroupsRequest,
 ) -> anyhow::Result<()> {
     let mut conn = state.db_pool.get()?;
-    GroupSubscription::unsubscribe(
-        &mut conn,
-        &payload.id,
-        &payload.group_ids,
-    )?;
+    GroupSubscription::unsubscribe(&mut conn, &payload.id, &payload.group_ids)?;
 
     info!(
         "Unsubscribed id={} from {} group(s): {:?}",
@@ -187,10 +182,7 @@ async fn broadcast_individual(
     Ok(())
 }
 
-async fn broadcast_impl(
-    state: &State,
-    notification: BroadcastNotification,
-) -> anyhow::Result<()> {
+async fn broadcast_impl(state: &State, notification: BroadcastNotification) -> anyhow::Result<()> {
     let mut conn = state.db_pool.get()?;
     let all = SubscriptionInfo::get_all(&mut conn)?;
 

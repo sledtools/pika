@@ -25,7 +25,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Scaffold a new Rust + iOS + Android app repository.
+    /// Scaffold a new Rust + iOS + Android + desktop app repository.
     Init(InitArgs),
 
     /// Fast diagnostics; must not build.
@@ -40,7 +40,7 @@ pub enum Cmd {
     /// Generate bindings and build platform artifacts.
     Bindings(BindingsArgs),
 
-    /// Build/install/launch on iOS/Android (debug).
+    /// Build/install/launch on iOS/Android/desktop (debug).
     Run(RunArgs),
 }
 
@@ -64,6 +64,30 @@ pub struct InitArgs {
     /// Exclude Android app scaffolding.
     #[arg(long = "no-android", action = ArgAction::SetTrue)]
     pub no_android: bool,
+
+    /// Include ICED desktop app scaffolding.
+    #[arg(long, conflicts_with = "no_iced")]
+    pub iced: bool,
+
+    /// Exclude ICED desktop app scaffolding.
+    #[arg(long = "no-iced", action = ArgAction::SetTrue)]
+    pub no_iced: bool,
+
+    /// Include a local flake.nix dev shell with an `rmp` wrapper.
+    #[arg(long, conflicts_with = "no_flake")]
+    pub flake: bool,
+
+    /// Exclude flake.nix generation.
+    #[arg(long = "no-flake", action = ArgAction::SetTrue)]
+    pub no_flake: bool,
+
+    /// Initialize a local git repo and stage scaffold files.
+    #[arg(long, conflicts_with = "no_git")]
+    pub git: bool,
+
+    /// Skip local git repo initialization.
+    #[arg(long = "no-git", action = ArgAction::SetTrue)]
+    pub no_git: bool,
 
     /// Reverse-DNS org prefix (e.g. com.example).
     #[arg(long)]
@@ -168,6 +192,7 @@ pub struct RunArgs {
 pub enum RunPlatform {
     Ios,
     Android,
+    Iced,
 }
 
 #[derive(clap::Args, Debug, Default)]
@@ -218,7 +243,7 @@ pub struct JsonErrInner {
 #[derive(Serialize, Clone, Debug)]
 pub struct JsonChoice {
     pub id: String,
-    pub platform: String, // "ios" | "android"
+    pub platform: String, // "ios" | "android" | "iced"
     pub kind: String,     // "device" | "simulator" | "emulator"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

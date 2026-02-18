@@ -59,13 +59,28 @@
         rmp = pkgs.writeShellScriptBin "rmp" ''
           set -euo pipefail
 
-          # Find workspace root by walking up to `rmp.toml`.
+          # Prefer nearest ancestor that actually contains the rmp-cli crate.
           root="$PWD"
-          while [ "$root" != "/" ] && [ ! -f "$root/rmp.toml" ]; do
+          while [ "$root" != "/" ] && [ ! -f "$root/crates/rmp-cli/Cargo.toml" ]; do
             root="$(dirname "$root")"
           done
-          if [ ! -f "$root/rmp.toml" ]; then
-            echo "error: could not find rmp.toml from $PWD" >&2
+
+          # Fallback: old behavior (nearest rmp.toml root).
+          if [ ! -f "$root/crates/rmp-cli/Cargo.toml" ]; then
+            root="$PWD"
+            while [ "$root" != "/" ] && [ ! -f "$root/rmp.toml" ]; do
+              root="$(dirname "$root")"
+            done
+          fi
+
+          # Optional explicit override.
+          if [ -n "''${RMP_REPO:-}" ] && [ -f "''${RMP_REPO}/crates/rmp-cli/Cargo.toml" ]; then
+            root="$RMP_REPO"
+          fi
+
+          # Final guard.
+          if [ ! -f "$root/crates/rmp-cli/Cargo.toml" ]; then
+            echo "error: could not find rmp-cli workspace root from $PWD (set RMP_REPO to pika checkout)" >&2
             exit 2
           fi
 
@@ -162,6 +177,8 @@
             pkgs.pkg-config
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.xvfb-run
           ];
 
           shellHook = ''

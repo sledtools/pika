@@ -33,7 +33,9 @@ pub fn run_capture(mut cmd: Command) -> Result<Output, CliError> {
 pub fn discover_xcode_dev_dir() -> Result<PathBuf, CliError> {
     if let Ok(v) = std::env::var("DEVELOPER_DIR") {
         let p = PathBuf::from(v);
-        if p.join("usr/bin/xcrun").exists() || p.join("usr/bin/simctl").exists() {
+        if (p.join("usr/bin/xcrun").exists() || p.join("usr/bin/simctl").exists())
+            && developer_dir_supports_iphoneos(&p)
+        {
             return Ok(p);
         }
     }
@@ -52,9 +54,26 @@ pub fn discover_xcode_dev_dir() -> Result<PathBuf, CliError> {
         }
     }
     candidates.sort();
-    candidates
-        .pop()
-        .ok_or_else(|| CliError::operational("Xcode not found under /Applications"))
+    for dev in candidates.into_iter().rev() {
+        if developer_dir_supports_iphoneos(&dev) {
+            return Ok(dev);
+        }
+    }
+    Err(CliError::operational(
+        "Xcode with iPhoneOS SDK not found under /Applications",
+    ))
+}
+
+fn developer_dir_supports_iphoneos(dev_dir: &PathBuf) -> bool {
+    let out = Command::new("/usr/bin/xcrun")
+        .env("DEVELOPER_DIR", dev_dir)
+        .arg("--sdk")
+        .arg("iphoneos")
+        .arg("--show-sdk-path")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    matches!(out, Ok(status) if status.success())
 }
 
 // (reserved) write_file_atomic: will be useful once `rmp init` lands.

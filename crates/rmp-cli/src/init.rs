@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::cli::{human_log, json_print, CliError, JsonOk};
 
@@ -10,9 +11,12 @@ pub fn init(
 ) -> Result<(), CliError> {
     let include_ios = resolve_toggle(args.ios, args.no_ios, true);
     let include_android = resolve_toggle(args.android, args.no_android, true);
-    if !include_ios && !include_android {
+    let include_iced = resolve_toggle(args.iced, args.no_iced, false);
+    let include_flake = resolve_toggle(args.flake, args.no_flake, false);
+    let include_git = resolve_toggle(args.git, args.no_git, include_flake);
+    if !include_ios && !include_android && !include_iced {
         return Err(CliError::user(
-            "at least one platform must be enabled (use --ios or --android)",
+            "at least one platform must be enabled (use --ios, --android, or --iced)",
         ));
     }
 
@@ -53,6 +57,7 @@ pub fn init(
     // Derive Rust crate/lib name from the project name.
     let crate_name = rust_crate_name(&project_dir_name);
     let lib_name = crate_name.replace('-', "_");
+    let iced_package = format!("{crate_name}_desktop_iced");
 
     // Kotlin package path segments from the app_id (e.g., "com.example.myapp" → "com/example/myapp").
     let kotlin_pkg = &app_id;
@@ -72,7 +77,7 @@ pub fn init(
 
     // ── Root files ──────────────────────────────────────────────────────
     write_text(&dest.join(".gitignore"), &tpl_gitignore())?;
-    write_text(&dest.join("Cargo.toml"), &tpl_workspace_toml(&crate_name))?;
+    write_text(&dest.join("Cargo.toml"), &tpl_workspace_toml(include_iced))?;
     write_text(
         &dest.join("rmp.toml"),
         &tpl_rmp_toml(
@@ -83,16 +88,28 @@ pub fn init(
             &app_id,
             include_ios,
             include_android,
+            include_iced,
+            &iced_package,
         ),
     )?;
     write_text(
         &dest.join("justfile"),
-        &tpl_justfile(include_ios, include_android),
+        &tpl_justfile(include_ios, include_android, include_iced),
     )?;
     write_text(
         &dest.join("README.md"),
-        &tpl_readme(&display_name, include_ios, include_android),
+        &tpl_readme(
+            &display_name,
+            include_ios,
+            include_android,
+            include_iced,
+            include_flake,
+        ),
     )?;
+    if include_flake {
+        write_text(&dest.join("flake.nix"), &tpl_flake_nix())?;
+        write_text(&dest.join(".envrc"), &tpl_envrc())?;
+    }
 
     // ── Rust core ───────────────────────────────────────────────────────
     let rust_dir = dest.join("rust");
@@ -227,6 +244,25 @@ pub fn init(
         write_gradlew(&android_dir)?;
     }
 
+    // ── Desktop (ICED) ────────────────────────────────────────────────────
+    if include_iced {
+        let desktop_dir = dest.join("desktop/iced");
+        std::fs::create_dir_all(desktop_dir.join("src"))
+            .map_err(|e| CliError::operational(format!("create desktop/iced/src: {e}")))?;
+        write_text(
+            &desktop_dir.join("Cargo.toml"),
+            &tpl_desktop_iced_cargo(&iced_package, &crate_name),
+        )?;
+        write_text(
+            &desktop_dir.join("src/main.rs"),
+            &tpl_desktop_iced_main(&display_name, &lib_name),
+        )?;
+    }
+
+    if include_git {
+        init_git_repo(&dest)?;
+    }
+
     // ── Done ────────────────────────────────────────────────────────────
     if json {
         let mut platforms: Vec<&str> = vec![];
@@ -235,6 +271,9 @@ pub fn init(
         }
         if include_android {
             platforms.push("android");
+        }
+        if include_iced {
+            platforms.push("iced");
         }
         json_print(&JsonOk {
             ok: true,
@@ -246,6 +285,9 @@ pub fn init(
                     "bundle_id": bundle_id,
                     "app_id": app_id,
                     "crate_name": crate_name,
+                    "iced_package": iced_package,
+                    "flake": include_flake,
+                    "git": include_git,
                 },
                 "platforms": platforms,
             }),
@@ -258,7 +300,23 @@ pub fn init(
         if include_android {
             eprintln!("  android app id: {app_id}");
         }
-        eprintln!("  next: cd {} && rmp doctor", dest.to_string_lossy());
+        if include_iced {
+            eprintln!("  desktop package: {iced_package}");
+        }
+        if include_flake {
+            eprintln!("  nix shell: flake.nix + .envrc generated (--flake)");
+        }
+        if include_git {
+            eprintln!("  git: initialized local repo + staged scaffold");
+        }
+        if include_flake {
+            eprintln!(
+                "  next: cd {} && nix develop -c just doctor",
+                dest.to_string_lossy()
+            );
+        } else {
+            eprintln!("  next: cd {} && rmp doctor", dest.to_string_lossy());
+        }
     }
 
     Ok(())
@@ -284,6 +342,32 @@ fn write_text(path: &Path, content: &str) -> Result<(), CliError> {
     }
     std::fs::write(path, content)
         .map_err(|e| CliError::operational(format!("failed to write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+fn init_git_repo(dest: &Path) -> Result<(), CliError> {
+    let init = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dest)
+        .status()
+        .map_err(|e| CliError::operational(format!("failed to run `git init`: {e}")))?;
+    if !init.success() {
+        return Err(CliError::operational(
+            "failed to initialize git repo (`git init` exited non-zero)",
+        ));
+    }
+
+    let add = Command::new("git")
+        .args(["add", "."])
+        .current_dir(dest)
+        .status()
+        .map_err(|e| CliError::operational(format!("failed to run `git add .`: {e}")))?;
+    if !add.success() {
+        return Err(CliError::operational(
+            "failed to stage scaffold files (`git add .` exited non-zero)",
+        ));
+    }
+
     Ok(())
 }
 
@@ -379,6 +463,7 @@ fn display_name(input: &str) -> String {
 
 fn tpl_gitignore() -> String {
     r#"/target
+.direnv/
 .DS_Store
 *.swp
 *.swo
@@ -395,15 +480,14 @@ android/local.properties
     .to_string()
 }
 
-fn tpl_workspace_toml(_crate_name: &str) -> String {
+fn tpl_workspace_toml(include_iced: bool) -> String {
+    let mut members = vec!["  \"rust\",", "  \"uniffi-bindgen\","];
+    if include_iced {
+        members.push("  \"desktop/iced\",");
+    }
     format!(
-        r#"[workspace]
-resolver = "2"
-members = [
-  "rust",
-  "uniffi-bindgen",
-]
-"#
+        "[workspace]\nresolver = \"2\"\nmembers = [\n{}\n]\n",
+        members.join("\n")
     )
 }
 
@@ -415,6 +499,8 @@ fn tpl_rmp_toml(
     app_id: &str,
     include_ios: bool,
     include_android: bool,
+    include_iced: bool,
+    iced_package: &str,
 ) -> String {
     let mut out = format!(
         r#"[project]
@@ -445,10 +531,22 @@ app_id = "{app_id}"
         ));
     }
 
+    if include_iced {
+        out.push_str(&format!(
+            r#"
+[desktop]
+targets = ["iced"]
+
+[desktop.iced]
+package = "{iced_package}"
+"#
+        ));
+    }
+
     out
 }
 
-fn tpl_justfile(include_ios: bool, include_android: bool) -> String {
+fn tpl_justfile(include_ios: bool, include_android: bool, include_iced: bool) -> String {
     let mut lines = vec![
         "set shell := [\"bash\", \"-c\"]",
         "",
@@ -468,13 +566,36 @@ fn tpl_justfile(include_ios: bool, include_android: bool) -> String {
     if include_android {
         lines.extend_from_slice(&["", "run-android:", "  rmp run android"]);
     }
+    if include_iced {
+        lines.extend_from_slice(&["", "run-iced:", "  rmp run iced"]);
+    }
     lines.push("");
     lines.join("\n")
 }
 
-fn tpl_readme(display_name: &str, include_ios: bool, include_android: bool) -> String {
-    let mut s = format!(
-        r#"# {display_name}
+fn tpl_readme(
+    display_name: &str,
+    include_ios: bool,
+    include_android: bool,
+    include_iced: bool,
+    include_flake: bool,
+) -> String {
+    let mut s = if include_flake {
+        format!(
+            r#"# {display_name}
+
+A cross-platform app built with [RMP](https://github.com/nickthecook/rmp) (Rust Multiplatform).
+
+## Quick Start
+
+```bash
+nix develop -c just doctor
+nix develop -c just bindings
+"#
+        )
+    } else {
+        format!(
+            r#"# {display_name}
 
 A cross-platform app built with [RMP](https://github.com/nickthecook/rmp) (Rust Multiplatform).
 
@@ -484,15 +605,156 @@ A cross-platform app built with [RMP](https://github.com/nickthecook/rmp) (Rust 
 rmp doctor
 rmp bindings all
 "#
-    );
+        )
+    };
     if include_ios {
-        s.push_str("rmp run ios\n");
+        if include_flake {
+            s.push_str("nix develop -c just run-ios\n");
+        } else {
+            s.push_str("rmp run ios\n");
+        }
     }
     if include_android {
-        s.push_str("rmp run android\n");
+        if include_flake {
+            s.push_str("nix develop -c just run-android\n");
+        } else {
+            s.push_str("rmp run android\n");
+        }
+    }
+    if include_iced {
+        if include_flake {
+            s.push_str("nix develop -c just run-iced\n");
+        } else {
+            s.push_str("rmp run iced\n");
+        }
     }
     s.push_str("```\n");
+    if include_flake {
+        s.push_str("\nOptional: enable direnv (`.envrc` is included and uses `use flake`).\n");
+    }
     s
+}
+
+fn tpl_envrc() -> String {
+    "use flake\n".to_string()
+}
+
+fn tpl_flake_nix() -> String {
+    r#"{
+  description = "RMP app dev environment";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    android-nixpkgs = {
+      url = "github:tadfisher/android-nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, flake-utils, rust-overlay, android-nixpkgs, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+          config.allowUnfree = true;
+          config.android_sdk.accept_license = true;
+        };
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+          targets = [
+            "aarch64-linux-android"
+            "armv7-linux-androideabi"
+            "x86_64-linux-android"
+            "aarch64-apple-ios"
+            "aarch64-apple-ios-sim"
+            "x86_64-apple-ios"
+          ];
+        };
+
+        androidSdk = android-nixpkgs.sdk.${system} (sdkPkgs: with sdkPkgs; [
+          cmdline-tools-latest
+          platform-tools
+          build-tools-34-0-0
+          build-tools-35-0-0
+          platforms-android-34
+          platforms-android-35
+          ndk-28-2-13676358
+          emulator
+          (if pkgs.stdenv.isDarwin
+           then system-images-android-35-google-apis-arm64-v8a
+           else system-images-android-35-google-apis-x86-64)
+        ]);
+
+        rmp = pkgs.writeShellScriptBin "rmp" ''
+          set -euo pipefail
+          rmp_repo="''${RMP_REPO:-$HOME/code/pika/worktrees/desktop}"
+          manifest="$rmp_repo/Cargo.toml"
+          if [ ! -f "$manifest" ]; then
+            echo "error: set RMP_REPO to your pika checkout (missing $manifest)" >&2
+            exit 2
+          fi
+          exec cargo run --manifest-path "$manifest" -p rmp-cli -- "$@"
+        '';
+
+        shell = pkgs.mkShell {
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
+          ];
+
+          packages = [
+            rustToolchain
+            androidSdk
+            pkgs.just
+            pkgs.nodejs_22
+            pkgs.python3
+            pkgs.curl
+            pkgs.git
+            pkgs.gradle
+            rmp
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.xcodegen
+          ];
+
+          shellHook = ''
+            export IN_NIX_SHELL=1
+            export ANDROID_HOME=${androidSdk}/share/android-sdk
+            export ANDROID_SDK_ROOT=${androidSdk}/share/android-sdk
+            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+            export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+
+            if [ "$(uname -s)" = "Darwin" ]; then
+              DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+              if [ -n "$DEV_DIR" ]; then
+                export DEVELOPER_DIR="$DEV_DIR"
+              fi
+            fi
+
+            mkdir -p android
+            cat > android/local.properties <<EOF
+            sdk.dir=$ANDROID_HOME
+EOF
+
+            echo ""
+            echo "RMP app dev environment ready"
+            echo "  Rust: $(rustc --version)"
+            echo "  RMP repo: ''${RMP_REPO:-$HOME/code/pika/worktrees/desktop}"
+            echo ""
+          '';
+        };
+      in {
+        devShells.default = shell;
+      }
+    );
+}
+"#
+    .to_string()
 }
 
 fn tpl_rust_cargo(crate_name: &str) -> String {
@@ -533,7 +795,7 @@ impl AppState {
     fn empty() -> Self {
         Self {
             rev: 0,
-            greeting: "Hello from Rust! 🦀".to_string(),
+            greeting: "Hello from Rust!".to_string(),
         }
     }
 }
@@ -603,9 +865,9 @@ impl FfiApp {
                             rev += 1;
                             state.rev = rev;
                             if name.trim().is_empty() {
-                                state.greeting = "Hello from Rust! 🦀".to_string();
+                                state.greeting = "Hello from Rust!".to_string();
                             } else {
-                                state.greeting = format!("Hello, {}! 🦀", name.trim());
+                                state.greeting = format!("Hello, {}!", name.trim());
                             }
                             let snapshot = state.clone();
                             match shared_for_core.write() {
@@ -679,6 +941,87 @@ publish = false
 uniffi = { version = "0.31.0", features = ["cli"] }
 "#
     .to_string()
+}
+
+// ── Desktop (ICED) templates ───────────────────────────────────────────────
+
+fn tpl_desktop_iced_cargo(package: &str, core_crate: &str) -> String {
+    format!(
+        r#"[package]
+name = "{package}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+{core_crate} = {{ path = "../../rust" }}
+iced = "0.13"
+"#
+    )
+}
+
+fn tpl_desktop_iced_main(display_name: &str, core_lib: &str) -> String {
+    format!(
+        r#"use iced::Center;
+use iced::widget::{{Column, button, column, text, text_input}};
+use std::sync::Arc;
+
+fn main() -> iced::Result {{
+    iced::run("{display_name} (ICED)", App::update, App::view)
+}}
+
+struct App {{
+    ffi: Arc<{core_lib}::FfiApp>,
+    name: String,
+    greeting: String,
+}}
+
+#[derive(Debug, Clone)]
+enum Message {{
+    NameChanged(String),
+    Apply,
+}}
+
+impl Default for App {{
+    fn default() -> Self {{
+        let ffi = {core_lib}::FfiApp::new(".".to_string());
+        let greeting = ffi.state().greeting;
+        Self {{
+            ffi,
+            name: String::new(),
+            greeting,
+        }}
+    }}
+}}
+
+impl App {{
+    fn update(&mut self, message: Message) {{
+        match message {{
+            Message::NameChanged(name) => {{
+                self.name = name;
+            }}
+            Message::Apply => {{
+                self.ffi
+                    .dispatch({core_lib}::AppAction::SetName {{ name: self.name.clone() }});
+                self.greeting = self.ffi.state().greeting;
+            }}
+        }}
+    }}
+
+    fn view(&self) -> Column<'_, Message> {{
+        column![
+            text("{display_name} (ICED)").size(24),
+            text(&self.greeting).size(20),
+            text_input("Enter a name", &self.name).on_input(Message::NameChanged),
+            button("Apply").on_press(Message::Apply),
+        ]
+        .padding(24)
+        .spacing(12)
+        .align_x(Center)
+    }}
+}}
+"#
+    )
 }
 
 // ── iOS templates ───────────────────────────────────────────────────────────

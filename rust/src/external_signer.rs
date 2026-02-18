@@ -23,13 +23,56 @@ pub struct ExternalSignerResult {
     pub error_message: Option<String>,
 }
 
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ExternalSignerHandshakeResult {
+    pub ok: bool,
+    pub pubkey: Option<String>,
+    pub signer_package: Option<String>,
+    pub current_user: Option<String>,
+    pub error_kind: Option<ExternalSignerErrorKind>,
+    pub error_message: Option<String>,
+}
+
 #[uniffi::export(callback_interface)]
 pub trait ExternalSignerBridge: Send + Sync + 'static {
-    fn sign_event(&self, unsigned_event_json: String) -> ExternalSignerResult;
-    fn nip44_encrypt(&self, peer_pubkey: String, content: String) -> ExternalSignerResult;
-    fn nip44_decrypt(&self, peer_pubkey: String, payload: String) -> ExternalSignerResult;
-    fn nip04_encrypt(&self, peer_pubkey: String, content: String) -> ExternalSignerResult;
-    fn nip04_decrypt(&self, peer_pubkey: String, payload: String) -> ExternalSignerResult;
+    fn request_public_key(
+        &self,
+        current_user_hint: Option<String>,
+    ) -> ExternalSignerHandshakeResult;
+    fn sign_event(
+        &self,
+        signer_package: String,
+        current_user: String,
+        unsigned_event_json: String,
+    ) -> ExternalSignerResult;
+    fn nip44_encrypt(
+        &self,
+        signer_package: String,
+        current_user: String,
+        peer_pubkey: String,
+        content: String,
+    ) -> ExternalSignerResult;
+    fn nip44_decrypt(
+        &self,
+        signer_package: String,
+        current_user: String,
+        peer_pubkey: String,
+        payload: String,
+    ) -> ExternalSignerResult;
+    fn nip04_encrypt(
+        &self,
+        signer_package: String,
+        current_user: String,
+        peer_pubkey: String,
+        content: String,
+    ) -> ExternalSignerResult;
+    fn nip04_decrypt(
+        &self,
+        signer_package: String,
+        current_user: String,
+        peer_pubkey: String,
+        payload: String,
+    ) -> ExternalSignerResult;
 }
 
 pub type SharedExternalSignerBridge = Arc<RwLock<Option<Arc<dyn ExternalSignerBridge>>>>;
@@ -37,6 +80,8 @@ pub type SharedExternalSignerBridge = Arc<RwLock<Option<Arc<dyn ExternalSignerBr
 #[derive(Clone)]
 pub struct ExternalSignerBridgeSigner {
     expected_pubkey: PublicKey,
+    signer_package: String,
+    current_user: String,
     bridge: Arc<dyn ExternalSignerBridge>,
 }
 
@@ -49,9 +94,16 @@ impl std::fmt::Debug for ExternalSignerBridgeSigner {
 }
 
 impl ExternalSignerBridgeSigner {
-    pub fn new(expected_pubkey: PublicKey, bridge: Arc<dyn ExternalSignerBridge>) -> Self {
+    pub fn new(
+        expected_pubkey: PublicKey,
+        signer_package: String,
+        current_user: String,
+        bridge: Arc<dyn ExternalSignerBridge>,
+    ) -> Self {
         Self {
             expected_pubkey,
+            signer_package,
+            current_user,
             bridge,
         }
     }
@@ -100,11 +152,14 @@ impl NostrSigner for ExternalSignerBridgeSigner {
 
     fn sign_event(&self, unsigned: UnsignedEvent) -> BoxedFuture<'_, Result<Event, SignerError>> {
         let bridge = self.bridge.clone();
+        let signer_package = self.signer_package.clone();
+        let current_user = self.current_user.clone();
         let expected_pubkey = self.expected_pubkey;
         Box::pin(async move {
             let unsigned_json = serde_json::to_string(&unsigned)
                 .map_err(|e| SignerError::from(format!("invalid response: {e}")))?;
-            let signed_json = Self::expect_value(bridge.sign_event(unsigned_json))?;
+            let signed_json =
+                Self::expect_value(bridge.sign_event(signer_package, current_user, unsigned_json))?;
             let event = Event::from_json(signed_json)
                 .map_err(|e| SignerError::from(format!("invalid response: {e}")))?;
             if event.pubkey != expected_pubkey {
@@ -122,9 +177,13 @@ impl NostrSigner for ExternalSignerBridgeSigner {
         content: &'a str,
     ) -> BoxedFuture<'a, Result<String, SignerError>> {
         let bridge = self.bridge.clone();
+        let signer_package = self.signer_package.clone();
+        let current_user = self.current_user.clone();
         let peer = public_key.to_hex();
         let body = content.to_string();
-        Box::pin(async move { Self::expect_value(bridge.nip04_encrypt(peer, body)) })
+        Box::pin(async move {
+            Self::expect_value(bridge.nip04_encrypt(signer_package, current_user, peer, body))
+        })
     }
 
     fn nip04_decrypt<'a>(
@@ -133,9 +192,13 @@ impl NostrSigner for ExternalSignerBridgeSigner {
         encrypted_content: &'a str,
     ) -> BoxedFuture<'a, Result<String, SignerError>> {
         let bridge = self.bridge.clone();
+        let signer_package = self.signer_package.clone();
+        let current_user = self.current_user.clone();
         let peer = public_key.to_hex();
         let body = encrypted_content.to_string();
-        Box::pin(async move { Self::expect_value(bridge.nip04_decrypt(peer, body)) })
+        Box::pin(async move {
+            Self::expect_value(bridge.nip04_decrypt(signer_package, current_user, peer, body))
+        })
     }
 
     fn nip44_encrypt<'a>(
@@ -144,9 +207,13 @@ impl NostrSigner for ExternalSignerBridgeSigner {
         content: &'a str,
     ) -> BoxedFuture<'a, Result<String, SignerError>> {
         let bridge = self.bridge.clone();
+        let signer_package = self.signer_package.clone();
+        let current_user = self.current_user.clone();
         let peer = public_key.to_hex();
         let body = content.to_string();
-        Box::pin(async move { Self::expect_value(bridge.nip44_encrypt(peer, body)) })
+        Box::pin(async move {
+            Self::expect_value(bridge.nip44_encrypt(signer_package, current_user, peer, body))
+        })
     }
 
     fn nip44_decrypt<'a>(
@@ -155,9 +222,13 @@ impl NostrSigner for ExternalSignerBridgeSigner {
         payload: &'a str,
     ) -> BoxedFuture<'a, Result<String, SignerError>> {
         let bridge = self.bridge.clone();
+        let signer_package = self.signer_package.clone();
+        let current_user = self.current_user.clone();
         let peer = public_key.to_hex();
         let body = payload.to_string();
-        Box::pin(async move { Self::expect_value(bridge.nip44_decrypt(peer, body)) })
+        Box::pin(async move {
+            Self::expect_value(bridge.nip44_decrypt(signer_package, current_user, peer, body))
+        })
     }
 }
 
@@ -179,4 +250,20 @@ pub fn user_visible_signer_error(err: &str) -> Option<&'static str> {
         return Some("External signer package mismatch");
     }
     None
+}
+
+pub fn user_visible_signer_error_kind(
+    kind: Option<ExternalSignerErrorKind>,
+) -> Option<&'static str> {
+    match kind {
+        Some(ExternalSignerErrorKind::Rejected) => Some("Signing request rejected"),
+        Some(ExternalSignerErrorKind::Canceled) => Some("Signing request canceled"),
+        Some(ExternalSignerErrorKind::Timeout) => Some("Signing request timed out"),
+        Some(ExternalSignerErrorKind::SignerUnavailable) => Some("External signer unavailable"),
+        Some(ExternalSignerErrorKind::PackageMismatch) => Some("External signer package mismatch"),
+        Some(ExternalSignerErrorKind::InvalidResponse) => {
+            Some("External signer returned an invalid response")
+        }
+        Some(ExternalSignerErrorKind::Other) | None => None,
+    }
 }

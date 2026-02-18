@@ -7,9 +7,8 @@ pub enum AppAction {
     Login {
         nsec: String,
     },
-    LoginWithExternalSigner {
-        pubkey: String,
-        signer_package: String,
+    BeginExternalSignerLogin {
+        current_user_hint: Option<String>,
     },
     RestoreSession {
         nsec: String,
@@ -17,6 +16,7 @@ pub enum AppAction {
     RestoreSessionExternalSigner {
         pubkey: String,
         signer_package: String,
+        current_user: String,
     },
     Logout,
     RefreshMyProfile,
@@ -129,7 +129,7 @@ impl AppAction {
             // Auth
             AppAction::CreateAccount => "CreateAccount",
             AppAction::Login { .. } => "Login",
-            AppAction::LoginWithExternalSigner { .. } => "LoginWithExternalSigner",
+            AppAction::BeginExternalSignerLogin { .. } => "BeginExternalSignerLogin",
             AppAction::RestoreSession { .. } => "RestoreSession",
             AppAction::RestoreSessionExternalSigner { .. } => "RestoreSessionExternalSigner",
             AppAction::Logout => "Logout",

@@ -32,8 +32,7 @@ fun LoginScreen(manager: AppManager, padding: PaddingValues) {
     val busy = manager.state.busy
     val createBusy = busy.creatingAccount
     val loginBusy = busy.loggingIn
-    val amberBusy = manager.amberLoginInProgress
-    val anyBusy = createBusy || loginBusy || amberBusy
+    val anyBusy = createBusy || loginBusy
 
     Column(
         modifier =
@@ -100,7 +99,7 @@ fun LoginScreen(manager: AppManager, padding: PaddingValues) {
                 enabled = !anyBusy,
                 modifier = Modifier.testTag(TestTags.LOGIN_WITH_AMBER),
             ) {
-                if (amberBusy) {
+                if (loginBusy) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,

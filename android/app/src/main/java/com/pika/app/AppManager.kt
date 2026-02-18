@@ -3,7 +3,6 @@ package com.pika.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,13 +14,12 @@ import com.pika.app.rust.AuthMode
 import com.pika.app.rust.AuthState
 import com.pika.app.rust.ExternalSignerBridge
 import com.pika.app.rust.ExternalSignerErrorKind
+import com.pika.app.rust.ExternalSignerHandshakeResult
 import com.pika.app.rust.ExternalSignerResult
 import com.pika.app.rust.FfiApp
 import com.pika.app.rust.MyProfileState
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
-import kotlin.concurrent.thread
 import org.json.JSONObject
 
 class AppManager private constructor(context: Context) : AppReconciler {
@@ -29,15 +27,11 @@ class AppManager private constructor(context: Context) : AppReconciler {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val secureStore = SecureAuthStore(appContext)
     private val amberClient = AmberSignerClient(appContext)
-    private val activeExternalDescriptor = AtomicReference<AmberDescriptor?>(null)
     private val signerRequestLock = Any()
     private val audioFocus = AndroidAudioFocusManager(appContext)
     private val rust: FfiApp
     private var lastRevApplied: ULong = 0UL
     private val listening = AtomicBoolean(false)
-
-    var amberLoginInProgress by mutableStateOf(false)
-        private set
 
     var state: AppState by mutableStateOf(
         AppState(
@@ -140,63 +134,22 @@ class AppManager private constructor(context: Context) : AppReconciler {
         if (trimmed.isNotBlank()) {
             secureStore.saveLocalNsec(trimmed)
         }
-        activeExternalDescriptor.set(null)
         rust.dispatch(AppAction.Login(trimmed))
     }
 
     fun loginWithAmber() {
-        if (!BuildConfig.ENABLE_AMBER_SIGNER) {
-            showToast("Amber signer is disabled")
-            return
-        }
-        if (amberLoginInProgress) return
-        amberLoginInProgress = true
-
         val currentUserHint =
-            activeExternalDescriptor.get()?.currentUser
-                ?: secureStore.load()?.takeIf { it.mode == StoredAuthMode.EXTERNAL_SIGNER }?.currentUser
-
-        thread(name = "amber-login", start = true) {
-            val result = withSignerRequestLock { amberClient.requestPublicKey(currentUserHint) }
-            mainHandler.post {
-                amberLoginInProgress = false
-                if (!result.ok) {
-                    showToast(publicKeyErrorMessage(result))
-                    return@post
-                }
-
-                val pubkey = result.pubkey?.trim().orEmpty()
-                val signerPackage = result.signerPackage?.trim().orEmpty()
-                if (pubkey.isBlank() || signerPackage.isBlank()) {
-                    showToast("Amber returned an invalid account")
-                    return@post
-                }
-
-                val currentUser =
-                    result.currentUser
-                        ?.trim()
-                        ?.takeIf { it.isNotEmpty() }
-                        ?: pubkey
-                activeExternalDescriptor.set(
-                    AmberDescriptor(
-                        pubkey = pubkey,
-                        signerPackage = signerPackage,
-                        currentUser = currentUser,
-                    ),
-                )
-                rust.dispatch(
-                    AppAction.LoginWithExternalSigner(
-                        pubkey = pubkey,
-                        signerPackage = signerPackage,
-                    ),
-                )
-            }
-        }
+            secureStore
+                .load()
+                ?.takeIf { it.mode == StoredAuthMode.EXTERNAL_SIGNER }
+                ?.currentUser
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        rust.dispatch(AppAction.BeginExternalSignerLogin(currentUserHint = currentUserHint))
     }
 
     fun logout() {
         secureStore.clear()
-        activeExternalDescriptor.set(null)
         rust.dispatch(AppAction.Logout)
     }
 
@@ -258,17 +211,11 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 val signerPackage = stored.signerPackage?.trim().orEmpty()
                 if (pubkey.isBlank() || signerPackage.isBlank()) return
                 val currentUser = stored.currentUser?.trim().takeUnless { it.isNullOrEmpty() } ?: pubkey
-                activeExternalDescriptor.set(
-                    AmberDescriptor(
-                        pubkey = pubkey,
-                        signerPackage = signerPackage,
-                        currentUser = currentUser,
-                    ),
-                )
                 rust.dispatch(
                     AppAction.RestoreSessionExternalSigner(
                         pubkey = pubkey,
                         signerPackage = signerPackage,
+                        currentUser = currentUser,
                     ),
                 )
             }
@@ -281,111 +228,88 @@ class AppManager private constructor(context: Context) : AppReconciler {
             is AuthState.LoggedIn -> {
                 when (val mode = auth.mode) {
                     is AuthMode.LocalNsec -> {
-                        activeExternalDescriptor.set(null)
                         if (secureStore.load()?.mode == StoredAuthMode.EXTERNAL_SIGNER) {
                             secureStore.clear()
                         }
                     }
                     is AuthMode.ExternalSigner -> {
-                        val currentUser =
-                            activeExternalDescriptor
-                                .get()
-                                ?.currentUser
-                                ?.takeIf { it.isNotBlank() }
-                                ?: auth.pubkey
-                        activeExternalDescriptor.set(
-                            AmberDescriptor(
-                                pubkey = mode.pubkey,
-                                signerPackage = mode.signerPackage,
-                                currentUser = currentUser,
-                            ),
-                        )
                         secureStore.saveExternalSigner(
                             pubkey = mode.pubkey,
                             signerPackage = mode.signerPackage,
-                            currentUser = currentUser,
+                            currentUser = mode.currentUser,
                         )
                     }
                 }
             }
-        }
-    }
-
-    private fun publicKeyErrorMessage(result: AmberPublicKeyResult): String =
-        when (result.kind) {
-            AmberErrorKind.REJECTED -> "Amber request rejected"
-            AmberErrorKind.CANCELED -> "Amber request canceled"
-            AmberErrorKind.TIMEOUT -> "Amber request timed out"
-            AmberErrorKind.SIGNER_UNAVAILABLE -> "Amber signer unavailable"
-            AmberErrorKind.PACKAGE_MISMATCH -> "Amber signer package mismatch"
-            AmberErrorKind.INVALID_RESPONSE ->
-                result.message?.takeIf { it.isNotBlank() } ?: "Amber returned an invalid response"
-            AmberErrorKind.OTHER, null -> result.message?.takeIf { it.isNotBlank() } ?: "Amber login failed"
-        }
-
-    private fun showToast(message: String) {
-        if (message.isBlank()) return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
-            return
-        }
-        mainHandler.post {
-            Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
         }
     }
 
     private inline fun <T> withSignerRequestLock(block: () -> T): T = synchronized(signerRequestLock) { block() }
 
     private inner class AmberRustBridge : ExternalSignerBridge {
-        override fun signEvent(unsignedEventJson: String): ExternalSignerResult =
+        override fun requestPublicKey(currentUserHint: String?): ExternalSignerHandshakeResult =
             withSignerRequestLock {
-                withActiveDescriptor { descriptor ->
-                    amberClient.signEvent(descriptor, unsignedEventJson).toExternalSignerResult()
-                }
+                amberClient.requestPublicKey(currentUserHint).toExternalSignerHandshakeResult()
             }
 
-        override fun nip44Encrypt(peerPubkey: String, content: String): ExternalSignerResult =
+        override fun signEvent(
+            signerPackage: String,
+            currentUser: String,
+            unsignedEventJson: String,
+        ): ExternalSignerResult =
             withSignerRequestLock {
-                withActiveDescriptor { descriptor ->
-                    amberClient.nip44Encrypt(descriptor, peerPubkey, content).toExternalSignerResult()
-                }
+                amberClient.signEvent(signerPackage, currentUser, unsignedEventJson).toExternalSignerResult()
             }
 
-        override fun nip44Decrypt(peerPubkey: String, payload: String): ExternalSignerResult =
+        override fun nip44Encrypt(
+            signerPackage: String,
+            currentUser: String,
+            peerPubkey: String,
+            content: String,
+        ): ExternalSignerResult =
             withSignerRequestLock {
-                withActiveDescriptor { descriptor ->
-                    amberClient.nip44Decrypt(descriptor, peerPubkey, payload).toExternalSignerResult()
-                }
+                amberClient.nip44Encrypt(signerPackage, currentUser, peerPubkey, content).toExternalSignerResult()
             }
 
-        override fun nip04Encrypt(peerPubkey: String, content: String): ExternalSignerResult =
+        override fun nip44Decrypt(
+            signerPackage: String,
+            currentUser: String,
+            peerPubkey: String,
+            payload: String,
+        ): ExternalSignerResult =
             withSignerRequestLock {
-                withActiveDescriptor { descriptor ->
-                    amberClient.nip04Encrypt(descriptor, peerPubkey, content).toExternalSignerResult()
-                }
+                amberClient.nip44Decrypt(signerPackage, currentUser, peerPubkey, payload).toExternalSignerResult()
             }
 
-        override fun nip04Decrypt(peerPubkey: String, payload: String): ExternalSignerResult =
+        override fun nip04Encrypt(
+            signerPackage: String,
+            currentUser: String,
+            peerPubkey: String,
+            content: String,
+        ): ExternalSignerResult =
             withSignerRequestLock {
-                withActiveDescriptor { descriptor ->
-                    amberClient.nip04Decrypt(descriptor, peerPubkey, payload).toExternalSignerResult()
-                }
+                amberClient.nip04Encrypt(signerPackage, currentUser, peerPubkey, content).toExternalSignerResult()
             }
 
-        private fun withActiveDescriptor(
-            f: (AmberDescriptor) -> ExternalSignerResult,
-        ): ExternalSignerResult {
-            val descriptor = activeExternalDescriptor.get()
-            if (descriptor == null) {
-                return ExternalSignerResult(
-                    ok = false,
-                    value = null,
-                    errorKind = ExternalSignerErrorKind.SIGNER_UNAVAILABLE,
-                    errorMessage = "signer unavailable: no active signer descriptor",
-                )
+        override fun nip04Decrypt(
+            signerPackage: String,
+            currentUser: String,
+            peerPubkey: String,
+            payload: String,
+        ): ExternalSignerResult =
+            withSignerRequestLock {
+                amberClient.nip04Decrypt(signerPackage, currentUser, peerPubkey, payload).toExternalSignerResult()
             }
-            return f(descriptor)
-        }
+
+        private fun AmberPublicKeyResult.toExternalSignerHandshakeResult(): ExternalSignerHandshakeResult =
+            ExternalSignerHandshakeResult(
+                ok = ok,
+                pubkey = pubkey,
+                signerPackage = signerPackage,
+                currentUser = currentUser,
+                errorKind = kind?.toExternalSignerErrorKind(),
+                errorMessage = message,
+            )
 
         private fun AmberResult.toExternalSignerResult(): ExternalSignerResult =
             ExternalSignerResult(

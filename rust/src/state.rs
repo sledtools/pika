@@ -109,6 +109,7 @@ pub enum AuthMode {
     ExternalSigner {
         pubkey: String,
         signer_package: String,
+        current_user: String,
     },
 }
 

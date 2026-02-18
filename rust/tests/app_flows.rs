@@ -1,17 +1,31 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp, Screen};
+use pika_core::{
+    AppAction, AppReconciler, AppUpdate, AuthMode, AuthState, CallStatus, ExternalSignerBridge,
+    ExternalSignerErrorKind, ExternalSignerHandshakeResult, ExternalSignerResult, FfiApp, Screen,
+};
 use tempfile::tempdir;
 
 fn write_config(data_dir: &str, disable_network: bool) {
+    write_config_with_external_signer(data_dir, disable_network, None);
+}
+
+fn write_config_with_external_signer(
+    data_dir: &str,
+    disable_network: bool,
+    enable_external_signer: Option<bool>,
+) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
-    let v = serde_json::json!({
+    let mut v = serde_json::json!({
         "disable_network": disable_network,
         "call_moq_url": "https://moq.local/anon",
         "call_broadcast_prefix": "pika/calls",
         "call_audio_backend": "synthetic",
     });
+    if let Some(enabled) = enable_external_signer {
+        v["enable_external_signer"] = serde_json::Value::Bool(enabled);
+    }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
 
@@ -45,6 +59,109 @@ impl TestReconciler {
 impl AppReconciler for TestReconciler {
     fn reconcile(&self, update: AppUpdate) {
         self.updates.lock().unwrap().push(update);
+    }
+}
+
+#[derive(Clone)]
+struct MockExternalSignerBridge {
+    handshake_result: Arc<Mutex<ExternalSignerHandshakeResult>>,
+    last_hint: Arc<Mutex<Option<String>>>,
+}
+
+impl MockExternalSignerBridge {
+    fn new(handshake_result: ExternalSignerHandshakeResult) -> Self {
+        Self {
+            handshake_result: Arc::new(Mutex::new(handshake_result)),
+            last_hint: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn last_hint(&self) -> Option<String> {
+        self.last_hint.lock().unwrap().clone()
+    }
+}
+
+impl ExternalSignerBridge for MockExternalSignerBridge {
+    fn request_public_key(
+        &self,
+        current_user_hint: Option<String>,
+    ) -> ExternalSignerHandshakeResult {
+        *self.last_hint.lock().unwrap() = current_user_hint;
+        self.handshake_result.lock().unwrap().clone()
+    }
+
+    fn sign_event(
+        &self,
+        _signer_package: String,
+        _current_user: String,
+        _unsigned_event_json: String,
+    ) -> ExternalSignerResult {
+        ExternalSignerResult {
+            ok: false,
+            value: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("signer unavailable".into()),
+        }
+    }
+
+    fn nip44_encrypt(
+        &self,
+        _signer_package: String,
+        _current_user: String,
+        _peer_pubkey: String,
+        _content: String,
+    ) -> ExternalSignerResult {
+        ExternalSignerResult {
+            ok: false,
+            value: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("signer unavailable".into()),
+        }
+    }
+
+    fn nip44_decrypt(
+        &self,
+        _signer_package: String,
+        _current_user: String,
+        _peer_pubkey: String,
+        _payload: String,
+    ) -> ExternalSignerResult {
+        ExternalSignerResult {
+            ok: false,
+            value: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("signer unavailable".into()),
+        }
+    }
+
+    fn nip04_encrypt(
+        &self,
+        _signer_package: String,
+        _current_user: String,
+        _peer_pubkey: String,
+        _content: String,
+    ) -> ExternalSignerResult {
+        ExternalSignerResult {
+            ok: false,
+            value: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("signer unavailable".into()),
+        }
+    }
+
+    fn nip04_decrypt(
+        &self,
+        _signer_package: String,
+        _current_user: String,
+        _peer_pubkey: String,
+        _payload: String,
+    ) -> ExternalSignerResult {
+        ExternalSignerResult {
+            ok: false,
+            value: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("signer unavailable".into()),
+        }
     }
 }
 
@@ -515,4 +632,126 @@ fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
         .unwrap_or_default()
         .to_lowercase()
         .contains("invalid npub"));
+}
+
+#[test]
+fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: true,
+        pubkey: Some("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into()),
+        signer_package: Some("com.greenart7c3.nostrsigner".into()),
+        current_user: Some("amber-user-1".into()),
+        error_kind: None,
+        error_message: None,
+    });
+    app.set_external_signer_bridge(Box::new(bridge.clone()));
+
+    app.dispatch(AppAction::BeginExternalSignerLogin {
+        current_user_hint: Some("hint-user".into()),
+    });
+    wait_until("external signer logged in", Duration::from_secs(2), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let s = app.state();
+    assert!(!s.busy.logging_in);
+    assert_eq!(s.router.default_screen, Screen::ChatList);
+    match s.auth {
+        AuthState::LoggedIn {
+            mode:
+                AuthMode::ExternalSigner {
+                    pubkey,
+                    signer_package,
+                    current_user,
+                },
+            ..
+        } => {
+            assert_eq!(
+                pubkey,
+                "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            );
+            assert_eq!(signer_package, "com.greenart7c3.nostrsigner");
+            assert_eq!(current_user, "amber-user-1");
+        }
+        other => panic!("expected external signer auth mode, got {other:?}"),
+    }
+    assert_eq!(bridge.last_hint().as_deref(), Some("hint-user"));
+}
+
+#[test]
+fn begin_external_signer_login_failure_shows_rust_toast_and_clears_busy() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::Timeout),
+        error_message: Some("timeout".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge));
+
+    app.dispatch(AppAction::BeginExternalSignerLogin {
+        current_user_hint: None,
+    });
+
+    wait_until("toast shown", Duration::from_secs(2), || {
+        app.state().toast.is_some()
+    });
+    let s = app.state();
+    assert!(matches!(s.auth, AuthState::LoggedOut));
+    assert!(!s.busy.logging_in);
+    assert!(s
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("timed out"));
+}
+
+#[test]
+fn restore_session_external_signer_keeps_current_user_in_auth_state() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge));
+
+    app.dispatch(AppAction::RestoreSessionExternalSigner {
+        pubkey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+        signer_package: "com.greenart7c3.nostrsigner".into(),
+        current_user: "restored-user".into(),
+    });
+
+    wait_until(
+        "restored external signer logged in",
+        Duration::from_secs(2),
+        || matches!(app.state().auth, AuthState::LoggedIn { .. }),
+    );
+    let s = app.state();
+    assert!(!s.busy.logging_in);
+    match s.auth {
+        AuthState::LoggedIn {
+            mode: AuthMode::ExternalSigner { current_user, .. },
+            ..
+        } => assert_eq!(current_user, "restored-user"),
+        other => panic!("expected external signer auth mode, got {other:?}"),
+    }
 }

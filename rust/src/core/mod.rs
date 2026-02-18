@@ -15,7 +15,8 @@ use flume::Sender;
 
 use crate::actions::AppAction;
 use crate::external_signer::{
-    user_visible_signer_error, ExternalSignerBridge, ExternalSignerBridgeSigner,
+    user_visible_signer_error, user_visible_signer_error_kind, ExternalSignerBridge,
+    ExternalSignerBridgeSigner, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
     SharedExternalSignerBridge,
 };
 use crate::mdk_support::{open_mdk, PikaMdk};
@@ -86,16 +87,23 @@ struct LocalOutgoing {
 #[derive(Debug, Clone)]
 enum SessionAuthMode {
     LocalNsec,
-    ExternalSigner { signer_package: String },
+    ExternalSigner {
+        signer_package: String,
+        current_user: String,
+    },
 }
 
 impl SessionAuthMode {
     fn to_state_mode(&self, pubkey_hex: &str) -> AuthMode {
         match self {
             SessionAuthMode::LocalNsec => AuthMode::LocalNsec,
-            SessionAuthMode::ExternalSigner { signer_package } => AuthMode::ExternalSigner {
+            SessionAuthMode::ExternalSigner {
+                signer_package,
+                current_user,
+            } => AuthMode::ExternalSigner {
                 pubkey: pubkey_hex.to_string(),
                 signer_package: signer_package.clone(),
+                current_user: current_user.clone(),
             },
         }
     }
@@ -344,6 +352,116 @@ impl AppCore {
             Ok(slot) => slot.clone(),
             Err(poison) => poison.into_inner().clone(),
         }
+    }
+
+    fn external_signer_handshake_error(
+        &self,
+        kind: Option<ExternalSignerErrorKind>,
+        detail: Option<String>,
+    ) -> String {
+        if let Some(msg) = user_visible_signer_error_kind(kind.clone()) {
+            return msg.to_string();
+        }
+        let detail = detail.unwrap_or_default();
+        let detail = detail.trim();
+        if !detail.is_empty() {
+            return detail.to_string();
+        }
+        "External signer login failed".to_string()
+    }
+
+    fn start_external_signer_session(
+        &mut self,
+        pubkey_raw: String,
+        signer_package_raw: String,
+        current_user_raw: String,
+    ) -> anyhow::Result<()> {
+        let signer_package = signer_package_raw.trim().to_string();
+        if signer_package.is_empty() {
+            anyhow::bail!("Missing signer package");
+        }
+        let pubkey = PublicKey::parse(pubkey_raw.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid signer pubkey: {e}"))?;
+        let current_user = {
+            let trimmed = current_user_raw.trim();
+            if trimmed.is_empty() {
+                pubkey.to_hex()
+            } else {
+                trimmed.to_string()
+            }
+        };
+
+        let bridge = self
+            .external_signer_bridge()
+            .ok_or_else(|| anyhow::anyhow!("External signer bridge unavailable"))?;
+        let signer = ExternalSignerBridgeSigner::new(
+            pubkey,
+            signer_package.clone(),
+            current_user.clone(),
+            bridge,
+        );
+        let mode = SessionAuthMode::ExternalSigner {
+            signer_package,
+            current_user,
+        };
+        self.start_session_with_signer(pubkey, Arc::new(signer), None, mode)
+    }
+
+    fn begin_external_signer_login(&mut self, current_user_hint: Option<String>) {
+        if !self.external_signer_enabled() {
+            self.toast("External signer is disabled");
+            return;
+        }
+        let Some(bridge) = self.external_signer_bridge() else {
+            self.toast("External signer bridge unavailable");
+            return;
+        };
+
+        self.set_busy(|b| {
+            b.logging_in = true;
+            b.creating_account = false;
+        });
+
+        let hint = current_user_hint.and_then(|v| {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let ExternalSignerHandshakeResult {
+            ok,
+            pubkey,
+            signer_package,
+            current_user,
+            error_kind,
+            error_message,
+        } = bridge.request_public_key(hint);
+
+        if !ok {
+            self.clear_busy();
+            self.toast(self.external_signer_handshake_error(error_kind, error_message));
+            return;
+        }
+
+        let pubkey = pubkey.unwrap_or_default();
+        let signer_package = signer_package.unwrap_or_default();
+        let current_user = current_user.unwrap_or_else(|| pubkey.clone());
+        if pubkey.trim().is_empty() || signer_package.trim().is_empty() {
+            self.clear_busy();
+            self.toast("External signer returned an invalid response");
+            return;
+        }
+
+        if let Err(e) = self.start_external_signer_session(pubkey, signer_package, current_user) {
+            self.clear_busy();
+            self.toast(format!("{e:#}"));
+            return;
+        }
+
+        self.clear_busy();
     }
 
     fn push_screen(&mut self, screen: Screen) {
@@ -1192,13 +1310,13 @@ impl AppCore {
                     self.clear_busy();
                 }
             }
-            AppAction::LoginWithExternalSigner {
-                pubkey,
-                signer_package,
+            AppAction::BeginExternalSignerLogin { current_user_hint } => {
+                self.begin_external_signer_login(current_user_hint);
             }
-            | AppAction::RestoreSessionExternalSigner {
+            AppAction::RestoreSessionExternalSigner {
                 pubkey,
                 signer_package,
+                current_user,
             } => {
                 self.set_busy(|b| {
                     b.logging_in = true;
@@ -1211,32 +1329,8 @@ impl AppCore {
                     return;
                 }
 
-                let signer_package = signer_package.trim().to_string();
-                if signer_package.is_empty() {
-                    self.clear_busy();
-                    self.toast("Missing signer package");
-                    return;
-                }
-
-                let pubkey = match PublicKey::parse(pubkey.trim()) {
-                    Ok(pk) => pk,
-                    Err(e) => {
-                        self.clear_busy();
-                        self.toast(format!("Invalid signer pubkey: {e}"));
-                        return;
-                    }
-                };
-
-                let Some(bridge) = self.external_signer_bridge() else {
-                    self.clear_busy();
-                    self.toast("External signer bridge unavailable");
-                    return;
-                };
-
-                let signer = ExternalSignerBridgeSigner::new(pubkey, bridge);
-                let mode = SessionAuthMode::ExternalSigner { signer_package };
-
-                if let Err(e) = self.start_session_with_signer(pubkey, Arc::new(signer), None, mode)
+                if let Err(e) =
+                    self.start_external_signer_session(pubkey, signer_package, current_user)
                 {
                     self.clear_busy();
                     let detail = format!("{e:#}");

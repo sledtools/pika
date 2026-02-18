@@ -23,12 +23,6 @@ data class AmberResult(
     val message: String? = null,
 )
 
-data class AmberDescriptor(
-    val pubkey: String,
-    val signerPackage: String,
-    val currentUser: String,
-)
-
 data class AmberPublicKeyResult(
     val ok: Boolean,
     val pubkey: String? = null,
@@ -95,11 +89,20 @@ class AmberSignerClient(
                 )
             }
             val signerPackage = responsePackage.ifBlank { pkg }
+            val currentUser =
+                intentData
+                    .getStringExtra("current_user")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: currentUserHint
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                    ?: pubkey
             return AmberPublicKeyResult(
                 ok = true,
                 pubkey = pubkey,
                 signerPackage = signerPackage,
-                currentUser = pubkey,
+                currentUser = currentUser,
             )
         }
 
@@ -110,47 +113,72 @@ class AmberSignerClient(
         )
     }
 
-    fun signEvent(descriptor: AmberDescriptor, unsignedEventJson: String): AmberResult =
+    fun signEvent(signerPackage: String, currentUser: String, unsignedEventJson: String): AmberResult =
         requestWithProviderFallback(
             type = TYPE_SIGN_EVENT,
             payload = unsignedEventJson,
-            descriptor = descriptor,
+            signerPackage = signerPackage,
+            currentUser = currentUser,
             peerPubkey = null,
             returnKind = ReturnKind.EVENT_JSON,
         )
 
-    fun nip44Encrypt(descriptor: AmberDescriptor, peerPubkey: String, content: String): AmberResult =
+    fun nip44Encrypt(
+        signerPackage: String,
+        currentUser: String,
+        peerPubkey: String,
+        content: String,
+    ): AmberResult =
         requestWithProviderFallback(
             type = TYPE_NIP44_ENCRYPT,
             payload = content,
-            descriptor = descriptor,
+            signerPackage = signerPackage,
+            currentUser = currentUser,
             peerPubkey = peerPubkey,
             returnKind = ReturnKind.RESULT,
         )
 
-    fun nip44Decrypt(descriptor: AmberDescriptor, peerPubkey: String, payload: String): AmberResult =
+    fun nip44Decrypt(
+        signerPackage: String,
+        currentUser: String,
+        peerPubkey: String,
+        payload: String,
+    ): AmberResult =
         requestWithProviderFallback(
             type = TYPE_NIP44_DECRYPT,
             payload = payload,
-            descriptor = descriptor,
+            signerPackage = signerPackage,
+            currentUser = currentUser,
             peerPubkey = peerPubkey,
             returnKind = ReturnKind.RESULT,
         )
 
-    fun nip04Encrypt(descriptor: AmberDescriptor, peerPubkey: String, content: String): AmberResult =
+    fun nip04Encrypt(
+        signerPackage: String,
+        currentUser: String,
+        peerPubkey: String,
+        content: String,
+    ): AmberResult =
         requestWithProviderFallback(
             type = TYPE_NIP04_ENCRYPT,
             payload = content,
-            descriptor = descriptor,
+            signerPackage = signerPackage,
+            currentUser = currentUser,
             peerPubkey = peerPubkey,
             returnKind = ReturnKind.RESULT,
         )
 
-    fun nip04Decrypt(descriptor: AmberDescriptor, peerPubkey: String, payload: String): AmberResult =
+    fun nip04Decrypt(
+        signerPackage: String,
+        currentUser: String,
+        peerPubkey: String,
+        payload: String,
+    ): AmberResult =
         requestWithProviderFallback(
             type = TYPE_NIP04_DECRYPT,
             payload = payload,
-            descriptor = descriptor,
+            signerPackage = signerPackage,
+            currentUser = currentUser,
             peerPubkey = peerPubkey,
             returnKind = ReturnKind.RESULT,
         )
@@ -158,11 +186,20 @@ class AmberSignerClient(
     private fun requestWithProviderFallback(
         type: String,
         payload: String,
-        descriptor: AmberDescriptor,
+        signerPackage: String,
+        currentUser: String,
         peerPubkey: String?,
         returnKind: ReturnKind,
     ): AmberResult {
-        val providerResult = queryViaProvider(type, payload, descriptor, peerPubkey, returnKind)
+        val providerResult =
+            queryViaProvider(
+                type = type,
+                payload = payload,
+                signerPackage = signerPackage,
+                currentUser = currentUser,
+                peerPubkey = peerPubkey,
+                returnKind = returnKind,
+            )
         if (providerResult.ok) {
             return providerResult
         }
@@ -176,8 +213,8 @@ class AmberSignerClient(
         val intentResult = requestViaIntent(
             type = type,
             payload = payload,
-            packageName = descriptor.signerPackage,
-            currentUser = descriptor.currentUser,
+            packageName = signerPackage,
+            currentUser = currentUser,
             peerPubkey = peerPubkey,
         )
         return intentResult.toAmberResult(returnKind)
@@ -186,13 +223,14 @@ class AmberSignerClient(
     private fun queryViaProvider(
         type: String,
         payload: String,
-        descriptor: AmberDescriptor,
+        signerPackage: String,
+        currentUser: String,
         peerPubkey: String?,
         returnKind: ReturnKind,
     ): AmberResult {
         val endpoint = type.uppercase()
-        val uri = Uri.parse("content://${descriptor.signerPackage}.$endpoint")
-        val projection = arrayOf(payload, peerPubkey.orEmpty(), descriptor.currentUser)
+        val uri = Uri.parse("content://$signerPackage.$endpoint")
+        val projection = arrayOf(payload, peerPubkey.orEmpty(), currentUser)
         return runCatching {
             appContext.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
                 parseProviderCursor(cursor, returnKind)

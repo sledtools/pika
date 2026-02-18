@@ -379,20 +379,16 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					2D0071299F035AA1EAC2CE97 = {
-						DevelopmentTeam = 6JWFWV65BL;
 						ProvisioningStyle = Automatic;
 					};
 					AEA02C6ADF42DA084E4281FA = {
-						DevelopmentTeam = 6JWFWV65BL;
 						ProvisioningStyle = Automatic;
 						TestTargetID = 2D0071299F035AA1EAC2CE97;
 					};
 					B65A733D519BB0CAB81F2C59 = {
-						DevelopmentTeam = 6JWFWV65BL;
 						ProvisioningStyle = Automatic;
 					};
 					B6D8ED6879409A76FCD25AD8 = {
-						DevelopmentTeam = 6JWFWV65BL;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -577,7 +573,6 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 6JWFWV65BL;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -600,6 +595,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PIKA_APP_BUNDLE_ID = com.justinmoon.pika;
+				PIKA_APP_GROUP = "group.$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -737,7 +733,6 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 6JWFWV65BL;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -753,6 +748,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PIKA_APP_BUNDLE_ID = com.justinmoon.pika;
+				PIKA_APP_GROUP = "group.$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

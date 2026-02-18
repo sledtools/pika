@@ -65,6 +65,7 @@ type SidecarInCmd =
   | { cmd: "accept_welcome"; request_id: string; wrapper_event_id: string }
   | { cmd: "list_groups"; request_id: string }
   | { cmd: "send_message"; request_id: string; nostr_group_id: string; content: string }
+  | { cmd: "send_typing"; request_id: string; nostr_group_id: string }
   | { cmd: "accept_call"; request_id: string; call_id: string }
   | { cmd: "reject_call"; request_id: string; call_id: string; reason?: string }
   | { cmd: "end_call"; request_id: string; call_id: string; reason?: string }
@@ -255,6 +256,10 @@ export class MarmotSidecar {
 
   async sendMessage(nostrGroupId: string, content: string): Promise<void> {
     await this.request({ cmd: "send_message", nostr_group_id: nostrGroupId, content } as any);
+  }
+
+  async sendTyping(nostrGroupId: string): Promise<void> {
+    await this.request({ cmd: "send_typing", nostr_group_id: nostrGroupId } as any);
   }
 
   async acceptCall(callId: string): Promise<void> {

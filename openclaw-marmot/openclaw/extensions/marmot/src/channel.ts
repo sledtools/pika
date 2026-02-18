@@ -330,6 +330,7 @@ async function dispatchInboundToAgent(params: {
   groupName?: string;
   stateDir?: string;
   deliverText: (text: string) => Promise<void>;
+  sendTyping?: () => Promise<void>;
   log?: { error?: (msg: string) => void };
 }): Promise<void> {
   const { runtime, accountId, chatId, senderId, text, isOwner, isGroupChat, deliverText } = params;
@@ -397,6 +398,7 @@ async function dispatchInboundToAgent(params: {
         if (!replyText) return;
         await deliverText(replyText);
       },
+      onReplyStart: params.sendTyping,
       onError: (err, info) => {
         params.log?.error?.(
           `[${accountId}] reply dispatch error kind=${info.kind}: ${String(err)}`,
@@ -1019,6 +1021,11 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
                   );
                   await sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
+                sendTyping: async () => {
+                  await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
+                    ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed group=${ev.nostr_group_id}: ${err}`);
+                  });
+                },
                 log: ctx.log,
               });
             } else {
@@ -1036,6 +1043,11 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
                     `[${resolved.accountId}] send dm=${ev.nostr_group_id} len=${responseText.length}`,
                   );
                   await sidecar.sendMessage(ev.nostr_group_id, responseText);
+                },
+                sendTyping: async () => {
+                  await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
+                    ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed dm=${ev.nostr_group_id}: ${err}`);
+                  });
                 },
                 log: ctx.log,
               });

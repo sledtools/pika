@@ -66,6 +66,11 @@ enum InCmd {
         nostr_group_id: String,
         content: String,
     },
+    SendTyping {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+    },
     AcceptCall {
         #[serde(default)]
         request_id: Option<String>,
@@ -2173,6 +2178,72 @@ pub async fn daemon_main(
                                 let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
+                    }
+                    InCmd::SendTyping { request_id, nostr_group_id } => {
+                        let group_id_bytes = match hex::decode(&nostr_group_id) {
+                            Ok(b) => b,
+                            Err(_) => {
+                                out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be hex")).ok();
+                                continue;
+                            }
+                        };
+                        if group_id_bytes.len() != 32 {
+                            out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be 32 bytes hex")).ok();
+                            continue;
+                        }
+                        let groups = mdk.get_groups().context("get_groups")?;
+                        let found = groups.iter().find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice());
+                        let Some(g) = found else {
+                            out_tx.send(out_error(request_id, "not_found", "group not found")).ok();
+                            continue;
+                        };
+                        let mls_group_id = g.mls_group_id.clone();
+
+                        let expires_at = Timestamp::now().as_secs() + 10;
+                        let rumor = UnsignedEvent::new(
+                            keys.public_key(),
+                            Timestamp::now(),
+                            Kind::ApplicationSpecificData,
+                            [
+                                Tag::custom(TagKind::d(), ["pika"]),
+                                Tag::expiration(Timestamp::from_secs(expires_at)),
+                            ],
+                            "typing",
+                        );
+
+                        let options = CreateMessageOptions {
+                            skip_storage: true,
+                            extra_wrapper_tags: vec![
+                                Tag::expiration(Timestamp::from_secs(expires_at)),
+                            ],
+                        };
+
+                        let wrapper = match mdk.create_message_with_options(&mls_group_id, rumor, options) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                continue;
+                            }
+                        };
+
+                        if relay_urls.is_empty() {
+                            out_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
+                            continue;
+                        }
+                        // Fire-and-forget: typing indicators are best-effort
+                        let client_clone = client.clone();
+                        let relay_urls_clone = relay_urls.clone();
+                        let out_tx_clone = out_tx.clone();
+                        tokio::spawn(async move {
+                            match publish_and_confirm_multi(&client_clone, &relay_urls_clone, &wrapper, "daemon_typing").await {
+                                Ok(_) => {
+                                    let _ = out_tx_clone.send(out_ok(request_id, None));
+                                }
+                                Err(e) => {
+                                    let _ = out_tx_clone.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                }
+                            }
+                        });
                     }
                     InCmd::AcceptCall { request_id, call_id } => {
                         if active_call.is_some() {

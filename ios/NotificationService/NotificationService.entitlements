@@ -6,13 +6,12 @@
 	<string>development</string>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.justinmoon.pika</string>
+		<string>group.com.justinmoon.pikatest</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.justinmoon.pika.shared</string>
 	</array>
-	<key>com.apple.developer.usernotifications.communication</key>
-	<true/>
+
 </dict>
 </plist>

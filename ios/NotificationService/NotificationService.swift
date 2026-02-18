@@ -27,7 +27,7 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         let dataDir = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pikatest")!
             .appendingPathComponent("Library/Application Support").path
 
         switch decryptPushNotification(dataDir: dataDir, nsec: nsec, eventJson: eventJson) {
@@ -131,7 +131,7 @@ class NotificationService: UNNotificationServiceExtension {
 enum SharedKeychainHelper {
     private static let service = "com.pika.app"
     private static let account = "nsec"
-    private static let accessGroup = "6JWFWV65BL.com.justinmoon.pika.shared"
+    private static let accessGroup = "W6VF934SEW.com.justinmoon.pika.shared"
 
     static func getNsec() -> String? {
         let query: [String: Any] = [

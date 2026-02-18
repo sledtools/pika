@@ -17,7 +17,7 @@ final class KeychainNsecStore {
         #if targetEnvironment(simulator)
         return nil
         #else
-        return "6JWFWV65BL.com.justinmoon.pika.shared"
+        return "W6VF934SEW.com.justinmoon.pika.shared"
         #endif
     }()
 

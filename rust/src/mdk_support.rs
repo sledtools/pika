@@ -36,7 +36,7 @@ fn init_keyring_inner() -> Result<()> {
     #[cfg(target_os = "ios")]
     {
         let mut config = std::collections::HashMap::new();
-        config.insert("access-group", "6JWFWV65BL.com.justinmoon.pika.shared");
+        config.insert("access-group", "W6VF934SEW.com.justinmoon.pika.shared");
         let store = apple_native_keyring_store::protected::Store::new_with_configuration(&config)
             .context(
             "failed to create Apple protected keyring store with shared access group",

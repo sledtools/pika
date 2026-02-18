@@ -9,7 +9,10 @@ settings:
   base:
     # Note: device builds still need a valid DEVELOPMENT_TEAM; we keep that out of git and
     # pass it via env from tools/run-ios.
-    PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika
+    # PIKA_APP_BUNDLE_ID is the "root" bundle id; targets derive from it.
+    # Override on the xcodebuild command line (run-ios does this automatically).
+    PIKA_APP_BUNDLE_ID: com.justinmoon.pikatest
+    PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID)
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0
@@ -56,10 +59,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: NotificationService/Info.plist
         CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.notification-service
-      configs:
-        Debug:
-          PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.dev.notification-service
+        PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID).notification-service
     dependencies:
       - framework: Frameworks/PikaNSE.xcframework
         embed: false

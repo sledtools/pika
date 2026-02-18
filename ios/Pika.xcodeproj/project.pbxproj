@@ -109,6 +109,7 @@
 		53159E06C561F50F6EC97A61 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		5F912C4C8861A3FB74085329 /* KeychainNsecStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainNsecStore.swift; sourceTree = "<group>"; };
 		6BD9687D9985059889C135D7 /* ViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewState.swift; sourceTree = "<group>"; };
+		6D320AAAF9812A4380FA3D31 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		790118951426B1C1F8F18CB5 /* CallTimelineEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallTimelineEvent.swift; sourceTree = "<group>"; };
 		80C8822654DC43F3670179F2 /* PeerProfileSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerProfileSheet.swift; sourceTree = "<group>"; };
 		8181E7992E3AF535AF9D22F6 /* PushNotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationManager.swift; sourceTree = "<group>"; };
@@ -282,6 +283,7 @@
 		E2B23F4BDB349F5BAECD786F /* NSEBindings */ = {
 			isa = PBXGroup;
 			children = (
+				6D320AAAF9812A4380FA3D31 /* .gitkeep */,
 				4CD610A90B71BBE734EBA0D6 /* pika_nse.swift */,
 			);
 			path = NSEBindings;
@@ -581,7 +583,8 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.justinmoon.pika;
+				PIKA_APP_BUNDLE_ID = com.justinmoon.pikatest;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -675,7 +678,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.justinmoon.pika.dev.notification-service";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID).notification-service";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -731,7 +734,8 @@
 				MARKETING_VERSION = 0.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.justinmoon.pika;
+				PIKA_APP_BUNDLE_ID = com.justinmoon.pikatest;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -793,7 +797,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.justinmoon.pika.notification-service";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PIKA_APP_BUNDLE_ID).notification-service";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

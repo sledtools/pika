@@ -173,6 +173,8 @@
             rmp
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.xvfb-run
           ];
 
           shellHook = ''

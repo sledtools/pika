@@ -140,12 +140,27 @@ rmp-nightly-linux NAME="rmp-nightly-linux" ORG="com.example" AVD="rmp_ci_api35":
   ABI="x86_64"; \
   IMG="system-images;android-35;google_apis;$ABI"; \
   cargo build -p rmp-cli; \
-  "$BIN" init "$TMP/{{NAME}}" --yes --org "{{ORG}}" --no-ios; \
+  "$BIN" init "$TMP/{{NAME}}" --yes --org "{{ORG}}" --no-ios --iced; \
   if ! emulator -list-avds | grep -qx "{{AVD}}"; then \
     echo "no" | avdmanager create avd -n "{{AVD}}" -k "$IMG" --force; \
   fi; \
   cd "$TMP/{{NAME}}"; \
   CI=1 "$BIN" run android --avd "{{AVD}}" --verbose; \
+  if ! command -v xvfb-run >/dev/null 2>&1; then \
+    echo "error: missing xvfb-run on PATH" >&2; \
+    exit 1; \
+  fi; \
+  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl timeout 900s \
+    xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
+    echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
+    exit 1; \
+  else \
+    code=$?; \
+    if [ "$code" -ne 124 ]; then \
+      echo "error: iced runtime check failed with exit code $code" >&2; \
+      exit "$code"; \
+    fi; \
+  fi; \
   adb devices || true
 
 # Nightly macOS lane: scaffold + iOS simulator run.

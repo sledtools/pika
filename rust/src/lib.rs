@@ -57,8 +57,13 @@ impl FfiApp {
         let core_tx_for_core = core_tx.clone();
         let shared_for_core = shared_state.clone();
         thread::spawn(move || {
-            let mut core =
-                crate::core::AppCore::new(update_tx, core_tx_for_core, data_dir, keychain_group, shared_for_core);
+            let mut core = crate::core::AppCore::new(
+                update_tx,
+                core_tx_for_core,
+                data_dir,
+                keychain_group,
+                shared_for_core,
+            );
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
             }

@@ -52,7 +52,7 @@ impl AppReconciler for TestReconciler {
 fn create_account_navigates_to_chat_list() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     let (reconciler, updates) = TestReconciler::new();
     app.listen_for_updates(Box::new(reconciler));
 
@@ -86,7 +86,7 @@ fn create_account_navigates_to_chat_list() {
 fn push_and_pop_stack_updates_router() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -110,7 +110,7 @@ fn push_and_pop_stack_updates_router() {
 fn send_message_creates_pending_then_sent() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -170,7 +170,7 @@ fn send_message_creates_pending_then_sent() {
 fn start_call_toggle_mute_and_end_transitions_state() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -225,7 +225,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
 fn logout_resets_state() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -264,7 +264,7 @@ fn restore_session_recovers_chat_history() {
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config(&data_dir, true);
 
-    let app = FfiApp::new(data_dir.clone());
+    let app = FfiApp::new(data_dir.clone(), String::new());
     let (reconciler, updates) = TestReconciler::new();
     app.listen_for_updates(Box::new(reconciler));
     app.dispatch(AppAction::CreateAccount);
@@ -314,7 +314,7 @@ fn restore_session_recovers_chat_history() {
     };
 
     // New process instance restores from the same encrypted per-identity DB.
-    let app2 = FfiApp::new(data_dir);
+    let app2 = FfiApp::new(data_dir, String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
     wait_until("restored session logged in", Duration::from_secs(2), || {
         matches!(app2.state().auth, AuthState::LoggedIn { .. })
@@ -348,7 +348,7 @@ fn restore_session_recovers_chat_history() {
 fn paging_loads_older_messages_in_pages() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -469,7 +469,7 @@ fn paging_loads_older_messages_in_pages() {
 fn restore_session_with_invalid_nsec_shows_toast_and_stays_logged_out() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
 
     app.dispatch(AppAction::RestoreSession {
         nsec: "not-a-real-nsec".into(),
@@ -492,7 +492,7 @@ fn restore_session_with_invalid_nsec_shows_toast_and_stays_logged_out() {
 fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
 
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {

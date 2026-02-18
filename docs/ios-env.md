@@ -1,3 +1,11 @@
+---
+summary: How to configure iOS code signing for local development using .env
+read_when:
+  - setting up iOS development for the first time
+  - building on a new Apple Developer team or device
+  - debugging code signing or provisioning errors
+---
+
 # iOS Signing & Developer Environment
 
 ## Quick Start

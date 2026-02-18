@@ -309,8 +309,8 @@ fn call_over_real_moq_relay() {
         &moq.url,
     );
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     // Create accounts
     alice.dispatch(AppAction::CreateAccount);

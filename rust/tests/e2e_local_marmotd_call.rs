@@ -526,7 +526,10 @@ fn run_marmotd_call_test(relay_url: &str, moq_url: &str) {
         Some(extra_relays[0]),
         moq_url,
     );
-    let caller = FfiApp::new(caller_dir.path().to_string_lossy().to_string());
+    let caller = FfiApp::new(
+        caller_dir.path().to_string_lossy().to_string(),
+        String::new(),
+    );
 
     caller.dispatch(AppAction::CreateAccount);
     wait_until("caller logged in", Duration::from_secs(10), || {

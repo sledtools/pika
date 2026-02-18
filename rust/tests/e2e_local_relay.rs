@@ -417,8 +417,8 @@ fn alice_sends_bob_receives_over_local_relay() {
     write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
     write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     #[derive(Clone)]
     struct Collector {
@@ -741,7 +741,7 @@ fn send_failure_then_retry_succeeds_over_local_relay() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), &relay.url);
 
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -801,8 +801,8 @@ fn call_invite_accept_end_flow_over_local_relay() {
     write_config(&dir_a.path().to_string_lossy(), &relay.url);
     write_config(&dir_b.path().to_string_lossy(), &relay.url);
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     alice.dispatch(AppAction::CreateAccount);
     bob.dispatch(AppAction::CreateAccount);
@@ -1114,8 +1114,8 @@ fn call_invite_with_invalid_relay_auth_is_rejected() {
     write_config(&dir_a.path().to_string_lossy(), &relay.url);
     write_config(&dir_b.path().to_string_lossy(), &relay.url);
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     alice.dispatch(AppAction::CreateAccount);
     bob.dispatch(AppAction::CreateAccount);
@@ -1216,8 +1216,8 @@ fn duplicate_group_message_does_not_duplicate_in_ui() {
     write_config(&dir_a.path().to_string_lossy(), &general_relay.url);
     write_config(&dir_b.path().to_string_lossy(), &general_relay.url);
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     alice.dispatch(AppAction::CreateAccount);
     bob.dispatch(AppAction::CreateAccount);

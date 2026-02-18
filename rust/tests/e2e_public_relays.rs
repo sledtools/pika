@@ -131,8 +131,8 @@ fn alice_sends_bob_over_public_relays() {
     write_config(&dir_a.path().to_string_lossy(), &relays);
     write_config(&dir_b.path().to_string_lossy(), &relays);
 
-    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string());
-    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string());
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
 
     let bob_collector = Collector::new();
     bob.listen_for_updates(Box::new(bob_collector.clone()));

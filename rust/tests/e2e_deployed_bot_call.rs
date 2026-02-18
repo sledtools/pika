@@ -156,7 +156,7 @@ fn call_deployed_bot_via_ffi_app() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), &relays, &kp_relays, &moq_url);
 
-    let app = FfiApp::new(dir.path().to_string_lossy().to_string());
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     let collector = Collector::new();
     app.listen_for_updates(Box::new(collector.clone()));
 

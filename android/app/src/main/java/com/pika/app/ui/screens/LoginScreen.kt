@@ -29,6 +29,7 @@ import com.pika.app.ui.TestTags
 @Composable
 fun LoginScreen(manager: AppManager, padding: PaddingValues) {
     var nsec by remember { mutableStateOf("") }
+    var bunkerUri by remember { mutableStateOf("") }
     val busy = manager.state.busy
     val createBusy = busy.creatingAccount
     val loginBusy = busy.loggingIn
@@ -87,6 +88,34 @@ fun LoginScreen(manager: AppManager, padding: PaddingValues) {
                 )
             } else {
                 Text("Login")
+            }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
+
+        OutlinedTextField(
+            value = bunkerUri,
+            onValueChange = { bunkerUri = it },
+            singleLine = true,
+            enabled = !anyBusy,
+            label = { Text("bunker URI") },
+            modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_BUNKER_URI),
+        )
+
+        Button(
+            onClick = {
+                manager.loginWithBunker(bunkerUri)
+            },
+            enabled = !anyBusy,
+            modifier = Modifier.testTag(TestTags.LOGIN_WITH_BUNKER),
+        ) {
+            if (loginBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Text("Login with Bunker")
             }
         }
 

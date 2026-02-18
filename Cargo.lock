@@ -2512,6 +2512,7 @@ version = "0.44.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3aa5e3b6a278ed061835fe1ee293b71641e6bf8b401cfe4e1834bbf4ef0a34e1"
 dependencies = [
+ "aes",
  "base64",
  "bech32",
  "bip39",
@@ -2540,6 +2541,19 @@ dependencies = [
  "nostr",
  "reqwest",
  "serde",
+]
+
+[[package]]
+name = "nostr-connect"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d7366ee1dfa57b479cf56256e18301cb3088f7068ceba01d446db0332b4cb2"
+dependencies = [
+ "async-utility",
+ "nostr",
+ "nostr-relay-pool",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3038,6 +3052,7 @@ dependencies = [
  "mdk-storage-traits",
  "ndk-context",
  "nostr-blossom",
+ "nostr-connect",
  "nostr-sdk",
  "paranoid-android",
  "pika-media",

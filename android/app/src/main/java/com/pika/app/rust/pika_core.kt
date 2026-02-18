@@ -2537,6 +2537,15 @@ sealed class AppAction {
         companion object
     }
     
+    data class BeginBunkerLogin(
+        val `bunkerUri`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
     data class RestoreSession(
         val `nsec`: kotlin.String) : AppAction()
         
@@ -2550,6 +2559,16 @@ sealed class AppAction {
         val `pubkey`: kotlin.String, 
         val `signerPackage`: kotlin.String, 
         val `currentUser`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class RestoreSessionBunker(
+        val `bunkerUri`: kotlin.String, 
+        val `clientNsec`: kotlin.String) : AppAction()
         
     {
         
@@ -2814,98 +2833,105 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             3 -> AppAction.BeginExternalSignerLogin(
                 FfiConverterOptionalString.read(buf),
                 )
-            4 -> AppAction.RestoreSession(
+            4 -> AppAction.BeginBunkerLogin(
                 FfiConverterString.read(buf),
                 )
-            5 -> AppAction.RestoreSessionExternalSigner(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
+            5 -> AppAction.RestoreSession(
                 FfiConverterString.read(buf),
                 )
-            6 -> AppAction.Logout
-            7 -> AppAction.RefreshMyProfile
-            8 -> AppAction.SaveMyProfile(
+            6 -> AppAction.RestoreSessionExternalSigner(
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            9 -> AppAction.UploadMyProfileImage(
+            7 -> AppAction.RestoreSessionBunker(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            10 -> AppAction.PushScreen(
+            8 -> AppAction.Logout
+            9 -> AppAction.RefreshMyProfile
+            10 -> AppAction.SaveMyProfile(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            11 -> AppAction.UploadMyProfileImage(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            12 -> AppAction.PushScreen(
                 FfiConverterTypeScreen.read(buf),
                 )
-            11 -> AppAction.UpdateScreenStack(
+            13 -> AppAction.UpdateScreenStack(
                 FfiConverterSequenceTypeScreen.read(buf),
                 )
-            12 -> AppAction.CreateChat(
+            14 -> AppAction.CreateChat(
                 FfiConverterString.read(buf),
                 )
-            13 -> AppAction.SendMessage(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            14 -> AppAction.RetryMessage(
+            15 -> AppAction.SendMessage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            15 -> AppAction.OpenChat(
+            16 -> AppAction.RetryMessage(
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            16 -> AppAction.LoadOlderMessages(
+            17 -> AppAction.OpenChat(
+                FfiConverterString.read(buf),
+                )
+            18 -> AppAction.LoadOlderMessages(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterUInt.read(buf),
                 )
-            17 -> AppAction.StartCall(
+            19 -> AppAction.StartCall(
                 FfiConverterString.read(buf),
                 )
-            18 -> AppAction.AcceptCall(
+            20 -> AppAction.AcceptCall(
                 FfiConverterString.read(buf),
                 )
-            19 -> AppAction.RejectCall(
+            21 -> AppAction.RejectCall(
                 FfiConverterString.read(buf),
                 )
-            20 -> AppAction.EndCall
-            21 -> AppAction.ToggleMute
-            22 -> AppAction.CreateGroupChat(
+            22 -> AppAction.EndCall
+            23 -> AppAction.ToggleMute
+            24 -> AppAction.CreateGroupChat(
                 FfiConverterSequenceString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            23 -> AppAction.AddGroupMembers(
+            25 -> AppAction.AddGroupMembers(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            24 -> AppAction.RemoveGroupMembers(
+            26 -> AppAction.RemoveGroupMembers(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            25 -> AppAction.LeaveGroup(
+            27 -> AppAction.LeaveGroup(
                 FfiConverterString.read(buf),
                 )
-            26 -> AppAction.RenameGroup(
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            27 -> AppAction.ArchiveChat(
-                FfiConverterString.read(buf),
-                )
-            28 -> AppAction.ReactToMessage(
-                FfiConverterString.read(buf),
+            28 -> AppAction.RenameGroup(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            29 -> AppAction.ClearToast
-            30 -> AppAction.Foregrounded
-            31 -> AppAction.OpenPeerProfile(
+            29 -> AppAction.ArchiveChat(
                 FfiConverterString.read(buf),
                 )
-            32 -> AppAction.ClosePeerProfile
-            33 -> AppAction.RefreshFollowList
-            34 -> AppAction.FollowUser(
+            30 -> AppAction.ReactToMessage(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            35 -> AppAction.UnfollowUser(
+            31 -> AppAction.ClearToast
+            32 -> AppAction.Foregrounded
+            33 -> AppAction.OpenPeerProfile(
+                FfiConverterString.read(buf),
+                )
+            34 -> AppAction.ClosePeerProfile
+            35 -> AppAction.RefreshFollowList
+            36 -> AppAction.FollowUser(
+                FfiConverterString.read(buf),
+                )
+            37 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -2933,6 +2959,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterOptionalString.allocationSize(value.`currentUserHint`)
             )
         }
+        is AppAction.BeginBunkerLogin -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`bunkerUri`)
+            )
+        }
         is AppAction.RestoreSession -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -2947,6 +2980,14 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`pubkey`)
                 + FfiConverterString.allocationSize(value.`signerPackage`)
                 + FfiConverterString.allocationSize(value.`currentUser`)
+            )
+        }
+        is AppAction.RestoreSessionBunker -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`bunkerUri`)
+                + FfiConverterString.allocationSize(value.`clientNsec`)
             )
         }
         is AppAction.Logout -> {
@@ -3181,169 +3222,180 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterOptionalString.write(value.`currentUserHint`, buf)
                 Unit
             }
-            is AppAction.RestoreSession -> {
+            is AppAction.BeginBunkerLogin -> {
                 buf.putInt(4)
+                FfiConverterString.write(value.`bunkerUri`, buf)
+                Unit
+            }
+            is AppAction.RestoreSession -> {
+                buf.putInt(5)
                 FfiConverterString.write(value.`nsec`, buf)
                 Unit
             }
             is AppAction.RestoreSessionExternalSigner -> {
-                buf.putInt(5)
+                buf.putInt(6)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterString.write(value.`signerPackage`, buf)
                 FfiConverterString.write(value.`currentUser`, buf)
                 Unit
             }
+            is AppAction.RestoreSessionBunker -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`bunkerUri`, buf)
+                FfiConverterString.write(value.`clientNsec`, buf)
+                Unit
+            }
             is AppAction.Logout -> {
-                buf.putInt(6)
+                buf.putInt(8)
                 Unit
             }
             is AppAction.RefreshMyProfile -> {
-                buf.putInt(7)
+                buf.putInt(9)
                 Unit
             }
             is AppAction.SaveMyProfile -> {
-                buf.putInt(8)
+                buf.putInt(10)
                 FfiConverterString.write(value.`name`, buf)
                 FfiConverterString.write(value.`about`, buf)
                 Unit
             }
             is AppAction.UploadMyProfileImage -> {
-                buf.putInt(9)
+                buf.putInt(11)
                 FfiConverterString.write(value.`imageBase64`, buf)
                 FfiConverterString.write(value.`mimeType`, buf)
                 Unit
             }
             is AppAction.PushScreen -> {
-                buf.putInt(10)
+                buf.putInt(12)
                 FfiConverterTypeScreen.write(value.`screen`, buf)
                 Unit
             }
             is AppAction.UpdateScreenStack -> {
-                buf.putInt(11)
+                buf.putInt(13)
                 FfiConverterSequenceTypeScreen.write(value.`stack`, buf)
                 Unit
             }
             is AppAction.CreateChat -> {
-                buf.putInt(12)
+                buf.putInt(14)
                 FfiConverterString.write(value.`peerNpub`, buf)
                 Unit
             }
             is AppAction.SendMessage -> {
-                buf.putInt(13)
+                buf.putInt(15)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 Unit
             }
             is AppAction.RetryMessage -> {
-                buf.putInt(14)
+                buf.putInt(16)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`messageId`, buf)
                 Unit
             }
             is AppAction.OpenChat -> {
-                buf.putInt(15)
+                buf.putInt(17)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.LoadOlderMessages -> {
-                buf.putInt(16)
+                buf.putInt(18)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`beforeMessageId`, buf)
                 FfiConverterUInt.write(value.`limit`, buf)
                 Unit
             }
             is AppAction.StartCall -> {
-                buf.putInt(17)
-                FfiConverterString.write(value.`chatId`, buf)
-                Unit
-            }
-            is AppAction.AcceptCall -> {
-                buf.putInt(18)
-                FfiConverterString.write(value.`chatId`, buf)
-                Unit
-            }
-            is AppAction.RejectCall -> {
                 buf.putInt(19)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
-            is AppAction.EndCall -> {
+            is AppAction.AcceptCall -> {
                 buf.putInt(20)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.RejectCall -> {
+                buf.putInt(21)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.EndCall -> {
+                buf.putInt(22)
                 Unit
             }
             is AppAction.ToggleMute -> {
-                buf.putInt(21)
+                buf.putInt(23)
                 Unit
             }
             is AppAction.CreateGroupChat -> {
-                buf.putInt(22)
+                buf.putInt(24)
                 FfiConverterSequenceString.write(value.`peerNpubs`, buf)
                 FfiConverterString.write(value.`groupName`, buf)
                 Unit
             }
             is AppAction.AddGroupMembers -> {
-                buf.putInt(23)
+                buf.putInt(25)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterSequenceString.write(value.`peerNpubs`, buf)
                 Unit
             }
             is AppAction.RemoveGroupMembers -> {
-                buf.putInt(24)
+                buf.putInt(26)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterSequenceString.write(value.`memberPubkeys`, buf)
                 Unit
             }
             is AppAction.LeaveGroup -> {
-                buf.putInt(25)
+                buf.putInt(27)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.RenameGroup -> {
-                buf.putInt(26)
+                buf.putInt(28)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`name`, buf)
                 Unit
             }
             is AppAction.ArchiveChat -> {
-                buf.putInt(27)
+                buf.putInt(29)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.ReactToMessage -> {
-                buf.putInt(28)
+                buf.putInt(30)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`messageId`, buf)
                 FfiConverterString.write(value.`emoji`, buf)
                 Unit
             }
             is AppAction.ClearToast -> {
-                buf.putInt(29)
+                buf.putInt(31)
                 Unit
             }
             is AppAction.Foregrounded -> {
-                buf.putInt(30)
+                buf.putInt(32)
                 Unit
             }
             is AppAction.OpenPeerProfile -> {
-                buf.putInt(31)
+                buf.putInt(33)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.ClosePeerProfile -> {
-                buf.putInt(32)
+                buf.putInt(34)
                 Unit
             }
             is AppAction.RefreshFollowList -> {
-                buf.putInt(33)
+                buf.putInt(35)
                 Unit
             }
             is AppAction.FollowUser -> {
-                buf.putInt(34)
+                buf.putInt(36)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.UnfollowUser -> {
-                buf.putInt(35)
+                buf.putInt(37)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
@@ -3383,6 +3435,17 @@ sealed class AppUpdate {
         companion object
     }
     
+    data class BunkerSessionDescriptor(
+        val `rev`: kotlin.ULong, 
+        val `bunkerUri`: kotlin.String, 
+        val `clientNsec`: kotlin.String) : AppUpdate()
+        
+    {
+        
+
+        companion object
+    }
+    
 
     
 
@@ -3408,6 +3471,11 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
+            3 -> AppUpdate.BunkerSessionDescriptor(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -3430,6 +3498,15 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
                 + FfiConverterString.allocationSize(value.`npub`)
             )
         }
+        is AppUpdate.BunkerSessionDescriptor -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`rev`)
+                + FfiConverterString.allocationSize(value.`bunkerUri`)
+                + FfiConverterString.allocationSize(value.`clientNsec`)
+            )
+        }
     }
 
     override fun write(value: AppUpdate, buf: ByteBuffer) {
@@ -3445,6 +3522,13 @@ public object FfiConverterTypeAppUpdate : FfiConverterRustBuffer<AppUpdate>{
                 FfiConverterString.write(value.`nsec`, buf)
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterString.write(value.`npub`, buf)
+                Unit
+            }
+            is AppUpdate.BunkerSessionDescriptor -> {
+                buf.putInt(3)
+                FfiConverterULong.write(value.`rev`, buf)
+                FfiConverterString.write(value.`bunkerUri`, buf)
+                FfiConverterString.write(value.`clientNsec`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -3464,6 +3548,15 @@ sealed class AuthMode {
         val `pubkey`: kotlin.String, 
         val `signerPackage`: kotlin.String, 
         val `currentUser`: kotlin.String) : AuthMode()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class BunkerSigner(
+        val `bunkerUri`: kotlin.String) : AuthMode()
         
     {
         
@@ -3493,6 +3586,9 @@ public object FfiConverterTypeAuthMode : FfiConverterRustBuffer<AuthMode>{
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
+            3 -> AuthMode.BunkerSigner(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -3513,6 +3609,13 @@ public object FfiConverterTypeAuthMode : FfiConverterRustBuffer<AuthMode>{
                 + FfiConverterString.allocationSize(value.`currentUser`)
             )
         }
+        is AuthMode.BunkerSigner -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`bunkerUri`)
+            )
+        }
     }
 
     override fun write(value: AuthMode, buf: ByteBuffer) {
@@ -3526,6 +3629,11 @@ public object FfiConverterTypeAuthMode : FfiConverterRustBuffer<AuthMode>{
                 FfiConverterString.write(value.`pubkey`, buf)
                 FfiConverterString.write(value.`signerPackage`, buf)
                 FfiConverterString.write(value.`currentUser`, buf)
+                Unit
+            }
+            is AuthMode.BunkerSigner -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`bunkerUri`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

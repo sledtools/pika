@@ -14,6 +14,9 @@ use std::time::Duration;
 use flume::Sender;
 
 use crate::actions::AppAction;
+use crate::bunker_signer::{
+    BunkerConnectError, BunkerSignerConnector, SharedBunkerSignerConnector,
+};
 use crate::external_signer::{
     user_visible_signer_error, user_visible_signer_error_kind, ExternalSignerBridge,
     ExternalSignerBridgeSigner, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
@@ -91,6 +94,9 @@ enum SessionAuthMode {
         signer_package: String,
         current_user: String,
     },
+    BunkerSigner {
+        bunker_uri: String,
+    },
 }
 
 impl SessionAuthMode {
@@ -104,6 +110,9 @@ impl SessionAuthMode {
                 pubkey: pubkey_hex.to_string(),
                 signer_package: signer_package.clone(),
                 current_user: current_user.clone(),
+            },
+            SessionAuthMode::BunkerSigner { bunker_uri } => AuthMode::BunkerSigner {
+                bunker_uri: bunker_uri.clone(),
             },
         }
     }
@@ -133,6 +142,7 @@ pub struct AppCore {
     core_sender: Sender<CoreMsg>,
     shared_state: Arc<RwLock<crate::state::AppState>>,
     external_signer_bridge: SharedExternalSignerBridge,
+    bunker_signer_connector: SharedBunkerSignerConnector,
 
     data_dir: String,
     config: config::AppConfig,
@@ -170,6 +180,7 @@ impl AppCore {
         data_dir: String,
         shared_state: Arc<RwLock<crate::state::AppState>>,
         external_signer_bridge: SharedExternalSignerBridge,
+        bunker_signer_connector: SharedBunkerSignerConnector,
     ) -> Self {
         let config = config::load_app_config(&data_dir);
         let state = crate::state::AppState::empty();
@@ -198,6 +209,7 @@ impl AppCore {
             core_sender,
             shared_state,
             external_signer_bridge,
+            bunker_signer_connector,
             data_dir,
             config,
             runtime,
@@ -336,6 +348,17 @@ impl AppCore {
         });
     }
 
+    fn emit_bunker_session_descriptor(&mut self, bunker_uri: String, client_nsec: String) {
+        let rev = self.next_rev();
+        let snapshot = self.state.clone();
+        self.commit_state_snapshot(&snapshot);
+        let _ = self.update_sender.send(AppUpdate::BunkerSessionDescriptor {
+            rev,
+            bunker_uri,
+            client_nsec,
+        });
+    }
+
     fn toast(&mut self, msg: impl Into<String>) {
         // Keep toast in state until the UI explicitly clears it. This makes the UX
         // robust to rev-gap resyncs (state() snapshot still contains the toast).
@@ -349,6 +372,13 @@ impl AppCore {
 
     fn external_signer_bridge(&self) -> Option<Arc<dyn ExternalSignerBridge>> {
         match self.external_signer_bridge.read() {
+            Ok(slot) => slot.clone(),
+            Err(poison) => poison.into_inner().clone(),
+        }
+    }
+
+    fn bunker_signer_connector(&self) -> Arc<dyn BunkerSignerConnector> {
+        match self.bunker_signer_connector.read() {
             Ok(slot) => slot.clone(),
             Err(poison) => poison.into_inner().clone(),
         }
@@ -405,6 +435,90 @@ impl AppCore {
             current_user,
         };
         self.start_session_with_signer(pubkey, Arc::new(signer), None, mode)
+    }
+
+    fn bunker_login_error_message(&self, err: &BunkerConnectError) -> String {
+        if let Some(msg) = err.user_visible_message() {
+            return msg.to_string();
+        }
+
+        let detail = err.message.trim();
+        if !detail.is_empty() {
+            return detail.to_string();
+        }
+        "Bunker login failed".to_string()
+    }
+
+    fn start_bunker_signer_session(
+        &mut self,
+        bunker_uri_raw: String,
+        client_keys: Keys,
+    ) -> anyhow::Result<()> {
+        let bunker_uri = bunker_uri_raw.trim();
+        if bunker_uri.is_empty() {
+            anyhow::bail!("Invalid bunker URI");
+        }
+        let client_nsec = client_keys.secret_key().to_bech32().expect("infallible");
+        let connector = self.bunker_signer_connector();
+        let output = connector
+            .connect(&self.runtime, bunker_uri, client_keys)
+            .map_err(|e| anyhow::anyhow!(self.bunker_login_error_message(&e)))?;
+        let mode = SessionAuthMode::BunkerSigner {
+            bunker_uri: output.canonical_bunker_uri.clone(),
+        };
+        self.start_session_with_signer(output.user_pubkey, output.signer, None, mode)?;
+        self.emit_bunker_session_descriptor(output.canonical_bunker_uri, client_nsec);
+        Ok(())
+    }
+
+    fn begin_bunker_login(&mut self, bunker_uri: String) {
+        if !self.external_signer_enabled() {
+            self.toast("External signer is disabled");
+            return;
+        }
+
+        self.set_busy(|b| {
+            b.logging_in = true;
+            b.creating_account = false;
+        });
+
+        if let Err(e) = self.start_bunker_signer_session(bunker_uri, Keys::generate()) {
+            self.clear_busy();
+            self.toast(format!("{e:#}"));
+            return;
+        }
+
+        self.clear_busy();
+    }
+
+    fn restore_bunker_session(&mut self, bunker_uri: String, client_nsec: String) {
+        self.set_busy(|b| {
+            b.logging_in = true;
+            b.creating_account = false;
+        });
+
+        if !self.external_signer_enabled() {
+            self.clear_busy();
+            self.toast("External signer is disabled");
+            return;
+        }
+
+        let keys = match Keys::parse(client_nsec.trim()) {
+            Ok(keys) => keys,
+            Err(e) => {
+                self.clear_busy();
+                self.toast(format!("Invalid bunker client key: {e}"));
+                return;
+            }
+        };
+
+        if let Err(e) = self.start_bunker_signer_session(bunker_uri, keys) {
+            self.clear_busy();
+            self.toast(format!("Login failed: {e:#}"));
+            return;
+        }
+
+        self.clear_busy();
     }
 
     fn begin_external_signer_login(&mut self, current_user_hint: Option<String>) {
@@ -1313,6 +1427,9 @@ impl AppCore {
             AppAction::BeginExternalSignerLogin { current_user_hint } => {
                 self.begin_external_signer_login(current_user_hint);
             }
+            AppAction::BeginBunkerLogin { bunker_uri } => {
+                self.begin_bunker_login(bunker_uri);
+            }
             AppAction::RestoreSessionExternalSigner {
                 pubkey,
                 signer_package,
@@ -1342,6 +1459,12 @@ impl AppCore {
                 } else {
                     self.clear_busy();
                 }
+            }
+            AppAction::RestoreSessionBunker {
+                bunker_uri,
+                client_nsec,
+            } => {
+                self.restore_bunker_session(bunker_uri, client_nsec);
             }
             AppAction::Logout => {
                 // Delete the MLS database before tearing down the session so stale

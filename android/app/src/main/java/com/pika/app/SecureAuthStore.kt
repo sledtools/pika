@@ -7,6 +7,7 @@ import androidx.security.crypto.MasterKey
 enum class StoredAuthMode {
     LOCAL_NSEC,
     EXTERNAL_SIGNER,
+    BUNKER,
 }
 
 data class StoredAuthDescriptor(
@@ -15,6 +16,8 @@ data class StoredAuthDescriptor(
     val pubkey: String? = null,
     val signerPackage: String? = null,
     val currentUser: String? = null,
+    val bunkerUri: String? = null,
+    val bunkerClientNsec: String? = null,
 )
 
 class SecureAuthStore(context: Context) {
@@ -53,6 +56,15 @@ class SecureAuthStore(context: Context) {
                     currentUser = currentUser,
                 )
             }
+            MODE_BUNKER -> {
+                val bunkerUri = prefs.getString(KEY_BUNKER_URI, null) ?: return null
+                val bunkerClientNsec = prefs.getString(KEY_BUNKER_CLIENT_NSEC, null) ?: return null
+                StoredAuthDescriptor(
+                    mode = StoredAuthMode.BUNKER,
+                    bunkerUri = bunkerUri,
+                    bunkerClientNsec = bunkerClientNsec,
+                )
+            }
             null -> {
                 // Backward compatibility: previous versions only stored nsec.
                 val nsec = prefs.getString(KEY_NSEC, null) ?: return null
@@ -70,6 +82,8 @@ class SecureAuthStore(context: Context) {
             .remove(KEY_EXT_PUBKEY)
             .remove(KEY_EXT_PACKAGE)
             .remove(KEY_EXT_CURRENT_USER)
+            .remove(KEY_BUNKER_URI)
+            .remove(KEY_BUNKER_CLIENT_NSEC)
             .apply()
     }
 
@@ -81,6 +95,21 @@ class SecureAuthStore(context: Context) {
             .putString(KEY_EXT_PACKAGE, signerPackage)
             .putString(KEY_EXT_CURRENT_USER, currentUser)
             .remove(KEY_NSEC)
+            .remove(KEY_BUNKER_URI)
+            .remove(KEY_BUNKER_CLIENT_NSEC)
+            .apply()
+    }
+
+    fun saveBunker(bunkerUri: String, bunkerClientNsec: String) {
+        prefs
+            .edit()
+            .putString(KEY_AUTH_MODE, MODE_BUNKER)
+            .putString(KEY_BUNKER_URI, bunkerUri)
+            .putString(KEY_BUNKER_CLIENT_NSEC, bunkerClientNsec)
+            .remove(KEY_NSEC)
+            .remove(KEY_EXT_PUBKEY)
+            .remove(KEY_EXT_PACKAGE)
+            .remove(KEY_EXT_CURRENT_USER)
             .apply()
     }
 
@@ -92,6 +121,8 @@ class SecureAuthStore(context: Context) {
             .remove(KEY_EXT_PUBKEY)
             .remove(KEY_EXT_PACKAGE)
             .remove(KEY_EXT_CURRENT_USER)
+            .remove(KEY_BUNKER_URI)
+            .remove(KEY_BUNKER_CLIENT_NSEC)
             .apply()
     }
 
@@ -101,8 +132,11 @@ class SecureAuthStore(context: Context) {
         private const val KEY_EXT_PUBKEY = "external_pubkey"
         private const val KEY_EXT_PACKAGE = "external_signer_package"
         private const val KEY_EXT_CURRENT_USER = "external_current_user"
+        private const val KEY_BUNKER_URI = "bunker_uri"
+        private const val KEY_BUNKER_CLIENT_NSEC = "bunker_client_nsec"
 
         private const val MODE_LOCAL_NSEC = "local_nsec"
         private const val MODE_EXTERNAL_SIGNER = "external_signer"
+        private const val MODE_BUNKER = "bunker"
     }
 }

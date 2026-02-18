@@ -10,6 +10,9 @@ pub enum AppAction {
     BeginExternalSignerLogin {
         current_user_hint: Option<String>,
     },
+    BeginBunkerLogin {
+        bunker_uri: String,
+    },
     RestoreSession {
         nsec: String,
     },
@@ -17,6 +20,10 @@ pub enum AppAction {
         pubkey: String,
         signer_package: String,
         current_user: String,
+    },
+    RestoreSessionBunker {
+        bunker_uri: String,
+        client_nsec: String,
     },
     Logout,
     RefreshMyProfile,
@@ -130,8 +137,10 @@ impl AppAction {
             AppAction::CreateAccount => "CreateAccount",
             AppAction::Login { .. } => "Login",
             AppAction::BeginExternalSignerLogin { .. } => "BeginExternalSignerLogin",
+            AppAction::BeginBunkerLogin { .. } => "BeginBunkerLogin",
             AppAction::RestoreSession { .. } => "RestoreSession",
             AppAction::RestoreSessionExternalSigner { .. } => "RestoreSessionExternalSigner",
+            AppAction::RestoreSessionBunker { .. } => "RestoreSessionBunker",
             AppAction::Logout => "Logout",
             AppAction::RefreshMyProfile => "RefreshMyProfile",
             AppAction::SaveMyProfile { .. } => "SaveMyProfile",

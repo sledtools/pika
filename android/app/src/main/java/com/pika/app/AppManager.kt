@@ -103,10 +103,11 @@ class AppManager private constructor(context: Context) : AppReconciler {
         if (isMissingOrBlank("call_broadcast_prefix")) {
             obj.put("call_broadcast_prefix", defaultBroadcastPrefix)
         }
-        // Keep Rust-side signer gating in sync with Android build-time flag.
+        // Default external signer support to enabled.
+        // Amber transport remains behind build flag, but bunker login is Rust-only.
         // If callers provided an explicit value, respect it.
         if (!obj.has("enable_external_signer")) {
-            obj.put("enable_external_signer", BuildConfig.ENABLE_AMBER_SIGNER)
+            obj.put("enable_external_signer", true)
         }
 
         runCatching {
@@ -148,6 +149,10 @@ class AppManager private constructor(context: Context) : AppReconciler {
         rust.dispatch(AppAction.BeginExternalSignerLogin(currentUserHint = currentUserHint))
     }
 
+    fun loginWithBunker(bunkerUri: String) {
+        rust.dispatch(AppAction.BeginBunkerLogin(bunkerUri = bunkerUri))
+    }
+
     fun logout() {
         secureStore.clear()
         rust.dispatch(AppAction.Logout)
@@ -169,6 +174,10 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 if (existing.isBlank() && update.nsec.isNotBlank()) {
                     secureStore.saveLocalNsec(update.nsec)
                 }
+            } else if (update is AppUpdate.BunkerSessionDescriptor) {
+                if (update.bunkerUri.isNotBlank() && update.clientNsec.isNotBlank()) {
+                    secureStore.saveBunker(update.bunkerUri, update.clientNsec)
+                }
             }
 
             // The stream is full-state snapshots; drop anything stale.
@@ -184,6 +193,12 @@ class AppManager private constructor(context: Context) : AppReconciler {
                     }
                     state = state.copy(rev = updateRev)
                 }
+                is AppUpdate.BunkerSessionDescriptor -> {
+                    if (update.bunkerUri.isNotBlank() && update.clientNsec.isNotBlank()) {
+                        secureStore.saveBunker(update.bunkerUri, update.clientNsec)
+                    }
+                    state = state.copy(rev = updateRev)
+                }
             }
             syncSecureStoreWithAuthState()
             audioFocus.syncForCall(state.activeCall)
@@ -194,6 +209,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
         when (this) {
             is AppUpdate.FullState -> this.v1.rev
             is AppUpdate.AccountCreated -> this.rev
+            is AppUpdate.BunkerSessionDescriptor -> this.rev
         }
 
     private fun restoreSessionFromSecureStore() {
@@ -219,6 +235,17 @@ class AppManager private constructor(context: Context) : AppReconciler {
                     ),
                 )
             }
+            StoredAuthMode.BUNKER -> {
+                val bunkerUri = stored.bunkerUri?.trim().orEmpty()
+                val clientNsec = stored.bunkerClientNsec?.trim().orEmpty()
+                if (bunkerUri.isBlank() || clientNsec.isBlank()) return
+                rust.dispatch(
+                    AppAction.RestoreSessionBunker(
+                        bunkerUri = bunkerUri,
+                        clientNsec = clientNsec,
+                    ),
+                )
+            }
         }
     }
 
@@ -228,7 +255,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             is AuthState.LoggedIn -> {
                 when (val mode = auth.mode) {
                     is AuthMode.LocalNsec -> {
-                        if (secureStore.load()?.mode == StoredAuthMode.EXTERNAL_SIGNER) {
+                        if (secureStore.load()?.mode != StoredAuthMode.LOCAL_NSEC) {
                             secureStore.clear()
                         }
                     }
@@ -238,6 +265,21 @@ class AppManager private constructor(context: Context) : AppReconciler {
                             signerPackage = mode.signerPackage,
                             currentUser = mode.currentUser,
                         )
+                    }
+                    is AuthMode.BunkerSigner -> {
+                        val existing = secureStore.load()
+                        val clientNsec =
+                            existing
+                                ?.takeIf { it.mode == StoredAuthMode.BUNKER }
+                                ?.bunkerClientNsec
+                                ?.trim()
+                                .orEmpty()
+                        if (clientNsec.isNotBlank()) {
+                            secureStore.saveBunker(
+                                bunkerUri = mode.bunkerUri,
+                                bunkerClientNsec = clientNsec,
+                            )
+                        }
                     }
                 }
             }

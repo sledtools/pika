@@ -129,6 +129,9 @@ final class AppManager: AppReconciler {
             }
             state.rev = updateRev
             callAudioSession.apply(activeCall: state.activeCall)
+        case .bunkerSessionDescriptor:
+            state.rev = updateRev
+            callAudioSession.apply(activeCall: state.activeCall)
         }
     }
 
@@ -216,6 +219,7 @@ private extension AppUpdate {
         switch self {
         case .fullState(let s): return s.rev
         case .accountCreated(let rev, _, _, _): return rev
+        case .bunkerSessionDescriptor(let rev, _, _): return rev
         }
     }
 }

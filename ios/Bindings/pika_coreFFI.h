@@ -250,6 +250,48 @@ typedef void (*UniffiCallbackInterfaceAppReconcilerMethod0)(uint64_t, RustBuffer
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD0
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD1
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod1)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD2
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod2)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD3
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD3
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod3)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD4
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD4
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod4)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD5
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE_METHOD5
+typedef void (*UniffiCallbackInterfaceExternalSignerBridgeMethod5)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_APP_RECONCILER
 typedef struct UniffiVTableCallbackInterfaceAppReconciler {
@@ -257,6 +299,20 @@ typedef struct UniffiVTableCallbackInterfaceAppReconciler {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceAppReconcilerMethod0 _Nonnull reconcile;
 } UniffiVTableCallbackInterfaceAppReconciler;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EXTERNAL_SIGNER_BRIDGE
+typedef struct UniffiVTableCallbackInterfaceExternalSignerBridge {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod0 _Nonnull requestPublicKey;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod1 _Nonnull signEvent;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod2 _Nonnull nip44Encrypt;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod3 _Nonnull nip44Decrypt;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod4 _Nonnull nip04Encrypt;
+    UniffiCallbackInterfaceExternalSignerBridgeMethod5 _Nonnull nip04Decrypt;
+} UniffiVTableCallbackInterfaceExternalSignerBridge;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_CLONE_FFIAPP
@@ -284,6 +340,11 @@ void uniffi_pika_core_fn_method_ffiapp_dispatch(uint64_t ptr, RustBuffer action,
 void uniffi_pika_core_fn_method_ffiapp_listen_for_updates(uint64_t ptr, uint64_t reconciler, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_METHOD_FFIAPP_SET_EXTERNAL_SIGNER_BRIDGE
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_METHOD_FFIAPP_SET_EXTERNAL_SIGNER_BRIDGE
+void uniffi_pika_core_fn_method_ffiapp_set_external_signer_bridge(uint64_t ptr, uint64_t bridge, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_METHOD_FFIAPP_STATE
 #define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_METHOD_FFIAPP_STATE
 RustBuffer uniffi_pika_core_fn_method_ffiapp_state(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -292,6 +353,11 @@ RustBuffer uniffi_pika_core_fn_method_ffiapp_state(uint64_t ptr, RustCallStatus 
 #ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 #define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_INIT_CALLBACK_VTABLE_APPRECONCILER
 void uniffi_pika_core_fn_init_callback_vtable_appreconciler(const UniffiVTableCallbackInterfaceAppReconciler* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_INIT_CALLBACK_VTABLE_EXTERNALSIGNERBRIDGE
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_FN_INIT_CALLBACK_VTABLE_EXTERNALSIGNERBRIDGE
+void uniffi_pika_core_fn_init_callback_vtable_externalsignerbridge(const UniffiVTableCallbackInterfaceExternalSignerBridge* _Nonnull vtable
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_PIKA_CORE_RUSTBUFFER_ALLOC
@@ -566,6 +632,12 @@ uint16_t uniffi_pika_core_checksum_method_ffiapp_listen_for_updates(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_FFIAPP_SET_EXTERNAL_SIGNER_BRIDGE
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_FFIAPP_SET_EXTERNAL_SIGNER_BRIDGE
+uint16_t uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 #define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_FFIAPP_STATE
 uint16_t uniffi_pika_core_checksum_method_ffiapp_state(void
@@ -581,6 +653,42 @@ uint16_t uniffi_pika_core_checksum_constructor_ffiapp_new(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 #define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_APPRECONCILER_RECONCILE
 uint16_t uniffi_pika_core_checksum_method_appreconciler_reconcile(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_REQUEST_PUBLIC_KEY
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_REQUEST_PUBLIC_KEY
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_request_public_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_SIGN_EVENT
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_SIGN_EVENT
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_sign_event(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP44_ENCRYPT
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP44_ENCRYPT
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_nip44_encrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP44_DECRYPT
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP44_DECRYPT
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_nip44_decrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP04_ENCRYPT
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP04_ENCRYPT
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_nip04_encrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP04_DECRYPT
+#define UNIFFI_FFIDEF_UNIFFI_PIKA_CORE_CHECKSUM_METHOD_EXTERNALSIGNERBRIDGE_NIP04_DECRYPT
+uint16_t uniffi_pika_core_checksum_method_externalsignerbridge_nip04_decrypt(void
     
 );
 #endif

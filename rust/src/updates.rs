@@ -14,6 +14,11 @@ pub enum AppUpdate {
         pubkey: String,
         npub: String,
     },
+    BunkerSessionDescriptor {
+        rev: u64,
+        bunker_uri: String,
+        client_nsec: String,
+    },
 }
 
 impl AppUpdate {
@@ -21,6 +26,7 @@ impl AppUpdate {
         match self {
             AppUpdate::FullState(s) => s.rev,
             AppUpdate::AccountCreated { rev, .. } => *rev,
+            AppUpdate::BunkerSessionDescriptor { rev, .. } => *rev,
         }
     }
 }

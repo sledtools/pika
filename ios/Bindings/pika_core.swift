@@ -544,6 +544,8 @@ public protocol FfiAppProtocol: AnyObject, Sendable {
 
     func listenForUpdates(reconciler: AppReconciler)
 
+    func setExternalSignerBridge(bridge: ExternalSignerBridge)
+
     func state()  -> AppState
 
 }
@@ -620,6 +622,14 @@ open func listenForUpdates(reconciler: AppReconciler)  {try! rustCall() {
     uniffi_pika_core_fn_method_ffiapp_listen_for_updates(
             self.uniffiCloneHandle(),
         FfiConverterCallbackInterfaceAppReconciler_lower(reconciler),$0
+    )
+}
+}
+
+open func setExternalSignerBridge(bridge: ExternalSignerBridge)  {try! rustCall() {
+    uniffi_pika_core_fn_method_ffiapp_set_external_signer_bridge(
+            self.uniffiCloneHandle(),
+        FfiConverterCallbackInterfaceExternalSignerBridge_lower(bridge),$0
     )
 }
 }
@@ -1225,6 +1235,138 @@ public func FfiConverterTypeChatViewState_lower(_ value: ChatViewState) -> RustB
 }
 
 
+public struct ExternalSignerHandshakeResult: Equatable, Hashable {
+    public var ok: Bool
+    public var pubkey: String?
+    public var signerPackage: String?
+    public var currentUser: String?
+    public var errorKind: ExternalSignerErrorKind?
+    public var errorMessage: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ok: Bool, pubkey: String?, signerPackage: String?, currentUser: String?, errorKind: ExternalSignerErrorKind?, errorMessage: String?) {
+        self.ok = ok
+        self.pubkey = pubkey
+        self.signerPackage = signerPackage
+        self.currentUser = currentUser
+        self.errorKind = errorKind
+        self.errorMessage = errorMessage
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ExternalSignerHandshakeResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExternalSignerHandshakeResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExternalSignerHandshakeResult {
+        return
+            try ExternalSignerHandshakeResult(
+                ok: FfiConverterBool.read(from: &buf),
+                pubkey: FfiConverterOptionString.read(from: &buf),
+                signerPackage: FfiConverterOptionString.read(from: &buf),
+                currentUser: FfiConverterOptionString.read(from: &buf),
+                errorKind: FfiConverterOptionTypeExternalSignerErrorKind.read(from: &buf),
+                errorMessage: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ExternalSignerHandshakeResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.ok, into: &buf)
+        FfiConverterOptionString.write(value.pubkey, into: &buf)
+        FfiConverterOptionString.write(value.signerPackage, into: &buf)
+        FfiConverterOptionString.write(value.currentUser, into: &buf)
+        FfiConverterOptionTypeExternalSignerErrorKind.write(value.errorKind, into: &buf)
+        FfiConverterOptionString.write(value.errorMessage, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerHandshakeResult_lift(_ buf: RustBuffer) throws -> ExternalSignerHandshakeResult {
+    return try FfiConverterTypeExternalSignerHandshakeResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerHandshakeResult_lower(_ value: ExternalSignerHandshakeResult) -> RustBuffer {
+    return FfiConverterTypeExternalSignerHandshakeResult.lower(value)
+}
+
+
+public struct ExternalSignerResult: Equatable, Hashable {
+    public var ok: Bool
+    public var value: String?
+    public var errorKind: ExternalSignerErrorKind?
+    public var errorMessage: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ok: Bool, value: String?, errorKind: ExternalSignerErrorKind?, errorMessage: String?) {
+        self.ok = ok
+        self.value = value
+        self.errorKind = errorKind
+        self.errorMessage = errorMessage
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ExternalSignerResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExternalSignerResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExternalSignerResult {
+        return
+            try ExternalSignerResult(
+                ok: FfiConverterBool.read(from: &buf),
+                value: FfiConverterOptionString.read(from: &buf),
+                errorKind: FfiConverterOptionTypeExternalSignerErrorKind.read(from: &buf),
+                errorMessage: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ExternalSignerResult, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.ok, into: &buf)
+        FfiConverterOptionString.write(value.value, into: &buf)
+        FfiConverterOptionTypeExternalSignerErrorKind.write(value.errorKind, into: &buf)
+        FfiConverterOptionString.write(value.errorMessage, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerResult_lift(_ buf: RustBuffer) throws -> ExternalSignerResult {
+    return try FfiConverterTypeExternalSignerResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerResult_lower(_ value: ExternalSignerResult) -> RustBuffer {
+    return FfiConverterTypeExternalSignerResult.lower(value)
+}
+
+
 public struct FollowListEntry: Equatable, Hashable {
     public var pubkey: String
     public var npub: String
@@ -1716,7 +1858,15 @@ public enum AppAction: Equatable, Hashable {
     case createAccount
     case login(nsec: String
     )
+    case beginExternalSignerLogin(currentUserHint: String?
+    )
+    case beginBunkerLogin(bunkerUri: String
+    )
     case restoreSession(nsec: String
+    )
+    case restoreSessionExternalSigner(pubkey: String, signerPackage: String, currentUser: String
+    )
+    case restoreSessionBunker(bunkerUri: String, clientNsec: String
     )
     case logout
     case refreshMyProfile
@@ -1796,89 +1946,101 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
         case 2: return .login(nsec: try FfiConverterString.read(from: &buf)
         )
 
-        case 3: return .restoreSession(nsec: try FfiConverterString.read(from: &buf)
+        case 3: return .beginExternalSignerLogin(currentUserHint: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 4: return .logout
-
-        case 5: return .refreshMyProfile
-
-        case 6: return .saveMyProfile(name: try FfiConverterString.read(from: &buf), about: try FfiConverterString.read(from: &buf)
+        case 4: return .beginBunkerLogin(bunkerUri: try FfiConverterString.read(from: &buf)
         )
 
-        case 7: return .uploadMyProfileImage(imageBase64: try FfiConverterString.read(from: &buf), mimeType: try FfiConverterString.read(from: &buf)
+        case 5: return .restoreSession(nsec: try FfiConverterString.read(from: &buf)
         )
 
-        case 8: return .pushScreen(screen: try FfiConverterTypeScreen.read(from: &buf)
+        case 6: return .restoreSessionExternalSigner(pubkey: try FfiConverterString.read(from: &buf), signerPackage: try FfiConverterString.read(from: &buf), currentUser: try FfiConverterString.read(from: &buf)
         )
 
-        case 9: return .updateScreenStack(stack: try FfiConverterSequenceTypeScreen.read(from: &buf)
+        case 7: return .restoreSessionBunker(bunkerUri: try FfiConverterString.read(from: &buf), clientNsec: try FfiConverterString.read(from: &buf)
         )
 
-        case 10: return .createChat(peerNpub: try FfiConverterString.read(from: &buf)
+        case 8: return .logout
+
+        case 9: return .refreshMyProfile
+
+        case 10: return .saveMyProfile(name: try FfiConverterString.read(from: &buf), about: try FfiConverterString.read(from: &buf)
         )
 
-        case 11: return .sendMessage(chatId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
+        case 11: return .uploadMyProfileImage(imageBase64: try FfiConverterString.read(from: &buf), mimeType: try FfiConverterString.read(from: &buf)
         )
 
-        case 12: return .retryMessage(chatId: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf)
+        case 12: return .pushScreen(screen: try FfiConverterTypeScreen.read(from: &buf)
         )
 
-        case 13: return .openChat(chatId: try FfiConverterString.read(from: &buf)
+        case 13: return .updateScreenStack(stack: try FfiConverterSequenceTypeScreen.read(from: &buf)
         )
 
-        case 14: return .loadOlderMessages(chatId: try FfiConverterString.read(from: &buf), beforeMessageId: try FfiConverterString.read(from: &buf), limit: try FfiConverterUInt32.read(from: &buf)
+        case 14: return .createChat(peerNpub: try FfiConverterString.read(from: &buf)
         )
 
-        case 15: return .startCall(chatId: try FfiConverterString.read(from: &buf)
+        case 15: return .sendMessage(chatId: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
         )
 
-        case 16: return .acceptCall(chatId: try FfiConverterString.read(from: &buf)
+        case 16: return .retryMessage(chatId: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf)
         )
 
-        case 17: return .rejectCall(chatId: try FfiConverterString.read(from: &buf)
+        case 17: return .openChat(chatId: try FfiConverterString.read(from: &buf)
         )
 
-        case 18: return .endCall
-
-        case 19: return .toggleMute
-
-        case 20: return .createGroupChat(peerNpubs: try FfiConverterSequenceString.read(from: &buf), groupName: try FfiConverterString.read(from: &buf)
+        case 18: return .loadOlderMessages(chatId: try FfiConverterString.read(from: &buf), beforeMessageId: try FfiConverterString.read(from: &buf), limit: try FfiConverterUInt32.read(from: &buf)
         )
 
-        case 21: return .addGroupMembers(chatId: try FfiConverterString.read(from: &buf), peerNpubs: try FfiConverterSequenceString.read(from: &buf)
+        case 19: return .startCall(chatId: try FfiConverterString.read(from: &buf)
         )
 
-        case 22: return .removeGroupMembers(chatId: try FfiConverterString.read(from: &buf), memberPubkeys: try FfiConverterSequenceString.read(from: &buf)
+        case 20: return .acceptCall(chatId: try FfiConverterString.read(from: &buf)
         )
 
-        case 23: return .leaveGroup(chatId: try FfiConverterString.read(from: &buf)
+        case 21: return .rejectCall(chatId: try FfiConverterString.read(from: &buf)
         )
 
-        case 24: return .renameGroup(chatId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf)
+        case 22: return .endCall
+
+        case 23: return .toggleMute
+
+        case 24: return .createGroupChat(peerNpubs: try FfiConverterSequenceString.read(from: &buf), groupName: try FfiConverterString.read(from: &buf)
         )
 
-        case 25: return .archiveChat(chatId: try FfiConverterString.read(from: &buf)
+        case 25: return .addGroupMembers(chatId: try FfiConverterString.read(from: &buf), peerNpubs: try FfiConverterSequenceString.read(from: &buf)
         )
 
-        case 26: return .reactToMessage(chatId: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf), emoji: try FfiConverterString.read(from: &buf)
+        case 26: return .removeGroupMembers(chatId: try FfiConverterString.read(from: &buf), memberPubkeys: try FfiConverterSequenceString.read(from: &buf)
         )
 
-        case 27: return .clearToast
-
-        case 28: return .foregrounded
-
-        case 29: return .openPeerProfile(pubkey: try FfiConverterString.read(from: &buf)
+        case 27: return .leaveGroup(chatId: try FfiConverterString.read(from: &buf)
         )
 
-        case 30: return .closePeerProfile
-
-        case 31: return .refreshFollowList
-
-        case 32: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 28: return .renameGroup(chatId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf)
         )
 
-        case 33: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
+        case 29: return .archiveChat(chatId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 30: return .reactToMessage(chatId: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf), emoji: try FfiConverterString.read(from: &buf)
+        )
+
+        case 31: return .clearToast
+
+        case 32: return .foregrounded
+
+        case 33: return .openPeerProfile(pubkey: try FfiConverterString.read(from: &buf)
+        )
+
+        case 34: return .closePeerProfile
+
+        case 35: return .refreshFollowList
+
+        case 36: return .followUser(pubkey: try FfiConverterString.read(from: &buf)
+        )
+
+        case 37: return .unfollowUser(pubkey: try FfiConverterString.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -1898,162 +2060,185 @@ public struct FfiConverterTypeAppAction: FfiConverterRustBuffer {
             FfiConverterString.write(nsec, into: &buf)
 
 
-        case let .restoreSession(nsec):
+        case let .beginExternalSignerLogin(currentUserHint):
             writeInt(&buf, Int32(3))
+            FfiConverterOptionString.write(currentUserHint, into: &buf)
+
+
+        case let .beginBunkerLogin(bunkerUri):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(bunkerUri, into: &buf)
+
+
+        case let .restoreSession(nsec):
+            writeInt(&buf, Int32(5))
             FfiConverterString.write(nsec, into: &buf)
 
 
+        case let .restoreSessionExternalSigner(pubkey,signerPackage,currentUser):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(pubkey, into: &buf)
+            FfiConverterString.write(signerPackage, into: &buf)
+            FfiConverterString.write(currentUser, into: &buf)
+
+
+        case let .restoreSessionBunker(bunkerUri,clientNsec):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(bunkerUri, into: &buf)
+            FfiConverterString.write(clientNsec, into: &buf)
+
+
         case .logout:
-            writeInt(&buf, Int32(4))
+            writeInt(&buf, Int32(8))
 
 
         case .refreshMyProfile:
-            writeInt(&buf, Int32(5))
+            writeInt(&buf, Int32(9))
 
 
         case let .saveMyProfile(name,about):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(10))
             FfiConverterString.write(name, into: &buf)
             FfiConverterString.write(about, into: &buf)
 
 
         case let .uploadMyProfileImage(imageBase64,mimeType):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(imageBase64, into: &buf)
             FfiConverterString.write(mimeType, into: &buf)
 
 
         case let .pushScreen(screen):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(12))
             FfiConverterTypeScreen.write(screen, into: &buf)
 
 
         case let .updateScreenStack(stack):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(13))
             FfiConverterSequenceTypeScreen.write(stack, into: &buf)
 
 
         case let .createChat(peerNpub):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(14))
             FfiConverterString.write(peerNpub, into: &buf)
 
 
         case let .sendMessage(chatId,content):
-            writeInt(&buf, Int32(11))
+            writeInt(&buf, Int32(15))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterString.write(content, into: &buf)
 
 
         case let .retryMessage(chatId,messageId):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(16))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterString.write(messageId, into: &buf)
 
 
         case let .openChat(chatId):
-            writeInt(&buf, Int32(13))
+            writeInt(&buf, Int32(17))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case let .loadOlderMessages(chatId,beforeMessageId,limit):
-            writeInt(&buf, Int32(14))
+            writeInt(&buf, Int32(18))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterString.write(beforeMessageId, into: &buf)
             FfiConverterUInt32.write(limit, into: &buf)
 
 
         case let .startCall(chatId):
-            writeInt(&buf, Int32(15))
+            writeInt(&buf, Int32(19))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case let .acceptCall(chatId):
-            writeInt(&buf, Int32(16))
+            writeInt(&buf, Int32(20))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case let .rejectCall(chatId):
-            writeInt(&buf, Int32(17))
+            writeInt(&buf, Int32(21))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case .endCall:
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(22))
 
 
         case .toggleMute:
-            writeInt(&buf, Int32(19))
+            writeInt(&buf, Int32(23))
 
 
         case let .createGroupChat(peerNpubs,groupName):
-            writeInt(&buf, Int32(20))
+            writeInt(&buf, Int32(24))
             FfiConverterSequenceString.write(peerNpubs, into: &buf)
             FfiConverterString.write(groupName, into: &buf)
 
 
         case let .addGroupMembers(chatId,peerNpubs):
-            writeInt(&buf, Int32(21))
+            writeInt(&buf, Int32(25))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterSequenceString.write(peerNpubs, into: &buf)
 
 
         case let .removeGroupMembers(chatId,memberPubkeys):
-            writeInt(&buf, Int32(22))
+            writeInt(&buf, Int32(26))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterSequenceString.write(memberPubkeys, into: &buf)
 
 
         case let .leaveGroup(chatId):
-            writeInt(&buf, Int32(23))
+            writeInt(&buf, Int32(27))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case let .renameGroup(chatId,name):
-            writeInt(&buf, Int32(24))
+            writeInt(&buf, Int32(28))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterString.write(name, into: &buf)
 
 
         case let .archiveChat(chatId):
-            writeInt(&buf, Int32(25))
+            writeInt(&buf, Int32(29))
             FfiConverterString.write(chatId, into: &buf)
 
 
         case let .reactToMessage(chatId,messageId,emoji):
-            writeInt(&buf, Int32(26))
+            writeInt(&buf, Int32(30))
             FfiConverterString.write(chatId, into: &buf)
             FfiConverterString.write(messageId, into: &buf)
             FfiConverterString.write(emoji, into: &buf)
 
 
         case .clearToast:
-            writeInt(&buf, Int32(27))
+            writeInt(&buf, Int32(31))
 
 
         case .foregrounded:
-            writeInt(&buf, Int32(28))
+            writeInt(&buf, Int32(32))
 
 
         case let .openPeerProfile(pubkey):
-            writeInt(&buf, Int32(29))
+            writeInt(&buf, Int32(33))
             FfiConverterString.write(pubkey, into: &buf)
 
 
         case .closePeerProfile:
-            writeInt(&buf, Int32(30))
+            writeInt(&buf, Int32(34))
 
 
         case .refreshFollowList:
-            writeInt(&buf, Int32(31))
+            writeInt(&buf, Int32(35))
 
 
         case let .followUser(pubkey):
-            writeInt(&buf, Int32(32))
+            writeInt(&buf, Int32(36))
             FfiConverterString.write(pubkey, into: &buf)
 
 
         case let .unfollowUser(pubkey):
-            writeInt(&buf, Int32(33))
+            writeInt(&buf, Int32(37))
             FfiConverterString.write(pubkey, into: &buf)
 
         }
@@ -2090,6 +2275,8 @@ public enum AppUpdate: Equatable, Hashable {
     )
     case accountCreated(rev: UInt64, nsec: String, pubkey: String, npub: String
     )
+    case bunkerSessionDescriptor(rev: UInt64, bunkerUri: String, clientNsec: String
+    )
 
 
 
@@ -2117,6 +2304,9 @@ public struct FfiConverterTypeAppUpdate: FfiConverterRustBuffer {
         case 2: return .accountCreated(rev: try FfiConverterUInt64.read(from: &buf), nsec: try FfiConverterString.read(from: &buf), pubkey: try FfiConverterString.read(from: &buf), npub: try FfiConverterString.read(from: &buf)
         )
 
+        case 3: return .bunkerSessionDescriptor(rev: try FfiConverterUInt64.read(from: &buf), bunkerUri: try FfiConverterString.read(from: &buf), clientNsec: try FfiConverterString.read(from: &buf)
+        )
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -2136,6 +2326,13 @@ public struct FfiConverterTypeAppUpdate: FfiConverterRustBuffer {
             FfiConverterString.write(nsec, into: &buf)
             FfiConverterString.write(pubkey, into: &buf)
             FfiConverterString.write(npub, into: &buf)
+
+
+        case let .bunkerSessionDescriptor(rev,bunkerUri,clientNsec):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(rev, into: &buf)
+            FfiConverterString.write(bunkerUri, into: &buf)
+            FfiConverterString.write(clientNsec, into: &buf)
 
         }
     }
@@ -2160,10 +2357,92 @@ public func FfiConverterTypeAppUpdate_lower(_ value: AppUpdate) -> RustBuffer {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
+public enum AuthMode: Equatable, Hashable {
+
+    case localNsec
+    case externalSigner(pubkey: String, signerPackage: String, currentUser: String
+    )
+    case bunkerSigner(bunkerUri: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AuthMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAuthMode: FfiConverterRustBuffer {
+    typealias SwiftType = AuthMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuthMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .localNsec
+
+        case 2: return .externalSigner(pubkey: try FfiConverterString.read(from: &buf), signerPackage: try FfiConverterString.read(from: &buf), currentUser: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .bunkerSigner(bunkerUri: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AuthMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .localNsec:
+            writeInt(&buf, Int32(1))
+
+
+        case let .externalSigner(pubkey,signerPackage,currentUser):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(pubkey, into: &buf)
+            FfiConverterString.write(signerPackage, into: &buf)
+            FfiConverterString.write(currentUser, into: &buf)
+
+
+        case let .bunkerSigner(bunkerUri):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(bunkerUri, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuthMode_lift(_ buf: RustBuffer) throws -> AuthMode {
+    return try FfiConverterTypeAuthMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuthMode_lower(_ value: AuthMode) -> RustBuffer {
+    return FfiConverterTypeAuthMode.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 public enum AuthState: Equatable, Hashable {
 
     case loggedOut
-    case loggedIn(npub: String, pubkey: String
+    case loggedIn(npub: String, pubkey: String, mode: AuthMode
     )
 
 
@@ -2188,7 +2467,7 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
 
         case 1: return .loggedOut
 
-        case 2: return .loggedIn(npub: try FfiConverterString.read(from: &buf), pubkey: try FfiConverterString.read(from: &buf)
+        case 2: return .loggedIn(npub: try FfiConverterString.read(from: &buf), pubkey: try FfiConverterString.read(from: &buf), mode: try FfiConverterTypeAuthMode.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2203,10 +2482,11 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
 
 
-        case let .loggedIn(npub,pubkey):
+        case let .loggedIn(npub,pubkey,mode):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(npub, into: &buf)
             FfiConverterString.write(pubkey, into: &buf)
+            FfiConverterTypeAuthMode.write(mode, into: &buf)
 
         }
     }
@@ -2316,6 +2596,108 @@ public func FfiConverterTypeCallStatus_lift(_ buf: RustBuffer) throws -> CallSta
 #endif
 public func FfiConverterTypeCallStatus_lower(_ value: CallStatus) -> RustBuffer {
     return FfiConverterTypeCallStatus.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum ExternalSignerErrorKind: Equatable, Hashable {
+
+    case rejected
+    case canceled
+    case timeout
+    case signerUnavailable
+    case packageMismatch
+    case invalidResponse
+    case other
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ExternalSignerErrorKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExternalSignerErrorKind: FfiConverterRustBuffer {
+    typealias SwiftType = ExternalSignerErrorKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExternalSignerErrorKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .rejected
+
+        case 2: return .canceled
+
+        case 3: return .timeout
+
+        case 4: return .signerUnavailable
+
+        case 5: return .packageMismatch
+
+        case 6: return .invalidResponse
+
+        case 7: return .other
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ExternalSignerErrorKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .rejected:
+            writeInt(&buf, Int32(1))
+
+
+        case .canceled:
+            writeInt(&buf, Int32(2))
+
+
+        case .timeout:
+            writeInt(&buf, Int32(3))
+
+
+        case .signerUnavailable:
+            writeInt(&buf, Int32(4))
+
+
+        case .packageMismatch:
+            writeInt(&buf, Int32(5))
+
+
+        case .invalidResponse:
+            writeInt(&buf, Int32(6))
+
+
+        case .other:
+            writeInt(&buf, Int32(7))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerErrorKind_lift(_ buf: RustBuffer) throws -> ExternalSignerErrorKind {
+    return try FfiConverterTypeExternalSignerErrorKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExternalSignerErrorKind_lower(_ value: ExternalSignerErrorKind) -> RustBuffer {
+    return FfiConverterTypeExternalSignerErrorKind.lower(value)
 }
 
 
@@ -2621,6 +3003,288 @@ public func FfiConverterCallbackInterfaceAppReconciler_lower(_ v: AppReconciler)
     return FfiConverterCallbackInterfaceAppReconciler.lower(v)
 }
 
+
+
+
+public protocol ExternalSignerBridge: AnyObject, Sendable {
+
+    func requestPublicKey(currentUserHint: String?)  -> ExternalSignerHandshakeResult
+
+    func signEvent(signerPackage: String, currentUser: String, unsignedEventJson: String)  -> ExternalSignerResult
+
+    func nip44Encrypt(signerPackage: String, currentUser: String, peerPubkey: String, content: String)  -> ExternalSignerResult
+
+    func nip44Decrypt(signerPackage: String, currentUser: String, peerPubkey: String, payload: String)  -> ExternalSignerResult
+
+    func nip04Encrypt(signerPackage: String, currentUser: String, peerPubkey: String, content: String)  -> ExternalSignerResult
+
+    func nip04Decrypt(signerPackage: String, currentUser: String, peerPubkey: String, payload: String)  -> ExternalSignerResult
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceExternalSignerBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceExternalSignerBridge] = [UniffiVTableCallbackInterfaceExternalSignerBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface ExternalSignerBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface ExternalSignerBridge: handle missing in uniffiClone")
+            }
+        },
+        requestPublicKey: { (
+            uniffiHandle: UInt64,
+            currentUserHint: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerHandshakeResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.requestPublicKey(
+                     currentUserHint: try FfiConverterOptionString.lift(currentUserHint)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerHandshakeResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        signEvent: { (
+            uniffiHandle: UInt64,
+            signerPackage: RustBuffer,
+            currentUser: RustBuffer,
+            unsignedEventJson: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.signEvent(
+                     signerPackage: try FfiConverterString.lift(signerPackage),
+                     currentUser: try FfiConverterString.lift(currentUser),
+                     unsignedEventJson: try FfiConverterString.lift(unsignedEventJson)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        nip44Encrypt: { (
+            uniffiHandle: UInt64,
+            signerPackage: RustBuffer,
+            currentUser: RustBuffer,
+            peerPubkey: RustBuffer,
+            content: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.nip44Encrypt(
+                     signerPackage: try FfiConverterString.lift(signerPackage),
+                     currentUser: try FfiConverterString.lift(currentUser),
+                     peerPubkey: try FfiConverterString.lift(peerPubkey),
+                     content: try FfiConverterString.lift(content)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        nip44Decrypt: { (
+            uniffiHandle: UInt64,
+            signerPackage: RustBuffer,
+            currentUser: RustBuffer,
+            peerPubkey: RustBuffer,
+            payload: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.nip44Decrypt(
+                     signerPackage: try FfiConverterString.lift(signerPackage),
+                     currentUser: try FfiConverterString.lift(currentUser),
+                     peerPubkey: try FfiConverterString.lift(peerPubkey),
+                     payload: try FfiConverterString.lift(payload)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        nip04Encrypt: { (
+            uniffiHandle: UInt64,
+            signerPackage: RustBuffer,
+            currentUser: RustBuffer,
+            peerPubkey: RustBuffer,
+            content: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.nip04Encrypt(
+                     signerPackage: try FfiConverterString.lift(signerPackage),
+                     currentUser: try FfiConverterString.lift(currentUser),
+                     peerPubkey: try FfiConverterString.lift(peerPubkey),
+                     content: try FfiConverterString.lift(content)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        nip04Decrypt: { (
+            uniffiHandle: UInt64,
+            signerPackage: RustBuffer,
+            currentUser: RustBuffer,
+            peerPubkey: RustBuffer,
+            payload: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ExternalSignerResult in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceExternalSignerBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.nip04Decrypt(
+                     signerPackage: try FfiConverterString.lift(signerPackage),
+                     currentUser: try FfiConverterString.lift(currentUser),
+                     peerPubkey: try FfiConverterString.lift(peerPubkey),
+                     payload: try FfiConverterString.lift(payload)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeExternalSignerResult_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitExternalSignerBridge() {
+    uniffi_pika_core_fn_init_callback_vtable_externalsignerbridge(UniffiCallbackInterfaceExternalSignerBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceExternalSignerBridge {
+    fileprivate static let handleMap = UniffiHandleMap<ExternalSignerBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceExternalSignerBridge : FfiConverter {
+    typealias SwiftType = ExternalSignerBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceExternalSignerBridge_lift(_ handle: UInt64) throws -> ExternalSignerBridge {
+    return try FfiConverterCallbackInterfaceExternalSignerBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceExternalSignerBridge_lower(_ v: ExternalSignerBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceExternalSignerBridge.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -2784,6 +3448,30 @@ fileprivate struct FfiConverterOptionTypePeerProfileState: FfiConverterRustBuffe
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypePeerProfileState.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeExternalSignerErrorKind: FfiConverterRustBuffer {
+    typealias SwiftType = ExternalSignerErrorKind?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeExternalSignerErrorKind.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeExternalSignerErrorKind.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -3035,6 +3723,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_pika_core_checksum_method_ffiapp_listen_for_updates() != 54024) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge() != 60161) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_pika_core_checksum_method_ffiapp_state() != 64637) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3044,8 +3735,27 @@ private let initializationResult: InitializationResult = {
     if (uniffi_pika_core_checksum_method_appreconciler_reconcile() != 10811) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_request_public_key() != 20534) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_sign_event() != 5558) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_nip44_encrypt() != 24811) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_nip44_decrypt() != 40037) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_nip04_encrypt() != 11537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_pika_core_checksum_method_externalsignerbridge_nip04_decrypt() != 52835) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
     uniffiCallbackInitAppReconciler()
+    uniffiCallbackInitExternalSignerBridge()
     return InitializationResult.ok
 }()
 

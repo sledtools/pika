@@ -111,6 +111,9 @@ pub enum AuthMode {
         signer_package: String,
         current_user: String,
     },
+    BunkerSigner {
+        bunker_uri: String,
+    },
 }
 
 #[derive(uniffi::Enum, Clone, Debug)]

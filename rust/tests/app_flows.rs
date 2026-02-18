@@ -1,9 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use nostr_sdk::prelude::{Keys, NostrSigner};
+use nostr_sdk::ToBech32;
 use pika_core::{
-    AppAction, AppReconciler, AppUpdate, AuthMode, AuthState, CallStatus, ExternalSignerBridge,
-    ExternalSignerErrorKind, ExternalSignerHandshakeResult, ExternalSignerResult, FfiApp, Screen,
+    AppAction, AppReconciler, AppUpdate, AuthMode, AuthState, BunkerConnectError,
+    BunkerConnectErrorKind, BunkerConnectOutput, BunkerSignerConnector, CallStatus,
+    ExternalSignerBridge, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
+    ExternalSignerResult, FfiApp, Screen,
 };
 use tempfile::tempdir;
 
@@ -162,6 +166,65 @@ impl ExternalSignerBridge for MockExternalSignerBridge {
             error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
             error_message: Some("signer unavailable".into()),
         }
+    }
+}
+
+#[derive(Clone)]
+struct MockBunkerSignerConnector {
+    result: Arc<Mutex<Result<BunkerConnectOutput, BunkerConnectError>>>,
+    last_bunker_uri: Arc<Mutex<Option<String>>>,
+    last_client_pubkey: Arc<Mutex<Option<String>>>,
+}
+
+impl MockBunkerSignerConnector {
+    fn success(canonical_bunker_uri: &str) -> (Self, String) {
+        let signer_keys = Keys::generate();
+        let user_pubkey = signer_keys.public_key();
+        let output = BunkerConnectOutput {
+            user_pubkey,
+            canonical_bunker_uri: canonical_bunker_uri.to_string(),
+            signer: Arc::new(signer_keys) as Arc<dyn NostrSigner>,
+        };
+        (
+            Self {
+                result: Arc::new(Mutex::new(Ok(output))),
+                last_bunker_uri: Arc::new(Mutex::new(None)),
+                last_client_pubkey: Arc::new(Mutex::new(None)),
+            },
+            user_pubkey.to_hex(),
+        )
+    }
+
+    fn failure(kind: BunkerConnectErrorKind, message: &str) -> Self {
+        Self {
+            result: Arc::new(Mutex::new(Err(BunkerConnectError {
+                kind,
+                message: message.to_string(),
+            }))),
+            last_bunker_uri: Arc::new(Mutex::new(None)),
+            last_client_pubkey: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn last_bunker_uri(&self) -> Option<String> {
+        self.last_bunker_uri.lock().unwrap().clone()
+    }
+
+    fn last_client_pubkey(&self) -> Option<String> {
+        self.last_client_pubkey.lock().unwrap().clone()
+    }
+}
+
+impl BunkerSignerConnector for MockBunkerSignerConnector {
+    fn connect(
+        &self,
+        _runtime: &tokio::runtime::Runtime,
+        bunker_uri: &str,
+        client_keys: Keys,
+    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
+        *self.last_bunker_uri.lock().unwrap() = Some(bunker_uri.to_string());
+        *self.last_client_pubkey.lock().unwrap() = Some(client_keys.public_key().to_hex());
+        self.result.lock().unwrap().clone()
     }
 }
 
@@ -754,4 +817,170 @@ fn restore_session_external_signer_keeps_current_user_in_auth_state() {
         } => assert_eq!(current_user, "restored-user"),
         other => panic!("expected external signer auth mode, got {other:?}"),
     }
+}
+
+#[test]
+fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let (reconciler, updates) = TestReconciler::new();
+    app.listen_for_updates(Box::new(reconciler));
+
+    let canonical_bunker_uri =
+        "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
+    let (connector, expected_user_pubkey) =
+        MockBunkerSignerConnector::success(canonical_bunker_uri);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    app.dispatch(AppAction::BeginBunkerLogin {
+        bunker_uri:
+            "bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input"
+                .into(),
+    });
+
+    wait_until("bunker logged in", Duration::from_secs(2), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let s = app.state();
+    assert!(!s.busy.logging_in);
+    assert_eq!(s.router.default_screen, Screen::ChatList);
+    match s.auth {
+        AuthState::LoggedIn {
+            pubkey,
+            mode: AuthMode::BunkerSigner { bunker_uri },
+            ..
+        } => {
+            assert_eq!(pubkey, expected_user_pubkey);
+            assert_eq!(bunker_uri, canonical_bunker_uri);
+        }
+        other => panic!("expected bunker signer auth mode, got {other:?}"),
+    }
+    assert_eq!(
+        connector.last_bunker_uri().as_deref(),
+        Some("bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input")
+    );
+
+    wait_until("bunker descriptor update", Duration::from_secs(2), || {
+        updates
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|u| matches!(u, AppUpdate::BunkerSessionDescriptor { .. }))
+    });
+    let descriptor = updates.lock().unwrap().iter().find_map(|u| match u {
+        AppUpdate::BunkerSessionDescriptor {
+            bunker_uri,
+            client_nsec,
+            ..
+        } => Some((bunker_uri.clone(), client_nsec.clone())),
+        _ => None,
+    });
+    let (descriptor_uri, descriptor_client_nsec) = descriptor.expect("descriptor update");
+    assert_eq!(descriptor_uri, canonical_bunker_uri);
+    assert!(!descriptor_client_nsec.trim().is_empty());
+}
+
+#[test]
+fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let connector = MockBunkerSignerConnector::failure(
+        BunkerConnectErrorKind::InvalidUri,
+        "invalid bunker URI",
+    );
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector));
+
+    app.dispatch(AppAction::BeginBunkerLogin {
+        bunker_uri: "not-a-uri".into(),
+    });
+
+    wait_until("toast shown", Duration::from_secs(2), || {
+        app.state().toast.is_some()
+    });
+    let s = app.state();
+    assert!(matches!(s.auth, AuthState::LoggedOut));
+    assert!(!s.busy.logging_in);
+    assert!(s
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("invalid bunker uri"));
+}
+
+#[test]
+fn restore_session_bunker_uses_stored_client_key_and_logs_in() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let canonical_bunker_uri =
+        "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.restore";
+    let (connector, _expected_user_pubkey) =
+        MockBunkerSignerConnector::success(canonical_bunker_uri);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    let client_keys = Keys::generate();
+    let client_nsec = client_keys.secret_key().to_bech32().unwrap();
+    let expected_client_pubkey = client_keys.public_key().to_hex();
+    app.dispatch(AppAction::RestoreSessionBunker {
+        bunker_uri:
+            "bunker://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?relay=wss://relay.restore.input"
+                .into(),
+        client_nsec,
+    });
+
+    wait_until("bunker restored", Duration::from_secs(2), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("busy cleared", Duration::from_secs(2), || {
+        !app.state().busy.logging_in
+    });
+
+    let s = app.state();
+    match s.auth {
+        AuthState::LoggedIn {
+            mode: AuthMode::BunkerSigner { bunker_uri },
+            ..
+        } => assert_eq!(bunker_uri, canonical_bunker_uri),
+        other => panic!("expected bunker signer auth mode, got {other:?}"),
+    }
+    assert_eq!(
+        connector.last_client_pubkey().as_deref(),
+        Some(expected_client_pubkey.as_str())
+    );
+}
+
+#[test]
+fn restore_session_bunker_with_invalid_client_key_shows_toast() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    app.dispatch(AppAction::RestoreSessionBunker {
+        bunker_uri:
+            "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com"
+                .into(),
+        client_nsec: "not-a-valid-client-key".into(),
+    });
+
+    wait_until("toast shown", Duration::from_secs(2), || {
+        app.state().toast.is_some()
+    });
+    let s = app.state();
+    assert!(matches!(s.auth, AuthState::LoggedOut));
+    assert!(!s.busy.logging_in);
+    assert!(s
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("invalid bunker client key"));
 }

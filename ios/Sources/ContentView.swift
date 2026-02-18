@@ -328,7 +328,7 @@ private func groupInfoState(from state: AppState) -> GroupInfoViewState {
 @MainActor
 private func myNpub(from state: AppState) -> String? {
     switch state.auth {
-    case .loggedIn(let npub, _):
+    case .loggedIn(let npub, _, _):
         return npub
     default:
         return nil

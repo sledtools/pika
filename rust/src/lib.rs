@@ -1,4 +1,5 @@
 mod actions;
+mod bunker_signer;
 mod core;
 mod external_signer;
 mod logging;
@@ -17,6 +18,7 @@ use std::thread;
 use flume::{Receiver, Sender};
 
 pub use actions::AppAction;
+pub use bunker_signer::*;
 pub use external_signer::*;
 pub use state::*;
 pub use updates::*;
@@ -41,6 +43,7 @@ pub struct FfiApp {
     listening: AtomicBool,
     shared_state: Arc<RwLock<AppState>>,
     external_signer_bridge: SharedExternalSignerBridge,
+    bunker_signer_connector: SharedBunkerSignerConnector,
 }
 
 #[uniffi::export]
@@ -56,11 +59,15 @@ impl FfiApp {
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();
         let shared_state = Arc::new(RwLock::new(AppState::empty()));
         let external_signer_bridge: SharedExternalSignerBridge = Arc::new(RwLock::new(None));
+        let bunker_signer_connector: SharedBunkerSignerConnector = Arc::new(RwLock::new(Arc::new(
+            NostrConnectBunkerSignerConnector::default(),
+        )));
 
         // Actor loop thread (single threaded "app actor").
         let core_tx_for_core = core_tx.clone();
         let shared_for_core = shared_state.clone();
         let signer_bridge_for_core = external_signer_bridge.clone();
+        let bunker_connector_for_core = bunker_signer_connector.clone();
         thread::spawn(move || {
             let mut core = crate::core::AppCore::new(
                 update_tx,
@@ -68,6 +75,7 @@ impl FfiApp {
                 data_dir,
                 shared_for_core,
                 signer_bridge_for_core,
+                bunker_connector_for_core,
             );
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
@@ -80,6 +88,7 @@ impl FfiApp {
             listening: AtomicBool::new(false),
             shared_state,
             external_signer_bridge,
+            bunker_signer_connector,
         })
     }
 
@@ -121,6 +130,19 @@ impl FfiApp {
             }
             Err(poison) => {
                 *poison.into_inner() = Some(bridge);
+            }
+        }
+    }
+}
+
+impl FfiApp {
+    pub fn set_bunker_signer_connector_for_tests(&self, connector: Arc<dyn BunkerSignerConnector>) {
+        match self.bunker_signer_connector.write() {
+            Ok(mut slot) => {
+                *slot = connector;
+            }
+            Err(poison) => {
+                *poison.into_inner() = connector;
             }
         }
     }

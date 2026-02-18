@@ -27,7 +27,7 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         let dataDir = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pikatest")!
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
             .appendingPathComponent("Library/Application Support").path
 
         switch decryptPushNotification(dataDir: dataDir, nsec: nsec, eventJson: eventJson) {

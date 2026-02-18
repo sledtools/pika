@@ -52,7 +52,7 @@ final class AppManager: AppReconciler {
 
     convenience init() {
         let fm = FileManager.default
-        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pikatest")!
+        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
             .appendingPathComponent("Library/Application Support")
         let dataDir = dataDirUrl.path
         let nsecStore = KeychainNsecStore()

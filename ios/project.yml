@@ -11,7 +11,7 @@ settings:
     # pass it via env from tools/run-ios.
     # PIKA_APP_BUNDLE_ID is the "root" bundle id; targets derive from it.
     # Override on the xcodebuild command line (run-ios does this automatically).
-    PIKA_APP_BUNDLE_ID: com.justinmoon.pikatest
+    PIKA_APP_BUNDLE_ID: com.justinmoon.pika
     PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID)
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1

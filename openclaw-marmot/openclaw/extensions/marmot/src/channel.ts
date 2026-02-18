@@ -288,15 +288,48 @@ async function getGroupMembers(
   }
 }
 
-function resolveRequireMention(chatId: string, cfg: any): boolean {
-  // Check channels.marmot.groups config
+type GroupConfig = {
+  requireMention?: boolean;
+  users?: string[];
+  systemPrompt?: string;
+};
+
+function resolveGroupConfig(chatId: string, cfg: any): GroupConfig | null {
   const groups = cfg?.channels?.marmot?.groups ?? {};
-  const groupConfig = groups[chatId] ?? groups["*"];
+  const gid = chatId.toLowerCase();
+  // Exact match first, then wildcard fallback
+  return groups[gid] ?? groups["*"] ?? null;
+}
+
+function resolveRequireMention(chatId: string, cfg: any): boolean {
+  const groupConfig = resolveGroupConfig(chatId, cfg);
   if (groupConfig && typeof groupConfig.requireMention === "boolean") {
     return groupConfig.requireMention;
   }
   // Default: require mention in groups
   return true;
+}
+
+function resolveGroupUsers(chatId: string, cfg: any): string[] | null {
+  const groupConfig = resolveGroupConfig(chatId, cfg);
+  if (groupConfig?.users && Array.isArray(groupConfig.users) && groupConfig.users.length > 0) {
+    return groupConfig.users.map((u: string) => String(u).trim().toLowerCase()).filter(Boolean);
+  }
+  return null;
+}
+
+function resolveGroupSystemPrompt(chatId: string, cfg: any): string | null {
+  const groupConfig = resolveGroupConfig(chatId, cfg);
+  if (groupConfig?.systemPrompt && typeof groupConfig.systemPrompt === "string") {
+    return groupConfig.systemPrompt.trim();
+  }
+  return null;
+}
+
+function isSenderAllowedInGroup(senderPk: string, chatId: string, cfg: any): boolean {
+  const groupUsers = resolveGroupUsers(chatId, cfg);
+  if (!groupUsers) return true; // No per-group restriction
+  return groupUsers.includes(senderPk.toLowerCase());
 }
 
 const GROUP_SYSTEM_PROMPT = [
@@ -381,7 +414,7 @@ async function dispatchInboundToAgent(params: {
     WasMentioned: params.wasMentioned ?? !isGroupChat,
     ...(isGroupChat ? {
       GroupSubject: params.groupName || groupNames.get(chatId) || undefined,
-      GroupSystemPrompt: GROUP_SYSTEM_PROMPT + (groupMembersInfo ? `\nGroup members: ${groupMembersInfo}\nTo mention someone, use their nostr:npub1... identifier.` : ""),
+      GroupSystemPrompt: (resolveGroupSystemPrompt(chatId, cfg) ?? GROUP_SYSTEM_PROMPT) + (groupMembersInfo ? `\nGroup members: ${groupMembersInfo}\nTo mention someone, use their nostr:npub1... identifier.` : ""),
       InboundHistory: params.inboundHistory,
       ConversationLabel: params.groupName || chatId,
     } : {}),
@@ -657,7 +690,8 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
       const isGroupAllowed = (nostrGroupId: string): boolean => {
         if (groupPolicy === "open") return true;
         const gid = String(nostrGroupId).trim().toLowerCase();
-        return Boolean(allowedGroups[gid]);
+        // Exact match or wildcard fallback
+        return Boolean(allowedGroups[gid] || allowedGroups["*"]);
       };
       const isSenderAllowed = (pubkey: string): boolean => {
         if (groupAllowFrom.length === 0) return true;
@@ -705,6 +739,16 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
             );
             await sidecar.rejectCall(ev.call_id, "sender_not_allowed");
             return;
+          }
+          {
+            const currentCfgForCall = runtime.config.loadConfig();
+            if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForCall)) {
+              ctx.log?.debug(
+                `[${resolved.accountId}] reject call invite (sender not in group users) sender=${ev.from_pubkey} group=${ev.nostr_group_id} call_id=${ev.call_id}`,
+              );
+              await sidecar.rejectCall(ev.call_id, "sender_not_allowed_in_group");
+              return;
+            }
           }
           ctx.log?.info(
             `[${resolved.accountId}] accept call invite group=${ev.nostr_group_id} from=${ev.from_pubkey} call_id=${ev.call_id}`,
@@ -822,6 +866,17 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
               `[${resolved.accountId}] drop message (sender not allowed) sender=${ev.from_pubkey}`,
             );
             return;
+          }
+
+          // Per-group user allowlist check
+          {
+            const currentCfgForGroupCheck = runtime.config.loadConfig();
+            if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForGroupCheck)) {
+              ctx.log?.debug(
+                `[${resolved.accountId}] drop message (sender not in group users allowlist) sender=${ev.from_pubkey} group=${ev.nostr_group_id}`,
+              );
+              return;
+            }
           }
 
           // Debug: if a call signal fails to parse in the sidecar, it will fall back to

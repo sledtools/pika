@@ -131,11 +131,35 @@ fmt:
 clippy *ARGS:
   cargo clippy -p pika_core {{ARGS}} -- -D warnings
 
+# Lint Kotlin sources (excluding generated UniFFI bindings).
+kotlin-lint:
+  ktlint --relative "android/app/src/**/*.kt" "!android/app/src/main/java/com/pika/app/rust/**"
+
+# Run Android lint.
+android-lint: gen-kotlin android-rust android-local-properties
+  cd android && ./gradlew :app:lintDebug
+
+# Lint Swift sources (macOS only).
+swift-lint:
+  if [ "$(uname -s)" != "Darwin" ]; then \
+    echo "error: swift-lint requires macOS"; \
+    exit 2; \
+  fi
+  swiftlint lint --config .swiftlint.yml --strict
+
+# CI-safe pre-merge for iOS native lint + simulator build.
+pre-merge-ios:
+  just swift-lint
+  just ios-build-sim
+  @echo "pre-merge-ios complete"
+
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt
   just clippy --lib --tests
   just test --lib --tests
   cargo build -p pika-cli
+  just kotlin-lint
+  just android-lint
   npx --yes @justinmoon/agent-tools check-docs
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"

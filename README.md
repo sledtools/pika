@@ -100,6 +100,9 @@ cargo run -p pika-cli -- --relay ws://127.0.0.1:7777 groups
 just fmt          # Format Rust code
 just clippy       # Lint
 just test         # Run pika_core tests
+just kotlin-lint  # Lint Kotlin (excludes generated UniFFI bindings)
+just android-lint # Run Android lint (excludes generated UniFFI bindings)
+just swift-lint   # Lint Swift (macOS only)
 just qa           # Full QA: fmt + clippy + test + platform builds
 just pre-merge    # CI entrypoint for the whole repo
 ```

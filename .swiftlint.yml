@@ -1,0 +1,44 @@
+included:
+  - ios/Sources
+  - ios/Tests
+  - ios/UITests
+
+excluded:
+  - ios/Bindings
+  - ios/.build
+  - ios/build
+  - ios/Frameworks
+
+line_length:
+  warning: 140
+  error: 180
+
+file_length:
+  warning: 1200
+  error: 1800
+
+function_body_length:
+  warning: 120
+  error: 180
+
+type_body_length:
+  warning: 500
+  error: 800
+
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+    - x
+    - y
+    - z
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - first_where
+  - redundant_nil_coalescing
+  - sorted_imports
+  - toggle_bool
+  - vertical_whitespace_closing_braces

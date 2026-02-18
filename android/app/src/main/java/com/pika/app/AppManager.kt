@@ -56,7 +56,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
         ensureDefaultConfig(context)
 
         val dataDir = context.filesDir.absolutePath
-        rust = FfiApp(dataDir)
+        rust = FfiApp(dataDir, "")
         val initial = rust.state()
         state = initial
         audioFocus.syncForCall(initial.activeCall)

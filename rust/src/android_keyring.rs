@@ -51,5 +51,6 @@ pub extern "system" fn Java_com_pika_app_Keyring_init(
     std::mem::forget(global_ctx);
 
     // Initialize keyring-core default store for encrypted MDK sqlite.
-    let _ = crate::mdk_support::init_keyring_once();
+    // Android doesn't use keychain access groups, so pass an empty string.
+    let _ = crate::mdk_support::init_keyring_once("");
 }

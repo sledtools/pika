@@ -7,12 +7,13 @@ options:
 
 settings:
   base:
-    # Note: device builds still need a valid DEVELOPMENT_TEAM; we keep that out of git and
-    # pass it via env from tools/run-ios.
     # PIKA_APP_BUNDLE_ID is the "root" bundle id; targets derive from it.
     # Override on the xcodebuild command line (run-ios does this automatically).
     PIKA_APP_BUNDLE_ID: com.justinmoon.pika
     PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID)
+    # PIKA_APP_GROUP: derived from bundle ID. Override via xcodebuild if needed.
+    PIKA_APP_GROUP: "group.$(PIKA_APP_BUNDLE_ID)"
+    CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0

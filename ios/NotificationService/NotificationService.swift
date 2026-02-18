@@ -26,11 +26,14 @@ class NotificationService: UNNotificationServiceExtension {
             return
         }
 
+        let appGroup = Bundle.main.infoDictionary?["PikaAppGroup"] as? String ?? "group.com.justinmoon.pika"
+        let keychainGroup = Bundle.main.infoDictionary?["PikaKeychainGroup"] as? String ?? ""
+
         let dataDir = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroup)!
             .appendingPathComponent("Library/Application Support").path
 
-        switch decryptPushNotification(dataDir: dataDir, nsec: nsec, eventJson: eventJson) {
+        switch decryptPushNotification(dataDir: dataDir, nsec: nsec, eventJson: eventJson, keychainGroup: keychainGroup) {
         case .content(let msg):
             if msg.isGroup {
                 content.title = msg.groupName ?? "Group"
@@ -131,17 +134,19 @@ class NotificationService: UNNotificationServiceExtension {
 enum SharedKeychainHelper {
     private static let service = "com.pika.app"
     private static let account = "nsec"
-    private static let accessGroup = "W6VF934SEW.com.justinmoon.pika.shared"
 
     static func getNsec() -> String? {
-        let query: [String: Any] = [
+        let accessGroup = Bundle.main.infoDictionary?["PikaKeychainGroup"] as? String ?? ""
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: accessGroup,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if !accessGroup.isEmpty {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess,

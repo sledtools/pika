@@ -43,11 +43,11 @@ pub struct FfiApp {
 #[uniffi::export]
 impl FfiApp {
     #[uniffi::constructor]
-    pub fn new(data_dir: String) -> Arc<Self> {
+    pub fn new(data_dir: String, keychain_group: String) -> Arc<Self> {
         // Must run before any rustls users (nostr-sdk, moq/quinn, etc) initialize.
         tls::init_rustls_crypto_provider();
         logging::init_logging(&data_dir);
-        tracing::info!(data_dir = %data_dir, "FfiApp::new() starting");
+        tracing::info!(data_dir = %data_dir, keychain_group = %keychain_group, "FfiApp::new() starting");
 
         let (update_tx, update_rx) = flume::unbounded();
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();
@@ -58,7 +58,7 @@ impl FfiApp {
         let shared_for_core = shared_state.clone();
         thread::spawn(move || {
             let mut core =
-                crate::core::AppCore::new(update_tx, core_tx_for_core, data_dir, shared_for_core);
+                crate::core::AppCore::new(update_tx, core_tx_for_core, data_dir, keychain_group, shared_for_core);
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
             }

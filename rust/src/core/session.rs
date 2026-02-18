@@ -14,7 +14,7 @@ impl AppCore {
         tracing::info!(pubkey = %pubkey_hex, npub = %npub, "start_session");
 
         // MDK per-identity encrypted sqlite DB.
-        let mdk = open_mdk(&self.data_dir, &pubkey)?;
+        let mdk = open_mdk(&self.data_dir, &pubkey, &self.keychain_group)?;
         tracing::info!("mdk opened");
 
         let client = Client::new(keys.clone());
@@ -80,7 +80,7 @@ impl AppCore {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
-        match open_mdk(&self.data_dir, &sess.keys.public_key()) {
+        match open_mdk(&self.data_dir, &sess.keys.public_key(), &self.keychain_group) {
             Ok(new_mdk) => {
                 sess.mdk = new_mdk;
             }

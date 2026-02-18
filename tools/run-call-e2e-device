@@ -42,6 +42,6 @@ PIKA_TEST_NSEC="$PIKA_TEST_NSEC" \
     -destination "id=$UDID" \
     -allowProvisioningUpdates \
     -only-testing:PikaUITests/CallE2ETests/testCallDeployedBot \
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+    PIKA_APP_BUNDLE_ID="$BUNDLE_ID" \
     DEVELOPMENT_TEAM="$PIKA_IOS_DEVELOPMENT_TEAM" \
     CODE_SIGN_STYLE=Automatic

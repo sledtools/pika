@@ -22,21 +22,21 @@ pub fn db_key_id(pubkey_hex: &str) -> String {
     format!("mdk.db.key.{pubkey_hex}")
 }
 
-pub fn init_keyring_once() -> Result<()> {
+pub fn init_keyring_once(#[allow(unused)] keychain_group: &str) -> Result<()> {
     static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    match INIT.get_or_init(|| init_keyring_inner().map_err(|e| e.to_string())) {
+    match INIT.get_or_init(|| init_keyring_inner(keychain_group).map_err(|e| e.to_string())) {
         Ok(()) => Ok(()),
         Err(e) => Err(anyhow!(e.clone())),
     }
 }
 
-fn init_keyring_inner() -> Result<()> {
+fn init_keyring_inner(#[allow(unused)] keychain_group: &str) -> Result<()> {
     // IMPORTANT: `set_default_store` can only be called once per process.
     // We guard it via `OnceLock` above.
     #[cfg(target_os = "ios")]
     {
         let mut config = std::collections::HashMap::new();
-        config.insert("access-group", "W6VF934SEW.com.justinmoon.pika.shared");
+        config.insert("access-group", keychain_group);
         let store = apple_native_keyring_store::protected::Store::new_with_configuration(&config)
             .context(
             "failed to create Apple protected keyring store with shared access group",
@@ -71,8 +71,8 @@ fn init_keyring_inner() -> Result<()> {
     }
 }
 
-pub fn open_mdk(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMdk> {
-    init_keyring_once()?;
+pub fn open_mdk(data_dir: &str, pubkey: &PublicKey, keychain_group: &str) -> Result<PikaMdk> {
+    init_keyring_once(keychain_group)?;
 
     let pubkey_hex = pubkey.to_hex();
     let db_path = mdk_db_path(data_dir, &pubkey_hex);

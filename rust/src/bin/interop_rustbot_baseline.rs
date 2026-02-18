@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     let data_dir = make_tmp_data_dir()?;
     write_config(&data_dir, &relay_url)?;
 
-    let app = FfiApp::new(data_dir);
+    let app = FfiApp::new(data_dir, String::new());
     let collector = Collector::default();
     app.listen_for_updates(Box::new(collector.clone()));
 

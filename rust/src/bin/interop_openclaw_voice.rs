@@ -366,7 +366,7 @@ fn main() {
         eprintln!("warn: bot key package (kind 443) not observed on kp_relays within timeout; continuing anyway");
     }
 
-    let app = FfiApp::new(data_dir.to_string_lossy().to_string());
+    let app = FfiApp::new(data_dir.to_string_lossy().to_string(), String::new());
     let collector = Collector::new();
     app.listen_for_updates(Box::new(collector.clone()));
 

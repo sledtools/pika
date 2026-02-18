@@ -104,6 +104,7 @@ pub struct AppCore {
     shared_state: Arc<RwLock<crate::state::AppState>>,
 
     data_dir: String,
+    keychain_group: String,
     config: config::AppConfig,
     runtime: tokio::runtime::Runtime,
 
@@ -145,6 +146,7 @@ impl AppCore {
         update_sender: Sender<AppUpdate>,
         core_sender: Sender<CoreMsg>,
         data_dir: String,
+        keychain_group: String,
         shared_state: Arc<RwLock<crate::state::AppState>>,
     ) -> Self {
         let config = config::load_app_config(&data_dir);
@@ -177,6 +179,7 @@ impl AppCore {
             core_sender,
             shared_state,
             data_dir,
+            keychain_group,
             config,
             runtime,
             session: None,

@@ -52,10 +52,12 @@ final class AppManager: AppReconciler {
 
     convenience init() {
         let fm = FileManager.default
-        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: "group.com.justinmoon.pika")!
+        let appGroup = Bundle.main.infoDictionary?["PikaAppGroup"] as? String ?? "group.com.justinmoon.pika"
+        let keychainGroup = Bundle.main.infoDictionary?["PikaKeychainGroup"] as? String ?? ""
+        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup)!
             .appendingPathComponent("Library/Application Support")
         let dataDir = dataDirUrl.path
-        let nsecStore = KeychainNsecStore()
+        let nsecStore = KeychainNsecStore(keychainGroup: keychainGroup)
 
         // One-time migration: move existing data from the old app-private container
         // to the shared App Group container so the NSE can access the MLS database.
@@ -89,7 +91,7 @@ final class AppManager: AppReconciler {
             notificationUrl: notificationUrl
         )
 
-        let core = FfiApp(dataDir: dataDir)
+        let core = FfiApp(dataDir: dataDir, keychainGroup: keychainGroup)
         self.init(core: core, nsecStore: nsecStore)
     }
 

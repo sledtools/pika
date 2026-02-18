@@ -29,13 +29,14 @@ pub fn decrypt_push_notification(
     data_dir: String,
     nsec: String,
     event_json: String,
+    keychain_group: String,
 ) -> Option<PushNotificationResult> {
     pika_tls::init_rustls_crypto_provider();
 
     let keys = nostr::Keys::parse(&nsec).ok()?;
     let pubkey = keys.public_key();
 
-    let mdk = mdk_support::open_mdk(&data_dir, &pubkey).ok()?;
+    let mdk = mdk_support::open_mdk(&data_dir, &pubkey, &keychain_group).ok()?;
 
     let event: Event = serde_json::from_str(&event_json).ok()?;
 

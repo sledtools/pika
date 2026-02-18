@@ -12,14 +12,8 @@ final class KeychainNsecStore {
     private let account = "nsec"
     /// The keychain access group shared between the main app and the NSE.
     /// On simulator, nil (shared groups aren't supported). On device, the full
-    /// qualified group: "<TeamID>.com.justinmoon.pika.shared".
-    private let accessGroup: String? = {
-        #if targetEnvironment(simulator)
-        return nil
-        #else
-        return "W6VF934SEW.com.justinmoon.pika.shared"
-        #endif
-    }()
+    /// qualified group: "<TeamID>.<bundle_id>.shared".
+    private let accessGroup: String?
 
     /// Controls whether the file fallback is permitted.
     /// Default: `true` on simulator, `false` on device (compile-time).
@@ -34,7 +28,13 @@ final class KeychainNsecStore {
     /// and fallback is allowed.
     private var useFileFallback: Bool = false
 
-    init(fileFallbackAllowed: Bool? = nil) {
+    init(keychainGroup: String? = nil, fileFallbackAllowed: Bool? = nil) {
+        #if targetEnvironment(simulator)
+        self.accessGroup = nil
+        #else
+        self.accessGroup = keychainGroup?.isEmpty == false ? keychainGroup : nil
+        #endif
+
         if let explicit = fileFallbackAllowed {
             self.fileFallbackAllowed = explicit
         } else {

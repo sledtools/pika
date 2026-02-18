@@ -8,11 +8,11 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.justinmoon.pika</string>
+		<string>$(PIKA_APP_GROUP)</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.justinmoon.pika.shared</string>
+		<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	</array>
 </dict>
 </plist>

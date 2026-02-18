@@ -40,6 +40,10 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<key>PikaAppGroup</key>
+	<string>$(PIKA_APP_GROUP)</string>
+	<key>PikaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

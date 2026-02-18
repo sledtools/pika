@@ -157,7 +157,7 @@ impl AppCore {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let this = Self {
+        let mut this = Self {
             state,
             rev: 0,
             outbox_seq: 0,

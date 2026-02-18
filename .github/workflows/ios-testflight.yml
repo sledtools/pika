@@ -1,0 +1,173 @@
+name: ios testflight
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/ios-testflight.yml"
+      - "ios/**"
+      - "justfile"
+      - "tools/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload exported IPA to TestFlight"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      PIKA_IOS_DEVELOPMENT_TEAM: ${{ secrets.PIKA_IOS_DEVELOPMENT_TEAM }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      IOS_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${PIKA_IOS_DEVELOPMENT_TEAM:?Missing secret PIKA_IOS_DEVELOPMENT_TEAM}"
+          : "${ASC_KEY_ID:?Missing secret ASC_KEY_ID}"
+          : "${ASC_ISSUER_ID:?Missing secret ASC_ISSUER_ID}"
+          : "${ASC_KEY_P8:?Missing secret ASC_KEY_P8}"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install just xcodegen
+
+      - name: Build Rust xcframework and regenerate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          just ios-xcframework ios-xcodeproj
+
+      - name: Write App Store Connect private key
+        id: asc_key
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          if [[ "$ASC_KEY_P8" == *"\\n"* ]]; then
+            printf '%b' "$ASC_KEY_P8" > "$key_path"
+          else
+            printf '%s' "$ASC_KEY_P8" > "$key_path"
+          fi
+          chmod 600 "$key_path"
+          echo "path=$key_path" >> "$GITHUB_OUTPUT"
+
+      - name: Archive app
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_path="$RUNNER_TEMP/Pika.xcarchive"
+          ./tools/xcode-run xcodebuild \
+            -project ios/Pika.xcodeproj \
+            -scheme Pika \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$archive_path" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.asc_key.outputs.path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
+            archive
+          echo "ARCHIVE_PATH=$archive_path" >> "$GITHUB_ENV"
+
+      - name: Write export options
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_options="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$export_options" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key>
+            <string>export</string>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>teamID</key>
+            <string>${PIKA_IOS_DEVELOPMENT_TEAM}</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          echo "EXPORT_OPTIONS=$export_options" >> "$GITHUB_ENV"
+
+      - name: Export IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_path="$RUNNER_TEMP/exported"
+          mkdir -p "$export_path"
+          ./tools/xcode-run xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$export_path" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "${{ steps.asc_key.outputs.path }}" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+          ipa_path="$(find "$export_path" -maxdepth 1 -name '*.ipa' | head -n 1)"
+          if [ -z "${ipa_path:-}" ]; then
+            echo "error: no IPA was exported"
+            ls -la "$export_path"
+            exit 1
+          fi
+          echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pika-testflight-ipa-${{ github.run_number }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+
+      - name: Upload to TestFlight via altool
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tools/xcode-run xcrun altool \
+            --upload-app \
+            -f "$IPA_PATH" \
+            --api-key "$ASC_KEY_ID" \
+            --api-issuer "$ASC_ISSUER_ID" \
+            --p8-file-path "${{ steps.asc_key.outputs.path }}" \
+            --wait \
+            --show-progress \
+            --output-format json

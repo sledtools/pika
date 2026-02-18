@@ -4,6 +4,7 @@ target/
 openclaw-marmot/.state/
 openclaw-marmot/node_modules/
 openclaw-marmot/**/node_modules/
+openclaw-marmot/**/package-lock.json
 openclaw-marmot/.env
 openclaw-marmot/.env.*
 

@@ -12,7 +12,8 @@ import {
 } from "./types.js";
 import { MarmotSidecar, resolveAccountStateDir } from "./sidecar.js";
 import { resolveMarmotSidecarCommand } from "./sidecar-install.js";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 type MarmotSidecarHandle = {
@@ -779,6 +780,7 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
             return;
           }
           try {
+            const currentCfg = runtime.config.loadConfig();
             await dispatchInboundToAgent({
               runtime,
               accountId: resolved.accountId,
@@ -786,11 +788,38 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
               chatId: callCtx.chatId,
               text: transcript,
               deliverText: async (responseText: string) => {
-                const stats = await sidecar.sendAudioResponse(ev.call_id, responseText);
-                const publish = stats.publish_path ? ` publish_path=${stats.publish_path}` : "";
                 ctx.log?.info(
-                  `[${resolved.accountId}] call_tts ok call_id=${ev.call_id} frames_published=${stats.frames_published}${publish}`,
+                  `[${resolved.accountId}] call TTS response call_id=${ev.call_id} text_len=${responseText.length}`,
                 );
+                // Use openclaw's config-driven TTS (OpenAI, ElevenLabs, Edge)
+                // to get raw PCM, write to temp file, send via sendAudioFile.
+                // Falls back to sidecar's built-in TTS on failure.
+                try {
+                  const ttsResult = await runtime.tts.textToSpeechTelephony({
+                    text: responseText,
+                    cfg: currentCfg,
+                  });
+                  if (!ttsResult.success || !ttsResult.audioBuffer) {
+                    throw new Error(ttsResult.error ?? "TTS returned no audio");
+                  }
+                  const tempDir = mkdtempSync(path.join(tmpdir(), "marmot-tts-"));
+                  const pcmPath = path.join(tempDir, `tts-${Date.now()}.pcm`);
+                  writeFileSync(pcmPath, ttsResult.audioBuffer);
+                  const timer = setTimeout(() => {
+                    rmSync(tempDir, { recursive: true, force: true });
+                  }, 5 * 60 * 1000);
+                  (timer as any).unref?.();
+                  const sampleRate = ttsResult.sampleRate ?? 24000;
+                  await sidecar.sendAudioFile(ev.call_id, pcmPath, sampleRate);
+                  ctx.log?.info(
+                    `[${resolved.accountId}] call audio sent call_id=${ev.call_id} path=${pcmPath} sample_rate=${sampleRate} provider=${ttsResult.provider ?? "unknown"}`,
+                  );
+                } catch (openclawTtsErr) {
+                  ctx.log?.info(
+                    `[${resolved.accountId}] openclaw_tts error call_id=${ev.call_id}: ${openclawTtsErr}, falling back to sidecar TTS`,
+                  );
+                  await sidecar.sendAudioResponse(ev.call_id, responseText);
+                }
               },
               log: ctx.log,
             });

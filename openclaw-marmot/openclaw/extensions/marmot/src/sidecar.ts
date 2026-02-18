@@ -69,6 +69,7 @@ type SidecarInCmd =
   | { cmd: "reject_call"; request_id: string; call_id: string; reason?: string }
   | { cmd: "end_call"; request_id: string; call_id: string; reason?: string }
   | { cmd: "send_audio_response"; request_id: string; call_id: string; tts_text: string }
+  | { cmd: "send_audio_file"; request_id: string; call_id: string; audio_path: string; sample_rate: number; channels?: number }
   | { cmd: "shutdown"; request_id: string };
 
 type SidecarEventHandler = (msg: SidecarOutMsg) => void | Promise<void>;
@@ -290,6 +291,10 @@ export class MarmotSidecar {
       local_label: typeof localLabel === "string" ? localLabel : undefined,
       peer_label: typeof peerLabel === "string" ? peerLabel : undefined,
     };
+  }
+
+  async sendAudioFile(callId: string, audioPath: string, sampleRate: number, channels?: number): Promise<unknown> {
+    return await this.request({ cmd: "send_audio_file", call_id: callId, audio_path: audioPath, sample_rate: sampleRate, channels } as any);
   }
 
   async shutdown(): Promise<void> {

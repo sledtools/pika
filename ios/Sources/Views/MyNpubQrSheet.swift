@@ -36,7 +36,7 @@ struct MyNpubQrSheet: View {
         onSaveProfile: @MainActor @escaping (_ name: String, _ about: String) -> Void,
         onUploadPhoto: @MainActor @escaping (_ data: Data, _ mimeType: String) -> Void,
         onLogout: @MainActor @escaping () -> Void,
-        timezoneDisplay: TimezoneDisplay = .utc,
+        timezoneDisplay: TimezoneDisplay = .local,
         onSetTimezoneDisplay: @MainActor @escaping (TimezoneDisplay) -> Void = { _ in },
         showLogoutConfirm: Bool = false
     ) {

@@ -12,7 +12,7 @@ pub struct UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
-            timezone_display: TimezoneDisplay::Utc,
+            timezone_display: TimezoneDisplay::Local,
         }
     }
 }

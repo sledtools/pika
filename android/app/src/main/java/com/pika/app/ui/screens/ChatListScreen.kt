@@ -168,7 +168,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
 }
 
 @Composable
-private fun ChatRow(chat: ChatSummary, selfPubkey: String?, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc, onClick: () -> Unit) {
+private fun ChatRow(chat: ChatSummary, selfPubkey: String?, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Local, onClick: () -> Unit) {
     val title = chatTitle(chat, selfPubkey)
     val peer = if (!chat.isGroup) {
         chat.members.firstOrNull { selfPubkey == null || it.pubkey != selfPubkey }
@@ -237,7 +237,7 @@ private fun chatTitle(chat: ChatSummary, selfPubkey: String?): String {
     return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
 }
 
-private fun formatChatListTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc): String {
+private fun formatChatListTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Local): String {
     val fmt = SimpleDateFormat("HH:mm", Locale.US)
     fmt.timeZone = when (timezoneDisplay) {
         is TimezoneDisplay.Utc -> TimeZone.getTimeZone("UTC")

@@ -12,7 +12,7 @@ private let webViewBaseURL = URL(string: "https://webview.benthecarman.com")!
 // MARK: - Timezone Environment Key
 
 private struct TimezoneDisplayEnvironmentKey: EnvironmentKey {
-    static let defaultValue: TimezoneDisplay = .utc
+    static let defaultValue: TimezoneDisplay = .local
 }
 
 extension EnvironmentValues {
@@ -52,7 +52,7 @@ struct ChatView: View {
         state: ChatScreenState,
         activeCall: CallState?,
         callEvents: [CallTimelineEvent],
-        timezoneDisplay: TimezoneDisplay = .utc,
+        timezoneDisplay: TimezoneDisplay = .local,
         onSendMessage: @escaping @MainActor (String) -> Void,
         onStartCall: @escaping @MainActor () -> Void,
         onOpenCallScreen: @escaping @MainActor () -> Void,
@@ -1589,7 +1589,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-1",
-            state: ChatScreenState(chat: PreviewAppState.chatDetail.currentChat, timezoneDisplay: .utc),
+            state: ChatScreenState(chat: PreviewAppState.chatDetail.currentChat, timezoneDisplay: .local),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1603,7 +1603,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-1",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailFailed.currentChat, timezoneDisplay: .utc),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailFailed.currentChat, timezoneDisplay: .local),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1617,7 +1617,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-empty",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailEmpty.currentChat, timezoneDisplay: .utc),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailEmpty.currentChat, timezoneDisplay: .local),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1631,7 +1631,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-long",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailLongThread.currentChat, timezoneDisplay: .utc),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailLongThread.currentChat, timezoneDisplay: .local),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },
@@ -1645,7 +1645,7 @@ private enum ChatViewPreviewData {
     NavigationStack {
         ChatView(
             chatId: "chat-grouped",
-            state: ChatScreenState(chat: PreviewAppState.chatDetailGrouped.currentChat, timezoneDisplay: .utc),
+            state: ChatScreenState(chat: PreviewAppState.chatDetailGrouped.currentChat, timezoneDisplay: .local),
             activeCall: nil,
             callEvents: [],
             onSendMessage: { _ in },

@@ -380,7 +380,7 @@ private fun isLiveCallStatus(status: CallStatus): Boolean =
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc, onSendMessage: (String) -> Unit) {
+private fun MessageBubble(message: ChatMessage, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Local, onSendMessage: (String) -> Unit) {
     val isMine = message.isMine
     val bubbleColor = if (isMine) PikaBlue else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
@@ -528,7 +528,7 @@ private fun PikaPromptCard(title: String, options: List<String>, message: ChatMe
     }
 }
 
-private fun formatTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Utc): String {
+private fun formatTimestamp(epochSeconds: Long, timezoneDisplay: TimezoneDisplay = TimezoneDisplay.Local): String {
     val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
     fmt.timeZone = when (timezoneDisplay) {
         is TimezoneDisplay.Utc -> java.util.TimeZone.getTimeZone("UTC")

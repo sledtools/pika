@@ -181,7 +181,7 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListEmpty.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListEmpty.myProfile,
-                timezoneDisplay: .utc
+                timezoneDisplay: .local
             ),
             onLogout: {},
             onOpenChat: { _ in },
@@ -204,7 +204,7 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListPopulated.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListPopulated.myProfile,
-                timezoneDisplay: .utc
+                timezoneDisplay: .local
             ),
             onLogout: {},
             onOpenChat: { _ in },
@@ -227,7 +227,7 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListLongNames.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListLongNames.myProfile,
-                timezoneDisplay: .utc
+                timezoneDisplay: .local
             ),
             onLogout: {},
             onOpenChat: { _ in },

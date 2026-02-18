@@ -216,7 +216,7 @@ enum PreviewAppState {
         activeCall: CallState? = nil,
         callTimeline: [CallTimelineEvent] = [],
         toast: String? = nil,
-        preferences: UserPreferences = UserPreferences(timezoneDisplay: .utc)
+        preferences: UserPreferences = UserPreferences(timezoneDisplay: .local)
     ) -> AppState {
         AppState(
             rev: rev,

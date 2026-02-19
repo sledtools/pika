@@ -694,7 +694,6 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
         // Legacy fallback: first entry in groupAllowFrom is owner
         return groupAllowFrom.length > 0 && groupAllowFrom[0] === pk;
       };
-      const allowedGroups = resolved.config.groups ?? {};
       const activeCalls = new Map<string, { chatId: string; senderId: string; responding: boolean }>();
       const callStartTtsText = String(process.env.MARMOT_CALL_START_TTS_TEXT ?? "").trim();
       const callStartTtsDelayMs = (() => {
@@ -707,9 +706,15 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
       })();
 
       const isGroupAllowed = (nostrGroupId: string): boolean => {
-        if (groupPolicy === "open") return true;
+        // Re-read from live config on every call (same pattern as resolveGroupConfig) to avoid
+        // any startup-capture issues where resolved.config.groups might be stale or empty.
+        const liveCfg = runtime.config.loadConfig();
+        const livePolicy: string = (liveCfg?.channels?.marmot as any)?.groupPolicy ?? "allowlist";
+        if (livePolicy === "open") return true;
         const gid = String(nostrGroupId).trim().toLowerCase();
-        return Boolean(allowedGroups[gid]);
+        const liveGroups = ((liveCfg?.channels?.marmot as any)?.groups ?? {}) as Record<string, unknown>;
+        // Normalize config keys (lowercase + trim) to match incoming gid.
+        return Object.keys(liveGroups).some((k) => String(k).trim().toLowerCase() === gid);
       };
       const isSenderAllowed = (pubkey: string): boolean => {
         if (groupAllowFrom.length === 0) return true;

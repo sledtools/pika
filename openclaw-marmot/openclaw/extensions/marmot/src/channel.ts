@@ -579,12 +579,30 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
       const resolved = resolveMarmotAccount({ cfg, accountId: account.accountId });
 
       // Guard against duplicate startAccount calls for the same account.
-      // Set sentinel immediately (before any awaits) to prevent races.
-      if (activeSidecars.has(resolved.accountId)) {
+      // Return a long-lived Promise tied to the existing sidecar so the
+      // framework considers this channel alive (prevents auto-restart loops).
+      const existingHandle = activeSidecars.get(resolved.accountId);
+      if (existingHandle) {
         ctx.log?.info(
           `[${resolved.accountId}] sidecar already running, skipping duplicate startAccount`,
         );
-        return { stop: () => {} };
+        ctx.setStatus({
+          accountId: resolved.accountId,
+          publicKey: existingHandle.pubkey,
+        });
+        return new Promise<void>((resolve) => {
+          const finish = () => resolve();
+          ctx.abortSignal.addEventListener("abort", () => {
+            const handle = activeSidecars.get(resolved.accountId);
+            if (handle) {
+              activeSidecars.delete(resolved.accountId);
+              void handle.sidecar.shutdown();
+            }
+            ctx.log?.info(`[${resolved.accountId}] marmot sidecar stopped`);
+            finish();
+          }, { once: true });
+          existingHandle.sidecar.waitForExit().then(finish);
+        });
       }
       activeSidecars.set(resolved.accountId, null as any);
 
@@ -666,23 +684,60 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
         return groupAllowFrom.includes(pk);
       };
 
+      // Batch welcome processing: collect welcomes over a short window,
+      // then log a single summary line with accept/fail counts.
+      let welcomeBatch: Array<{ from: string; group: string; name: string; wrapperId: string }> = [];
+      let welcomeFlushTimer: ReturnType<typeof setTimeout> | null = null;
+      const WELCOME_BATCH_DELAY_MS = 500;
+
+      const flushWelcomeBatch = async () => {
+        welcomeFlushTimer = null;
+        const batch = welcomeBatch;
+        welcomeBatch = [];
+        if (batch.length === 0) return;
+
+        const uniqueSenders = new Set(batch.map((w) => w.from));
+        ctx.log?.info(
+          `[${resolved.accountId}] welcome_received count=${batch.length} senders=${uniqueSenders.size}`,
+        );
+
+        if (!resolved.config.autoAcceptWelcomes) return;
+
+        let accepted = 0;
+        let failed = 0;
+        for (const w of batch) {
+          try {
+            await sidecar.acceptWelcome(w.wrapperId);
+            accepted++;
+          } catch {
+            failed++;
+          }
+        }
+        if (failed > 0) {
+          ctx.log?.debug(
+            `[${resolved.accountId}] auto-accept welcomes: accepted=${accepted} stale=${failed}`,
+          );
+        } else if (accepted > 0) {
+          ctx.log?.info(
+            `[${resolved.accountId}] auto-accept welcomes: accepted=${accepted}`,
+          );
+        }
+      };
+
       sidecar.onEvent(async (ev) => {
         if (ev.type === "welcome_received") {
-          ctx.log?.info(
-            `[${resolved.accountId}] welcome_received from=${ev.from_pubkey} group=${ev.nostr_group_id} name=${JSON.stringify(ev.group_name)}`,
-          );
           // Cache group name for later use in GroupSubject
           if (ev.group_name && ev.nostr_group_id) {
             groupNames.set(ev.nostr_group_id.toLowerCase(), ev.group_name);
           }
-          if (resolved.config.autoAcceptWelcomes) {
-            try {
-              await sidecar.acceptWelcome(ev.wrapper_event_id);
-            } catch (err) {
-              ctx.log?.error(
-                `[${resolved.accountId}] failed to accept welcome wrapper=${ev.wrapper_event_id}: ${err}`,
-              );
-            }
+          welcomeBatch.push({
+            from: ev.from_pubkey,
+            group: ev.nostr_group_id,
+            name: ev.group_name,
+            wrapperId: ev.wrapper_event_id,
+          });
+          if (!welcomeFlushTimer) {
+            welcomeFlushTimer = setTimeout(() => { void flushWelcomeBatch(); }, WELCOME_BATCH_DELAY_MS);
           }
           return;
         }
@@ -993,16 +1048,25 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
         }
       });
 
-      return {
-        stop: () => {
+      // Return a long-lived Promise so the framework keeps the channel
+      // as "running". Resolves when the sidecar exits or abort fires.
+      return new Promise<void>((resolve) => {
+        const finish = () => resolve();
+        ctx.abortSignal.addEventListener("abort", () => {
           const handle = activeSidecars.get(resolved.accountId);
           if (handle) {
             activeSidecars.delete(resolved.accountId);
             void handle.sidecar.shutdown();
           }
           ctx.log?.info(`[${resolved.accountId}] marmot sidecar stopped`);
-        },
-      };
+          finish();
+        }, { once: true });
+        sidecar.waitForExit().then(() => {
+          activeSidecars.delete(resolved.accountId);
+          ctx.log?.info(`[${resolved.accountId}] marmot sidecar exited`);
+          finish();
+        });
+      });
     },
   },
 };

@@ -113,6 +113,8 @@ export class MarmotSidecar {
   #readyResolve: ((msg: SidecarOutMsg & { type: "ready" }) => void) | null = null;
   #readyReject: ((err: Error) => void) | null = null;
   #readyPromise: Promise<SidecarOutMsg & { type: "ready" }>;
+  #exitResolve: (() => void) | null = null;
+  #exitPromise: Promise<void>;
 
   constructor(params: { cmd: string; args: string[]; env?: NodeJS.ProcessEnv }) {
     this.#proc = spawn(params.cmd, params.args, {
@@ -156,6 +158,9 @@ export class MarmotSidecar {
       this.#readyResolve = resolve;
       this.#readyReject = reject;
     });
+    this.#exitPromise = new Promise((resolve) => {
+      this.#exitResolve = resolve;
+    });
 
     this.#proc.on("exit", (code, signal) => {
       this.#closed = true;
@@ -171,6 +176,8 @@ export class MarmotSidecar {
         this.#readyReject = null;
         rr(err);
       }
+      this.#exitResolve?.();
+      this.#exitResolve = null;
     });
   }
 
@@ -180,6 +187,12 @@ export class MarmotSidecar {
 
   pid(): number | undefined {
     return this.#proc.pid;
+  }
+
+  /** Resolves when the sidecar process exits. Resolves immediately if already closed. */
+  waitForExit(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return this.#exitPromise;
   }
 
   async waitForReady(timeoutMs: number = 10_000): Promise<SidecarOutMsg & { type: "ready" }> {

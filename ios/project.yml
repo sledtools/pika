@@ -1,6 +1,6 @@
 name: Pika
 options:
-  bundleIdPrefix: com.justinmoon
+  bundleIdPrefix: org.pikachat
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -9,12 +9,12 @@ settings:
   base:
     # PIKA_APP_BUNDLE_ID is the "root" bundle id; targets derive from it.
     # Override on the xcodebuild command line (run-ios does this automatically).
-    PIKA_APP_BUNDLE_ID: com.justinmoon.pika
+    PIKA_APP_BUNDLE_ID: org.pikachat.pika
     PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID)
     # PIKA_APP_GROUP: derived from bundle ID. Override via xcodebuild if needed.
     PIKA_APP_GROUP: "group.$(PIKA_APP_BUNDLE_ID)"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: 0.1.0
+    MARKETING_VERSION: 1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0
 
@@ -45,6 +45,16 @@ targets:
         embed: false
       - package: MarkdownUI
       - target: PikaNotificationService
+    postBuildScripts:
+      - name: "Stamp build number"
+        script: |
+          if [ -f "${PROJECT_DIR}/.build-number" ]; then
+            BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
+          else
+            BUILD_NUMBER=$(date +"%Y%m%d%H%M")
+          fi
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+        basedOnDependencyAnalysis: false
 
   PikaNotificationService:
     type: app-extension
@@ -57,6 +67,7 @@ targets:
           - "*.modulemap"
     settings:
       base:
+        PRODUCT_NAME: PikaNotificationService
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: NotificationService/Info.plist
         CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
@@ -64,6 +75,16 @@ targets:
     dependencies:
       - framework: Frameworks/PikaNSE.xcframework
         embed: false
+    postBuildScripts:
+      - name: "Stamp build number"
+        script: |
+          if [ -f "${PROJECT_DIR}/.build-number" ]; then
+            BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
+          else
+            BUILD_NUMBER=$(date +"%Y%m%d%H%M")
+          fi
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+        basedOnDependencyAnalysis: false
 
   PikaTests:
     type: bundle.unit-test
@@ -126,6 +147,9 @@ targets:
 schemes:
   Pika:
     build:
+      preActions:
+        - script: 'date +"%Y%m%d%H%M" > "${PROJECT_DIR}/.build-number"'
+          settingsTarget: Pika
       targets:
         Pika: all
     test:

@@ -8,7 +8,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+		<string>$(PIKA_APP_GROUP)</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>

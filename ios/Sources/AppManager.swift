@@ -54,8 +54,15 @@ final class AppManager: AppReconciler {
         let fm = FileManager.default
         let appGroup = Bundle.main.infoDictionary?["PikaAppGroup"] as? String ?? "group.com.justinmoon.pika"
         let keychainGroup = Bundle.main.infoDictionary?["PikaKeychainGroup"] as? String ?? ""
-        let dataDirUrl = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup)!
-            .appendingPathComponent("Library/Application Support")
+        let dataDirUrl: URL
+        if let groupContainer = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+            dataDirUrl = groupContainer.appendingPathComponent("Library/Application Support")
+        } else {
+            // Fallback for simulator builds where CODE_SIGNING_ALLOWED=NO
+            // means entitlements aren't embedded and the app group container
+            // is unavailable. NSE won't work but the app itself runs fine.
+            dataDirUrl = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        }
         let dataDir = dataDirUrl.path
         let nsecStore = KeychainNsecStore(keychainGroup: keychainGroup)
 

@@ -530,6 +530,17 @@ ios-xcframework: ios-gen-swift ios-rust
 ios-xcodeproj:
   cd ios && rm -rf Pika.xcodeproj && xcodegen generate
 
+# Prepare for App Store: build both xcframework slices and regenerate project.
+# After running, open Xcode, select your dev team, and Product > Archive.
+ios-appstore: ios-xcframework ios-xcodeproj
+  @echo ""
+  @echo "Ready for App Store build."
+  @echo "  1. Open Xcode:  open ios/Pika.xcodeproj"
+  @echo "  2. Select your development team in Signing & Capabilities"
+  @echo "  3. Product > Archive"
+  @echo ""
+  open ios/Pika.xcodeproj
+
 # Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
   SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \

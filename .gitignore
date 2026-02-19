@@ -20,6 +20,7 @@ android/local.properties
 ios/.build/
 ios/build/
 ios/build-device/
+ios/build-appstore/
 ios/Frameworks/
 ios/**/xcuserdata/
 ios/Bindings/*.swift
@@ -28,6 +29,7 @@ ios/Bindings/*.modulemap
 ios/NSEBindings/*.swift
 ios/NSEBindings/*.h
 ios/NSEBindings/*.modulemap
+ios/.build-number
 
 # Misc
 .android-avd/

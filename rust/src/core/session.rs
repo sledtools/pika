@@ -182,13 +182,26 @@ impl AppCore {
     }
 
     pub(super) fn ensure_key_package_published_best_effort(&mut self) {
-        let relays = self.key_package_relays();
+        let key_package_relays = self.key_package_relays();
+        let mut publish_relay_set: BTreeSet<RelayUrl> = BTreeSet::new();
+        for r in key_package_relays.iter().cloned() {
+            publish_relay_set.insert(r);
+        }
+        for r in self.default_relays() {
+            publish_relay_set.insert(r);
+        }
+        let publish_relays: Vec<RelayUrl> = publish_relay_set.into_iter().collect();
+        let relays_for_tags = if key_package_relays.is_empty() {
+            publish_relays.clone()
+        } else {
+            key_package_relays
+        };
         let Some(sess) = self.session.as_mut() else {
             return;
         };
         let (content, tags, _hash_ref) = match sess
             .mdk
-            .create_key_package_for_event(&sess.keys.public_key(), relays.clone())
+            .create_key_package_for_event(&sess.keys.public_key(), relays_for_tags)
         {
             Ok(v) => v,
             Err(e) => {
@@ -209,17 +222,30 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            for r in relays.iter().cloned() {
+            let relay_list: Vec<String> = publish_relays.iter().map(|r| r.to_string()).collect();
+            if publish_relays.is_empty() {
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::KeyPackagePublished {
+                        ok: false,
+                        error: Some("no relays configured".to_string()),
+                    },
+                )));
+                return;
+            }
+
+            for r in publish_relays.iter().cloned() {
                 let _ = client.add_relay(r).await;
             }
-            client.connect().await;
-            client.wait_for_connection(Duration::from_secs(4)).await;
 
-            // Best-effort with retries: some relays require NIP-42 auth before
-            // accepting protected events (NIP-70).
+            // Best-effort with retries:
+            // - relays can be slow to connect right after login/restore
+            // - some relays require NIP-42 auth before accepting protected events
             let mut last_err: Option<String> = None;
-            for attempt in 0..5u8 {
-                match client.send_event_to(&relays, &event).await {
+            for attempt in 0..6u8 {
+                client.connect().await;
+                client.wait_for_connection(Duration::from_secs(5)).await;
+
+                match client.send_event_to(&publish_relays, &event).await {
                     Ok(output) if !output.success.is_empty() => {
                         let _ = tx.send(CoreMsg::Internal(Box::new(
                             InternalEvent::KeyPackagePublished {
@@ -240,13 +266,25 @@ impl AppCore {
                         let any_retryable = errors.iter().any(|e| {
                             e.contains("protected") || e.contains("auth") || e.contains("AUTH")
                         });
-                        last_err = Some(summary);
-                        if !any_retryable {
+                        let maybe_not_connected = errors.iter().any(|e| {
+                            e.contains("no relays")
+                                || e.contains("not ready")
+                                || e.contains("not connected")
+                        });
+                        last_err = Some(format!("{summary}; relays={}", relay_list.join(",")));
+                        if !any_retryable && !maybe_not_connected {
                             break;
                         }
                     }
                     Err(e) => {
-                        last_err = Some(e.to_string());
+                        let es = e.to_string();
+                        let maybe_not_connected = es.contains("no relays")
+                            || es.contains("not ready")
+                            || es.contains("not connected");
+                        last_err = Some(format!("{es}; relays={}", relay_list.join(",")));
+                        if !maybe_not_connected {
+                            break;
+                        }
                     }
                 }
                 let delay_ms = 250u64.saturating_mul(1u64 << attempt);

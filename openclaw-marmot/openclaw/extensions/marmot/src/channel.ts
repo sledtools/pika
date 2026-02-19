@@ -739,6 +739,8 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
             await sidecar.rejectCall(ev.call_id, "sender_not_allowed");
             return;
           }
+          // Per-group user allowlist check (same layered logic as messages — see below).
+          // groups[id].users is an additional filter on top of groupAllowFrom.
           {
             const currentCfgForCall = runtime.config.loadConfig();
             if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForCall)) {
@@ -867,7 +869,11 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
             return;
           }
 
-          // Per-group user allowlist check
+          // Per-group user allowlist check.
+          // Note: groups[id].users is an *additional* filter on top of groupAllowFrom.
+          // A sender who passes groupAllowFrom can still be silently dropped here if they
+          // are not listed in the group's users array. This is intentional for fine-grained
+          // per-group control, but the drop is silent so it's easy to miss if misconfigured.
           {
             const currentCfgForGroupCheck = runtime.config.loadConfig();
             if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForGroupCheck)) {

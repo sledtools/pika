@@ -281,8 +281,8 @@ Optional/targeted device-backed tests:
 
 Manual exploratory:
 
-1. iOS: `./tools/agent-device --platform ios open com.justinmoon.pika.dev`
-2. Android: `npx --yes agent-device --platform android open com.justinmoon.pika.dev`
+1. iOS: `./tools/agent-device --platform ios open org.pikachat.pika.dev`
+2. Android: `npx --yes agent-device --platform android open org.pikachat.pika.dev`
 3. follow prompts in `prompts/ios-agent-device-manual-qa.md` and `prompts/android-agent-device-manual-qa.md`
 4. desktop direct run + click-through with logs enabled
 

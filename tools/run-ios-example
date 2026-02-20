@@ -26,7 +26,7 @@ done
 : "${UDID:?missing --udid}"
 
 TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:?set PIKA_IOS_DEVELOPMENT_TEAM in .env}"
-BUNDLE_ID="com.justinmoon.pika.dev.test"
+BUNDLE_ID="org.pikachat.pika.dev.test"
 
 # --- Build for iOS device using the same env as just ios-rust ---
 XCODE_DEV="$(xcode-select -p)"

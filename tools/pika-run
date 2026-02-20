@@ -293,7 +293,7 @@ def cmd_android_list_targets(args: argparse.Namespace) -> int:
 
 def cmd_ios_run(args: argparse.Namespace) -> int:
     mode = "device" if args.device else "sim"
-    bundle_id = args.bundle_id or os.environ.get("PIKA_IOS_BUNDLE_ID") or "com.justinmoon.pika.dev"
+    bundle_id = args.bundle_id or os.environ.get("PIKA_IOS_BUNDLE_ID") or "org.pikachat.pika.dev"
 
     env = dict(os.environ)
     env["PIKA_IOS_BUNDLE_ID"] = bundle_id

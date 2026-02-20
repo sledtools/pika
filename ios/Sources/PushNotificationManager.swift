@@ -9,7 +9,7 @@ import os
 final class PushNotificationManager: NSObject, ObservableObject {
     static let shared = PushNotificationManager()
 
-    private let logger = Logger(subsystem: "com.justinmoon.pika", category: "push")
+    private let logger = Logger(subsystem: "org.pikachat.pika", category: "push")
 
     /// The real APNs device token, set after successful registration.
     @Published private(set) var apnsToken: String?

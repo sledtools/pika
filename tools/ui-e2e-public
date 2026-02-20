@@ -117,7 +117,7 @@ run_ios() {
     PIKA_UI_E2E_KP_RELAYS="$kp_relays" \
     PIKA_UI_E2E_NSEC="$nsec" \
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
-      PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" \
+      PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
       -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 }
 

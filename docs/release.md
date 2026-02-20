@@ -1,20 +1,20 @@
 ---
-summary: Release process for Android APK and marmotd (OpenClaw extension)
+summary: Release process for Pika app artifacts (Android + macOS) and marmotd
 read_when:
-  - preparing an Android or marmotd release
+  - preparing an Android, macOS, or marmotd release
   - rotating Android signing keys or CI release secrets
   - changing release automation in justfile, Gradle, or GitHub Actions
 ---
 
 # Release
 
-This repo has three independent release pipelines, all tag-driven:
+This repo has two independent release tag families:
 
 | Target | Tag pattern | CI workflow | Artifacts |
 |--------|------------|-------------|-----------|
-| Android APK | `v*` (e.g. `v0.2.2`) | `release.yml` | Signed APK + SHA256SUMS on GitHub Releases |
-| Zapstore publish | `v*` (e.g. `v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
-| Nostr announcement | `v*` (e.g. `v0.2.2`) | `release.yml` (`announce-release` job) | Kind-1 release announcement note |
+| Pika app release | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` | Signed Android APK + macOS universal DMG + SHA256SUMS on GitHub Releases |
+| Zapstore publish | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
+| Nostr announcement | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`announce-release` job) | Kind-1 release announcement note |
 | marmotd (OpenClaw extension) | `marmotd-v*` (e.g. `marmotd-v0.3.2`) | `marmotd-release.yml` | Linux + macOS binaries on GitHub Releases, npm package |
 
 **Important:** All release tags must be created from the `master` branch. Tags on
@@ -35,7 +35,7 @@ recipe enforces this with a branch check.
   - `./scripts/version-read --name`
   - `./scripts/version-read --code`
 
-CI enforces that the pushed tag equals `v$(cat VERSION)`.
+CI enforces that the pushed tag equals `pika/v$(cat VERSION)`.
 
 ### Runbook
 
@@ -47,7 +47,7 @@ git pull origin master
 # 2. Bump the version
 echo "0.3.0" > VERSION
 git add VERSION
-git commit -m "release: bump to v0.3.0"
+git commit -m "release: bump to 0.3.0"
 git push origin master
 
 # 3. Tag and push (this triggers the CI release)
@@ -58,7 +58,7 @@ gh run list --limit 1
 gh run watch <run-id>
 
 # 5. Verify the release
-gh release view v0.3.0
+gh release view 'pika/v0.3.0'
 ```
 
 `just release` validates:
@@ -112,15 +112,23 @@ gh release view v0.3.0
 
 ### CI workflow
 
-`/.github/workflows/release.yml` runs on `push.tags: ["v*"]` and `workflow_dispatch`.
+`/.github/workflows/release.yml` runs on `push.tags: ["pika/v*"]` and `workflow_dispatch`.
 
 Jobs:
 
-1. `check` - validates tag/version match and runs `just pre-merge-pika`
-2. `build` - runs `just android-release`, uploads APK + `SHA256SUMS`
-3. `publish` - creates GitHub Release with uploaded assets
-4. `publish-zapstore` - publishes the built APK artifact to Zapstore relays
-5. `announce-release` - publishes a kind-1 release announcement (Zapstore + GitHub links)
+1. `approve-release` - requires approval via the protected `release` environment
+2. `check` - validates tag/version match and runs `just pre-merge-pika`
+3. `build-android` - runs `just android-release`, uploads APK artifact
+4. `build-macos` - builds universal (`arm64` + `x86_64`) `Pika.app`, packages DMG via `scripts/build-macos-release`, uploads DMG artifact
+5. `publish` - combines artifacts, generates a single `SHA256SUMS`, creates GitHub Release
+6. `publish-zapstore` - publishes the built APK artifact to Zapstore relays
+7. `announce-release` - publishes a kind-1 release announcement (Zapstore + GitHub links)
+
+The workflow enforces both:
+- explicit allowed actors in `approve-release` (`justinmoon`, `futurepaul`, `benthecarman`, `AnthonyRonning`)
+- protected `release` environment reviewer approval
+
+Keep both controls enabled.
 
 `publish-zapstore` is gated on `secrets/zapstore-signing.env.age` existing in
 git. It decrypts `ZAPSTORE_SIGN_WITH` via `AGE_SECRET_KEY`, uses centralized

@@ -14,7 +14,7 @@ read_when:
 
 ```bash
 PIKA_IOS_DEVELOPMENT_TEAM=<your Apple Developer Team ID>
-PIKA_IOS_BUNDLE_ID=com.justinmoon.<yourname>
+PIKA_IOS_BUNDLE_ID=org.pikachat.<yourname>
 PIKA_IOS_DEVICE=1
 PIKA_IOS_CONSOLE=1
 ```
@@ -39,11 +39,11 @@ derives from two `.env` variables:
 | Variable | Example | Description |
 |----------|---------|-------------|
 | `PIKA_IOS_DEVELOPMENT_TEAM` | `W6VF934SEW` | Your Apple Developer Team ID |
-| `PIKA_IOS_BUNDLE_ID` | `com.justinmoon.pikatest` | Bundle ID registered on your team |
+| `PIKA_IOS_BUNDLE_ID` | `org.pikachat.pikatest` | Bundle ID registered on your team |
 
 From these, the build system automatically derives:
 
-- **App group**: `group.<PIKA_IOS_BUNDLE_ID>` (e.g. `group.com.justinmoon.pikatest`)
+- **App group**: `group.<PIKA_IOS_BUNDLE_ID>` (e.g. `group.org.pikachat.pikatest`)
 - **NSE bundle ID**: `<PIKA_IOS_BUNDLE_ID>.notification-service`
 - **Keychain access group**: `<TeamPrefix>.<PIKA_IOS_BUNDLE_ID>.shared`
 
@@ -64,9 +64,9 @@ Or visit https://developer.apple.com/account → Membership Details.
 When using a new bundle ID for the first time, Xcode's automatic signing
 (`-allowProvisioningUpdates`) will register:
 
-- The App ID (e.g. `com.justinmoon.pikatest`)
-- The NSE App ID (e.g. `com.justinmoon.pikatest.notification-service`)
-- The App Group (e.g. `group.com.justinmoon.pikatest`)
+- The App ID (e.g. `org.pikachat.pikatest`)
+- The NSE App ID (e.g. `org.pikachat.pikatest.notification-service`)
+- The App Group (e.g. `group.org.pikachat.pikatest`)
 - Your device UDID
 - Development provisioning profiles
 
@@ -77,7 +77,7 @@ app group through its GUI.
 
 ## Push Notifications
 
-Push notifications only work with the production bundle ID (`com.justinmoon.pika`)
+Push notifications only work with the production bundle ID (`org.pikachat.pika`)
 because the notification server needs to know the App ID. Dev bundle IDs will
 build and run fine but won't receive pushes.
 

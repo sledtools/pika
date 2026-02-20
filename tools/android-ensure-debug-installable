@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ADB="${ADB:-adb}"
-APP_ID="${PIKA_ANDROID_APP_ID:-com.justinmoon.pika.dev}"
+APP_ID="${PIKA_ANDROID_APP_ID:-org.pikachat.pika.dev}"
 SERIAL="${PIKA_ANDROID_SERIAL:-}"
 
 pick_emulators() {
@@ -62,4 +62,3 @@ if "$ADB" -s "$SERIAL" shell pm path "$APP_ID" >/dev/null 2>&1; then
   echo "uninstalling existing $APP_ID from $SERIAL (to avoid signature mismatch)"
   "$ADB" -s "$SERIAL" uninstall "$APP_ID" >/dev/null 2>&1 || true
 fi
-

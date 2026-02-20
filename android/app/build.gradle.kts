@@ -15,7 +15,7 @@ android {
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "com.justinmoon.pika"
+        applicationId = "org.pikachat.pika"
         minSdk = 26
         targetSdk = 35
         versionCode = appVersionCode

@@ -28,7 +28,7 @@ done
 : "${PIKA_IOS_DEVELOPMENT_TEAM:?missing (put it in .env as PIKA_IOS_DEVELOPMENT_TEAM=YOUR_TEAM_ID)}"
 
 BOT_NPUB="${PIKA_BOT_NPUB:-npub1z6ujr8rad5zp9sr9w22rkxm0truulf2jntrks6rlwskhdmqsawpqmnjlcp}"
-BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
 
 echo "==> Building xcframework + xcode project..."
 just ios-xcframework ios-xcodeproj >/dev/null

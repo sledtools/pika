@@ -13,7 +13,7 @@ usage: ./scripts/post-release-announcement <tag> [repo-url] [zapstore-app-url]
 Publishes a kind-1 Nostr release announcement for a Git tag release.
 
 Arguments:
-  tag               Release tag (e.g. v0.2.5)
+  tag               Release tag (e.g. pika/v0.2.5)
   repo-url          Optional repository URL (default: https://github.com/sledtools/pika)
   zapstore-app-url  Optional Zapstore app URL (default: https://zapstore.dev/apps/naddr1qqfkxmmd9e482um5d9hx6mm0dch8q6ttvyq3samnwvaz7tmjv4kxz7fw0fshqum5daex2tnyv4mqyg8g38vsur6pyts9uv5357r2sxujmyl54ugvetfduyvp80hgh6yzcspsgqqq0c9shze8tx)
 
@@ -47,10 +47,11 @@ tag="$1"
 repo_url="${2:-$DEFAULT_REPO_URL}"
 zapstore_app_url="${3:-$DEFAULT_ZAPSTORE_APP_URL}"
 
-if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-  echo "error: invalid tag format: $tag (expected vX.Y.Z)" >&2
+if ! printf '%s\n' "$tag" | grep -Eq '^pika/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "error: invalid tag format: $tag (expected pika/vX.Y.Z)" >&2
   exit 1
 fi
+tag_url="${tag//\//%2F}"
 
 sign_with="$(cd "$ROOT" && ./scripts/read-zapstore-sign-with | tr -d '\r\n')"
 if [ -z "$sign_with" ]; then
@@ -62,9 +63,10 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   printf '::add-mask::%s\n' "$sign_with"
 fi
 
-content="Pika Android ${tag} is live.
+content="Pika ${tag} is live.
+Android APK + macOS DMG are available.
 Install on Zapstore: ${zapstore_app_url}
-GitHub release: ${repo_url}/releases/tag/${tag}"
+GitHub release: ${repo_url}/releases/tag/${tag_url}"
 
 if [ -n "${PIKA_ANNOUNCE_RELAYS:-}" ]; then
   IFS=' ' read -r -a relays <<<"${PIKA_ANNOUNCE_RELAYS}"

@@ -3,15 +3,32 @@ name: release
 on:
   push:
     tags:
-      - "v*"
+      - "pika/v*"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  approve-release:
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    steps:
+      - name: Enforce allowed release actors
+        run: |
+          set -euo pipefail
+          case "${GITHUB_ACTOR}" in
+            justinmoon|futurepaul|benthecarman|AnthonyRonning) ;;
+            *)
+              echo "error: actor '${GITHUB_ACTOR}' is not allowed to run release workflow"
+              exit 1
+              ;;
+          esac
+      - run: echo "release approved"
+
   check:
-    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
+    needs: approve-release
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +40,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -43,7 +60,7 @@ jobs:
             echo "error: release workflow must run on a tag ref"
             exit 1
           fi
-          expected_tag="v$(./scripts/version-read --name)"
+          expected_tag="pika/v$(./scripts/version-read --name)"
           if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
             echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
             exit 1
@@ -51,8 +68,7 @@ jobs:
 
       - run: nix develop .#default -c just pre-merge-pika
 
-  build:
-    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
+  build-android:
     needs: check
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
@@ -65,7 +81,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -81,7 +97,7 @@ jobs:
       - name: Validate tag matches VERSION
         run: |
           set -euo pipefail
-          expected_tag="v$(./scripts/version-read --name)"
+          expected_tag="pika/v$(./scripts/version-read --name)"
           if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
             echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
             exit 1
@@ -92,63 +108,84 @@ jobs:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: nix develop .#default -c just android-release
 
-      - name: Generate checksums
-        run: sha256sum dist/*.apk > dist/SHA256SUMS
-
       - uses: actions/upload-artifact@v4
         with:
-          name: release-apk
-          path: |
-            dist/*.apk
-            dist/SHA256SUMS
+          name: release-android
+          path: dist/*.apk
           if-no-files-found: error
 
-  publish:
-    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
-    needs: build
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+  build-macos:
+    needs: check
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - uses: useblacksmith/stickydisk@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-apk
-          path: dist
+      - uses: Swatinem/rust-cache@v2
 
       - name: Validate tag matches VERSION
         run: |
           set -euo pipefail
-          expected_tag="v$(./scripts/version-read --name)"
+          expected_tag="pika/v$(./scripts/version-read --name)"
           if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
             echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
             exit 1
           fi
 
+      - name: Build macOS universal DMG
+        run: ./scripts/build-macos-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [build-android, build-macos]
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-android
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: dist
+
+      - name: Validate tag matches VERSION
+        run: |
+          set -euo pipefail
+          expected_tag="pika/v$(./scripts/version-read --name)"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+            exit 1
+          fi
+
+      - name: Generate checksums
+        run: sha256sum dist/*.apk dist/*.dmg > dist/SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Pika Android ${{ github.ref_name }}
+          name: Pika ${{ github.ref_name }}
           generate_release_notes: true
           overwrite_files: true
           files: |
             dist/*.apk
+            dist/*.dmg
             dist/SHA256SUMS
 
   publish-zapstore:
-    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
-    needs: [build, publish]
+    needs: [build-android, publish]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -173,7 +210,7 @@ jobs:
         if: steps.zapstore_secret.outputs.present == 'true'
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
         if: steps.zapstore_secret.outputs.present == 'true'
@@ -181,14 +218,14 @@ jobs:
       - uses: actions/download-artifact@v4
         if: steps.zapstore_secret.outputs.present == 'true'
         with:
-          name: release-apk
+          name: release-android
           path: dist
 
       - name: Validate tag matches VERSION
         if: steps.zapstore_secret.outputs.present == 'true'
         run: |
           set -euo pipefail
-          expected_tag="v$(./scripts/version-read --name)"
+          expected_tag="pika/v$(./scripts/version-read --name)"
           if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
             echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
             exit 1
@@ -212,7 +249,6 @@ jobs:
           nix develop .#default -c ./scripts/zapstore-publish "$apk_path" "https://github.com/${GITHUB_REPOSITORY}"
 
   announce-release:
-    if: github.actor == 'justinmoon' || github.actor == 'futurepaul' || github.actor == 'AnthonyRonning' || github.actor == 'benthecarman'
     needs: publish
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
@@ -233,7 +269,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 

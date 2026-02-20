@@ -1,16 +1,15 @@
 [project]
 name = "pika"
-org = "com.justinmoon"
+org = "org.pikachat"
 
 [core]
 crate = "pika_core"
 bindings = "uniffi"
 
 [ios]
-bundle_id = "com.justinmoon.pika"
+bundle_id = "org.pikachat.pika"
 scheme = "Pika"
 
 [android]
-app_id = "com.justinmoon.pika"
+app_id = "org.pikachat.pika"
 avd_name = "pika_api35"
-

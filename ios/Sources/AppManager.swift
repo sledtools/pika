@@ -52,7 +52,7 @@ final class AppManager: AppReconciler {
 
     convenience init() {
         let fm = FileManager.default
-        let appGroup = Bundle.main.infoDictionary?["PikaAppGroup"] as? String ?? "group.com.justinmoon.pika"
+        let appGroup = Bundle.main.infoDictionary?["PikaAppGroup"] as? String ?? "group.org.pikachat.pika"
         let keychainGroup = Bundle.main.infoDictionary?["PikaKeychainGroup"] as? String ?? ""
         let dataDirUrl: URL
         if let groupContainer = fm.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {

@@ -34,7 +34,7 @@ if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
   exec nix develop -c bash -lc "cd \"$ROOT\"; ./tools/run-ios ${qargs[*]}"
 fi
 
-IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika}"
+IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika}"
 IOS_TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:-}"
 MODE="sim"
 CONSOLE="${PIKA_IOS_CONSOLE:-0}"

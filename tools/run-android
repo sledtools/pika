@@ -21,7 +21,7 @@ if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_ANDROID_NO_NIX:-0}" != "1" ]; the
 fi
 
 ADB="${ADB:-adb}"
-APP_ID="${PIKA_ANDROID_APP_ID:-com.justinmoon.pika.dev}"
+APP_ID="${PIKA_ANDROID_APP_ID:-org.pikachat.pika.dev}"
 SERIAL="${PIKA_ANDROID_SERIAL:-}"
 MODE="auto" # auto|emulator|device
 RELEASE=0

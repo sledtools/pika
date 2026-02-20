@@ -197,6 +197,11 @@ impl AppCore {
             }
         };
 
+        // Disable NIP-70 for now: strip the protected marker before publish.
+        let tags: Tags = tags
+            .into_iter()
+            .filter(|t: &Tag| !matches!(t.kind(), TagKind::Protected))
+            .collect();
         let builder = EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags);
         let event = match builder.sign_with_keys(&sess.keys) {
             Ok(e) => e,
@@ -215,8 +220,7 @@ impl AppCore {
             client.connect().await;
             client.wait_for_connection(Duration::from_secs(4)).await;
 
-            // Best-effort with retries: some relays require NIP-42 auth before
-            // accepting protected events (NIP-70).
+            // Best-effort with retries: some relays require NIP-42 auth.
             let mut last_err: Option<String> = None;
             for attempt in 0..5u8 {
                 match client.send_event_to(&relays, &event).await {
@@ -237,9 +241,9 @@ impl AppCore {
                         } else {
                             errors.join("; ")
                         };
-                        let any_retryable = errors.iter().any(|e| {
-                            e.contains("protected") || e.contains("auth") || e.contains("AUTH")
-                        });
+                        let any_retryable = errors
+                            .iter()
+                            .any(|e| e.contains("auth") || e.contains("AUTH"));
                         last_err = Some(summary);
                         if !any_retryable {
                             break;

@@ -156,40 +156,16 @@ rmp-nightly-linux NAME="rmp-nightly-linux" ORG="com.example" AVD="rmp_ci_api35":
     echo "error: missing xvfb-run on PATH" >&2; \
     exit 1; \
   fi; \
-  iced_check_ok=0; \
-  last_code=1; \
-  for backend in gl default; do \
-    if [ "$backend" = "default" ]; then \
-      echo "info: iced runtime check with default wgpu backend selection"; \
-      if LIBGL_ALWAYS_SOFTWARE=1 WINIT_UNIX_BACKEND=x11 timeout 900s \
-        xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
-        echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
-        exit 1; \
-      else \
-        code=$?; \
-      fi; \
-    else \
-      echo "info: iced runtime check with WGPU_BACKEND=$backend"; \
-      if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND="$backend" WINIT_UNIX_BACKEND=x11 timeout 900s \
-        xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
-        echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
-        exit 1; \
-      else \
-        code=$?; \
-      fi; \
+  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=vulkan WINIT_UNIX_BACKEND=x11 timeout 900s \
+    xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
+    echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
+    exit 1; \
+  else \
+    code=$?; \
+    if [ "$code" -ne 124 ]; then \
+      echo "error: iced runtime check failed with exit code $code" >&2; \
+      exit "$code"; \
     fi; \
-    if [ "$code" -eq 124 ]; then \
-      iced_check_ok=1; \
-      break; \
-    fi; \
-    last_code="$code"; \
-    if [ "$backend" != "default" ]; then \
-      echo "warning: iced runtime check failed with WGPU_BACKEND=$backend (exit $code); retrying with default backend" >&2; \
-    fi; \
-  done; \
-  if [ "$iced_check_ok" -ne 1 ]; then \
-    echo "error: iced runtime check failed with exit code $last_code" >&2; \
-    exit "$last_code"; \
   fi; \
   adb devices || true
 

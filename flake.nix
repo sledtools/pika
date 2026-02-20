@@ -157,8 +157,14 @@
           pkgs.xorg.libXrandr
           pkgs.xorg.libXinerama
           pkgs.libxkbcommon
+          pkgs.libglvnd
+          pkgs.mesa
+          pkgs.vulkan-loader
         ];
         linuxGuiRuntimeLibraryPath = pkgs.lib.makeLibraryPath linuxGuiRuntimeLibraries;
+        linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
+        linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
+        linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -218,6 +224,16 @@
             if [ "$(uname -s)" = "Linux" ] && [ -n "${linuxGuiRuntimeLibraryPath}" ]; then
               export LD_LIBRARY_PATH="${linuxGuiRuntimeLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export WINIT_UNIX_BACKEND="x11"
+              export LIBGL_DRIVERS_PATH="${linuxMesaDriversPath}''${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+              export __EGL_VENDOR_LIBRARY_DIRS="${linuxEglVendorPath}''${__EGL_VENDOR_LIBRARY_DIRS:+:$__EGL_VENDOR_LIBRARY_DIRS}"
+              if [ -d "${linuxVulkanIcdPath}" ]; then
+                for icd in "${linuxVulkanIcdPath}"/lvp_icd.*.json; do
+                  if [ -f "$icd" ]; then
+                    export VK_DRIVER_FILES="$icd"
+                    break
+                  fi
+                done
+              fi
             fi
 
             # Needed for adb when VPN is running

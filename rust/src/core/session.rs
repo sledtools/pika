@@ -268,8 +268,9 @@ impl AppCore {
                         } else {
                             errors.join("; ")
                         };
-                        let any_retryable =
-                            errors.iter().any(|e| e.contains("auth") || e.contains("AUTH"));
+                        let any_retryable = errors
+                            .iter()
+                            .any(|e| e.contains("auth") || e.contains("AUTH"));
                         let maybe_not_connected = errors.iter().any(|e| {
                             e.contains("no relays")
                                 || e.contains("not ready")

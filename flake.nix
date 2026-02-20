@@ -149,6 +149,16 @@
             mainProgram = "zsp";
           };
         };
+
+        linuxGuiRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
+          pkgs.xorg.libX11
+          pkgs.xorg.libXcursor
+          pkgs.xorg.libXi
+          pkgs.xorg.libXrandr
+          pkgs.xorg.libXinerama
+          pkgs.libxkbcommon
+        ];
+        linuxGuiRuntimeLibraryPath = pkgs.lib.makeLibraryPath linuxGuiRuntimeLibraries;
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -191,7 +201,7 @@
             xcodeWrapper
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.xvfb-run
-          ];
+          ] ++ linuxGuiRuntimeLibraries;
 
           shellHook = ''
             export ANDROID_HOME=${androidSdk}/share/android-sdk
@@ -204,6 +214,11 @@
             export JAVA_HOME=${pkgs.jdk17_headless}
             export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
             export PATH=$PWD/tools:$PATH
+
+            if [ "$(uname -s)" = "Linux" ] && [ -n "${linuxGuiRuntimeLibraryPath}" ]; then
+              export LD_LIBRARY_PATH="${linuxGuiRuntimeLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export WINIT_UNIX_BACKEND="x11"
+            fi
 
             # Needed for adb when VPN is running
             export ADB_MDNS_OPENSCREEN=0

@@ -156,7 +156,7 @@ rmp-nightly-linux NAME="rmp-nightly-linux" ORG="com.example" AVD="rmp_ci_api35":
     echo "error: missing xvfb-run on PATH" >&2; \
     exit 1; \
   fi; \
-  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl timeout 900s \
+  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl WINIT_UNIX_BACKEND=x11 timeout 900s \
     xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
     echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
     exit 1; \

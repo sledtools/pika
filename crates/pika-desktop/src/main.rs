@@ -54,6 +54,7 @@ struct DesktopApp {
     new_chat_search: String,
     filtered_follows: Vec<pika_core::FollowListEntry>,
     message_input: String,
+    optimistic_selected_chat_id: Option<String>,
     overlay: UiOverlay,
     // Group creation
     group_name_input: String,
@@ -167,6 +168,7 @@ impl DesktopApp {
                     manager.logout();
                 }
                 self.avatar_cache.borrow_mut().clear();
+                self.optimistic_selected_chat_id = None;
                 self.clear_all_overlays();
             }
             Message::ResetLocalSessionData => {
@@ -174,6 +176,7 @@ impl DesktopApp {
                     manager.clear_local_session_for_recovery();
                     manager.dispatch(AppAction::ClearToast);
                 }
+                self.optimistic_selected_chat_id = None;
                 self.clear_all_overlays();
             }
             Message::ResetRelayConfig => {
@@ -214,6 +217,7 @@ impl DesktopApp {
                 // Form closes when the next core state update reports completion.
             }
             Message::OpenChat(chat_id) => {
+                self.optimistic_selected_chat_id = Some(chat_id.clone());
                 self.clear_all_overlays();
                 if let Some(manager) = &self.manager {
                     manager.dispatch(AppAction::OpenChat { chat_id });
@@ -290,6 +294,7 @@ impl DesktopApp {
                     });
                 }
                 self.clear_all_overlays();
+                self.optimistic_selected_chat_id = None;
             }
 
             // ── My profile ────────────────────────────────────────────
@@ -449,9 +454,13 @@ impl DesktopApp {
 
         // Chat rail (left sidebar)
         let my_profile_pic = self.state.my_profile.picture_url.as_deref();
+        let selected_chat_id = effective_selected_chat_id(
+            route.selected_chat_id.as_deref(),
+            self.optimistic_selected_chat_id.as_deref(),
+        );
         let rail = views::chat_rail::chat_rail_view(
             &self.state.chat_list,
-            route.selected_chat_id.as_deref(),
+            selected_chat_id,
             self.overlay == UiOverlay::NewChat,
             self.overlay == UiOverlay::NewGroup,
             self.overlay == UiOverlay::MyProfile,
@@ -548,6 +557,7 @@ impl DesktopApp {
             new_chat_search: String::new(),
             filtered_follows: Vec::new(),
             message_input: String::new(),
+            optimistic_selected_chat_id: None,
             overlay: UiOverlay::None,
             group_name_input: String::new(),
             selected_group_members: Vec::new(),
@@ -595,6 +605,17 @@ impl DesktopApp {
             {
                 self.profile_name_draft = latest.my_profile.name.clone();
                 self.profile_about_draft = latest.my_profile.about.clone();
+            }
+
+            let latest_route = project_desktop(&latest);
+            if let Some(optimistic_chat_id) = self.optimistic_selected_chat_id.as_deref() {
+                let authoritative_selection = latest_route.selected_chat_id.as_deref();
+                if authoritative_selection == Some(optimistic_chat_id)
+                    || authoritative_selection.is_some()
+                    || matches!(latest_route.shell_mode, DesktopShellMode::Login)
+                {
+                    self.optimistic_selected_chat_id = None;
+                }
             }
 
             self.state = latest;
@@ -680,5 +701,29 @@ impl DesktopApp {
                 .cloned()
                 .collect();
         }
+    }
+}
+
+fn effective_selected_chat_id<'a>(
+    route_selected_chat_id: Option<&'a str>,
+    optimistic_selected_chat_id: Option<&'a str>,
+) -> Option<&'a str> {
+    optimistic_selected_chat_id.or(route_selected_chat_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_selected_chat_id;
+
+    #[test]
+    fn effective_selected_chat_prefers_optimistic_selection() {
+        let selected = effective_selected_chat_id(Some("route-chat"), Some("optimistic-chat"));
+        assert_eq!(selected, Some("optimistic-chat"));
+    }
+
+    #[test]
+    fn effective_selected_chat_falls_back_to_projected_selection() {
+        let selected = effective_selected_chat_id(Some("route-chat"), None);
+        assert_eq!(selected, Some("route-chat"));
     }
 }

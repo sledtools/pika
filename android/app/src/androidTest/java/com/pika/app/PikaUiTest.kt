@@ -4,6 +4,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.util.Log
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -13,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pika.app.ui.TestTags
@@ -32,6 +35,17 @@ class PikaUiTest {
         //
         // If external tools (agent-device/uiautomator) are running concurrently, they can still
         // interfere; run UI tests in isolation.
+    }
+
+    @Test
+    fun loginNsecField_isPasswordSemantics() {
+        hardResetForeground()
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        runOnMain { AppManager.getInstance(ctx).logout() }
+
+        compose.onNodeWithTag(TestTags.LOGIN_NSEC)
+            .assertExists()
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
     }
 
     @Test

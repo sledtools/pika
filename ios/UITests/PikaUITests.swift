@@ -330,7 +330,7 @@ final class PikaUITests: XCTestCase {
         let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
         if createAccount.waitForExistence(timeout: 5) {
             if !testNsec.isEmpty {
-                let loginNsec = app.textFields.matching(identifier: "login_nsec_input").firstMatch
+                let loginNsec = app.secureTextFields.matching(identifier: "login_nsec_input").firstMatch
                 let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
                 XCTAssertTrue(loginNsec.waitForExistence(timeout: 5))
                 XCTAssertTrue(loginSubmit.waitForExistence(timeout: 5))

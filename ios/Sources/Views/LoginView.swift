@@ -62,7 +62,7 @@ struct LoginView: View {
                 }
                 .padding(.vertical, 4)
 
-                TextField("Enter your nsec", text: $nsecInput)
+                SecureField("Enter your nsec", text: $nsecInput)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textFieldStyle(.roundedBorder)

@@ -468,10 +468,7 @@ impl DesktopApp {
             .or(self.state.toast.as_deref())
         {
             let show_relay_reset = self.profile_toast.is_none() && self.should_offer_relay_reset();
-            main_column = main_column.push(views::toast::toast_bar(
-                toast_msg,
-                show_relay_reset,
-            ));
+            main_column = main_column.push(views::toast::toast_bar(toast_msg, show_relay_reset));
         }
 
         let cache = &mut *self.avatar_cache.borrow_mut();

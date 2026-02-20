@@ -221,7 +221,7 @@ private func screenView(
             state: chatScreenState(from: state),
             activeCall: state.activeCall,
             callEvents: state.callTimeline.filter { $0.chatId == chatId },
-            onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0)) },
+            onSendMessage: { manager.dispatch(.sendMessage(chatId: chatId, content: $0, kind: nil)) },
             onStartCall: { manager.dispatch(.startCall(chatId: chatId)) },
             onOpenCallScreen: {
                 onOpenCallScreen()

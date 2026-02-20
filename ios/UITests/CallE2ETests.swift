@@ -112,7 +112,7 @@ final class CallE2ETests: XCTestCase {
         app.launch()
 
         // --- Login with test nsec ---
-        let loginNsec = app.textFields.matching(identifier: "login_nsec_input").firstMatch
+        let loginNsec = app.secureTextFields.matching(identifier: "login_nsec_input").firstMatch
         let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
 
         if loginNsec.waitForExistence(timeout: 5) {

@@ -23,8 +23,12 @@ struct MyNpubQrSheet: View {
     @State private var didSyncDrafts = false
     @State private var didCopyNpub = false
     @State private var didCopyNsec = false
+    @State private var didCopyAppVersion = false
+    @State private var copyToastMessage: String?
     @State private var npubCopyResetTask: Task<Void, Never>?
     @State private var nsecCopyResetTask: Task<Void, Never>?
+    @State private var appVersionCopyResetTask: Task<Void, Never>?
+    @State private var copyToastResetTask: Task<Void, Never>?
 
     init(
         npub: String,
@@ -49,6 +53,13 @@ struct MyNpubQrSheet: View {
     private var hasProfileChanges: Bool {
         normalized(nameDraft) != normalized(profile.name)
             || normalized(aboutDraft) != normalized(profile.about)
+    }
+
+    private var appVersionDisplay: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        return "v\(version) (\(build))"
     }
 
     @ViewBuilder
@@ -207,6 +218,37 @@ struct MyNpubQrSheet: View {
     }
 
     @ViewBuilder
+    private var appVersionSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Button {
+                    copyToClipboard(appVersionDisplay, kind: .appVersion)
+                } label: {
+                    Text(appVersionDisplay)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(TestIds.myProfileAppVersionValue)
+                .accessibilityLabel("Copy app version")
+
+                copyAccessory(
+                    copied: didCopyAppVersion,
+                    testId: TestIds.myProfileAppVersionCopy,
+                    accessibilityLabel: didCopyAppVersion ? "Copied app version" : "Copy app version"
+                ) {
+                    copyToClipboard(appVersionDisplay, kind: .appVersion)
+                }
+            }
+        } header: {
+            Text("App Version")
+        } footer: {
+            Text("Tap to copy when sharing troubleshooting details.")
+        }
+    }
+
+    @ViewBuilder
     private var content: some View {
         photoSection
         profileSection
@@ -215,6 +257,7 @@ struct MyNpubQrSheet: View {
         if let nsec = nsecProvider() {
             nsecSection(nsec)
         }
+        appVersionSection
         notificationsSection
         logoutSection
     }
@@ -245,6 +288,8 @@ struct MyNpubQrSheet: View {
             .onDisappear {
                 npubCopyResetTask?.cancel()
                 nsecCopyResetTask?.cancel()
+                appVersionCopyResetTask?.cancel()
+                copyToastResetTask?.cancel()
             }
             .confirmationDialog("Log out?", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
                 Button("Log out", role: .destructive) {
@@ -255,6 +300,9 @@ struct MyNpubQrSheet: View {
             } message: {
                 Text("You can log back in with your nsec.")
             }
+        }
+        .overlay(alignment: .bottom) {
+            copyToastOverlay
         }
     }
 
@@ -269,6 +317,7 @@ struct MyNpubQrSheet: View {
     private enum CopyKind {
         case npub
         case nsec
+        case appVersion
     }
 
     @MainActor
@@ -290,6 +339,44 @@ struct MyNpubQrSheet: View {
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
                 didCopyNsec = false
             }
+        case .appVersion:
+            didCopyAppVersion = true
+            appVersionCopyResetTask?.cancel()
+            appVersionCopyResetTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                didCopyAppVersion = false
+            }
+            showCopyToast("Copied app version")
+        }
+    }
+
+    @MainActor
+    private func showCopyToast(_ message: String) {
+        withAnimation {
+            copyToastMessage = message
+        }
+        copyToastResetTask?.cancel()
+        copyToastResetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation {
+                copyToastMessage = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var copyToastOverlay: some View {
+        if let message = copyToastMessage {
+            Text(message)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.82), in: Capsule())
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityIdentifier("my_profile_copy_toast")
+                .allowsHitTesting(false)
         }
     }
 

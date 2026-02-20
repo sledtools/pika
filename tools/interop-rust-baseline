@@ -13,6 +13,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/tools/lib/local-e2e-fixture.sh"
 
 KEEP=0
 MANUAL=0
@@ -45,14 +46,8 @@ if [ ! -d "$RUST_INTEROP_DIR" ]; then
 fi
 MDK_DIR="${MDK_DIR:-$HOME/code/mdk}"
 
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: missing '$1' on PATH" >&2
-    exit 1
-  fi
-}
-need nostr-rs-relay
-need cargo
+pika_fixture_need nostr-rs-relay
+pika_fixture_need cargo
 
 if [ -d "$MDK_DIR/.git" ]; then
   mdk_head="$(cd "$MDK_DIR" && git rev-parse HEAD 2>/dev/null || true)"
@@ -98,15 +93,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-RELAY_PORT="$(
-  python3 - <<'PY'
-import socket
-s=socket.socket()
-s.bind(("127.0.0.1",0))
-print(s.getsockname()[1])
-s.close()
-PY
-)"
+RELAY_PORT="$(pika_fixture_pick_free_port)"
 
 RELAY_DB_DIR="${STATE_DIR}/relay-db"
 mkdir -p "$RELAY_DB_DIR"
@@ -117,23 +104,16 @@ if [ ! -f "$RELAY_CONFIG" ]; then
 fi
 
 RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
-sed -E \
-  -e "s|^relay_url = \\\".*\\\"|relay_url = \\\"ws://127.0.0.1:${RELAY_PORT}\\\"|g" \
-  -e "s|^port = [0-9]+|port = ${RELAY_PORT}|g" \
-  -e "s|^data_directory = \\\".*\\\"|data_directory = \\\"${RELAY_DB_DIR}\\\"|g" \
-  "${RELAY_CONFIG}" > "${RELAY_CONFIG_TMP}"
+pika_fixture_rewrite_relay_config "${RELAY_CONFIG}" "${RELAY_CONFIG_TMP}" "${RELAY_PORT}" "${RELAY_DB_DIR}"
 
 RELAY_LOG="${STATE_DIR}/relay.log"
 echo "starting local relay (nostr-rs-relay) state_dir=$STATE_DIR port=$RELAY_PORT"
-nostr-rs-relay --db "${RELAY_DB_DIR}" --config "${RELAY_CONFIG_TMP}" >"${RELAY_LOG}" 2>&1 &
-RELAY_PID="$!"
-
-for _ in $(seq 1 200); do
-  if (echo >"/dev/tcp/127.0.0.1/${RELAY_PORT}") >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.05
-done
+pika_fixture_start_relay "${RELAY_DB_DIR}" "${RELAY_CONFIG_TMP}" "${RELAY_LOG}"
+RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
+if ! pika_fixture_wait_for_tcp "127.0.0.1" "${RELAY_PORT}" 200 0.05; then
+  echo "error: local relay did not become reachable on port ${RELAY_PORT}" >&2
+  exit 1
+fi
 
 RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
@@ -141,45 +121,18 @@ ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 echo "relay_url=${RELAY_URL}"
 echo "android_relay_url=${ANDROID_RELAY_URL}"
 
-rm -f "$BOT_LOG"
 echo "starting rust bot (logs at: $BOT_LOG)"
-(
-  cd "$RUST_INTEROP_DIR"
-  cargo run -q -p rust_harness -- bot --relay "$RELAY_URL" --state-dir "${STATE_DIR}/bot" --timeout-sec "$BOT_TIMEOUT_SEC"
-) >"$BOT_LOG" 2>&1 &
-BOT_PID="$!"
-
-BOT_NPUB=""
-BOT_PUBKEY=""
-for i in $(seq 1 1200); do
-  if [ -s "$BOT_LOG" ]; then
-    # Example line:
-    #   [openclaw_bot] ready pubkey=<hex> npub=<npub>
-    line="$(grep -E "\\[openclaw_bot\\] ready pubkey=" "$BOT_LOG" | tail -n 1 || true)"
-    if [ -n "${line:-}" ]; then
-      # Parse without regex tooling to avoid environment-specific sed quirks.
-      BOT_PUBKEY="${line#*pubkey=}"
-      BOT_PUBKEY="${BOT_PUBKEY%% *}"
-      BOT_NPUB="${line#*npub=}"
-      BOT_NPUB="${BOT_NPUB%% *}"
-      if [ -n "${BOT_PUBKEY:-}" ] && [ -n "${BOT_NPUB:-}" ]; then
-        break
-      fi
-    fi
-  fi
-  if ! kill -0 "$BOT_PID" >/dev/null 2>&1; then
-    echo "error: rust bot exited early; last logs:" >&2
-    tail -n 120 "$BOT_LOG" >&2 || true
-    exit 1
-  fi
-  sleep 0.5
-done
-
-if [ -z "${BOT_NPUB:-}" ]; then
-  echo "error: failed to detect bot identity from logs; last logs:" >&2
-  tail -n 160 "$BOT_LOG" >&2 || true
+if ! pika_fixture_start_bot_and_wait \
+  "${BOT_LOG}" \
+  "\\[openclaw_bot\\] ready pubkey=" \
+  1200 \
+  0.5 \
+  bash -lc "cd \"${RUST_INTEROP_DIR}\" && cargo run -q -p rust_harness -- bot --relay \"${RELAY_URL}\" --state-dir \"${STATE_DIR}/bot\" --timeout-sec \"${BOT_TIMEOUT_SEC}\""; then
   exit 1
 fi
+BOT_PID="${PIKA_FIXTURE_BOT_PID}"
+BOT_NPUB="${PIKA_FIXTURE_BOT_NPUB}"
+BOT_PUBKEY="${PIKA_FIXTURE_BOT_PUBKEY}"
 
 echo "bot_npub=${BOT_NPUB}"
 echo "bot_pubkey_hex=${BOT_PUBKEY}"

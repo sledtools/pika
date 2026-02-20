@@ -5,8 +5,19 @@ mod views;
 use app_manager::AppManager;
 use iced::widget::{column, container, row, rule, text};
 use iced::{Element, Fill, Font, Size, Subscription, Task, Theme};
-use pika_core::{AppAction, AppState, AuthState};
+use pika_core::{
+    project_desktop, AppAction, AppState, AuthState, DesktopDetailPane, DesktopShellMode, Screen,
+};
 use std::time::Duration;
+
+fn app_version_display() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    if let Some(build) = option_env!("PIKA_BUILD_NUMBER") {
+        format!("v{version} ({build})")
+    } else {
+        format!("v{version}")
+    }
+}
 
 pub fn main() -> iced::Result {
     iced::application(DesktopApp::new, DesktopApp::update, DesktopApp::view)
@@ -33,6 +44,14 @@ fn manager_update_stream(manager: &AppManager) -> impl iced::futures::Stream<Ite
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiOverlay {
+    None,
+    NewChat,
+    NewGroup,
+    MyProfile,
+}
+
 struct DesktopApp {
     manager: Option<AppManager>,
     boot_error: Option<String>,
@@ -44,18 +63,17 @@ struct DesktopApp {
     new_chat_search: String,
     filtered_follows: Vec<pika_core::FollowListEntry>,
     message_input: String,
-    show_new_chat_form: bool,
-    selected_chat_id: Option<String>,
+    optimistic_selected_chat_id: Option<String>,
+    overlay: UiOverlay,
     // Group creation
-    show_new_group_form: bool,
     group_name_input: String,
     selected_group_members: Vec<String>,
     // My profile
-    show_my_profile: bool,
     profile_name_draft: String,
     profile_about_draft: String,
+    app_version_display: String,
+    profile_toast: Option<String>,
     // Group info
-    show_group_info: bool,
     group_info_name_draft: String,
     group_info_npub_input: String,
 }
@@ -68,6 +86,8 @@ pub enum Message {
     Login,
     CreateAccount,
     Logout,
+    ResetLocalSessionData,
+    ResetRelayConfig,
     NewChatChanged(String),
     NewChatSearchChanged(String),
     StartChat,
@@ -89,6 +109,7 @@ pub enum Message {
     ProfileAboutChanged(String),
     SaveProfile,
     CopyNpub,
+    CopyAppVersion,
     // Group info
     ShowGroupInfo,
     CloseGroupInfo,
@@ -159,8 +180,22 @@ impl DesktopApp {
                     manager.logout();
                 }
                 self.avatar_cache.borrow_mut().clear();
-                self.selected_chat_id = None;
+                self.optimistic_selected_chat_id = None;
+                self.profile_toast = None;
                 self.clear_all_overlays();
+            }
+            Message::ResetLocalSessionData => {
+                if let Some(manager) = &self.manager {
+                    manager.clear_local_session_for_recovery();
+                    manager.dispatch(AppAction::ClearToast);
+                }
+                self.optimistic_selected_chat_id = None;
+                self.clear_all_overlays();
+            }
+            Message::ResetRelayConfig => {
+                if let Some(manager) = &self.manager {
+                    manager.reset_relay_config_to_defaults();
+                }
             }
             Message::NewChatChanged(value) => self.new_chat_input = value,
             Message::NewChatSearchChanged(value) => {
@@ -168,14 +203,10 @@ impl DesktopApp {
                 self.refilter_follows();
             }
             Message::ToggleNewChatForm => {
-                let opening = !self.show_new_chat_form;
+                let opening = self.overlay != UiOverlay::NewChat;
                 self.clear_all_overlays();
-                self.show_new_chat_form = opening;
-                if !self.show_new_chat_form {
-                    self.new_chat_input.clear();
-                    self.new_chat_search.clear();
-                }
-                if self.show_new_chat_form {
+                if opening {
+                    self.overlay = UiOverlay::NewChat;
                     self.refilter_follows();
                     if let Some(manager) = &self.manager {
                         manager.dispatch(AppAction::RefreshFollowList);
@@ -199,7 +230,7 @@ impl DesktopApp {
                 // Form closes when the next core state update reports completion.
             }
             Message::OpenChat(chat_id) => {
-                self.selected_chat_id = Some(chat_id.clone());
+                self.optimistic_selected_chat_id = Some(chat_id.clone());
                 self.clear_all_overlays();
                 if let Some(manager) = &self.manager {
                     manager.dispatch(AppAction::OpenChat { chat_id });
@@ -233,17 +264,19 @@ impl DesktopApp {
                 }
             }
             Message::ClearToast => {
-                if let Some(manager) = &self.manager {
+                if self.profile_toast.is_some() {
+                    self.profile_toast = None;
+                } else if let Some(manager) = &self.manager {
                     manager.dispatch(AppAction::ClearToast);
                 }
             }
 
             // ── Group creation ────────────────────────────────────────
             Message::ToggleNewGroupForm => {
-                let opening = !self.show_new_group_form;
+                let opening = self.overlay != UiOverlay::NewGroup;
                 self.clear_all_overlays();
-                self.show_new_group_form = opening;
                 if opening {
+                    self.overlay = UiOverlay::NewGroup;
                     self.refilter_follows();
                     if let Some(manager) = &self.manager {
                         manager.dispatch(AppAction::RefreshFollowList);
@@ -276,14 +309,15 @@ impl DesktopApp {
                     });
                 }
                 self.clear_all_overlays();
+                self.optimistic_selected_chat_id = None;
             }
 
             // ── My profile ────────────────────────────────────────────
             Message::ToggleMyProfile => {
-                let opening = !self.show_my_profile;
+                let opening = self.overlay != UiOverlay::MyProfile;
                 self.clear_all_overlays();
-                self.show_my_profile = opening;
                 if opening {
+                    self.overlay = UiOverlay::MyProfile;
                     self.profile_name_draft = self.state.my_profile.name.clone();
                     self.profile_about_draft = self.state.my_profile.about.clone();
                     if let Some(manager) = &self.manager {
@@ -303,21 +337,38 @@ impl DesktopApp {
             }
             Message::CopyNpub => {
                 if let AuthState::LoggedIn { ref npub, .. } = self.state.auth {
+                    self.profile_toast = Some("Copied npub".to_string());
                     return iced::clipboard::write(npub.clone());
                 }
+            }
+            Message::CopyAppVersion => {
+                self.profile_toast = Some("Copied app version".to_string());
+                return iced::clipboard::write(self.app_version_display.clone());
             }
 
             // ── Group info ────────────────────────────────────────────
             Message::ShowGroupInfo => {
                 self.clear_all_overlays();
-                self.show_group_info = true;
                 if let Some(chat) = &self.state.current_chat {
                     self.group_info_name_draft = chat.group_name.clone().unwrap_or_default();
+                    if let Some(manager) = &self.manager {
+                        manager.dispatch(AppAction::PushScreen {
+                            screen: Screen::GroupInfo {
+                                chat_id: chat.chat_id.clone(),
+                            },
+                        });
+                    }
                 }
             }
             Message::CloseGroupInfo => {
-                self.show_group_info = false;
                 self.group_info_npub_input.clear();
+                if let Some(manager) = &self.manager {
+                    let mut stack = self.state.router.screen_stack.clone();
+                    if matches!(stack.last(), Some(Screen::GroupInfo { .. })) {
+                        stack.pop();
+                        manager.dispatch(AppAction::UpdateScreenStack { stack });
+                    }
+                }
             }
             Message::GroupInfoNameChanged(value) => self.group_info_name_draft = value,
             Message::RenameGroup => {
@@ -365,7 +416,6 @@ impl DesktopApp {
                     }
                 }
                 self.clear_all_overlays();
-                self.selected_chat_id = None;
             }
         }
 
@@ -373,6 +423,8 @@ impl DesktopApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let route = project_desktop(&self.state);
+
         // ── Boot error ──────────────────────────────────────────────
         if let Some(error) = &self.boot_error {
             return container(
@@ -389,17 +441,20 @@ impl DesktopApp {
         }
 
         // ── Login screen ────────────────────────────────────────────
-        if matches!(self.state.auth, AuthState::LoggedOut) {
+        if matches!(route.shell_mode, DesktopShellMode::Login) {
             let is_restoring = self
                 .manager
                 .as_ref()
                 .map_or(false, |m| m.is_restoring_session());
+            let show_recovery = self.should_offer_recovery_controls();
 
             return views::login::login_view(
                 &self.nsec_input,
                 self.state.busy.creating_account,
                 is_restoring,
                 self.state.toast.as_deref(),
+                show_recovery,
+                self.should_offer_relay_reset(),
             );
         }
 
@@ -407,8 +462,13 @@ impl DesktopApp {
 
         // Toast bar (optional)
         let mut main_column = column![];
-        if let Some(toast_msg) = &self.state.toast {
-            main_column = main_column.push(views::toast::toast_bar(toast_msg));
+        if let Some(toast_msg) = self
+            .profile_toast
+            .as_deref()
+            .or(self.state.toast.as_deref())
+        {
+            let show_relay_reset = self.profile_toast.is_none() && self.should_offer_relay_reset();
+            main_column = main_column.push(views::toast::toast_bar(toast_msg, show_relay_reset));
         }
 
         let cache = &mut *self.avatar_cache.borrow_mut();
@@ -416,18 +476,22 @@ impl DesktopApp {
 
         // Chat rail (left sidebar)
         let my_profile_pic = self.state.my_profile.picture_url.as_deref();
+        let selected_chat_id = effective_selected_chat_id(
+            route.selected_chat_id.as_deref(),
+            self.optimistic_selected_chat_id.as_deref(),
+        );
         let rail = views::chat_rail::chat_rail_view(
             &self.state.chat_list,
-            self.selected_chat_id.as_deref(),
-            self.show_new_chat_form,
-            self.show_new_group_form,
-            self.show_my_profile,
+            selected_chat_id,
+            self.overlay == UiOverlay::NewChat,
+            self.overlay == UiOverlay::NewGroup,
+            self.overlay == UiOverlay::MyProfile,
             my_profile_pic,
             cache,
         );
 
         // Center pane routing (mutually exclusive overlays)
-        let center_pane: Element<'_, Message> = if self.show_my_profile {
+        let center_pane: Element<'_, Message> = if self.overlay == UiOverlay::MyProfile {
             let npub = match &self.state.auth {
                 AuthState::LoggedIn { npub, .. } => npub.as_str(),
                 _ => "",
@@ -436,10 +500,11 @@ impl DesktopApp {
                 &self.profile_name_draft,
                 &self.profile_about_draft,
                 npub,
+                &self.app_version_display,
                 self.state.my_profile.picture_url.as_deref(),
                 cache,
             )
-        } else if self.show_group_info {
+        } else if matches!(route.detail_pane, DesktopDetailPane::GroupInfo { .. }) {
             if let Some(chat) = &self.state.current_chat {
                 let my_pubkey = match &self.state.auth {
                     AuthState::LoggedIn { pubkey, .. } => pubkey.as_str(),
@@ -455,7 +520,7 @@ impl DesktopApp {
             } else {
                 views::empty_state::empty_state_view()
             }
-        } else if self.show_new_group_form {
+        } else if self.overlay == UiOverlay::NewGroup {
             views::new_group_chat::new_group_chat_view(
                 &self.filtered_follows,
                 &self.group_name_input,
@@ -466,7 +531,7 @@ impl DesktopApp {
                 &self.new_chat_search,
                 cache,
             )
-        } else if self.show_new_chat_form {
+        } else if self.overlay == UiOverlay::NewChat {
             views::new_chat::new_chat_view(
                 &self.filtered_follows,
                 &self.new_chat_input,
@@ -475,8 +540,14 @@ impl DesktopApp {
                 &self.new_chat_search,
                 cache,
             )
-        } else if let Some(chat) = &self.state.current_chat {
-            views::conversation::conversation_view(chat, &self.message_input, cache)
+        } else if route.selected_chat_id.is_some() {
+            if let Some(chat) = &self.state.current_chat {
+                views::conversation::conversation_view(chat, &self.message_input, cache)
+            } else {
+                views::empty_state::empty_state_view()
+            }
+        } else if matches!(route.detail_pane, DesktopDetailPane::PeerProfile { .. }) {
+            views::empty_state::empty_state_view()
         } else {
             views::empty_state::empty_state_view()
         };
@@ -509,15 +580,14 @@ impl DesktopApp {
             new_chat_search: String::new(),
             filtered_follows: Vec::new(),
             message_input: String::new(),
-            show_new_chat_form: false,
-            selected_chat_id: None,
-            show_new_group_form: false,
+            optimistic_selected_chat_id: None,
+            overlay: UiOverlay::None,
             group_name_input: String::new(),
             selected_group_members: Vec::new(),
-            show_my_profile: false,
             profile_name_draft: String::new(),
             profile_about_draft: String::new(),
-            show_group_info: false,
+            app_version_display: app_version_display(),
+            profile_toast: None,
             group_info_name_draft: String::new(),
             group_info_npub_input: String::new(),
         }
@@ -538,32 +608,43 @@ impl DesktopApp {
             }
 
             // Close new-chat form once creating_chat finishes.
-            if self.state.busy.creating_chat && !latest.busy.creating_chat {
-                self.show_new_chat_form = false;
+            if self.state.busy.creating_chat
+                && !latest.busy.creating_chat
+                && self.overlay == UiOverlay::NewChat
+            {
+                self.overlay = UiOverlay::None;
                 self.new_chat_input.clear();
-            }
-
-            // Sync selected_chat_id if core's current_chat changed.
-            if latest.current_chat.is_none() {
-                self.selected_chat_id = None;
             }
 
             // Close new-group form once creating_chat finishes.
             if self.state.busy.creating_chat
                 && !latest.busy.creating_chat
-                && self.show_new_group_form
+                && self.overlay == UiOverlay::NewGroup
             {
                 self.clear_all_overlays();
             }
 
             // Sync my_profile drafts when profile state updates.
-            if self.show_my_profile && self.state.my_profile.name != latest.my_profile.name {
+            if self.overlay == UiOverlay::MyProfile
+                && self.state.my_profile.name != latest.my_profile.name
+            {
                 self.profile_name_draft = latest.my_profile.name.clone();
                 self.profile_about_draft = latest.my_profile.about.clone();
             }
 
+            let latest_route = project_desktop(&latest);
+            if let Some(optimistic_chat_id) = self.optimistic_selected_chat_id.as_deref() {
+                let authoritative_selection = latest_route.selected_chat_id.as_deref();
+                if authoritative_selection == Some(optimistic_chat_id)
+                    || authoritative_selection.is_some()
+                    || matches!(latest_route.shell_mode, DesktopShellMode::Login)
+                {
+                    self.optimistic_selected_chat_id = None;
+                }
+            }
+
             self.state = latest;
-            if self.show_new_chat_form || self.show_new_group_form {
+            if matches!(self.overlay, UiOverlay::NewChat | UiOverlay::NewGroup) {
                 self.refilter_follows();
             }
         }
@@ -572,7 +653,7 @@ impl DesktopApp {
     }
 
     fn retry_follow_list_if_needed(&self) {
-        let needs_follows = self.show_new_chat_form || self.show_new_group_form;
+        let needs_follows = matches!(self.overlay, UiOverlay::NewChat | UiOverlay::NewGroup);
         if needs_follows
             && self.state.follow_list.is_empty()
             && !self.state.busy.fetching_follow_list
@@ -584,15 +665,43 @@ impl DesktopApp {
     }
 
     fn clear_all_overlays(&mut self) {
-        self.show_new_chat_form = false;
-        self.show_new_group_form = false;
-        self.show_my_profile = false;
-        self.show_group_info = false;
+        self.overlay = UiOverlay::None;
         self.new_chat_input.clear();
         self.new_chat_search.clear();
         self.group_name_input.clear();
         self.selected_group_members.clear();
         self.group_info_npub_input.clear();
+    }
+
+    fn should_offer_recovery_controls(&self) -> bool {
+        let from_toast = self
+            .state
+            .toast
+            .as_deref()
+            .map(|toast| {
+                toast.contains("Login failed")
+                    || toast.contains("open encrypted mdk sqlite db")
+                    || toast.contains("keyring")
+            })
+            .unwrap_or(false);
+        let restoring = self
+            .manager
+            .as_ref()
+            .map(|m| m.is_restoring_session())
+            .unwrap_or(false);
+        from_toast || restoring
+    }
+
+    fn should_offer_relay_reset(&self) -> bool {
+        self.state
+            .toast
+            .as_deref()
+            .map(|toast| {
+                toast.contains("relay")
+                    || toast.contains("no relays")
+                    || toast.contains("not connected")
+            })
+            .unwrap_or(false)
     }
 
     fn refilter_follows(&mut self) {
@@ -617,5 +726,29 @@ impl DesktopApp {
                 .cloned()
                 .collect();
         }
+    }
+}
+
+fn effective_selected_chat_id<'a>(
+    route_selected_chat_id: Option<&'a str>,
+    optimistic_selected_chat_id: Option<&'a str>,
+) -> Option<&'a str> {
+    optimistic_selected_chat_id.or(route_selected_chat_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_selected_chat_id;
+
+    #[test]
+    fn effective_selected_chat_prefers_optimistic_selection() {
+        let selected = effective_selected_chat_id(Some("route-chat"), Some("optimistic-chat"));
+        assert_eq!(selected, Some("optimistic-chat"));
+    }
+
+    #[test]
+    fn effective_selected_chat_falls_back_to_projected_selection() {
+        let selected = effective_selected_chat_id(Some("route-chat"), None);
+        assert_eq!(selected, Some("route-chat"));
     }
 }

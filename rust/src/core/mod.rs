@@ -69,6 +69,14 @@ pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowLi
     });
     entries
 }
+
+pub(crate) fn default_app_config_json() -> String {
+    config::default_app_config_json()
+}
+
+pub(crate) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
+    config::relay_reset_config_json(existing_json)
+}
 use nostr_sdk::prelude::*;
 
 use interop::{
@@ -852,10 +860,15 @@ impl AppCore {
             InternalEvent::KeyPackagePublished { ok, ref error } => {
                 tracing::info!(ok, ?error, "key_package_published");
                 if !ok {
-                    self.toast(format!(
-                        "Key package publish failed: {}",
-                        error.clone().unwrap_or_else(|| "unknown error".into())
-                    ));
+                    let msg = error.clone().unwrap_or_else(|| "unknown error".into());
+                    if msg.contains("no relays")
+                        || msg.contains("not ready")
+                        || msg.contains("not connected")
+                    {
+                        self.toast("Key package publish delayed: relay connection is not ready");
+                    } else {
+                        self.toast(format!("Key package publish failed: {msg}"));
+                    }
                 }
             }
             InternalEvent::PushSubscriptionsSynced { groups } => {
@@ -1665,10 +1678,7 @@ impl AppCore {
                 self.archived_chats.insert(chat_id.clone());
                 self.save_archived_chats();
                 // If we're viewing this chat, navigate back.
-                self.state
-                    .router
-                    .screen_stack
-                    .retain(|s| !matches!(s, Screen::Chat { chat_id: id } if id == &chat_id));
+                prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
                 self.refresh_chat_list_from_storage();
                 self.emit_router();
@@ -1787,6 +1797,23 @@ impl AppCore {
                     self.refresh_my_profile(false);
                     self.refresh_follow_list();
                 }
+            }
+            AppAction::ReloadConfig => {
+                self.config = config::load_app_config(&self.data_dir);
+
+                if !self.network_enabled() {
+                    self.toast("Config reloaded (network disabled)");
+                    return;
+                }
+
+                if self.is_logged_in() {
+                    self.publish_key_package_relays_best_effort();
+                    self.ensure_key_package_published_best_effort();
+                    self.recompute_subscriptions();
+                    self.refresh_follow_list();
+                }
+
+                self.toast("Relay config reloaded");
             }
             AppAction::OpenPeerProfile { pubkey } => {
                 if !self.is_logged_in() {
@@ -2662,10 +2689,7 @@ impl AppCore {
                 );
 
                 // Navigate back to chat list.
-                self.state
-                    .router
-                    .screen_stack
-                    .retain(|s| !matches!(s, Screen::Chat { chat_id: id } if id == &chat_id));
+                prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
                 self.refresh_all_from_storage();
                 self.emit_router();
@@ -2851,4 +2875,73 @@ fn call_timeline_ended_text(
     text
 }
 
+fn prune_chat_routes(stack: &mut Vec<Screen>, chat_id: &str) {
+    stack.retain(|screen| {
+        !matches!(
+            screen,
+            Screen::Chat { chat_id: id } | Screen::GroupInfo { chat_id: id } if id == chat_id
+        )
+    });
+}
+
 // (Config + interop helpers live in `config.rs` and `interop.rs`.)
+
+#[cfg(test)]
+mod tests {
+    use super::prune_chat_routes;
+    use crate::Screen;
+
+    #[test]
+    fn prune_chat_routes_removes_chat_and_group_info_for_target_chat() {
+        let mut stack = vec![
+            Screen::NewChat,
+            Screen::Chat {
+                chat_id: "chat-a".into(),
+            },
+            Screen::GroupInfo {
+                chat_id: "chat-a".into(),
+            },
+            Screen::GroupInfo {
+                chat_id: "chat-b".into(),
+            },
+        ];
+
+        prune_chat_routes(&mut stack, "chat-a");
+
+        assert_eq!(
+            stack,
+            vec![
+                Screen::NewChat,
+                Screen::GroupInfo {
+                    chat_id: "chat-b".into()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_chat_routes_keeps_stack_when_chat_not_present() {
+        let mut stack = vec![
+            Screen::Chat {
+                chat_id: "chat-a".into(),
+            },
+            Screen::GroupInfo {
+                chat_id: "chat-b".into(),
+            },
+        ];
+
+        prune_chat_routes(&mut stack, "chat-z");
+
+        assert_eq!(
+            stack,
+            vec![
+                Screen::Chat {
+                    chat_id: "chat-a".into()
+                },
+                Screen::GroupInfo {
+                    chat_id: "chat-b".into()
+                }
+            ]
+        );
+    }
+}

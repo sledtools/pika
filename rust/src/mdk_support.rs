@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
 use mdk_core::{MdkConfig, MDK};
-use mdk_sqlite_storage::MdkSqliteStorage;
+use mdk_sqlite_storage::{error::Error as MdkStorageError, MdkSqliteStorage};
 use nostr_sdk::prelude::PublicKey;
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
@@ -124,41 +124,60 @@ fn mdk_config() -> MdkConfig {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_legacy_missing_file_key_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<MdkStorageError>()
+            .map(|storage_err| matches!(storage_err, MdkStorageError::WrongEncryptionKey))
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn remove_mdk_db_artifacts(db_path: &Path) {
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("sqlite3-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("sqlite3-wal"));
+}
+
 /// Desktop: file-based encryption key stored next to the DB file.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn open_mdk_desktop_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMdk> {
     let pubkey_hex = pubkey.to_hex();
     let db_path = mdk_db_path(data_dir, &pubkey_hex);
     let key_path = db_path.with_extension("key");
+    let had_existing_db = db_path.exists();
 
     if let Some(parent) = key_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create mdk key dir: {}", parent.display()))?;
     }
 
-    let key: [u8; 32] = if key_path.exists() {
+    let (key, created_key): ([u8; 32], bool) = if key_path.exists() {
         let bytes = std::fs::read(&key_path)
             .with_context(|| format!("read mdk file key: {}", key_path.display()))?;
-        bytes.as_slice().try_into().map_err(|_| {
+        let key = bytes.as_slice().try_into().map_err(|_| {
             anyhow!(
                 "invalid mdk file key length: expected 32 bytes, got {}",
                 bytes.len()
             )
-        })?
+        })?;
+        (key, false)
     } else {
         use rand::rngs::OsRng;
         use rand::RngCore;
 
-        let mut k = [0u8; 32];
-        OsRng.fill_bytes(&mut k);
-        std::fs::write(&key_path, k)
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        std::fs::write(&key_path, key)
             .with_context(|| format!("write mdk file key: {}", key_path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
         }
-        k
+        (key, true)
     };
 
     // If a previous attempt created an empty DB file (e.g., keyring failure mid-init),
@@ -169,18 +188,39 @@ fn open_mdk_desktop_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaM
         }
     }
 
-    let storage =
+    let open = || {
         MdkSqliteStorage::new_with_key(&db_path, mdk_sqlite_storage::EncryptionConfig::new(key))
             .with_context(|| {
                 format!(
                     "open encrypted mdk sqlite db with file key: {}",
                     db_path.display()
                 )
-            })?;
+            })
+            .map(|storage| {
+                MDK::builder(storage)
+                    .with_config(MdkConfig::default())
+                    .build()
+            })
+    };
 
-    Ok(MDK::builder(storage)
-        .with_config(MdkConfig::default())
-        .build())
+    match open() {
+        Ok(mdk) => Ok(mdk),
+        Err(err) => {
+            // Legacy desktop builds could leave an encrypted DB without a persisted file key.
+            // Only recover when an existing DB fails specifically with WrongEncryptionKey.
+            if created_key && had_existing_db && is_legacy_missing_file_key_error(&err) {
+                tracing::warn!(
+                    error = %err,
+                    path = %db_path.display(),
+                    "desktop mdk key missing for existing db; recreating local encrypted db"
+                );
+                remove_mdk_db_artifacts(&db_path);
+                open()
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 #[cfg(all(target_os = "ios", target_env = "sim"))]
@@ -241,4 +281,78 @@ fn open_mdk_ios_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMdk> 
             })?;
 
     Ok(MDK::builder(storage).with_config(mdk_config()).build())
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod tests {
+    use super::*;
+    use nostr_sdk::prelude::Keys;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    use tempfile::tempdir;
+
+    #[test]
+    fn desktop_recovers_unreadable_legacy_db_when_key_file_missing() {
+        let tmp = tempdir().expect("tempdir");
+        let data_dir = tmp.path().to_string_lossy().to_string();
+        let pubkey = Keys::generate().public_key();
+        let pubkey_hex = pubkey.to_hex();
+        let db_path = mdk_db_path(&data_dir, &pubkey_hex);
+        let key_path = db_path.with_extension("key");
+
+        std::fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+
+        // Simulate a legacy encrypted DB created with an unknown keyring-backed key.
+        let mut legacy_key = [0u8; 32];
+        OsRng.fill_bytes(&mut legacy_key);
+        let storage = MdkSqliteStorage::new_with_key(
+            &db_path,
+            mdk_sqlite_storage::EncryptionConfig::new(legacy_key),
+        )
+        .expect("create legacy db");
+        let legacy = MDK::builder(storage)
+            .with_config(MdkConfig::default())
+            .build();
+        drop(legacy);
+        assert!(!key_path.exists(), "legacy setup should not have file key");
+
+        // First open recreates unreadable DB and persists a new file key.
+        let opened = open_mdk_desktop_file_key(&data_dir, &pubkey).expect("open with recovery");
+        drop(opened);
+        assert!(key_path.exists(), "file key should be persisted");
+
+        // Subsequent open should succeed with the persisted key.
+        let reopened = open_mdk_desktop_file_key(&data_dir, &pubkey).expect("reopen");
+        drop(reopened);
+    }
+
+    #[test]
+    fn desktop_does_not_delete_db_on_non_legacy_open_failure() {
+        let tmp = tempdir().expect("tempdir");
+        let data_dir = tmp.path().to_string_lossy().to_string();
+        let pubkey = Keys::generate().public_key();
+        let pubkey_hex = pubkey.to_hex();
+        let db_path = mdk_db_path(&data_dir, &pubkey_hex);
+        let key_path = db_path.with_extension("key");
+
+        // Use a directory at the DB path to force an open failure that is not WrongEncryptionKey.
+        std::fs::create_dir_all(&db_path).expect("create directory at db path");
+        assert!(db_path.is_dir(), "fixture must stay a directory");
+
+        let err = match open_mdk_desktop_file_key(&data_dir, &pubkey) {
+            Ok(_) => panic!("open should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            db_path.is_dir(),
+            "non-legacy failures must not delete db artifacts"
+        );
+        assert!(key_path.exists(), "key file should still be persisted");
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("open encrypted mdk sqlite db with file key"),
+            "error should surface context for troubleshooting"
+        );
+    }
 }

@@ -9,6 +9,7 @@ set -euo pipefail
 # Usage:
 #   tools/ui-e2e-local --platform android
 #   tools/ui-e2e-local --platform ios
+#   tools/ui-e2e-local --platform desktop
 #
 # Env:
 #   BOT_TIMEOUT_SEC=900
@@ -16,6 +17,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/tools/lib/local-e2e-fixture.sh"
 
 platform=""
 KEEP="${KEEP:-0}"
@@ -23,7 +25,7 @@ BOT_TIMEOUT_SEC="${BOT_TIMEOUT_SEC:-900}"
 
 usage() {
   cat >&2 <<EOF
-usage: tools/ui-e2e-local --platform android|ios
+usage: tools/ui-e2e-local --platform android|ios|desktop
 
 Starts a local relay+bot and runs the platform UI E2E ping/pong test.
 EOF
@@ -81,16 +83,9 @@ if [ "$platform" = "android" ]; then
   fi
 fi
 
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: missing '$1' on PATH" >&2
-    exit 1
-  fi
-}
-
-need nostr-rs-relay
-need cargo
-need python3
+pika_fixture_need nostr-rs-relay
+pika_fixture_need cargo
+pika_fixture_need python3
 
 STATE_DIR="$(mktemp -d /tmp/pika-ui-e2e-local.XXXXXX)"
 BOT_LOG="${STATE_DIR}/rustbot.log"
@@ -112,15 +107,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-RELAY_PORT="$(
-  python3 - <<'PY'
-import socket
-s=socket.socket()
-s.bind(("127.0.0.1",0))
-print(s.getsockname()[1])
-s.close()
-PY
-)"
+RELAY_PORT="$(pika_fixture_pick_free_port)"
 
 RELAY_DB_DIR="${STATE_DIR}/relay-db"
 mkdir -p "$RELAY_DB_DIR"
@@ -131,23 +118,16 @@ if [ ! -f "$RELAY_CONFIG" ]; then
 fi
 
 RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
-sed -E \
-  -e "s|^relay_url = \\\".*\\\"|relay_url = \\\"ws://127.0.0.1:${RELAY_PORT}\\\"|g" \
-  -e "s|^port = [0-9]+|port = ${RELAY_PORT}|g" \
-  -e "s|^data_directory = \\\".*\\\"|data_directory = \\\"${RELAY_DB_DIR}\\\"|g" \
-  "${RELAY_CONFIG}" > "${RELAY_CONFIG_TMP}"
+pika_fixture_rewrite_relay_config "${RELAY_CONFIG}" "${RELAY_CONFIG_TMP}" "${RELAY_PORT}" "${RELAY_DB_DIR}"
 
 RELAY_LOG="${STATE_DIR}/relay.log"
 echo "starting local relay (nostr-rs-relay) port=$RELAY_PORT state_dir=$STATE_DIR"
-nostr-rs-relay --db "${RELAY_DB_DIR}" --config "${RELAY_CONFIG_TMP}" >"${RELAY_LOG}" 2>&1 &
-RELAY_PID="$!"
-
-for _ in $(seq 1 200); do
-  if (echo >"/dev/tcp/127.0.0.1/${RELAY_PORT}") >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.05
-done
+pika_fixture_start_relay "${RELAY_DB_DIR}" "${RELAY_CONFIG_TMP}" "${RELAY_LOG}"
+RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
+if ! pika_fixture_wait_for_tcp "127.0.0.1" "${RELAY_PORT}" 200 0.05; then
+  echo "error: local relay did not become reachable on port ${RELAY_PORT}" >&2
+  exit 1
+fi
 
 RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
@@ -155,105 +135,27 @@ ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 echo "relay_url=${RELAY_URL}"
 echo "android_relay_url=${ANDROID_RELAY_URL}"
 
-rm -f "$BOT_LOG"
 echo "starting rust bot (logs at: $BOT_LOG)"
-(
-  ./tools/pika-e2e-bot --relay "$RELAY_URL" --state-dir "${STATE_DIR}/bot" --timeout-sec "$BOT_TIMEOUT_SEC"
-) >"$BOT_LOG" 2>&1 &
-BOT_PID="$!"
-
-BOT_NPUB=""
-for _ in $(seq 1 1200); do
-  if [ -s "$BOT_LOG" ]; then
-    # Example line:
-    #   [pika_e2e_bot] ready pubkey=<hex> npub=<npub>
-    line="$(grep -E "\\[pika_e2e_bot\\] ready pubkey=" "$BOT_LOG" | tail -n 1 || true)"
-    if [ -n "${line:-}" ]; then
-      BOT_NPUB="${line#*npub=}"
-      BOT_NPUB="${BOT_NPUB%% *}"
-      if [ -n "${BOT_NPUB:-}" ]; then
-        break
-      fi
-    fi
-  fi
-  if ! kill -0 "$BOT_PID" >/dev/null 2>&1; then
-    echo "error: rust bot exited early; last logs:" >&2
-    tail -n 120 "$BOT_LOG" >&2 || true
-    exit 1
-  fi
-  sleep 0.5
-done
-
-if [ -z "${BOT_NPUB:-}" ]; then
-  echo "error: failed to detect bot identity from logs; last logs:" >&2
-  tail -n 160 "$BOT_LOG" >&2 || true
+if ! pika_fixture_start_bot_and_wait \
+  "${BOT_LOG}" \
+  "\\[pika_e2e_bot\\] ready pubkey=" \
+  1200 \
+  0.5 \
+  ./tools/pika-e2e-bot --relay "${RELAY_URL}" --state-dir "${STATE_DIR}/bot" --timeout-sec "${BOT_TIMEOUT_SEC}"; then
   exit 1
 fi
+BOT_PID="${PIKA_FIXTURE_BOT_PID}"
+BOT_NPUB="${PIKA_FIXTURE_BOT_NPUB}"
 
 echo "bot_npub=${BOT_NPUB}"
 
 # Deterministic local test identity. This is NOT used for public relays.
-CLIENT_NSEC=""
-if [ -n "${PIKA_UI_E2E_NSEC:-}" ]; then
-  CLIENT_NSEC="$(tr -d '\n' <<<"${PIKA_UI_E2E_NSEC}" | tr -d '\r')"
-elif [ -f "${ROOT}/.pika-cli-test-nsec" ]; then
-  CLIENT_NSEC="$(tr -d '\n' < "${ROOT}/.pika-cli-test-nsec" | tr -d '\r')"
+generated_nsec=0
+if [ -z "${PIKA_UI_E2E_NSEC:-}" ] && [ ! -f "${ROOT}/.pika-cli-test-nsec" ]; then
+  generated_nsec=1
 fi
-if [ -z "${CLIENT_NSEC:-}" ]; then
-  CLIENT_NSEC="$(
-    python3 - <<'PY'
-import secrets
-
-CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
-def bech32_polymod(values):
-  GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
-  chk = 1
-  for v in values:
-    b = chk >> 25
-    chk = ((chk & 0x1ffffff) << 5) ^ v
-    for i in range(5):
-      chk ^= GEN[i] if ((b >> i) & 1) else 0
-  return chk
-
-def bech32_hrp_expand(hrp):
-  return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
-
-def bech32_create_checksum(hrp, data):
-  values = bech32_hrp_expand(hrp) + data
-  polymod = bech32_polymod(values + [0,0,0,0,0,0]) ^ 1
-  return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
-
-def bech32_encode(hrp, data):
-  combined = data + bech32_create_checksum(hrp, data)
-  return hrp + "1" + "".join([CHARSET[d] for d in combined])
-
-def convertbits(data, frombits, tobits, pad=True):
-  acc = 0
-  bits = 0
-  ret = []
-  maxv = (1 << tobits) - 1
-  for b in data:
-    acc = (acc << frombits) | b
-    bits += frombits
-    while bits >= tobits:
-      bits -= tobits
-      ret.append((acc >> bits) & maxv)
-  if pad:
-    if bits:
-      ret.append((acc << (tobits - bits)) & maxv)
-  else:
-    if bits >= frombits:
-      raise ValueError("excess padding")
-    if (acc << (tobits - bits)) & maxv:
-      raise ValueError("non-zero padding")
-  return ret
-
-sk = secrets.token_bytes(32)
-data5 = convertbits(list(sk), 8, 5, True)
-print(bech32_encode("nsec", data5))
-PY
-  )"
+CLIENT_NSEC="$(pika_fixture_client_nsec "${ROOT}")"
+if [ "${generated_nsec}" = "1" ]; then
   echo "note: generated ephemeral local e2e nsec (set PIKA_UI_E2E_NSEC or .pika-cli-test-nsec to override)" >&2
 fi
 
@@ -294,6 +196,14 @@ case "$platform" in
       PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
       ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -destination "id=$udid" test CODE_SIGNING_ALLOWED=NO \
           -only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+    ;;
+  desktop)
+    PIKA_UI_E2E=1 \
+      PIKA_UI_E2E_BOT_NPUB="${BOT_NPUB}" \
+      PIKA_UI_E2E_RELAYS="${RELAY_URL}" \
+      PIKA_UI_E2E_KP_RELAYS="${RELAY_URL}" \
+      PIKA_UI_E2E_NSEC="${CLIENT_NSEC}" \
+      cargo test -p pika-desktop desktop_e2e_local_ping_pong_with_bot -- --ignored --nocapture
     ;;
   *)
     echo "error: invalid platform: $platform" >&2

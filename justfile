@@ -156,7 +156,7 @@ rmp-nightly-linux NAME="rmp-nightly-linux" ORG="com.example" AVD="rmp_ci_api35":
     echo "error: missing xvfb-run on PATH" >&2; \
     exit 1; \
   fi; \
-  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl timeout 900s \
+  if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=vulkan WINIT_UNIX_BACKEND=x11 timeout 900s \
     xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
     echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
     exit 1; \
@@ -197,6 +197,7 @@ pre-merge-pika: fmt
   just clippy --lib --tests
   just test --lib --tests
   cargo build -p pika-cli
+  actionlint
   npx --yes @justinmoon/agent-tools check-docs
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"
@@ -396,11 +397,15 @@ android-ui-test: gen-kotlin android-rust android-local-properties
 android-ui-e2e-local:
   ./tools/ui-e2e-local --platform android
 
+# Desktop E2E: local Nostr relay + local Rust bot.
+desktop-e2e-local:
+  ./tools/ui-e2e-local --platform desktop
+
 # Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
 android-ui-e2e:
   ./tools/ui-e2e-public --platform android
 
-# Create + push version tag (vX.Y.Z) after validating VERSION and clean tree.
+# Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
 release VERSION:
   set -euo pipefail; \
   branch="$(git rev-parse --abbrev-ref HEAD)"; \
@@ -420,7 +425,7 @@ release VERSION:
     git status --short; \
     exit 1; \
   fi; \
-  tag="v$release_version"; \
+  tag="pika/v$release_version"; \
   if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then \
     echo "error: tag already exists: $tag"; \
     exit 1; \
@@ -592,6 +597,10 @@ run-ios *ARGS:
 # Build-check the desktop ICED app.
 desktop-check:
   cargo check -p pika-desktop
+
+# Run desktop tests (manager + UI wiring).
+desktop-ui-test:
+  cargo test -p pika-desktop
 
 # Run the desktop ICED app.
 run-desktop *ARGS:

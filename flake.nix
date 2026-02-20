@@ -149,6 +149,22 @@
             mainProgram = "zsp";
           };
         };
+
+        linuxGuiRuntimeLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
+          pkgs.xorg.libX11
+          pkgs.xorg.libXcursor
+          pkgs.xorg.libXi
+          pkgs.xorg.libXrandr
+          pkgs.xorg.libXinerama
+          pkgs.libxkbcommon
+          pkgs.libglvnd
+          pkgs.mesa
+          pkgs.vulkan-loader
+        ];
+        linuxGuiRuntimeLibraryPath = pkgs.lib.makeLibraryPath linuxGuiRuntimeLibraries;
+        linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
+        linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
+        linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -165,6 +181,7 @@
             pkgs.curl
             pkgs.git
             pkgs.gh
+            pkgs.actionlint
             pkgs.coreutils
             pkgs.findutils
             pkgs.gnugrep
@@ -190,7 +207,7 @@
             xcodeWrapper
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.xvfb-run
-          ];
+          ] ++ linuxGuiRuntimeLibraries;
 
           shellHook = ''
             export ANDROID_HOME=${androidSdk}/share/android-sdk
@@ -203,6 +220,21 @@
             export JAVA_HOME=${pkgs.jdk17_headless}
             export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
             export PATH=$PWD/tools:$PATH
+
+            if [ "$(uname -s)" = "Linux" ] && [ -n "${linuxGuiRuntimeLibraryPath}" ]; then
+              export LD_LIBRARY_PATH="${linuxGuiRuntimeLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export WINIT_UNIX_BACKEND="x11"
+              export LIBGL_DRIVERS_PATH="${linuxMesaDriversPath}''${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+              export __EGL_VENDOR_LIBRARY_DIRS="${linuxEglVendorPath}''${__EGL_VENDOR_LIBRARY_DIRS:+:$__EGL_VENDOR_LIBRARY_DIRS}"
+              if [ -d "${linuxVulkanIcdPath}" ]; then
+                for icd in "${linuxVulkanIcdPath}"/lvp_icd.*.json; do
+                  if [ -f "$icd" ]; then
+                    export VK_DRIVER_FILES="$icd"
+                    break
+                  fi
+                done
+              fi
+            fi
 
             # Needed for adb when VPN is running
             export ADB_MDNS_OPENSCREEN=0

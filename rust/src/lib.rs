@@ -2,6 +2,7 @@ mod actions;
 mod core;
 mod logging;
 mod mdk_support;
+mod route_projection;
 mod state;
 mod tls;
 mod updates;
@@ -16,6 +17,7 @@ use std::thread;
 use flume::{Receiver, Sender};
 
 pub use actions::AppAction;
+pub use route_projection::*;
 pub use state::*;
 pub use updates::*;
 
@@ -30,6 +32,16 @@ pub fn init_rustls_crypto_provider() {
 /// new-chat contact list immediately at startup.
 pub fn load_cached_profiles(data_dir: &str) -> Vec<FollowListEntry> {
     core::load_cached_profiles(data_dir)
+}
+
+/// Return the default `pika_config.json` payload used when no config file exists.
+pub fn default_config_json() -> String {
+    core::default_app_config_json()
+}
+
+/// Reset only relay-related config keys to defaults while preserving unrelated keys.
+pub fn reset_relay_config_json(existing_json: Option<String>) -> String {
+    core::relay_reset_config_json(existing_json.as_deref())
 }
 
 uniffi::setup_scaffolding!();

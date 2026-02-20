@@ -19,6 +19,8 @@ enum TestIds {
     static let myNpubNsecValue = "my_npub_nsec_value"
     static let myNpubNsecToggle = "my_npub_nsec_toggle"
     static let myNpubNsecCopy = "my_npub_nsec_copy"
+    static let myProfileAppVersionValue = "my_profile_app_version_value"
+    static let myProfileAppVersionCopy = "my_profile_app_version_copy"
 
     // New chat
     static let newChatPeerNpub = "newchat_peer_npub"

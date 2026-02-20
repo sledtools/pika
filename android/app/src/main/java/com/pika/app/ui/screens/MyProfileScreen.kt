@@ -50,6 +50,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.core.content.pm.PackageInfoCompat
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.ui.Avatar
@@ -79,6 +80,19 @@ fun MyProfileSheet(
 
     val hasChanges = nameDraft.trim() != profile.name.trim() ||
         aboutDraft.trim() != profile.about.trim()
+    val appVersionDisplay = remember {
+        runCatching {
+            val packageInfo = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            val versionName = packageInfo.versionName ?: "unknown"
+            val versionCode = PackageInfoCompat.getLongVersionCode(packageInfo)
+            "v$versionName ($versionCode)"
+        }.getOrDefault("unknown")
+    }
+
+    fun copyValue(value: String, label: String) {
+        clipboard.setText(AnnotatedString(value))
+        Toast.makeText(ctx, "$label copied", Toast.LENGTH_SHORT).show()
+    }
 
     LaunchedEffect(Unit) {
         manager.dispatch(AppAction.RefreshMyProfile)
@@ -184,8 +198,7 @@ fun MyProfileSheet(
                         modifier = Modifier.weight(1f),
                     )
                     IconButton(onClick = {
-                        clipboard.setText(AnnotatedString(npub))
-                        Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
+                        copyValue(npub, "npub")
                     }) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy npub", modifier = Modifier.size(18.dp))
                     }
@@ -231,8 +244,7 @@ fun MyProfileSheet(
                             )
                         }
                         IconButton(onClick = {
-                            clipboard.setText(AnnotatedString(nsec))
-                            Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
+                            copyValue(nsec, "nsec")
                         }) {
                             Icon(Icons.Default.ContentCopy, contentDescription = "Copy nsec", modifier = Modifier.size(18.dp))
                         }
@@ -242,6 +254,35 @@ fun MyProfileSheet(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                }
+            }
+
+            // App version / build
+            item {
+                HorizontalDivider()
+                Text("App Version", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { copyValue(appVersionDisplay, "Version") },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            appVersionDisplay,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(onClick = { copyValue(appVersionDisplay, "Version") }) {
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = "Copy app version",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
 

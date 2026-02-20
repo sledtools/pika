@@ -10,6 +10,8 @@ pub fn login_view<'a>(
     busy: bool,
     is_restoring: bool,
     toast: Option<&'a str>,
+    show_recovery_controls: bool,
+    show_relay_reset: bool,
 ) -> Element<'a, Message, Theme> {
     let heading = text("Pika").size(36).color(theme::TEXT_PRIMARY).center();
 
@@ -86,6 +88,26 @@ pub fn login_view<'a>(
                 .size(13)
                 .color(theme::TEXT_FADED)
                 .center(),
+        );
+    }
+
+    if show_recovery_controls {
+        card = card.push(
+            button(text("Reset Local Session Data").center())
+                .on_press(Message::ResetLocalSessionData)
+                .width(Length::Fill)
+                .padding([10, 20])
+                .style(theme::danger_button_style),
+        );
+    }
+
+    if show_relay_reset {
+        card = card.push(
+            button(text("Reset Relay Config").center())
+                .on_press(Message::ResetRelayConfig)
+                .width(Length::Fill)
+                .padding([10, 20])
+                .style(theme::secondary_button_style),
         );
     }
 

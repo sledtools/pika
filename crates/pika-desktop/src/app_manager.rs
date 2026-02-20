@@ -20,6 +20,7 @@ struct Inner {
     core: Arc<FfiApp>,
     model: RwLock<ManagerModel>,
     nsec_store: FileNsecStore,
+    data_dir: PathBuf,
     subscribers: Mutex<Vec<Sender<()>>>,
 }
 
@@ -107,6 +108,7 @@ impl AppManager {
             core: core.clone(),
             model: RwLock::new(ManagerModel::new(initial)),
             nsec_store,
+            data_dir: data_dir.clone(),
             subscribers: Mutex::new(Vec::new()),
         });
 
@@ -165,6 +167,29 @@ impl AppManager {
     pub fn logout(&self) {
         self.inner.nsec_store.clear();
         self.inner.core.dispatch(AppAction::Logout);
+    }
+
+    pub fn clear_local_session_for_recovery(&self) {
+        self.inner.core.dispatch(AppAction::Logout);
+        self.inner.nsec_store.clear();
+        let _ = std::fs::remove_dir_all(self.inner.data_dir.join("mls"));
+
+        let mut model = write_model(&self.inner.model);
+        let notify = model.is_restoring_session;
+        model.is_restoring_session = false;
+        drop(model);
+        if notify {
+            self.inner.notify_subscribers();
+        }
+    }
+
+    pub fn reset_relay_config_to_defaults(&self) {
+        let path = self.inner.data_dir.join("pika_config.json");
+        let existing = std::fs::read_to_string(&path).ok();
+        let merged = pika_core::reset_relay_config_json(existing);
+        if std::fs::write(path, merged).is_ok() {
+            self.inner.core.dispatch(AppAction::ReloadConfig);
+        }
     }
 }
 
@@ -278,7 +303,7 @@ fn ensure_default_config(data_dir: &Path) -> std::io::Result<()> {
     if path.exists() {
         return Ok(());
     }
-    let default = r#"{"call_moq_url":"https://us-east.moq.logos.surf/anon","call_broadcast_prefix":"pika/calls"}"#;
+    let default = pika_core::default_config_json();
     std::fs::write(path, default.as_bytes())
 }
 
@@ -306,6 +331,8 @@ fn lock_subscribers(lock: &Mutex<Vec<Sender<()>>>) -> std::sync::MutexGuard<'_, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn state_with(rev: u64, logged_in: bool) -> AppState {
         let mut state = AppState::empty();
@@ -418,5 +445,227 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn clear_local_session_for_recovery_clears_persistence() {
+        let _guard = match ENV_LOCK.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("desktop-recovery-clear");
+        std::fs::create_dir_all(data_dir.join("mls/test")).expect("create mls");
+        std::fs::write(data_dir.join("desktop_nsec.txt"), "nsec1test").expect("write nsec");
+        std::fs::write(data_dir.join("mls/test/mdk.sqlite3"), b"stub").expect("write mls db");
+        std::env::set_var("PIKA_DESKTOP_DATA_DIR", data_dir.as_os_str());
+
+        let manager = AppManager::new().expect("manager");
+        manager.clear_local_session_for_recovery();
+
+        assert!(
+            !data_dir.join("desktop_nsec.txt").exists(),
+            "recovery should clear persisted nsec"
+        );
+        assert!(
+            !data_dir.join("mls").exists(),
+            "recovery should remove local mls cache"
+        );
+        assert!(
+            !manager.is_restoring_session(),
+            "recovery should clear restoring-session spinner state"
+        );
+
+        std::env::remove_var("PIKA_DESKTOP_DATA_DIR");
+    }
+
+    #[test]
+    fn reset_relay_config_to_defaults_writes_default_relays() {
+        let _guard = match ENV_LOCK.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("desktop-recovery-config");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(
+            data_dir.join("pika_config.json"),
+            r#"{"relay_urls":["wss://invalid.local"],"key_package_relay_urls":["wss://invalid-kp.local"],"disable_network":true,"notification_url":"https://example.invalid/notifs","call_audio_backend":"mock"}"#,
+        )
+        .expect("seed config");
+        std::env::set_var("PIKA_DESKTOP_DATA_DIR", data_dir.as_os_str());
+
+        let manager = AppManager::new().expect("manager");
+        manager.reset_relay_config_to_defaults();
+        let config =
+            std::fs::read_to_string(data_dir.join("pika_config.json")).expect("read config");
+        assert!(
+            config.contains("relay.damus.io") && config.contains("nostr-pub.wellorder.net"),
+            "default relay lists must be present in rewritten config"
+        );
+        assert!(
+            config.contains("\"disable_network\":true")
+                && config.contains("\"notification_url\":\"https://example.invalid/notifs\"")
+                && config.contains("\"call_audio_backend\":\"mock\""),
+            "non-relay settings must be preserved"
+        );
+        assert!(
+            !config.contains("invalid.local"),
+            "invalid relay values should be replaced by defaults"
+        );
+
+        std::env::remove_var("PIKA_DESKTOP_DATA_DIR");
+    }
+
+    #[test]
+    #[ignore = "requires local relay+bot fixture (run: tools/ui-e2e-local --platform desktop)"]
+    fn desktop_e2e_local_ping_pong_with_bot() {
+        let _guard = match ENV_LOCK.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        let relay_url = std::env::var("PIKA_UI_E2E_RELAYS")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("PIKA_DESKTOP_E2E_RELAY_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .expect("missing relay url: set PIKA_UI_E2E_RELAYS");
+        let bot_npub = std::env::var("PIKA_UI_E2E_BOT_NPUB")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("PIKA_DESKTOP_E2E_BOT_NPUB")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .expect("missing bot npub: set PIKA_UI_E2E_BOT_NPUB");
+        let client_nsec = std::env::var("PIKA_UI_E2E_NSEC")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("PIKA_DESKTOP_E2E_NSEC")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .expect("missing client nsec: set PIKA_UI_E2E_NSEC");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("desktop-e2e-local");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let config = format!(
+            r#"{{"disable_network":false,"relay_urls":["{relay}"],"key_package_relay_urls":["{relay}"],"call_moq_url":"https://us-east.moq.logos.surf/anon","call_broadcast_prefix":"pika/calls"}}"#,
+            relay = relay_url
+        );
+        std::fs::write(data_dir.join("pika_config.json"), config).expect("write pika_config.json");
+        std::env::set_var("PIKA_DESKTOP_DATA_DIR", data_dir.as_os_str());
+
+        let manager = AppManager::new().expect("manager");
+        wait_for_with_timeout(
+            Duration::from_secs(20),
+            || matches!(manager.state().auth, AuthState::LoggedOut),
+            "initial logged out",
+        );
+
+        manager.login_with_nsec(client_nsec);
+        wait_for_with_timeout(
+            Duration::from_secs(60),
+            || !matches!(manager.state().auth, AuthState::LoggedOut),
+            "logged in with test nsec",
+        );
+
+        manager.dispatch(AppAction::CreateChat {
+            peer_npub: bot_npub,
+        });
+        wait_for_with_timeout(
+            Duration::from_secs(90),
+            || {
+                manager
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| !chat.chat_id.trim().is_empty())
+                    .unwrap_or(false)
+            },
+            "chat opened",
+        );
+
+        let chat_id = manager
+            .state()
+            .current_chat
+            .as_ref()
+            .expect("current chat")
+            .chat_id
+            .clone();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_millis();
+        let probe = format!("ping:desktop{nonce}");
+        let expect = format!("pong:desktop{nonce}");
+        manager.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            content: probe.clone(),
+        });
+
+        wait_for_with_timeout(
+            Duration::from_secs(30),
+            || {
+                manager
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| {
+                        chat.chat_id == chat_id
+                            && chat.messages.iter().any(|msg| {
+                                msg.content == probe || msg.display_content.as_str() == probe
+                            })
+                    })
+                    .unwrap_or(false)
+            },
+            "outbound probe visible in current chat",
+        );
+
+        wait_for_with_timeout(
+            Duration::from_secs(180),
+            || {
+                manager
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| {
+                        chat.chat_id == chat_id
+                            && chat.messages.iter().any(|msg| {
+                                msg.content == expect || msg.display_content.as_str() == expect
+                            })
+                    })
+                    .unwrap_or(false)
+            },
+            "bot pong received in current chat",
+        );
+
+        std::env::remove_var("PIKA_DESKTOP_DATA_DIR");
+    }
+
+    fn wait_for_with_timeout(
+        timeout: Duration,
+        mut condition: impl FnMut() -> bool,
+        description: &str,
+    ) {
+        let start = Instant::now();
+        loop {
+            if condition() {
+                return;
+            }
+            if start.elapsed() >= timeout {
+                panic!("timeout waiting for {}", description);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
     }
 }

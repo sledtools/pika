@@ -100,6 +100,7 @@ pub enum AppAction {
 
     // Lifecycle
     Foregrounded,
+    ReloadConfig,
 
     // Peer profile
     OpenPeerProfile {
@@ -168,6 +169,7 @@ impl AppAction {
 
             // Lifecycle
             AppAction::Foregrounded => "Foregrounded",
+            AppAction::ReloadConfig => "ReloadConfig",
 
             // Peer profile
             AppAction::OpenPeerProfile { .. } => "OpenPeerProfile",

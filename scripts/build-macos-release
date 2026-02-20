@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION_FILE="$ROOT/VERSION"
+ICON_SOURCE="$ROOT/ios/Sources/Assets.xcassets/AppIcon.appiconset/icon_1024x1024.png"
+
+APP_NAME="Pika.app"
+APP_EXECUTABLE_NAME="Pika"
+BUNDLE_ID="org.pikachat.pika"
+
+RELEASE_DIR="$ROOT/target/release/macos"
+APP_DIR="$RELEASE_DIR/$APP_NAME"
+APP_CONTENTS_DIR="$APP_DIR/Contents"
+APP_MACOS_DIR="$APP_CONTENTS_DIR/MacOS"
+APP_RESOURCES_DIR="$APP_CONTENTS_DIR/Resources"
+APP_EXECUTABLE="$APP_MACOS_DIR/$APP_EXECUTABLE_NAME"
+ICON_FILE="$APP_RESOURCES_DIR/pika.icns"
+
+DIST_DIR="$ROOT/dist"
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing command: $1" >&2
+    exit 1
+  fi
+}
+
+for cmd in cargo lipo hdiutil sips iconutil otool git; do
+  need_cmd "$cmd"
+done
+
+if [ ! -f "$VERSION_FILE" ]; then
+  echo "error: missing VERSION file: $VERSION_FILE" >&2
+  exit 1
+fi
+if [ ! -f "$ICON_SOURCE" ]; then
+  echo "error: missing icon source: $ICON_SOURCE" >&2
+  exit 1
+fi
+
+version="$(tr -d '[:space:]' <"$VERSION_FILE")"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: VERSION must be x.y.z (got: $version)" >&2
+  exit 1
+fi
+
+deployment_target="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+export MACOSX_DEPLOYMENT_TARGET="$deployment_target"
+
+git_revision="$(git -C "$ROOT" rev-parse --short HEAD)"
+bundle_version="$version"
+
+mkdir -p "$DIST_DIR"
+rm -rf "$RELEASE_DIR"
+mkdir -p "$APP_MACOS_DIR" "$APP_RESOURCES_DIR"
+
+echo "Building pika-desktop (arm64 + x86_64)..."
+toolchain="${PIKA_MACOS_RUST_TOOLCHAIN:-stable}"
+cargo_cmd=(cargo)
+rustc_cmd=()
+if command -v rustup >/dev/null 2>&1; then
+  rustup toolchain install "$toolchain" --profile minimal >/dev/null 2>&1 || true
+  rustup target add --toolchain "$toolchain" aarch64-apple-darwin x86_64-apple-darwin
+  cargo_cmd=(rustup run "$toolchain" cargo)
+  rustc_cmd=("$(rustup which --toolchain "$toolchain" rustc)")
+fi
+if [ "${#rustc_cmd[@]}" -gt 0 ]; then
+  RUSTC="${rustc_cmd[0]}" "${cargo_cmd[@]}" build -p pika-desktop --release --target aarch64-apple-darwin
+  RUSTC="${rustc_cmd[0]}" "${cargo_cmd[@]}" build -p pika-desktop --release --target x86_64-apple-darwin
+else
+  "${cargo_cmd[@]}" build -p pika-desktop --release --target aarch64-apple-darwin
+  "${cargo_cmd[@]}" build -p pika-desktop --release --target x86_64-apple-darwin
+fi
+
+lipo -create \
+  "$ROOT/target/aarch64-apple-darwin/release/pika-desktop" \
+  "$ROOT/target/x86_64-apple-darwin/release/pika-desktop" \
+  -output "$APP_EXECUTABLE"
+chmod 755 "$APP_EXECUTABLE"
+
+icon_tmp="$(mktemp -d)"
+trap 'rm -rf "$icon_tmp"' EXIT
+iconset_dir="$icon_tmp/pika.iconset"
+mkdir -p "$iconset_dir"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ICON_SOURCE" --out "$iconset_dir/icon_${size}x${size}.png" >/dev/null
+  double_size=$((size * 2))
+  sips -z "$double_size" "$double_size" "$ICON_SOURCE" --out "$iconset_dir/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$iconset_dir" -o "$ICON_FILE"
+
+cat > "$APP_CONTENTS_DIR/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>${APP_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${BUNDLE_ID}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Pika</string>
+  <key>CFBundleDisplayName</key>
+  <string>Pika</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${version}</string>
+  <key>CFBundleVersion</key>
+  <string>${bundle_version}</string>
+  <key>CFBundleIconFile</key>
+  <string>pika.icns</string>
+  <key>PikaGitRevision</key>
+  <string>${git_revision}</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>LSMinimumSystemVersion</key>
+  <string>${deployment_target}</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+if [ "${PIKA_ALLOW_NIX_STORE_LINKS:-0}" != "1" ] && otool -L "$APP_EXECUTABLE" | grep -q '/nix/store/'; then
+  echo "error: app binary links against /nix/store paths; build outside nix shell for release" >&2
+  otool -L "$APP_EXECUTABLE" >&2
+  exit 1
+fi
+
+rm -f "$RELEASE_DIR/Applications"
+ln -s /Applications "$RELEASE_DIR/Applications"
+
+dmg_path="$DIST_DIR/pika-${version}-macos-universal.dmg"
+rm -f "$dmg_path"
+hdiutil create "$dmg_path" -volname "Pika" -fs HFS+ -srcfolder "$RELEASE_DIR" -ov -format UDZO >/dev/null
+
+echo "ok: built $dmg_path"

@@ -29,7 +29,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -59,7 +59,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -87,7 +87,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -115,7 +115,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -166,7 +166,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -194,7 +194,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -222,7 +222,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -250,7 +250,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -299,10 +299,12 @@ jobs:
             failed="${failed}- **nightly-pika-ui-android**: ${{ needs.nightly-pika-ui-android.result }}\n"
           fi
           if [[ -n "$failed" ]]; then
-            echo "failed<<EOF" >> "$GITHUB_OUTPUT"
-            echo -e "$failed" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "has_failures=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "failed<<EOF"
+              echo -e "$failed"
+              echo "EOF"
+              echo "has_failures=true"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Open issue on failure

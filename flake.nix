@@ -165,6 +165,7 @@
             pkgs.curl
             pkgs.git
             pkgs.gh
+            pkgs.actionlint
             pkgs.coreutils
             pkgs.findutils
             pkgs.gnugrep

@@ -40,7 +40,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -81,7 +81,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
@@ -210,7 +210,7 @@ jobs:
         if: steps.zapstore_secret.outputs.present == 'true'
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
         if: steps.zapstore_secret.outputs.present == 'true'
@@ -269,7 +269,7 @@ jobs:
       - name: Fix /nix ownership
         run: |
           if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R $(id -u):$(id -g) /nix
+            sudo chown -R "$(id -u):$(id -g)" /nix
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 

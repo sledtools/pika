@@ -197,6 +197,7 @@ pre-merge-pika: fmt
   just clippy --lib --tests
   just test --lib --tests
   cargo build -p pika-cli
+  actionlint
   npx --yes @justinmoon/agent-tools check-docs
   npx --yes @justinmoon/agent-tools check-justfile
   @echo "pre-merge-pika complete"

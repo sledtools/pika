@@ -10,6 +10,7 @@ export type MarmotChannelConfig = {
   stateDir?: string;
   sidecarCmd?: string;
   sidecarArgs?: string[];
+  sidecarVersion?: string;
   autoAcceptWelcomes: boolean;
   groupPolicy: MarmotGroupPolicy;
   groupAllowFrom: string[];
@@ -37,6 +38,8 @@ export function resolveMarmotChannelConfig(raw: unknown): MarmotChannelConfig {
   const sidecarCmd =
     typeof obj.sidecarCmd === "string" && obj.sidecarCmd.trim() ? obj.sidecarCmd.trim() : undefined;
   const sidecarArgs = asStringArray(obj.sidecarArgs) ?? undefined;
+  const sidecarVersion =
+    typeof obj.sidecarVersion === "string" && obj.sidecarVersion.trim() ? obj.sidecarVersion.trim() : undefined;
 
   const autoAcceptWelcomes =
     typeof obj.autoAcceptWelcomes === "boolean" ? obj.autoAcceptWelcomes : true;
@@ -61,6 +64,7 @@ export function resolveMarmotChannelConfig(raw: unknown): MarmotChannelConfig {
     stateDir,
     sidecarCmd,
     sidecarArgs,
+    sidecarVersion,
     autoAcceptWelcomes,
     groupPolicy,
     groupAllowFrom,

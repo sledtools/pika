@@ -1,5 +1,5 @@
 import { constants, createWriteStream } from "node:fs";
-import { access, chmod, mkdir, rename, rm } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -22,9 +22,28 @@ type GitHubRelease = {
   assets: GitHubReleaseAsset[];
 };
 
-// marmotd is built and released from this monorepo.
 const DEFAULT_REPO = "sledtools/pika";
 const DEFAULT_BINARY_NAME = "marmotd";
+const VERSION_CHECK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_KEPT_VERSIONS = 2; // current + one previous
+
+// ---------------------------------------------------------------------------
+// Version utilities
+// ---------------------------------------------------------------------------
+
+function parseVer(v: string): number[] {
+  return v.replace(/^(marmotd-)?v/, "").split(".").map(Number);
+}
+
+export function compareVersionsDesc(a: string, b: string): number {
+  const [aMaj = 0, aMin = 0, aPat = 0] = parseVer(a);
+  const [bMaj = 0, bMin = 0, bPat = 0] = parseVer(b);
+  return bMaj - aMaj || bMin - aMin || bPat - aPat;
+}
+
+// ---------------------------------------------------------------------------
+// Path / command resolution
+// ---------------------------------------------------------------------------
 
 function hasPathSeparator(input: string): boolean {
   return input.includes("/") || input.includes("\\");
@@ -62,6 +81,10 @@ async function resolveExistingCommand(cmd: string): Promise<string | null> {
   return await resolveFromPath(trimmed);
 }
 
+// ---------------------------------------------------------------------------
+// Platform detection
+// ---------------------------------------------------------------------------
+
 function resolvePlatformAsset(): string {
   if (process.platform === "linux" && process.arch === "x64") return "marmotd-x86_64-linux";
   if (process.platform === "linux" && process.arch === "arm64") return "marmotd-aarch64-linux";
@@ -70,16 +93,40 @@ function resolvePlatformAsset(): string {
   throw new Error(`unsupported platform for marmot auto-install: ${process.platform}/${process.arch}`);
 }
 
-function releaseApiUrl(repo: string, version: string): string {
-  if (!version || version === "latest") {
-    return `https://api.github.com/repos/${repo}/releases/latest`;
+// ---------------------------------------------------------------------------
+// Cache directory
+// ---------------------------------------------------------------------------
+
+function getCacheDir(): string {
+  return path.join(os.homedir(), ".openclaw", "tools", "marmot");
+}
+
+function getBinaryPath(version: string): string {
+  return path.join(getCacheDir(), version, DEFAULT_BINARY_NAME);
+}
+
+// ---------------------------------------------------------------------------
+// GitHub helpers
+// ---------------------------------------------------------------------------
+
+function githubHeaders(): Headers {
+  const headers = new Headers({
+    Accept: "application/vnd.github+json",
+    "User-Agent": "openclaw-marmot-plugin",
+  });
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
-  return `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(version)}`;
+  return headers;
 }
 
 function releasesListApiUrl(repo: string, page: number): string {
-  // Default ordering is newest-first.
   return `https://api.github.com/repos/${repo}/releases?per_page=50&page=${page}`;
+}
+
+function releaseByTagApiUrl(repo: string, version: string): string {
+  return `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(version)}`;
 }
 
 function normalizeRelease(raw: any): GitHubRelease {
@@ -99,21 +146,14 @@ function normalizeRelease(raw: any): GitHubRelease {
   return { tag_name: tagName, assets: normalizedAssets };
 }
 
+// Monorepo: "latest" release might belong to another component (e.g. pika/v*).
+// Scan release pages to find the newest release that has our platform asset.
 async function fetchLatestReleaseWithAsset(params: {
   repo: string;
   assetName: string;
 }): Promise<GitHubRelease> {
-  const headers = new Headers({
-    Accept: "application/vnd.github+json",
-    "User-Agent": "openclaw-marmot-plugin",
-  });
-  const token = process.env.GITHUB_TOKEN?.trim();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
+  const headers = githubHeaders();
 
-  // Monorepo: "latest" release might belong to another component. Scan for the newest
-  // release that includes the marmotd asset for this platform.
   for (let page = 1; page <= 4; page++) {
     const res = await fetch(releasesListApiUrl(params.repo, page), { headers });
     if (!res.ok) {
@@ -134,6 +174,19 @@ async function fetchLatestReleaseWithAsset(params: {
   throw new Error(`no GitHub release found with asset ${params.assetName} in ${params.repo}`);
 }
 
+async function fetchReleaseByTag(params: {
+  repo: string;
+  version: string;
+}): Promise<GitHubRelease> {
+  const headers = githubHeaders();
+  const res = await fetch(releaseByTagApiUrl(params.repo, params.version), { headers });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`release lookup failed ${res.status}: ${body.slice(0, 200)}`);
+  }
+  return normalizeRelease(await res.json());
+}
+
 async function fetchRelease(params: {
   repo: string;
   version: string;
@@ -144,35 +197,142 @@ async function fetchRelease(params: {
       assetName: resolvePlatformAsset(),
     });
   }
-
-  const headers = new Headers({
-    Accept: "application/vnd.github+json",
-    "User-Agent": "openclaw-marmot-plugin",
-  });
-  const token = process.env.GITHUB_TOKEN?.trim();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
-  const res = await fetch(releaseApiUrl(params.repo, params.version), { headers });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`release lookup failed ${res.status}: ${body.slice(0, 200)}`);
-  }
-  return normalizeRelease(await res.json());
+  return await fetchReleaseByTag(params);
 }
 
-async function downloadFile(url: string, outPath: string): Promise<void> {
-  const headers = new Headers({
-    "User-Agent": "openclaw-marmot-plugin",
-  });
-  const token = process.env.GITHUB_TOKEN?.trim();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+// ---------------------------------------------------------------------------
+// Version resolution with 24h cache
+// ---------------------------------------------------------------------------
+
+async function resolveVersion(
+  log: MarmotLog,
+  repo: string,
+  pinnedVersion?: string,
+): Promise<string> {
+  if (pinnedVersion) {
+    return pinnedVersion;
   }
-  const res = await fetch(url, {
-    headers,
-  });
+
+  const cacheDir = getCacheDir();
+  const cacheFile = path.join(cacheDir, ".latest-version");
+
+  try {
+    const fileStat = await stat(cacheFile);
+    const age = Date.now() - fileStat.mtimeMs;
+    if (age < VERSION_CHECK_TTL_MS) {
+      const cached = (await readFile(cacheFile, "utf-8")).trim();
+      if (cached) {
+        log.info?.(`[marmot] using cached latest version: ${cached} (checked ${Math.round(age / 60000)}m ago)`);
+        return cached;
+      }
+    }
+  } catch {
+    // No cache file or unreadable
+  }
+
+  log.info?.("[marmot] checking GitHub for latest marmotd release...");
+  const release = await fetchRelease({ repo, version: "latest" });
+  const version = release.tag_name;
+
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(cacheFile, version, "utf-8");
+
+  return version;
+}
+
+// ---------------------------------------------------------------------------
+// Checksum verification
+// ---------------------------------------------------------------------------
+
+async function verifyChecksum(
+  filePath: string,
+  checksumUrl: string,
+  log: MarmotLog,
+): Promise<void> {
+  const headers = githubHeaders();
+  const res = await fetch(checksumUrl, { headers, redirect: "follow" });
+  if (!res.ok) {
+    if (res.status === 404) {
+      log.warn?.(
+        `[marmot] checksum file not found (404), skipping verification for ${path.basename(filePath)}`,
+      );
+      return;
+    }
+    throw new Error(
+      `failed to fetch checksum for ${path.basename(filePath)}: ${res.status} ${res.statusText}. ` +
+        `This may indicate GitHub rate limiting or a server error.`,
+    );
+  }
+
+  const expectedLine = (await res.text()).trim();
+  const expectedHash = expectedLine.split(/\s+/)[0];
+
+  const { createHash } = await import("node:crypto");
+  const fileBuffer = await readFile(filePath);
+  const actualHash = createHash("sha256").update(fileBuffer).digest("hex");
+
+  if (actualHash !== expectedHash) {
+    await rm(filePath, { force: true });
+    throw new Error(
+      `checksum mismatch for ${path.basename(filePath)}: ` +
+        `expected ${expectedHash}, got ${actualHash}`,
+    );
+  }
+
+  log.info?.(`[marmot] checksum verified for ${path.basename(filePath)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Old version cleanup
+// ---------------------------------------------------------------------------
+
+async function cleanupOldVersions(
+  currentVersion: string,
+  log: MarmotLog,
+): Promise<void> {
+  const cacheDir = getCacheDir();
+
+  let entries: string[];
+  try {
+    entries = await readdir(cacheDir);
+  } catch {
+    return;
+  }
+
+  // Match marmotd version directories (e.g. marmotd-v0.4.0)
+  const versionDirs = entries
+    .filter((e) => e.startsWith("marmotd-v") || e.startsWith("v"))
+    .sort(compareVersionsDesc);
+
+  if (versionDirs.length <= MAX_KEPT_VERSIONS) {
+    return;
+  }
+
+  const toKeep = new Set<string>([currentVersion]);
+  for (const dir of versionDirs) {
+    if (toKeep.size >= MAX_KEPT_VERSIONS) break;
+    toKeep.add(dir);
+  }
+
+  for (const dir of versionDirs) {
+    if (toKeep.has(dir)) continue;
+    const dirPath = path.join(cacheDir, dir);
+    try {
+      await rm(dirPath, { recursive: true, force: true });
+      log.info?.(`[marmot] cleaned up old version: ${dir}`);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Download
+// ---------------------------------------------------------------------------
+
+async function downloadFile(url: string, outPath: string): Promise<void> {
+  const headers = githubHeaders();
+  const res = await fetch(url, { headers, redirect: "follow" });
   if (!res.ok || !res.body) {
     throw new Error(`download failed ${res.status} for ${url}`);
   }
@@ -182,24 +342,40 @@ async function downloadFile(url: string, outPath: string): Promise<void> {
   );
 }
 
-async function ensureInstalledBinary(params: {
-  log?: MarmotLog;
-  repo: string;
+// ---------------------------------------------------------------------------
+// ensureBinary — the main entry point for auto-install
+// ---------------------------------------------------------------------------
+
+export interface DownloadResult {
+  binaryPath: string;
   version: string;
-}): Promise<string> {
+}
+
+async function ensureInstalledBinary(params: {
+  log: MarmotLog;
+  repo: string;
+  pinnedVersion?: string;
+}): Promise<DownloadResult> {
+  const { log, repo } = params;
+
+  const version = await resolveVersion(log, repo, params.pinnedVersion);
+  const binaryPath = getBinaryPath(version);
+
+  if (await isExecutableFile(binaryPath)) {
+    log.debug?.(`[marmot] marmotd ${version} already cached at ${binaryPath}`);
+    await cleanupOldVersions(version, log);
+    return { binaryPath, version };
+  }
+
   const assetName = resolvePlatformAsset();
-  const release = await fetchRelease({ repo: params.repo, version: params.version });
+  const release = await fetchRelease({ repo, version });
   const asset = release.assets.find((a) => a.name === assetName);
   if (!asset) {
     throw new Error(`release ${release.tag_name} missing asset ${assetName}`);
   }
 
-  const installDir = path.join(os.homedir(), ".openclaw", "tools", "marmot", release.tag_name);
+  const installDir = path.join(getCacheDir(), release.tag_name);
   const installedPath = path.join(installDir, DEFAULT_BINARY_NAME);
-  if (await isExecutableFile(installedPath)) {
-    params.log?.debug?.(`[marmot] using cached sidecar ${installedPath}`);
-    return installedPath;
-  }
 
   await mkdir(installDir, { recursive: true });
   const tempPath = path.join(
@@ -208,11 +384,20 @@ async function ensureInstalledBinary(params: {
   );
 
   try {
-    params.log?.info?.(`[marmot] downloading sidecar asset ${assetName} (${release.tag_name})`);
+    log.info?.(`[marmot] downloading marmotd ${release.tag_name} (${assetName})...`);
     await downloadFile(asset.browser_download_url, tempPath);
+
+    // Verify checksum if available (gracefully skips if no .sha256 file in release)
+    const checksumAsset = release.assets.find((a) => a.name === `${assetName}.sha256`);
+    if (checksumAsset) {
+      await verifyChecksum(tempPath, checksumAsset.browser_download_url, log);
+    } else {
+      log.warn?.(`[marmot] no checksum file found for ${assetName}, skipping verification`);
+    }
+
     await chmod(tempPath, 0o755);
     await rename(tempPath, installedPath);
-    return installedPath;
+    log.info?.(`[marmot] marmotd ${release.tag_name} ready at ${installedPath}`);
   } catch (err) {
     try {
       await rm(tempPath, { force: true });
@@ -220,30 +405,41 @@ async function ensureInstalledBinary(params: {
       // ignore cleanup errors
     }
     if (await isExecutableFile(installedPath)) {
-      return installedPath;
+      return { binaryPath: installedPath, version: release.tag_name };
     }
     throw err;
   }
+
+  await cleanupOldVersions(release.tag_name, log);
+  return { binaryPath: installedPath, version: release.tag_name };
 }
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export async function resolveMarmotSidecarCommand(params: {
   requestedCmd: string;
   log?: MarmotLog;
+  pinnedVersion?: string;
 }): Promise<string> {
+  const log: MarmotLog = params.log ?? {};
   const existing = await resolveExistingCommand(params.requestedCmd);
   if (existing) return existing;
 
-  params.log?.warn?.(
+  log.warn?.(
     `[marmot] sidecar command not found (${params.requestedCmd}); attempting auto-install`,
   );
 
   const repo = process.env.MARMOT_SIDECAR_REPO?.trim() || DEFAULT_REPO;
-  const version = process.env.MARMOT_SIDECAR_VERSION?.trim() || "latest";
-  const installed = await ensureInstalledBinary({
-    log: params.log,
+  const envVersion = process.env.MARMOT_SIDECAR_VERSION?.trim();
+  const pinnedVersion = params.pinnedVersion ?? envVersion;
+
+  const { binaryPath, version } = await ensureInstalledBinary({
+    log,
     repo,
-    version,
+    pinnedVersion: pinnedVersion && pinnedVersion !== "latest" ? pinnedVersion : undefined,
   });
-  params.log?.info?.(`[marmot] installed sidecar ${installed}`);
-  return installed;
+  log.info?.(`[marmot] installed sidecar ${version} at ${binaryPath}`);
+  return binaryPath;
 }

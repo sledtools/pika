@@ -13,6 +13,7 @@ export const marmotPluginConfigSchema = {
       type: "array",
       items: { type: "string" },
     },
+    sidecarVersion: { type: "string" },
     autoAcceptWelcomes: {
       type: "boolean",
       default: true,

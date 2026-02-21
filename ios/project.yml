@@ -10,12 +10,14 @@ settings:
     # Note: device builds still need a valid DEVELOPMENT_TEAM; we keep that out of git and
     # pass it via env from tools/run-ios.
     PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika
+    PIKA_URL_SCHEME: pika
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0
   configs:
     Debug:
       PRODUCT_BUNDLE_IDENTIFIER: com.justinmoon.pika.dev
+      PIKA_URL_SCHEME: pika-dev
 
 packages:
   MarkdownUI:

@@ -3,11 +3,11 @@ import UIKit
 
 final class IOSExternalSignerBridge: ExternalSignerBridge, @unchecked Sendable {
     private var nostrConnectCallbackUrl: String {
-        let scheme = Self.callbackScheme(bundleIdentifier: Bundle.main.bundleIdentifier)
+        let scheme = Self.callbackScheme(forBundleIdentifier: Bundle.main.bundleIdentifier)
         return "\(scheme)://nostrconnect-return"
     }
 
-    private static func callbackScheme(bundleIdentifier: String?) -> String {
+    static func callbackScheme(forBundleIdentifier bundleIdentifier: String?) -> String {
         guard let bundleIdentifier else { return "pika" }
         if bundleIdentifier.hasSuffix(".dev") { return "pika-dev" }
         if bundleIdentifier.hasSuffix(".pikatest") { return "pika-test" }

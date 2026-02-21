@@ -29,9 +29,7 @@
 			<string>com.justinmoon.pika</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>pika</string>
-				<string>pika-dev</string>
-				<string>pika-test</string>
+				<string>$(PIKA_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>

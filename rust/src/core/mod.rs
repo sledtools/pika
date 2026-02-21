@@ -109,6 +109,7 @@ struct PendingNostrConnectLogin {
     client_nsec: String,
     relays: Vec<RelayUrl>,
     secret: String,
+    callback_received: bool,
     /// Result slot set by the in-flight NIP-46 connect-response waiter.
     /// Contains remote signer pubkey once validated, or a user-visible error.
     connect_response_result: Arc<Mutex<Option<Result<NostrConnectConnectResponse, String>>>>,
@@ -132,6 +133,8 @@ struct PersistedPendingNostrConnectLogin {
     client_nsec: String,
     relays: Vec<String>,
     secret: String,
+    #[serde(default)]
+    callback_received: bool,
 }
 
 impl SessionAuthMode {
@@ -864,9 +867,10 @@ impl AppCore {
     fn wait_for_pending_nostr_connect_signer(
         &self,
         pending: &mut PendingNostrConnectLogin,
-        callback_url: &str,
+        callback_url: Option<&str>,
     ) -> anyhow::Result<Option<NostrConnectConnectResponse>> {
-        let callback_signer_hint = self.parse_remote_signer_from_callback(callback_url);
+        let callback_signer_hint =
+            callback_url.and_then(|url| self.parse_remote_signer_from_callback(url));
 
         let next = match pending.connect_response_result.lock() {
             Ok(mut slot) => slot.take(),
@@ -1189,6 +1193,7 @@ impl AppCore {
                 .map(|relay| relay.as_str_without_trailing_slash().to_string())
                 .collect(),
             secret: pending.secret.clone(),
+            callback_received: pending.callback_received,
         };
         let path = self.nostr_connect_pending_login_path();
         let bytes = match serde_json::to_vec(&payload) {
@@ -1251,6 +1256,7 @@ impl AppCore {
         relays: Vec<RelayUrl>,
         secret: String,
         started_at_unix: i64,
+        callback_received: bool,
     ) {
         self.maybe_persist_nostr_connect_pairing(&client_keys, &secret);
         let connect_response_result = Arc::new(Mutex::new(
@@ -1270,6 +1276,7 @@ impl AppCore {
             client_nsec: client_keys.secret_key().to_bech32().expect("infallible"),
             relays,
             secret,
+            callback_received,
             connect_response_result,
         };
         self.persist_pending_nostr_connect_login_snapshot(&pending);
@@ -1341,6 +1348,7 @@ impl AppCore {
             relays,
             secret,
             pending.started_at_unix,
+            pending.callback_received,
         );
     }
 
@@ -1460,7 +1468,7 @@ impl AppCore {
         );
         // Persist/arm pending state before app switch so callback can always resume,
         // even if iOS suspends us immediately after opening Primal.
-        self.start_pending_nostr_connect_login(client_keys, relays, secret, now_seconds());
+        self.start_pending_nostr_connect_login(client_keys, relays, secret, now_seconds(), false);
         if let Err(e) = self.open_external_url(client_uri.clone()) {
             tracing::error!(%e, "nostr_connect: open_external_url failed");
             self.clear_pending_nostr_connect_login();
@@ -1471,12 +1479,27 @@ impl AppCore {
         tracing::info!("nostr_connect: external URL opened, waiting for callback");
     }
 
-    fn on_nostr_connect_callback(&mut self, url: String) {
-        tracing::info!(%url, pending = self.pending_nostr_connect_login.is_some(), "nostr_connect: callback received");
+    fn progress_pending_nostr_connect_login(
+        &mut self,
+        callback_url: Option<&str>,
+        mark_callback_received: bool,
+        trigger: &'static str,
+    ) {
         let Some(mut pending) = self.pending_nostr_connect_login.take() else {
-            tracing::warn!("nostr_connect: callback but no pending login, ignoring");
+            tracing::warn!(trigger, "nostr_connect: callback/continue but no pending login, ignoring");
             return;
         };
+        if mark_callback_received {
+            pending.callback_received = true;
+        } else if !pending.callback_received {
+            tracing::info!(
+                trigger,
+                "nostr_connect: pending login resumed before callback; still waiting for callback"
+            );
+            self.persist_pending_nostr_connect_login_snapshot(&pending);
+            self.pending_nostr_connect_login = Some(pending);
+            return;
+        }
         let client_keys = match Keys::parse(&pending.client_nsec) {
             Ok(keys) => keys,
             Err(e) => {
@@ -1488,12 +1511,13 @@ impl AppCore {
             }
         };
 
-        let connect_response = match self.wait_for_pending_nostr_connect_signer(&mut pending, &url)
+        let connect_response = match self
+            .wait_for_pending_nostr_connect_signer(&mut pending, callback_url)
         {
             Ok(Some(connect_response)) => connect_response,
             Ok(None) => {
                 // Foreground retry path: response not received yet.
-                tracing::info!("nostr_connect: signer response not ready yet; still waiting");
+                tracing::info!(trigger, "nostr_connect: signer response not ready yet; still waiting");
                 self.persist_pending_nostr_connect_login_snapshot(&pending);
                 self.pending_nostr_connect_login = Some(pending);
                 return;
@@ -1526,10 +1550,15 @@ impl AppCore {
         self.clear_busy();
     }
 
+    fn on_nostr_connect_callback(&mut self, url: String) {
+        tracing::info!(%url, pending = self.pending_nostr_connect_login.is_some(), "nostr_connect: callback received");
+        self.progress_pending_nostr_connect_login(Some(url.as_str()), true, "callback");
+    }
+
     fn continue_pending_nostr_connect_login(&mut self) {
         if self.pending_nostr_connect_login.is_some() {
             tracing::info!("nostr_connect: foregrounded with pending login, continuing");
-            self.on_nostr_connect_callback("foreground".to_string());
+            self.progress_pending_nostr_connect_login(None, false, "foreground");
         }
     }
 
@@ -1766,7 +1795,11 @@ impl AppCore {
                     tracing::info!(
                         "nostr_connect: connect response ready, continuing pending login"
                     );
-                    self.on_nostr_connect_callback("connect-response-ready".to_string());
+                    self.progress_pending_nostr_connect_login(
+                        None,
+                        false,
+                        "connect-response-ready",
+                    );
                 }
             }
             InternalEvent::NostrConnectTimeout { attempt_id } => {
@@ -1812,7 +1845,11 @@ impl AppCore {
                     should_continue = true;
                 }
                 if should_continue {
-                    self.on_nostr_connect_callback("connect-response-ready".to_string());
+                    self.progress_pending_nostr_connect_login(
+                        None,
+                        false,
+                        "connect-response-ready",
+                    );
                 }
             }
             InternalEvent::CallRuntimeConnected { call_id } => {

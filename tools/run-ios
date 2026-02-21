@@ -36,6 +36,7 @@ fi
 
 IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
 IOS_TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:-}"
+IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-}"
 MODE="sim"
 CONSOLE="${PIKA_IOS_CONSOLE:-0}"
 RELEASE=0
@@ -50,6 +51,7 @@ usage: ./tools/run-ios [--sim|--device] [--release] [--console] [--udid <udid>] 
 
 Env:
   PIKA_IOS_BUNDLE_ID        (default: $IOS_BUNDLE_ID)
+  PIKA_IOS_URL_SCHEME       (default: derived from bundle id: pika|pika-dev|pika-test)
   PIKA_IOS_DEVELOPMENT_TEAM (required for --device; put it in .env to avoid typing)
   PIKA_IOS_DEVICE_UDID      (optional, for --device)
   PIKA_IOS_SIM_UDID         (optional, for --sim)
@@ -59,6 +61,19 @@ Env:
   PIKA_NO_RELAY_OVERRIDE=1  disable dev-friendly relay defaults
   PIKA_IOS_DEVICE_ALLOW_LOCAL_OVERRIDES=1  allow localhost relay/MoQ overrides on physical devices
 EOF
+}
+
+callback_scheme_for_bundle_id() {
+  local bundle_id="$1"
+  if [[ "$bundle_id" == *.dev ]]; then
+    echo "pika-dev"
+    return 0
+  fi
+  if [[ "$bundle_id" == *.pikatest ]]; then
+    echo "pika-test"
+    return 0
+  fi
+  echo "pika"
 }
 
 list_connected_iphones() {
@@ -118,6 +133,9 @@ if [ "$RELEASE" = "1" ]; then
   export PIKA_RUST_PROFILE="release"
 else
   export PIKA_RUST_PROFILE="${PIKA_RUST_PROFILE:-debug}"
+fi
+if [ -z "${IOS_URL_SCHEME:-}" ]; then
+  IOS_URL_SCHEME="$(callback_scheme_for_bundle_id "$IOS_BUNDLE_ID")"
 fi
 echo "rust profile: $PIKA_RUST_PROFILE"
 
@@ -244,6 +262,7 @@ if [ "$MODE" = "device" ]; then
   # Build signed device .app (must unset LD/CC/CXX inside Nix shells).
   signing_settings=()
   signing_settings+=("PRODUCT_BUNDLE_IDENTIFIER=$IOS_BUNDLE_ID")
+  signing_settings+=("PIKA_URL_SCHEME=$IOS_URL_SCHEME")
   signing_settings+=("DEVELOPMENT_TEAM=$IOS_TEAM_ID")
   signing_settings+=("CODE_SIGN_STYLE=Automatic")
 
@@ -381,6 +400,7 @@ if [ -z "${PIKA_IOS_RUST_TARGETS:-}" ]; then
     export PIKA_IOS_RUST_TARGETS="aarch64-apple-ios-sim"
   fi
 fi
+export PIKA_IOS_URL_SCHEME="$IOS_URL_SCHEME"
 
 just ios-build-sim
 

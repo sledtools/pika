@@ -473,7 +473,7 @@ ios-xcodeproj:
 # Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
   SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \
-  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}"
+  ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="${PIKA_IOS_BUNDLE_ID:-com.justinmoon.pika.dev}" PIKA_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika-dev}"
 
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj

@@ -4,12 +4,115 @@ on:
   push:
     tags:
       - "marmotd-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.5.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    steps:
+      - name: Enforce allowed release actors
+        run: |
+          set -euo pipefail
+          case "${GITHUB_ACTOR}" in
+            justinmoon|futurepaul|benthecarman|AnthonyRonning) ;;
+            *)
+              echo "error: actor '${GITHUB_ACTOR}' is not allowed to run release workflow"
+              exit 1
+              ;;
+          esac
+
+  bump-and-tag:
+    if: github.event_name == 'workflow_dispatch'
+    needs: authorize
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate version input
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: version must be x.y.z (got: $version)"
+            exit 1
+          fi
+          tag="marmotd-v${version}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "error: tag already exists: $tag"
+            exit 1
+          fi
+
+      - name: Bump versions
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+
+          # Bump Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${version}\"/" crates/marmotd/Cargo.toml
+
+          # Bump package.json
+          cd openclaw-marmot/openclaw/extensions/marmot
+          npm version "$version" --no-git-tag-version --allow-same-version
+          cd "$GITHUB_WORKSPACE"
+
+          # Update Cargo.lock
+          cargo check -p marmotd --quiet
+
+      - name: Commit, tag, and push
+        id: tag
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          tag="marmotd-v${version}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/marmotd/Cargo.toml openclaw-marmot/openclaw/extensions/marmot/package.json Cargo.lock
+          git commit -m "release: marmotd v${version}"
+          git tag "$tag"
+          git push origin master "$tag"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  resolve-tag:
+    needs: [authorize, bump-and-tag]
+    if: always() && needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ needs.bump-and-tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
   build-linux:
+    needs: resolve-tag
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +126,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -48,6 +153,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: resolve-tag
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +165,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -85,6 +193,7 @@ jobs:
 
   publish-release:
     needs:
+      - resolve-tag
       - build-linux
       - build-macos
     runs-on: ubuntu-latest
@@ -98,13 +207,18 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
           files: dist/*
 
   publish-npm:
-    needs: publish-release
+    needs:
+      - resolve-tag
+      - publish-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: actions/setup-node@v4
         with:

@@ -5,6 +5,11 @@ on:
     tags:
       - "pika/v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.9)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -27,11 +32,78 @@ jobs:
           esac
       - run: echo "release approved"
 
-  check:
+  bump-and-tag:
+    if: github.event_name == 'workflow_dispatch'
     needs: approve-release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Validate version input
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: version must be x.y.z (got: $version)"
+            exit 1
+          fi
+          tag="pika/v${version}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "error: tag already exists: $tag"
+            exit 1
+          fi
+
+      - name: Bump VERSION file
+        run: |
+          set -euo pipefail
+          echo -n "${{ inputs.version }}" > VERSION
+
+      - name: Commit, tag, and push
+        id: tag
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          tag="pika/v${version}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "release: pika v${version}"
+          git tag "$tag"
+          git push origin master "$tag"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  resolve-tag:
+    needs: [approve-release, bump-and-tag]
+    if: always() && needs.approve-release.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ needs.bump-and-tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  check:
+    needs: resolve-tag
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -56,23 +128,22 @@ jobs:
       - name: Validate tag matches VERSION
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            echo "error: release workflow must run on a tag ref"
-            exit 1
-          fi
           expected_tag="pika/v$(./scripts/version-read --name)"
-          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
-            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
+          tag="${{ needs.resolve-tag.outputs.tag }}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "error: tag/version mismatch: tag=${tag}, expected=${expected_tag}"
             exit 1
           fi
 
       - run: nix develop .#default -c just pre-merge-pika
 
   build-android:
-    needs: check
+    needs: [resolve-tag, check]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -93,15 +164,6 @@ jobs:
         with:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
-
-      - name: Validate tag matches VERSION
-        run: |
-          set -euo pipefail
-          expected_tag="pika/v$(./scripts/version-read --name)"
-          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
-            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
-            exit 1
-          fi
 
       - name: Build signed release APK
         env:
@@ -115,25 +177,18 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    needs: check
+    needs: [resolve-tag, check]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Validate tag matches VERSION
-        run: |
-          set -euo pipefail
-          expected_tag="pika/v$(./scripts/version-read --name)"
-          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
-            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
-            exit 1
-          fi
 
       - name: Build macOS universal DMG
         run: ./scripts/build-macos-release
@@ -145,10 +200,12 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build-android, build-macos]
+    needs: [resolve-tag, build-android, build-macos]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -160,23 +217,14 @@ jobs:
           name: release-macos
           path: dist
 
-      - name: Validate tag matches VERSION
-        run: |
-          set -euo pipefail
-          expected_tag="pika/v$(./scripts/version-read --name)"
-          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
-            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
-            exit 1
-          fi
-
       - name: Generate checksums
         run: sha256sum dist/*.apk dist/*.dmg > dist/SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Pika ${{ github.ref_name }}
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
+          name: Pika ${{ needs.resolve-tag.outputs.tag }}
           generate_release_notes: true
           overwrite_files: true
           files: |
@@ -185,10 +233,12 @@ jobs:
             dist/SHA256SUMS
 
   publish-zapstore:
-    needs: [build-android, publish]
+    needs: [resolve-tag, build-android, publish]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - name: Check Zapstore signing secret
         id: zapstore_secret
@@ -221,16 +271,6 @@ jobs:
           name: release-android
           path: dist
 
-      - name: Validate tag matches VERSION
-        if: steps.zapstore_secret.outputs.present == 'true'
-        run: |
-          set -euo pipefail
-          expected_tag="pika/v$(./scripts/version-read --name)"
-          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
-            echo "error: tag/version mismatch: ref=${GITHUB_REF_NAME}, expected=${expected_tag}"
-            exit 1
-          fi
-
       - name: Publish to Zapstore
         if: steps.zapstore_secret.outputs.present == 'true'
         env:
@@ -249,10 +289,12 @@ jobs:
           nix develop .#default -c ./scripts/zapstore-publish "$apk_path" "https://github.com/${GITHUB_REPOSITORY}"
 
   announce-release:
-    needs: publish
+    needs: [resolve-tag, publish]
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - name: Ensure announcement signing secret exists
         run: |
@@ -279,5 +321,6 @@ jobs:
         run: |
           set -euo pipefail
           set +x
+          tag="${{ needs.resolve-tag.outputs.tag }}"
           repo_url="https://github.com/${GITHUB_REPOSITORY}"
-          nix develop .#default -c ./scripts/post-release-announcement "${GITHUB_REF_NAME}" "$repo_url"
+          nix develop .#default -c ./scripts/post-release-announcement "$tag" "$repo_url"

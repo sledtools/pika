@@ -23,6 +23,8 @@ struct ChatView: View {
     let onTypingStarted: (@MainActor () -> Void)?
     @State private var messageText = ""
     @State private var isAtBottom = true
+    @State private var shouldStickToBottom = true
+    @State private var isUserScrolling = false
     @State private var activeReactionMessageId: String?
     @State private var contextMenuMessage: ChatMessage?
     @State private var showContextActionCard = false
@@ -33,6 +35,8 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
 
     private let scrollButtonBottomPadding: CGFloat = 12
+    private let bottomVisibilityTolerance: CGFloat = 100
+    private let bottomAnchorId = "bottom-anchor"
 
     init(
         chatId: String,
@@ -216,82 +220,131 @@ struct ChatView: View {
 
     @ViewBuilder
     private func messageList(_ chat: ChatViewState) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    LazyVStack(spacing: 8) {
-                        ForEach(timelineRows(chat)) { row in
-                            switch row {
-                            case .messageGroup(let group):
-                                MessageGroupRow(
-                                    group: group,
-                                    showSender: chat.isGroup,
-                                    onSendMessage: onSendMessage,
-                                    onTapSender: onTapSender,
-                                    onReact: onReact,
-                                    activeReactionMessageId: $activeReactionMessageId,
-                                    onLongPressMessage: { message in
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
-                                            activeReactionMessageId = message.id
-                                            contextMenuMessage = message
-                                            showContextActionCard = true
+        GeometryReader { scrollGeo in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        LazyVStack(spacing: 8) {
+                            ForEach(timelineRows(chat)) { row in
+                                switch row {
+                                case .messageGroup(let group):
+                                    MessageGroupRow(
+                                        group: group,
+                                        showSender: chat.isGroup,
+                                        onSendMessage: onSendMessage,
+                                        onTapSender: onTapSender,
+                                        onReact: onReact,
+                                        activeReactionMessageId: $activeReactionMessageId,
+                                        onLongPressMessage: { message in
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                                activeReactionMessageId = message.id
+                                                contextMenuMessage = message
+                                                showContextActionCard = true
+                                            }
                                         }
-                                    }
+                                    )
+                                case .callEvent(let event):
+                                    CallTimelineEventRow(event: event)
+                                }
+                            }
+
+                            if !chat.typingMembers.isEmpty {
+                                TypingIndicatorRow(
+                                    typingMembers: chat.typingMembers,
+                                    members: chat.members
                                 )
-                            case .callEvent(let event):
-                                CallTimelineEventRow(event: event)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .animation(.easeInOut(duration: 0.2), value: chat.typingMembers.map(\.pubkey))
 
-                        if !chat.typingMembers.isEmpty {
-                            TypingIndicatorRow(
-                                typingMembers: chat.typingMembers,
-                                members: chat.members
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: BottomVisibleKey.self,
+                                value: geo.frame(in: .named("chatScroll")).minY
                             )
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
+                        .frame(height: 1)
+                        .id(bottomAnchorId)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .animation(.easeInOut(duration: 0.2), value: chat.typingMembers.map(\.pubkey))
+                }
+                .coordinateSpace(name: "chatScroll")
+                .defaultScrollAnchor(.bottom)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { _ in
+                            if !isUserScrolling {
+                                isUserScrolling = true
+                            }
+                        }
+                        .onEnded { _ in
+                            isUserScrolling = false
+                        }
+                )
+                .onDisappear {
+                    isUserScrolling = false
+                }
+                .onPreferenceChange(BottomVisibleKey.self) { minY in
+                    guard let minY else { return }
+                    let isNearBottom = minY < scrollGeo.size.height + bottomVisibilityTolerance
+                    if isAtBottom != isNearBottom {
+                        isAtBottom = isNearBottom
+                    }
+                    // Only user-initiated scrolling can disable sticky mode.
+                    if isNearBottom {
+                        if !shouldStickToBottom {
+                            shouldStickToBottom = true
+                        }
+                    } else if isUserScrolling, shouldStickToBottom {
+                        shouldStickToBottom = false
+                    }
+                }
+                .onChange(of: chat.messages.last?.id) { oldMessageId, newMessageId in
+                    guard newMessageId != oldMessageId else { return }
+                    guard shouldStickToBottom else { return }
+                    scrollToBottom(using: proxy, animated: true)
+                }
+                .onChange(of: chat.chatId) { _, _ in
+                    shouldStickToBottom = true
+                    scrollToBottom(using: proxy, animated: false)
+                }
+                .onAppear {
+                    if shouldStickToBottom {
+                        scrollToBottom(using: proxy, animated: false)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !isAtBottom {
+                        Button {
+                            shouldStickToBottom = true
+                            scrollToBottom(using: proxy, animated: true)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.footnote.weight(.semibold))
+                                .padding(10)
+                        }
+                        .foregroundStyle(.primary)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                        .padding(.trailing, 16)
+                        .padding(.bottom, scrollButtonBottomPadding)
+                        .accessibilityLabel("Scroll to bottom")
+                    }
+                }
+            }
+        }
+    }
 
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: BottomVisibleKey.self,
-                            value: geo.frame(in: .named("chatScroll")).minY
-                        )
-                    }
-                    .frame(height: 1)
-                    .id("bottom-anchor")
+    private func scrollToBottom(using proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                 }
-            }
-            .coordinateSpace(name: "chatScroll")
-            .defaultScrollAnchor(.bottom)
-            .onPreferenceChange(BottomVisibleKey.self) { minY in
-                // The anchor is visible when its top edge is within the scroll view bounds.
-                // Give some tolerance (100pt) to account for the input bar overlay.
-                if let minY {
-                    isAtBottom = minY < UIScreen.main.bounds.height + 100
-                }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if !isAtBottom {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo("bottom-anchor", anchor: .bottom)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.footnote.weight(.semibold))
-                            .padding(10)
-                    }
-                    .foregroundStyle(.primary)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-                    .padding(.trailing, 16)
-                    .padding(.bottom, scrollButtonBottomPadding)
-                    .accessibilityLabel("Scroll to bottom")
-                }
+            } else {
+                proxy.scrollTo(bottomAnchorId, anchor: .bottom)
             }
         }
     }

@@ -17,11 +17,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -35,6 +39,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +83,38 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
     }
 
     var draft by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val newestMessageId = chat.messages.lastOrNull()?.id
+    var shouldStickToBottom by remember(chat.chatId) { mutableStateOf(true) }
+    var programmaticScrollInFlight by remember { mutableStateOf(false) }
+    val isAtBottom by remember(listState) {
+        derivedStateOf { listState.isNearBottomForReverseLayout() }
+    }
+
+    LaunchedEffect(chat.chatId) {
+        shouldStickToBottom = true
+        if (chat.messages.isNotEmpty()) {
+            listState.scrollToItem(0)
+        }
+    }
+
+    LaunchedEffect(isAtBottom, listState.isScrollInProgress, programmaticScrollInFlight) {
+        if (isAtBottom) {
+            shouldStickToBottom = true
+        } else if (listState.isScrollInProgress && !programmaticScrollInFlight) {
+            shouldStickToBottom = false
+        }
+    }
+
+    LaunchedEffect(newestMessageId) {
+        if (newestMessageId == null || !shouldStickToBottom) return@LaunchedEffect
+        programmaticScrollInFlight = true
+        try {
+            listState.animateScrollToItem(0)
+        } finally {
+            programmaticScrollInFlight = false
+        }
+    }
 
     val myPubkey =
         when (val a = manager.state.auth) {
@@ -121,7 +159,11 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
         },
     ) { inner ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(inner),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(inner)
+                    .padding(top = 8.dp),
         ) {
             CallControls(
                 manager = manager,
@@ -129,6 +171,7 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
             )
 
             LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().testTag(TestTags.CHAT_MESSAGE_LIST),
                 reverseLayout = true,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
@@ -146,7 +189,12 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedTextField(
@@ -171,6 +219,11 @@ fun ChatScreen(manager: AppManager, chatId: String, padding: PaddingValues) {
             }
         }
     }
+}
+
+private fun LazyListState.isNearBottomForReverseLayout(tolerancePx: Int = 12): Boolean {
+    if (firstVisibleItemIndex != 0) return false
+    return firstVisibleItemScrollOffset <= tolerancePx
 }
 
 private fun chatTitle(chat: com.pika.app.rust.ChatViewState, selfPubkey: String?): String {

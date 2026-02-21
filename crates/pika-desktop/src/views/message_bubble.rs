@@ -12,13 +12,13 @@ const EMOJI_FONT: Font = Font::with_name("Noto Color Emoji");
 /// Common emoji choices for the quick picker.
 const EMOJI_CHOICES: &[&str] = &[
     "\u{2764}\u{FE0F}", // ❤️
-    "\u{1F44D}",         // 👍
-    "\u{1F602}",         // 😂
-    "\u{1F62E}",         // 😮
-    "\u{1F622}",         // 😢
-    "\u{1F64F}",         // 🙏
-    "\u{1F525}",         // 🔥
-    "\u{1F389}",         // 🎉
+    "\u{1F44D}",        // 👍
+    "\u{1F602}",        // 😂
+    "\u{1F62E}",        // 😮
+    "\u{1F622}",        // 😢
+    "\u{1F64F}",        // 🙏
+    "\u{1F525}",        // 🔥
+    "\u{1F389}",        // 🎉
 ];
 
 /// Renders a single message as a styled bubble with reactions.
@@ -61,9 +61,7 @@ pub fn message_bubble<'a>(
         // Signal layout: [spacer] [icons] [bubble]
         let bubble = container(
             column![
-                text(&msg.display_content)
-                    .size(14)
-                    .color(Color::WHITE),
+                text(&msg.display_content).size(14).color(Color::WHITE),
                 text(time_text)
                     .size(10)
                     .color(Color::WHITE.scale_alpha(0.6)),
@@ -147,10 +145,7 @@ pub fn message_bubble<'a>(
 
 /// Small action icons beside the bubble (Signal-style).
 /// Currently just a react button; could add reply / more later.
-fn message_action_icons<'a>(
-    msg_id: &str,
-    picker_open: bool,
-) -> Element<'a, Message, Theme> {
+fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Message, Theme> {
     let mid = msg_id.to_string();
 
     // React icon: ✕ when picker is open, + otherwise
@@ -172,9 +167,7 @@ fn message_action_icons<'a>(
             }
         });
 
-    row![react_btn]
-        .align_y(iced::Alignment::Center)
-        .into()
+    row![react_btn].align_y(iced::Alignment::Center).into()
 }
 
 /// Existing reaction chips displayed below the bubble.

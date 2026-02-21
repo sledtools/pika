@@ -135,7 +135,7 @@ fn is_live_call_status(status: &CallStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AuthState, CallState, ChatViewState};
+    use crate::{AuthMode, AuthState, CallState, ChatViewState};
 
     fn state_with_router(default_screen: Screen, stack: Vec<Screen>) -> AppState {
         let mut state = AppState::empty();
@@ -148,6 +148,7 @@ mod tests {
         state.auth = AuthState::LoggedIn {
             npub: "npub1test".into(),
             pubkey: "pubkey".into(),
+            mode: AuthMode::LocalNsec,
         };
         state
     }

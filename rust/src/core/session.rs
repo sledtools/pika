@@ -105,11 +105,7 @@ impl AppCore {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
-        match open_mdk(
-            &self.data_dir,
-            &sess.pubkey,
-            &self.keychain_group,
-        ) {
+        match open_mdk(&self.data_dir, &sess.pubkey, &self.keychain_group) {
             Ok(new_mdk) => {
                 sess.mdk = new_mdk;
             }

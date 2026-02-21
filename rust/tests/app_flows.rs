@@ -1658,7 +1658,8 @@ fn nostr_connect_connect_response_without_callback_does_not_log_in() {
 
     let canonical_bunker_uri =
         "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
-    let (connector, _expected_user_pubkey) = MockBunkerSignerConnector::success(canonical_bunker_uri);
+    let (connector, _expected_user_pubkey) =
+        MockBunkerSignerConnector::success(canonical_bunker_uri);
     app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);

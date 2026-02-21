@@ -1876,7 +1876,10 @@ impl AppCore {
         trigger: &'static str,
     ) {
         let Some(mut pending) = self.pending_nostr_connect_login.take() else {
-            tracing::warn!(trigger, "nostr_connect: callback/continue but no pending login, ignoring");
+            tracing::warn!(
+                trigger,
+                "nostr_connect: callback/continue but no pending login, ignoring"
+            );
             return;
         };
         if mark_callback_received {
@@ -1901,25 +1904,27 @@ impl AppCore {
             }
         };
 
-        let connect_response = match self
-            .wait_for_pending_nostr_connect_signer(&mut pending, callback_url)
-        {
-            Ok(Some(connect_response)) => connect_response,
-            Ok(None) => {
-                // Foreground retry path: response not received yet.
-                tracing::info!(trigger, "nostr_connect: signer response not ready yet; still waiting");
-                self.persist_pending_nostr_connect_login_snapshot(&pending);
-                self.pending_nostr_connect_login = Some(pending);
-                return;
-            }
-            Err(e) => {
-                tracing::error!(%e, "nostr_connect: connect response validation failed");
-                self.clear_pending_nostr_connect_login_snapshot();
-                self.clear_busy();
-                self.toast(format!("{e:#}"));
-                return;
-            }
-        };
+        let connect_response =
+            match self.wait_for_pending_nostr_connect_signer(&mut pending, callback_url) {
+                Ok(Some(connect_response)) => connect_response,
+                Ok(None) => {
+                    // Foreground retry path: response not received yet.
+                    tracing::info!(
+                        trigger,
+                        "nostr_connect: signer response not ready yet; still waiting"
+                    );
+                    self.persist_pending_nostr_connect_login_snapshot(&pending);
+                    self.pending_nostr_connect_login = Some(pending);
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(%e, "nostr_connect: connect response validation failed");
+                    self.clear_pending_nostr_connect_login_snapshot();
+                    self.clear_busy();
+                    self.toast(format!("{e:#}"));
+                    return;
+                }
+            };
         self.clear_pending_nostr_connect_login_snapshot();
         self.maybe_persist_nostr_connect_pairing(&client_keys, &connect_response.agreed_secret);
         let bunker_uri = self.make_bunker_uri(
@@ -2913,12 +2918,8 @@ impl AppCore {
                 let mut changed = false;
 
                 // Update own profile.
-                let is_me = self
-                    .session
-                    .as_ref()
-                    .map(|s| s.pubkey.to_hex())
-                    .as_deref()
-                    == Some(&pubkey);
+                let is_me =
+                    self.session.as_ref().map(|s| s.pubkey.to_hex()).as_deref() == Some(&pubkey);
                 if is_me {
                     let next = self.my_profile_state();
                     if next != self.state.my_profile {
@@ -3061,8 +3062,7 @@ impl AppCore {
                             // Handle typing indicator: update in-memory state, refresh chat.
                             if let Some(sender) = app_sender {
                                 let sender_hex = sender.to_hex();
-                                let my_hex =
-                                    self.session.as_ref().map(|s| s.pubkey.to_hex());
+                                let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
                                 // Ignore our own typing indicators.
                                 if my_hex.as_deref() != Some(sender_hex.as_str()) {
                                     self.update_typing(&chat_id, &sender_hex, now_seconds() + 10);
@@ -4500,18 +4500,26 @@ fn prune_chat_routes(stack: &mut Vec<Screen>, chat_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::{prune_chat_routes, AppCore};
+    use crate::bunker_signer::{NostrConnectBunkerSignerConnector, SharedBunkerSignerConnector};
+    use crate::external_signer::SharedExternalSignerBridge;
     use crate::Screen;
     use std::sync::{Arc, RwLock};
 
     fn make_core(data_dir: String) -> AppCore {
         let (update_tx, _update_rx) = flume::unbounded();
         let (core_tx, _core_rx) = flume::unbounded();
+        let external_signer_bridge: SharedExternalSignerBridge = Arc::new(RwLock::new(None));
+        let bunker_signer_connector: SharedBunkerSignerConnector = Arc::new(RwLock::new(Arc::new(
+            NostrConnectBunkerSignerConnector::default(),
+        )));
         AppCore::new(
             update_tx,
             core_tx,
             data_dir,
             String::new(),
             Arc::new(RwLock::new(crate::state::AppState::empty())),
+            external_signer_bridge,
+            bunker_signer_connector,
         )
     }
 

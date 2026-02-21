@@ -1,3 +1,11 @@
+---
+summary: Local Primal iOS interop lab for debugging Pika NIP-46 login callbacks and relay traffic
+read_when:
+  - debugging Pika to Primal to Pika signer login behavior on iOS
+  - running repeatable simulator interop sessions with seeded state
+  - inspecting nostr-connect callback and relay evidence for flaky login flows
+---
+
 # Primal iOS Interop Lab
 
 This lab is for debugging real `Pika -> Primal -> Pika` NIP-46 login interop with evidence:

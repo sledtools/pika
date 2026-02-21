@@ -87,10 +87,9 @@ impl FfiApp {
         let (core_tx, core_rx) = flume::unbounded::<CoreMsg>();
         let shared_state = Arc::new(RwLock::new(AppState::empty()));
         let external_signer_bridge: SharedExternalSignerBridgeType = Arc::new(RwLock::new(None));
-        let bunker_signer_connector: SharedBunkerSignerConnectorType =
-            Arc::new(RwLock::new(Arc::new(
-                NostrConnectBunkerSignerConnectorImpl::default(),
-            )));
+        let bunker_signer_connector: SharedBunkerSignerConnectorType = Arc::new(RwLock::new(
+            Arc::new(NostrConnectBunkerSignerConnectorImpl::default()),
+        ));
 
         // Actor loop thread (single threaded "app actor").
         let core_tx_for_core = core_tx.clone();

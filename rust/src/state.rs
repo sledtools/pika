@@ -297,6 +297,56 @@ pub fn now_seconds() -> i64 {
         .as_secs() as i64
 }
 
+/// Scan `content` for `nostr:npub1...` tokens, resolve display names via `lookup`,
+/// and return `(display_content, mentions)`.
+pub fn resolve_mentions(
+    content: &str,
+    lookup: &std::collections::HashMap<String, String>,
+) -> (String, Vec<Mention>) {
+    use nostr_sdk::prelude::PublicKey;
+
+    let mut mentions = Vec::new();
+    let mut display = String::with_capacity(content.len());
+    let mut rest = content;
+
+    while let Some(pos) = rest.find("nostr:npub1") {
+        display.push_str(&rest[..pos]);
+        let token_start = pos + "nostr:".len();
+        let npub_str = &rest[token_start..];
+        let end = npub_str
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == '!' || c == '?')
+            .unwrap_or(npub_str.len());
+        let npub = &npub_str[..end];
+
+        let display_name = if let Ok(pk) = PublicKey::parse(npub) {
+            let hex = pk.to_hex();
+            lookup
+                .get(&hex)
+                .cloned()
+                .unwrap_or_else(|| npub[..npub.len().min(13)].to_string())
+        } else {
+            npub[..npub.len().min(12)].to_string()
+        };
+
+        let mention_label = format!("@{display_name}");
+        let start = display.len() as u32;
+        let end_pos = start + mention_label.len() as u32;
+        display.push_str(&mention_label);
+
+        mentions.push(Mention {
+            npub: npub.to_string(),
+            display_name: display_name.clone(),
+            start,
+            end: end_pos,
+        });
+
+        rest = &rest[pos + "nostr:".len() + end..];
+    }
+    display.push_str(rest);
+
+    (display, mentions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CallState, CallStatus};
@@ -366,54 +416,4 @@ mod tests {
         assert!(!call.should_auto_present_call_screen);
         assert!(!call.should_enable_proximity_lock);
     }
-}
-
-/// Scan `content` for `nostr:npub1...` tokens, resolve display names via `lookup`,
-/// and return `(display_content, mentions)`.
-pub fn resolve_mentions(
-    content: &str,
-    lookup: &std::collections::HashMap<String, String>,
-) -> (String, Vec<Mention>) {
-    use nostr_sdk::prelude::PublicKey;
-
-    let mut mentions = Vec::new();
-    let mut display = String::with_capacity(content.len());
-    let mut rest = content;
-
-    while let Some(pos) = rest.find("nostr:npub1") {
-        display.push_str(&rest[..pos]);
-        let token_start = pos + "nostr:".len();
-        let npub_str = &rest[token_start..];
-        let end = npub_str
-            .find(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == '!' || c == '?')
-            .unwrap_or(npub_str.len());
-        let npub = &npub_str[..end];
-
-        let display_name = if let Ok(pk) = PublicKey::parse(npub) {
-            let hex = pk.to_hex();
-            lookup
-                .get(&hex)
-                .cloned()
-                .unwrap_or_else(|| npub[..npub.len().min(13)].to_string())
-        } else {
-            npub[..npub.len().min(12)].to_string()
-        };
-
-        let mention_label = format!("@{display_name}");
-        let start = display.len() as u32;
-        let end_pos = start + mention_label.len() as u32;
-        display.push_str(&mention_label);
-
-        mentions.push(Mention {
-            npub: npub.to_string(),
-            display_name: display_name.clone(),
-            start,
-            end: end_pos,
-        });
-
-        rest = &rest[pos + "nostr:".len() + end..];
-    }
-    display.push_str(rest);
-
-    (display, mentions)
 }

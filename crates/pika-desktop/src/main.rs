@@ -300,9 +300,11 @@ impl DesktopApp {
                             chat_id: chat.chat_id.clone(),
                             content,
                             kind: None,
+                            reply_to_message_id: self.reply_to_message_id.clone(),
                         });
                     }
                     self.message_input.clear();
+                    self.reply_to_message_id = None;
                     self.emoji_picker_message_id = None;
                 }
             }
@@ -703,12 +705,18 @@ impl DesktopApp {
             views::call_screen::call_screen_view(call, peer_name)
         } else if route.selected_chat_id.is_some() {
             if let Some(chat) = &self.state.current_chat {
+                let replying_to = self.reply_to_message_id.as_ref().and_then(|reply_id| {
+                    chat.messages
+                        .iter()
+                        .find(|message| message.id == *reply_id)
+                });
                 views::conversation::conversation_view(
                     chat,
                     &self.message_input,
                     self.state.active_call.as_ref(),
                     self.emoji_picker_message_id.as_deref(),
                     self.hovered_message_id.as_deref(),
+                    replying_to,
                     cache,
                 )
             } else {

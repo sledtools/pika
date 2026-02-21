@@ -612,6 +612,7 @@ mod tests {
             chat_id: chat_id.clone(),
             content: probe.clone(),
             kind: None,
+            reply_to_message_id: None,
         });
 
         wait_for_with_timeout(

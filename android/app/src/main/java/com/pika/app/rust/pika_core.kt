@@ -2523,7 +2523,8 @@ sealed class AppAction {
     data class SendMessage(
         val `chatId`: kotlin.String, 
         val `content`: kotlin.String, 
-        val `kind`: kotlin.UShort?) : AppAction()
+        val `kind`: kotlin.UShort?, 
+        val `replyToMessageId`: kotlin.String?) : AppAction()
         
     {
         
@@ -2773,6 +2774,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterOptionalUShort.read(buf),
+                FfiConverterOptionalString.read(buf),
                 )
             13 -> AppAction.RetryMessage(
                 FfiConverterString.read(buf),
@@ -2932,6 +2934,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`chatId`)
                 + FfiConverterString.allocationSize(value.`content`)
                 + FfiConverterOptionalUShort.allocationSize(value.`kind`)
+                + FfiConverterOptionalString.allocationSize(value.`replyToMessageId`)
             )
         }
         is AppAction.RetryMessage -> {
@@ -3179,6 +3182,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`content`, buf)
                 FfiConverterOptionalUShort.write(value.`kind`, buf)
+                FfiConverterOptionalString.write(value.`replyToMessageId`, buf)
                 Unit
             }
             is AppAction.RetryMessage -> {

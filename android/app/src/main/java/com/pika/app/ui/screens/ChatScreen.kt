@@ -129,6 +129,10 @@ fun ChatScreen(
     val callForChat = activeCall?.takeIf { it.chatId == chat.chatId }
     val hasLiveCallElsewhere = activeCall?.let { it.chatId != chat.chatId && it.isLive } ?: false
     val isCallActionDisabled = callForChat == null && hasLiveCallElsewhere
+    val messagesById = remember(chat.messages) { chat.messages.associateBy { it.id } }
+    val reversed = remember(chat.messages) { chat.messages.asReversed() }
+    val reversedIndexById =
+        remember(reversed) { reversed.mapIndexed { index, message -> message.id to index }.toMap() }
 
     Scaffold(
         modifier = Modifier.padding(padding),
@@ -199,7 +203,16 @@ fun ChatScreen(
                         message = msg,
                         messagesById = messagesById,
                         onSendMessage = { text ->
-                            manager.dispatch(AppAction.SendMessage(chat.chatId, text, null))
+                            manager.dispatch(AppAction.SendMessage(chat.chatId, text, null, null))
+                        },
+                        onReplyTo = { replyMessage ->
+                            replyDraft = replyMessage
+                        },
+                        onJumpToMessage = { targetId ->
+                            val index = reversedIndexById[targetId] ?: return@MessageBubble
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(index)
+                            }
                         },
                     )
                 }
@@ -214,22 +227,15 @@ fun ChatScreen(
                         .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier.weight(1f).testTag(TestTags.CHAT_MESSAGE_INPUT),
-                    placeholder = { Text("Message") },
-                    singleLine = false,
-                    maxLines = 4,
-                )
-                Spacer(Modifier.width(10.dp))
-                Button(
-                    onClick = {
-                        val text = draft
-                        draft = ""
-                        manager.dispatch(AppAction.SendMessage(chat.chatId, text, null))
-                    },
-                    modifier = Modifier.testTag(TestTags.CHAT_SEND),
+                replyDraft?.let { replying ->
+                    ReplyComposerPreview(
+                        message = replying,
+                        onClear = { replyDraft = null },
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     OutlinedTextField(
                         value = draft,
@@ -244,7 +250,9 @@ fun ChatScreen(
                         onClick = {
                             val text = draft
                             draft = ""
-                            manager.dispatch(AppAction.SendMessage(chat.chatId, text, replyDraft?.id))
+                            manager.dispatch(
+                                AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
+                            )
                             replyDraft = null
                         },
                         modifier = Modifier.testTag(TestTags.CHAT_SEND),

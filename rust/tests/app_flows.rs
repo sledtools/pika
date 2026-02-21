@@ -138,6 +138,7 @@ fn send_message_creates_pending_then_sent() {
         chat_id: chat_id.clone(),
         content: "hello".into(),
         kind: None,
+        reply_to_message_id: None,
     });
     wait_until("message appears", Duration::from_secs(2), || {
         app.state()
@@ -170,6 +171,7 @@ fn send_message_creates_pending_then_sent() {
     app.dispatch(AppAction::SendMessage {
         chat_id,
         content: "reply".into(),
+        kind: None,
         reply_to_message_id: Some(first_message_id.clone()),
     });
     wait_until("reply appears", Duration::from_secs(2), || {
@@ -217,6 +219,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
     app.dispatch(AppAction::SendMessage {
         chat_id: chat_id.clone(),
         content: "plain despite stale reply".into(),
+        kind: None,
         reply_to_message_id: Some(missing_reply_target),
     });
 
@@ -423,6 +426,7 @@ fn restore_session_recovers_chat_history() {
         chat_id: chat_id.clone(),
         content: "persist-me".into(),
         kind: None,
+        reply_to_message_id: None,
     });
     wait_until("message persisted", Duration::from_secs(2), || {
         app.state()
@@ -516,6 +520,7 @@ fn paging_loads_older_messages_in_pages() {
             chat_id: chat_id.clone(),
             content: format!("m{i}"),
             kind: None,
+            reply_to_message_id: None,
         });
     }
     wait_until(

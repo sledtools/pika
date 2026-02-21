@@ -189,6 +189,7 @@ fn call_deployed_bot_via_ffi_app() {
         chat_id: chat_id.clone(),
         content: ping,
         kind: None,
+        reply_to_message_id: None,
     });
     wait_until("bot pong", Duration::from_secs(30), || {
         app.state()

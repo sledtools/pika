@@ -465,6 +465,7 @@ fn main() {
         chat_id: chat_id.clone(),
         content: ping,
         kind: None,
+        reply_to_message_id: None,
     });
     let ping_window = Duration::from_secs(30);
     let ping_start = Instant::now();
@@ -509,6 +510,7 @@ fn main() {
             chat_id: chat_id.clone(),
             content: probe,
             kind: None,
+            reply_to_message_id: None,
         });
         std::thread::sleep(Duration::from_millis(500));
     }

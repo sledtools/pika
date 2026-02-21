@@ -29,6 +29,7 @@ const EMOJI_CHOICES: &[&str] = &[
 pub fn message_bubble<'a>(
     msg: &'a ChatMessage,
     is_group: bool,
+    reply_target: Option<&'a ChatMessage>,
     emoji_picker_open: bool,
     hovered: bool,
 ) -> Element<'a, Message, Theme> {
@@ -55,19 +56,61 @@ pub fn message_bubble<'a>(
     } else {
         None
     };
+    let make_reply_preview = || {
+        msg.reply_to_message_id.as_ref().map(|reply_to_id| {
+            let sender = match reply_target {
+                Some(target) if target.is_mine => "You".to_string(),
+                Some(target) => target
+                    .sender_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| target.sender_pubkey.chars().take(8).collect()),
+                None => "Original message".to_string(),
+            };
+            let snippet = match reply_target {
+                Some(target) => {
+                    let head = target.display_content.lines().next().unwrap_or("").trim();
+                    if head.is_empty() {
+                        "(empty message)".to_string()
+                    } else if head.chars().count() > 80 {
+                        format!("{}…", head.chars().take(80).collect::<String>())
+                    } else {
+                        head.to_string()
+                    }
+                }
+                None => "Original message not loaded".to_string(),
+            };
+            let preview: Element<'a, Message, Theme> = container(
+                column![
+                    text(sender).size(11).color(theme::TEXT_SECONDARY),
+                    text(snippet).size(11).color(theme::TEXT_FADED),
+                ]
+                .spacing(2),
+            )
+            .padding([6, 8])
+            .into();
+            if reply_target.is_some() {
+                button(preview)
+                    .on_press(Message::JumpToMessage(reply_to_id.clone()))
+                    .style(theme::secondary_button_style)
+                    .into()
+            } else {
+                preview
+            }
+        })
+    };
 
     let content: Element<'a, Message, Theme> = if msg.is_mine {
         // ── Sent: right-aligned ─────────────────────────────────
         // Signal layout: [spacer] [icons] [bubble]
-        let bubble = container(
-            column![
-                text(&msg.display_content).size(14).color(Color::WHITE),
-                text(time_text)
-                    .size(10)
-                    .color(Color::WHITE.scale_alpha(0.6)),
-            ]
-            .spacing(2),
-        )
+        let mut bubble_content = column![].spacing(2);
+        if let Some(preview) = make_reply_preview() {
+            bubble_content = bubble_content.push(preview);
+        }
+        bubble_content = bubble_content.push(text(&msg.display_content).size(14).color(Color::WHITE));
+        bubble_content =
+            bubble_content.push(text(time_text).size(10).color(Color::WHITE.scale_alpha(0.6)));
+        let bubble = container(bubble_content)
         .padding([8, 12])
         .max_width(500)
         .style(theme::bubble_sent_style);
@@ -103,6 +146,9 @@ pub fn message_bubble<'a>(
         if !sender_name.is_empty() {
             bubble_content =
                 bubble_content.push(text(sender_name).size(12).color(theme::ACCENT_BLUE));
+        }
+        if let Some(preview) = make_reply_preview() {
+            bubble_content = bubble_content.push(preview);
         }
         bubble_content = bubble_content.push(
             text(&msg.display_content)
@@ -144,12 +190,28 @@ pub fn message_bubble<'a>(
 }
 
 /// Small action icons beside the bubble (Signal-style).
-/// Currently just a react button; could add reply / more later.
 fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Message, Theme> {
     let mid = msg_id.to_string();
+    let reply_mid = msg_id.to_string();
 
     // React icon: ✕ when picker is open, + otherwise
     let icon = if picker_open { "\u{2715}" } else { "+" };
+
+    let reply_btn = button(text("\u{21A9}").size(13).center())
+        .padding([4, 4])
+        .on_press(Message::SetReplyTarget(reply_mid))
+        .style(|_theme: &Theme, status: button::Status| {
+            let text_color = match status {
+                button::Status::Hovered => theme::TEXT_PRIMARY,
+                _ => theme::TEXT_FADED,
+            };
+            button::Style {
+                background: Some(Background::Color(Color::TRANSPARENT)),
+                text_color,
+                border: border::rounded(4),
+                ..Default::default()
+            }
+        });
 
     let react_btn = button(text(icon).size(14).center())
         .padding([4, 4])
@@ -167,7 +229,10 @@ fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Mess
             }
         });
 
-    row![react_btn].align_y(iced::Alignment::Center).into()
+    row![reply_btn, react_btn]
+        .spacing(2)
+        .align_y(iced::Alignment::Center)
+        .into()
 }
 
 /// Existing reaction chips displayed below the bubble.

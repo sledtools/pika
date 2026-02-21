@@ -2145,6 +2145,7 @@ impl AppCore {
                 chat_id,
                 content,
                 kind,
+                reply_to_message_id,
             } => {
                 if !self.is_logged_in() {
                     self.toast("Please log in first");
@@ -2214,7 +2215,7 @@ impl AppCore {
                         sess.keys.public_key(),
                         Timestamp::from(ts as u64),
                         kind,
-                        [],
+                        tags,
                         content.clone(),
                     );
                     rumor.ensure_id();

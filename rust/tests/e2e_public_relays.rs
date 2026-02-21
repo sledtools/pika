@@ -187,6 +187,7 @@ fn alice_sends_bob_over_public_relays() {
         chat_id: chat_id.clone(),
         content: "hi-from-alice-public".into(),
         kind: None,
+        reply_to_message_id: None,
     });
 
     wait_until(

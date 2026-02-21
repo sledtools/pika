@@ -38,6 +38,7 @@ pub enum AppAction {
         chat_id: String,
         content: String,
         kind: Option<u16>,
+        reply_to_message_id: Option<String>,
     },
     RetryMessage {
         chat_id: String,

@@ -99,6 +99,7 @@ fn main() -> Result<()> {
         chat_id: chat_id.clone(),
         content: "ping".to_string(),
         kind: None,
+        reply_to_message_id: None,
     });
 
     // Expect the peer to reply "pong".

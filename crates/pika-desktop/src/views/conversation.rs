@@ -1,6 +1,9 @@
-use iced::widget::{button, column, container, row, rule, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Fill, Theme};
-use pika_core::{CallState, CallStatus, ChatViewState};
+use iced::widget::{
+    button, column, container, operation, row, rule, scrollable, text, text_input, Space,
+};
+use iced::{Alignment, Element, Fill, Task, Theme};
+use pika_core::{CallState, CallStatus, ChatMessage, ChatViewState};
+use std::collections::HashMap;
 
 use crate::theme;
 use crate::views::avatar::avatar_circle;
@@ -35,6 +38,7 @@ pub fn conversation_view<'a>(
     active_call: Option<&'a CallState>,
     emoji_picker_message_id: Option<&str>,
     hovered_message_id: Option<&str>,
+    replying_to: Option<&'a ChatMessage>,
     avatar_cache: &mut super::avatar::AvatarCache,
 ) -> Element<'a, Message, Theme> {
     // ── Header bar ──────────────────────────────────────────────────
@@ -136,9 +140,19 @@ pub fn conversation_view<'a>(
         .messages
         .iter()
         .fold(column![].spacing(6).padding([8, 16]), |col, msg| {
+            let reply_target = msg
+                .reply_to_message_id
+                .as_deref()
+                .and_then(|id| messages_by_id.get(id).copied());
             let picker_open = emoji_picker_message_id == Some(msg.id.as_str());
             let hovered = hovered_message_id == Some(msg.id.as_str());
-            col.push(message_bubble(msg, is_group, picker_open, hovered))
+            col.push(message_bubble(
+                msg,
+                is_group,
+                reply_target,
+                picker_open,
+                hovered,
+            ))
         });
 
     let message_scroll = scrollable(messages)

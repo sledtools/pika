@@ -584,6 +584,7 @@ fn run_marmotd_call_test(relay_url: &str, moq_url: &str) {
         chat_id: chat_id.clone(),
         content: ping_msg.clone(),
         kind: None,
+        reply_to_message_id: None,
     });
 
     // Daemon should receive the message.

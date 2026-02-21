@@ -26,7 +26,17 @@ This installs the plugin via npm. The `marmotd` sidecar binary is auto-downloade
 
 ### 2. (Optional) Set up an identity
 
-If you want a specific Nostr identity, create a state directory and identity file:
+If you want a specific Nostr identity, use `marmotd init`:
+
+```bash
+marmotd init --nsec <nsec1...or-hex> --state-dir ~/.openclaw/.marmot-state
+```
+
+This writes `identity.json` into the state directory. Accepts both bech32 (`nsec1...`) and hex formats.
+
+If `identity.json` already exists with a different key, `init` warns you. If `mdk.sqlite` exists (MLS state from a previous identity), it warns about that too. If the key already matches, it's a no-op.
+
+You can also create `identity.json` manually if you prefer:
 
 ```bash
 mkdir -p ~/.openclaw/.marmot-state

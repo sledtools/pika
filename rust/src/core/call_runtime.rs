@@ -179,16 +179,17 @@ impl CallRuntime {
         let muted = Arc::new(AtomicBool::new(false));
         let muted_for_thread = muted.clone();
         let tx_for_thread = tx.clone();
-        let mut audio_backend = match AudioBackend::try_new(audio_backend_mode) {
-            Ok(v) => v,
-            Err(err) => {
-                let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                    format!("Audio backend fallback: {err}"),
-                ))));
-                AudioBackend::synthetic()
-            }
-        };
+        let audio_backend_mode: Option<String> = audio_backend_mode.map(|s| s.to_owned());
         thread::spawn(move || {
+            let mut audio_backend = match AudioBackend::try_new(audio_backend_mode.as_deref()) {
+                Ok(v) => v,
+                Err(err) => {
+                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                        format!("Audio backend fallback: {err}"),
+                    ))));
+                    AudioBackend::synthetic()
+                }
+            };
             let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
                 InternalEvent::CallRuntimeConnected {
                     call_id: call_id_owned.clone(),

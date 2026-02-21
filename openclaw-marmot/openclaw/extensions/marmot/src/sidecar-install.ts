@@ -424,13 +424,19 @@ export async function resolveMarmotSidecarCommand(params: {
   pinnedVersion?: string;
 }): Promise<string> {
   const log: MarmotLog = params.log ?? {};
-  const existing = await resolveExistingCommand(params.requestedCmd);
-  if (existing) return existing;
 
-  log.warn?.(
-    `[marmot] sidecar command not found (${params.requestedCmd}); attempting auto-install`,
-  );
+  // If a custom sidecarCmd was explicitly configured (not the default "marmotd"),
+  // resolve it directly — the user is in control.
+  if (params.requestedCmd !== DEFAULT_BINARY_NAME) {
+    const existing = await resolveExistingCommand(params.requestedCmd);
+    if (existing) {
+      log.info?.(`[marmot] using configured sidecar command: ${existing}`);
+      return existing;
+    }
+    log.warn?.(`[marmot] configured sidecar command not found: ${params.requestedCmd}, falling back to auto-install`);
+  }
 
+  // Always use the managed binary location — download/update as needed.
   const repo = process.env.MARMOT_SIDECAR_REPO?.trim() || DEFAULT_REPO;
   const envVersion = process.env.MARMOT_SIDECAR_VERSION?.trim();
   const pinnedVersion = params.pinnedVersion ?? envVersion;

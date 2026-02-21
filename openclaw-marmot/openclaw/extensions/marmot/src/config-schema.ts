@@ -33,6 +33,9 @@ export const marmotPluginConfigSchema = {
         additionalProperties: false,
         properties: {
           name: { type: "string" },
+          requireMention: { type: "boolean" },
+          users: { type: "array", items: { type: "string" } },
+          systemPrompt: { type: "string" },
         },
       },
     },

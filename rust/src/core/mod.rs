@@ -386,6 +386,36 @@ impl AppCore {
         }
     }
 
+    fn call_timeline_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("call_timeline.json")
+    }
+
+    fn load_call_timeline(&mut self) {
+        let path = self.call_timeline_path();
+        let loaded = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|data| {
+                serde_json::from_str::<Vec<crate::state::CallTimelineEvent>>(&data).ok()
+            })
+            .unwrap_or_default();
+
+        self.call_timeline_logged_keys.clear();
+        self.state.call_timeline.clear();
+
+        for event in loaded {
+            if self.call_timeline_logged_keys.insert(event.id.clone()) {
+                self.state.call_timeline.push(event);
+            }
+        }
+    }
+
+    fn save_call_timeline(&self) {
+        let path = self.call_timeline_path();
+        if let Ok(json) = serde_json::to_string(&self.state.call_timeline) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
     /// Returns the list of members currently typing in the given chat (pruning expired entries).
     fn get_active_typers(&mut self, chat_id: &str) -> Vec<crate::state::TypingMember> {
         let now = now_seconds();
@@ -509,15 +539,7 @@ impl AppCore {
         let Some(new) = new else { return };
         let now = now_seconds();
 
-        let is_live = matches!(
-            new.status,
-            CallStatus::Offering
-                | CallStatus::Ringing
-                | CallStatus::Connecting
-                | CallStatus::Active
-        );
-
-        if is_live {
+        if new.is_live {
             self.append_call_timeline_event(
                 format!("{}:started", new.call_id),
                 new.chat_id.clone(),
@@ -571,6 +593,7 @@ impl AppCore {
                 .call_timeline
                 .split_off(total - max_per_chat * 10);
         }
+        self.save_call_timeline();
     }
 
     fn emit_account_created(&mut self, nsec: String, pubkey: String, npub: String) {
@@ -733,6 +756,7 @@ impl AppCore {
             self.state.peer_profile = None;
             self.call_session_params = None;
             self.call_timeline_logged_keys.clear();
+            self.save_call_timeline();
             self.last_outgoing_ts = 0;
             self.emit_router();
             self.emit_busy();
@@ -884,7 +908,7 @@ impl AppCore {
                     if call.call_id == call_id && matches!(call.status, CallStatus::Connecting) {
                         let previous = self.state.active_call.clone();
                         let call = self.state.active_call.as_mut().unwrap();
-                        call.status = CallStatus::Active;
+                        call.set_status(CallStatus::Active);
                         if call.started_at.is_none() {
                             call.started_at = Some(now_seconds());
                         }
@@ -905,7 +929,7 @@ impl AppCore {
                         let previous = self.state.active_call.clone();
                         let call = self.state.active_call.as_mut().unwrap();
                         if matches!(call.status, CallStatus::Connecting) {
-                            call.status = CallStatus::Active;
+                            call.set_status(CallStatus::Active);
                             if call.started_at.is_none() {
                                 call.started_at = Some(now_seconds());
                             }
@@ -2984,8 +3008,53 @@ fn prune_chat_routes(stack: &mut Vec<Screen>, chat_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::prune_chat_routes;
+    use super::{prune_chat_routes, AppCore};
     use crate::Screen;
+    use std::sync::{Arc, RwLock};
+
+    fn make_core(data_dir: String) -> AppCore {
+        let (update_tx, _update_rx) = flume::unbounded();
+        let (core_tx, _core_rx) = flume::unbounded();
+        AppCore::new(
+            update_tx,
+            core_tx,
+            data_dir,
+            String::new(),
+            Arc::new(RwLock::new(crate::state::AppState::empty())),
+        )
+    }
+
+    #[test]
+    fn call_timeline_persists_across_core_restart() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().to_string_lossy().into_owned();
+
+        let mut first = make_core(data_dir.clone());
+        first.append_call_timeline_event(
+            "call-1:started".to_string(),
+            "chat-1".to_string(),
+            "Call started".to_string(),
+            1_700_000_000,
+        );
+        assert_eq!(first.state.call_timeline.len(), 1);
+        drop(first);
+
+        let mut second = make_core(data_dir);
+        second.load_call_timeline();
+        assert_eq!(second.state.call_timeline.len(), 1);
+        assert_eq!(second.state.call_timeline[0].id, "call-1:started");
+        assert_eq!(second.state.call_timeline[0].chat_id, "chat-1");
+
+        // The logged-key cache must be restored so duplicate transition keys
+        // don't append duplicate timeline entries after restart.
+        second.append_call_timeline_event(
+            "call-1:started".to_string(),
+            "chat-1".to_string(),
+            "Call started".to_string(),
+            1_700_000_001,
+        );
+        assert_eq!(second.state.call_timeline.len(), 1);
+    }
 
     #[test]
     fn prune_chat_routes_removes_chat_and_group_info_for_target_chat() {

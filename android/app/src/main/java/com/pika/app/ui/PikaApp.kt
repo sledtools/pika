@@ -12,10 +12,15 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.Screen
+import com.pika.app.ui.screens.CallSurface
 import com.pika.app.ui.screens.ChatListScreen
 import com.pika.app.ui.screens.ChatScreen
 import com.pika.app.ui.screens.GroupInfoScreen
@@ -28,11 +33,27 @@ import com.pika.app.ui.screens.PeerProfileSheet
 fun PikaApp(manager: AppManager) {
     val snackbarHostState = remember { SnackbarHostState() }
     val state = manager.state
+    var callSurfaceChatId by rememberSaveable { mutableStateOf<String?>(null) }
+    var isCallSurfacePresented by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.toast) {
         val msg = state.toast ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(message = msg)
         manager.dispatch(AppAction.ClearToast)
+    }
+
+    LaunchedEffect(state.activeCall?.callId, state.activeCall?.status) {
+        val activeCall = state.activeCall
+        if (activeCall == null) {
+            isCallSurfacePresented = false
+            callSurfaceChatId = null
+            return@LaunchedEffect
+        }
+
+        if (activeCall.shouldAutoPresentCallScreen) {
+            callSurfaceChatId = activeCall.chatId
+            isCallSurfacePresented = true
+        }
     }
 
     Scaffold(
@@ -60,12 +81,37 @@ fun PikaApp(manager: AppManager) {
                         is Screen.ChatList -> ChatListScreen(manager = manager, padding = padding)
                         is Screen.NewChat -> NewChatScreen(manager = manager, padding = padding)
                         is Screen.NewGroupChat -> NewGroupChatScreen(manager = manager, padding = padding)
-                        is Screen.Chat -> ChatScreen(manager = manager, chatId = screen.chatId, padding = padding)
+                        is Screen.Chat ->
+                            ChatScreen(
+                                manager = manager,
+                                chatId = screen.chatId,
+                                padding = padding,
+                                onOpenCallSurface = { chatId ->
+                                    callSurfaceChatId = chatId
+                                    isCallSurfacePresented = true
+                                },
+                            )
                         is Screen.GroupInfo -> GroupInfoScreen(manager = manager, chatId = screen.chatId, padding = padding)
                         is Screen.Login -> LoginScreen(manager = manager, padding = padding)
                     }
                 }
             }
+        }
+    }
+
+    if (isCallSurfacePresented) {
+        val chatId = state.activeCall?.chatId ?: callSurfaceChatId
+        if (chatId != null) {
+            CallSurface(
+                manager = manager,
+                chatId = chatId,
+                onDismiss = {
+                    isCallSurfacePresented = false
+                    if (state.activeCall == null) {
+                        callSurfaceChatId = null
+                    }
+                },
+            )
         }
     }
 

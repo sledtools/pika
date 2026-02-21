@@ -1,4 +1,4 @@
-#[derive(uniffi::Record, Clone, Debug)]
+#[derive(uniffi::Record, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CallTimelineEvent {
     pub id: String,
     pub chat_id: String,
@@ -50,6 +50,9 @@ pub struct CallState {
     pub chat_id: String,
     pub peer_npub: String,
     pub status: CallStatus,
+    pub is_live: bool,
+    pub should_auto_present_call_screen: bool,
+    pub should_enable_proximity_lock: bool,
     pub started_at: Option<i64>,
     pub is_muted: bool,
     pub debug: Option<CallDebugStats>,
@@ -62,6 +65,55 @@ pub enum CallStatus {
     Connecting,
     Active,
     Ended { reason: String },
+}
+
+impl CallStatus {
+    pub fn is_live(&self) -> bool {
+        matches!(
+            self,
+            Self::Offering | Self::Ringing | Self::Connecting | Self::Active
+        )
+    }
+
+    pub fn should_auto_present_call_screen(&self) -> bool {
+        self.is_live()
+    }
+
+    pub fn should_enable_proximity_lock(&self) -> bool {
+        matches!(self, Self::Offering | Self::Connecting | Self::Active)
+    }
+}
+
+impl CallState {
+    pub fn new(
+        call_id: String,
+        chat_id: String,
+        peer_npub: String,
+        status: CallStatus,
+        started_at: Option<i64>,
+        is_muted: bool,
+        debug: Option<CallDebugStats>,
+    ) -> Self {
+        Self {
+            call_id,
+            chat_id,
+            peer_npub,
+            is_live: status.is_live(),
+            should_auto_present_call_screen: status.should_auto_present_call_screen(),
+            should_enable_proximity_lock: status.should_enable_proximity_lock(),
+            status,
+            started_at,
+            is_muted,
+            debug,
+        }
+    }
+
+    pub fn set_status(&mut self, status: CallStatus) {
+        self.is_live = status.is_live();
+        self.should_auto_present_call_screen = status.should_auto_present_call_screen();
+        self.should_enable_proximity_lock = status.should_enable_proximity_lock();
+        self.status = status;
+    }
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -243,6 +295,77 @@ pub fn now_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallState, CallStatus};
+
+    #[test]
+    fn call_status_proximity_lock_mapping() {
+        assert!(CallStatus::Offering.should_enable_proximity_lock());
+        assert!(!CallStatus::Ringing.should_enable_proximity_lock());
+        assert!(CallStatus::Connecting.should_enable_proximity_lock());
+        assert!(CallStatus::Active.should_enable_proximity_lock());
+        assert!(!CallStatus::Ended {
+            reason: "user_hangup".to_string(),
+        }
+        .should_enable_proximity_lock());
+    }
+
+    #[test]
+    fn call_status_live_and_auto_present_mapping() {
+        assert!(CallStatus::Offering.is_live());
+        assert!(CallStatus::Offering.should_auto_present_call_screen());
+
+        assert!(CallStatus::Ringing.is_live());
+        assert!(CallStatus::Ringing.should_auto_present_call_screen());
+
+        assert!(CallStatus::Connecting.is_live());
+        assert!(CallStatus::Connecting.should_auto_present_call_screen());
+
+        assert!(CallStatus::Active.is_live());
+        assert!(CallStatus::Active.should_auto_present_call_screen());
+
+        let ended = CallStatus::Ended {
+            reason: "user_hangup".to_string(),
+        };
+        assert!(!ended.is_live());
+        assert!(!ended.should_auto_present_call_screen());
+    }
+
+    #[test]
+    fn call_state_set_status_keeps_lifecycle_policy_synced() {
+        let mut call = CallState::new(
+            "call-1".to_string(),
+            "chat-1".to_string(),
+            "npub1test".to_string(),
+            CallStatus::Offering,
+            None,
+            false,
+            None,
+        );
+        assert!(call.is_live);
+        assert!(call.should_auto_present_call_screen);
+        assert!(call.should_enable_proximity_lock);
+
+        call.set_status(CallStatus::Ringing);
+        assert!(call.is_live);
+        assert!(call.should_auto_present_call_screen);
+        assert!(!call.should_enable_proximity_lock);
+
+        call.set_status(CallStatus::Active);
+        assert!(call.is_live);
+        assert!(call.should_auto_present_call_screen);
+        assert!(call.should_enable_proximity_lock);
+
+        call.set_status(CallStatus::Ended {
+            reason: "user_hangup".to_string(),
+        });
+        assert!(!call.is_live);
+        assert!(!call.should_auto_present_call_screen);
+        assert!(!call.should_enable_proximity_lock);
+    }
 }
 
 /// Scan `content` for `nostr:npub1...` tokens, resolve display names via `lookup`,

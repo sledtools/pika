@@ -1,24 +1,6 @@
 import Foundation
 
 extension CallStatus {
-    var isLive: Bool {
-        switch self {
-        case .offering, .ringing, .connecting, .active:
-            return true
-        case .ended:
-            return false
-        }
-    }
-
-    var shouldAutoPresentCallScreen: Bool {
-        switch self {
-        case .offering, .ringing, .connecting, .active:
-            return true
-        case .ended:
-            return false
-        }
-    }
-
     var titleText: String {
         switch self {
         case .offering:
@@ -82,5 +64,4 @@ func callDurationText(startedAt: Int64?, nowSeconds: Int64 = Int64(Date().timeIn
 func formattedCallDebugStats(_ debug: CallDebugStats) -> String {
     "tx \(debug.txFrames)  rx \(debug.rxFrames)  drop \(debug.rxDropped)"
 }
-
 

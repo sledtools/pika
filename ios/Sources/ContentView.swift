@@ -69,7 +69,7 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: visibleToast)
         .onAppear {
-            if let call = manager.state.activeCall, call.status.shouldAutoPresentCallScreen {
+            if let call = manager.state.activeCall, call.shouldAutoPresentCallScreen {
                 isCallScreenPresented = true
             }
         }
@@ -94,12 +94,7 @@ struct ContentView: View {
                 return
             }
 
-            if !new.status.isLive {
-                isCallScreenPresented = false
-                return
-            }
-
-            guard new.status.shouldAutoPresentCallScreen else { return }
+            guard new.shouldAutoPresentCallScreen else { return }
             let callChanged = old?.callId != new.callId
             let statusChanged = old?.status != new.status
             if callChanged || statusChanged {

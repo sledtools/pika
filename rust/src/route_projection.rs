@@ -274,15 +274,15 @@ mod tests {
     #[test]
     fn desktop_projection_emits_active_call_modal_for_live_call() {
         let mut state = logged_in(state_with_router(Screen::ChatList, vec![]));
-        state.active_call = Some(CallState {
-            call_id: "call1".into(),
-            chat_id: "chat1".into(),
-            peer_npub: "npub1peer".into(),
-            status: CallStatus::Active,
-            started_at: None,
-            is_muted: false,
-            debug: None,
-        });
+        state.active_call = Some(CallState::new(
+            "call1".into(),
+            "chat1".into(),
+            "npub1peer".into(),
+            CallStatus::Active,
+            None,
+            false,
+            None,
+        ));
         let route = project_desktop(&state);
         assert_eq!(
             route.modal,

@@ -40,6 +40,23 @@ final class PikaUITests: XCTestCase {
         return messages
     }
 
+    private func openNewChatFromChatList(_ app: XCUIApplication, timeout: TimeInterval = 10) {
+        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
+        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
+        newChat.tap()
+
+        let nav = app.navigationBars["New Chat"]
+        if nav.waitForExistence(timeout: 2) {
+            return
+        }
+
+        // Master behavior: toolbar Menu requires selecting the "New Chat" action.
+        let menuItem = app.buttons["New Chat"].firstMatch
+        XCTAssertTrue(menuItem.waitForExistence(timeout: 5), "New Chat menu item did not appear")
+        menuItem.tap()
+        XCTAssertTrue(nav.waitForExistence(timeout: timeout))
+    }
+
     func testCreateAccount_noteToSelf_sendMessage_and_logout() throws {
         let app = XCUIApplication()
         // Keep this test deterministic/offline.
@@ -76,11 +93,7 @@ final class PikaUITests: XCTestCase {
         else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
 
         // New chat.
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
-        newChat.tap()
-
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 10))
+        openNewChatFromChatList(app, timeout: 10)
 
         let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peer.waitForExistence(timeout: 10))
@@ -113,9 +126,21 @@ final class PikaUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 10))
 
-        let logout = app.buttons.matching(identifier: "chatlist_logout").firstMatch
+        myNpubBtn.tap()
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+
+        let logout = app.descendants(matching: .any).matching(identifier: "chatlist_logout").firstMatch
+        if !logout.exists {
+            for _ in 0..<4 where !logout.exists {
+                app.swipeUp()
+            }
+        }
         XCTAssertTrue(logout.waitForExistence(timeout: 5))
         logout.tap()
+
+        let confirmLogout = app.buttons.matching(identifier: "chatlist_logout_confirm").firstMatch
+        XCTAssertTrue(confirmLogout.waitForExistence(timeout: 5))
+        confirmLogout.tap()
 
         XCTAssertTrue(app.staticTexts["Pika"].waitForExistence(timeout: 10))
     }
@@ -151,11 +176,7 @@ final class PikaUITests: XCTestCase {
         else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
 
         // Create note-to-self chat.
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
-        newChat.tap()
-
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 10))
+        openNewChatFromChatList(app, timeout: 10)
 
         let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peer.waitForExistence(timeout: 10))
@@ -258,11 +279,7 @@ final class PikaUITests: XCTestCase {
         if close.exists { close.tap() }
         else { myNpubNavBar.buttons.element(boundBy: 0).tap() }
 
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
-        newChat.tap()
-
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 10))
+        openNewChatFromChatList(app, timeout: 10)
 
         let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peer.waitForExistence(timeout: 10))
@@ -288,21 +305,35 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[msg].waitForExistence(timeout: 10))
 
         // Long-press message text to open reactions + action card.
-        app.staticTexts[msg].press(forDuration: 1.0)
+        let sentMessage = app.staticTexts[msg].firstMatch
+        sentMessage.press(forDuration: 1.0)
 
-        let reactionBar = app.otherElements.matching(identifier: "chat_reaction_bar").firstMatch
+        let reactionBar = app.descendants(matching: .any).matching(identifier: "chat_reaction_bar").firstMatch
+        if !reactionBar.waitForExistence(timeout: 2) {
+            // Retry with explicit coordinate press when XCTest misses the first long-press.
+            sentMessage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+        }
         XCTAssertTrue(reactionBar.waitForExistence(timeout: 5))
 
-        let actionCard = app.otherElements.matching(identifier: "chat_action_card").firstMatch
+        let actionCard = app.descendants(matching: .any).matching(identifier: "chat_action_card").firstMatch
         XCTAssertTrue(actionCard.waitForExistence(timeout: 5))
 
         let copy = app.buttons.matching(identifier: "chat_action_copy").firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: 5))
 
         // Tap outside overlays to dismiss.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        let copyButton = app.buttons.matching(identifier: "chat_action_copy").firstMatch
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.40)).tap()
+        if copyButton.exists {
+            // Fallback tap point if the first tap lands near overlay content.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.72)).tap()
+        }
 
-        XCTAssertFalse(app.buttons.matching(identifier: "chat_action_copy").firstMatch.waitForExistence(timeout: 1.5))
+        let dismissDeadline = Date().addingTimeInterval(2)
+        while Date() < dismissDeadline, copyButton.exists {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertFalse(copyButton.exists)
     }
 
     func testE2E_deployedRustBot_pingPong() throws {
@@ -348,11 +379,7 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 30))
 
         // Start chat with deployed bot.
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 10))
-        newChat.tap()
-
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 15))
+        openNewChatFromChatList(app, timeout: 15)
 
         let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peer.waitForExistence(timeout: 10))

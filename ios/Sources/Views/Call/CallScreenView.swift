@@ -1,5 +1,7 @@
 import AVFAudio
+import Combine
 import SwiftUI
+import UIKit
 
 @MainActor
 struct CallScreenView: View {
@@ -14,6 +16,8 @@ struct CallScreenView: View {
 
     @State private var showMicDeniedAlert = false
     @State private var isSpeakerOn = false
+    @State private var isProximityMonitoringEnabled = false
+    @State private var isProximityLocked = false
 
     var body: some View {
         ZStack {
@@ -50,7 +54,7 @@ struct CallScreenView: View {
                         .foregroundStyle(.white.opacity(0.86))
                 }
 
-                if let duration = callDurationText(startedAt: call.startedAt), call.status.isLive {
+                if let duration = callDurationText(startedAt: call.startedAt), call.isLive {
                     Text(duration)
                         .font(.title3.monospacedDigit().weight(.medium))
                         .foregroundStyle(.white.opacity(0.9))
@@ -71,6 +75,26 @@ struct CallScreenView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
+            .allowsHitTesting(!isProximityLocked)
+
+            if isProximityLocked {
+                Color.black
+                    .ignoresSafeArea()
+                    .allowsHitTesting(true)
+            }
+        }
+        .onAppear {
+            updateProximityMonitoring()
+        }
+        .onChange(of: call.shouldEnableProximityLock) { _, _ in
+            updateProximityMonitoring()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.proximityStateDidChangeNotification)) { _ in
+            guard isProximityMonitoringEnabled else { return }
+            isProximityLocked = UIDevice.current.proximityState
+        }
+        .onDisappear {
+            stopProximityMonitoring()
         }
         .onAppear { syncSpeakerState() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
@@ -195,7 +219,28 @@ struct CallScreenView: View {
             NSLog("Failed to toggle speaker: \(error)")
         }
     }
+    private func updateProximityMonitoring() {
+        if call.shouldEnableProximityLock {
+            startProximityMonitoringIfNeeded()
+        } else {
+            stopProximityMonitoring()
+        }
+    }
 
+    private func startProximityMonitoringIfNeeded() {
+        guard !isProximityMonitoringEnabled else { return }
+        UIDevice.current.isProximityMonitoringEnabled = true
+        isProximityMonitoringEnabled = UIDevice.current.isProximityMonitoringEnabled
+        isProximityLocked = isProximityMonitoringEnabled && UIDevice.current.proximityState
+    }
+
+    private func stopProximityMonitoring() {
+        if isProximityMonitoringEnabled || UIDevice.current.isProximityMonitoringEnabled {
+            UIDevice.current.isProximityMonitoringEnabled = false
+        }
+        isProximityMonitoringEnabled = false
+        isProximityLocked = false
+    }
     private func startMicPermissionAction(_ action: @escaping @MainActor () -> Void) {
         Task { @MainActor in
             let granted = await CallMicrophonePermission.ensureGranted()
@@ -242,6 +287,9 @@ private struct CallControlButton: View {
             chatId: "chat-1",
             peerNpub: "npub1...",
             status: .active,
+            isLive: true,
+            shouldAutoPresentCallScreen: true,
+            shouldEnableProximityLock: true,
             startedAt: Int64(Date().timeIntervalSince1970) - 95,
             isMuted: false,
             debug: CallDebugStats(

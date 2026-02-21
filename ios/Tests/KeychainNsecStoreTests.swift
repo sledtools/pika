@@ -2,6 +2,15 @@ import XCTest
 @testable import Pika
 
 final class KeychainNsecStoreTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        KeychainNsecStore(fileFallbackAllowed: true).clearNsec()
+    }
+
+    override func tearDown() {
+        KeychainNsecStore(fileFallbackAllowed: true).clearNsec()
+        super.tearDown()
+    }
 
     // MARK: - Production mode: file fallback must be denied
 
@@ -29,6 +38,10 @@ final class KeychainNsecStoreTests: XCTestCase {
         XCTAssertNotNil(deniedMessage,
             "Production mode must trigger crash handler when keychain is unavailable, not silently fall back to file")
         XCTAssertTrue(deniedMessage?.contains("must not happen in a production build") == true)
+        XCTAssertNil(
+            KeychainNsecStore(fileFallbackAllowed: true).getNsec(),
+            "Denied fallback must not write plaintext nsec to file"
+        )
     }
 
     func testProductionModeDeniesFileFallback_onGet() throws {

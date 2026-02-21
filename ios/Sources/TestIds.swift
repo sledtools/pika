@@ -8,6 +8,7 @@ enum TestIds {
 
     // Chat list
     static let chatListLogout = "chatlist_logout"
+    static let chatListLogoutConfirm = "chatlist_logout_confirm"
     static let chatListNewChat = "chatlist_new_chat"
     static let chatListMyNpub = "chatlist_my_npub"
     static let chatListMyNpubValue = "chatlist_my_npub_value"

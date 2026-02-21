@@ -6,7 +6,7 @@ struct NewChatView: View {
     let onCreateChat: @MainActor (String) -> Void
     let onRefreshFollowList: @MainActor () -> Void
     @State private var searchText = ""
-    @State private var showManualEntry = false
+    @State private var showManualEntry = true
     @State private var npubInput = ""
     @State private var showScanner = false
 

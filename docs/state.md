@@ -20,7 +20,7 @@ Pika uses a single-threaded Rust "app actor" as the source of truth.
 - navigation (`router`)
 - auth (`auth`)
 - list + detail slices (`chat_list`, `current_chat`)
-- call state (`active_call`)
+- call state (`active_call`, including call-lifecycle UI policy flags such as `is_live`, call-screen auto-present eligibility, and proximity-lock eligibility)
 - ephemeral UI (`toast`)
 
 Rust also maintains actor-internal bookkeeping that is *not* part of `AppState` (paging counters,

@@ -5,7 +5,6 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import com.pika.app.rust.CallState
-import com.pika.app.rust.CallStatus
 
 internal class AndroidAudioFocusManager(context: Context) {
     private val audioManager = context.getSystemService(AudioManager::class.java)
@@ -19,7 +18,7 @@ internal class AndroidAudioFocusManager(context: Context) {
         }
 
     fun syncForCall(call: CallState?) {
-        if (call != null && isLiveCallStatus(call.status)) {
+        if (call?.isLive == true) {
             requestFocus()
         } else {
             abandonFocus()
@@ -52,13 +51,3 @@ internal class AndroidAudioFocusManager(context: Context) {
         hasFocus = false
     }
 }
-
-private fun isLiveCallStatus(status: CallStatus): Boolean =
-    when (status) {
-        is CallStatus.Offering,
-        is CallStatus.Ringing,
-        is CallStatus.Connecting,
-        is CallStatus.Active,
-        -> true
-        is CallStatus.Ended -> false
-    }

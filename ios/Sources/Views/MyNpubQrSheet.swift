@@ -329,6 +329,7 @@ struct MyNpubQrSheet: View {
                     onLogout()
                     dismiss()
                 }
+                .accessibilityIdentifier(TestIds.chatListLogoutConfirm)
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("You can log back in with your nsec.")

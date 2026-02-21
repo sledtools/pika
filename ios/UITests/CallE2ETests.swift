@@ -82,10 +82,30 @@ final class CallE2ETests: XCTestCase {
         return [:]
     }
 
+    private func openNewChatFromChatList(_ app: XCUIApplication, timeout: TimeInterval = 15) {
+        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
+        XCTAssertTrue(newChat.waitForExistence(timeout: 10))
+        newChat.tap()
+
+        let nav = app.navigationBars["New Chat"]
+        if nav.waitForExistence(timeout: 2) {
+            return
+        }
+
+        let menuItem = app.buttons["New Chat"].firstMatch
+        XCTAssertTrue(menuItem.waitForExistence(timeout: 5), "New Chat menu item did not appear")
+        menuItem.tap()
+        XCTAssertTrue(nav.waitForExistence(timeout: timeout))
+    }
+
     func testCallDeployedBot() throws {
+        let buildEnv = ProcessInfo.processInfo.environment
+        if buildEnv["PIKA_UI_E2E"] != "1" {
+            throw XCTSkip("Set PIKA_UI_E2E=1 to run deployed-bot call E2E")
+        }
+
         // Read config from .env file at repo root (env vars don't reach XCUITest runner).
         let dotenv = loadDotenv()
-        let buildEnv = ProcessInfo.processInfo.environment
 
         let nsec = buildEnv["PIKA_TEST_NSEC"] ?? dotenv["PIKA_TEST_NSEC"] ?? ""
         let botNpub = buildEnv["PIKA_BOT_NPUB"] ?? dotenv["PIKA_BOT_NPUB"]
@@ -126,11 +146,7 @@ final class CallE2ETests: XCTestCase {
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 30), "Chat list did not appear after login")
 
         // --- Create chat with bot ---
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 10))
-        newChat.tap()
-
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 15))
+        openNewChatFromChatList(app, timeout: 15)
 
         let peerField = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
         XCTAssertTrue(peerField.waitForExistence(timeout: 10))
@@ -142,11 +158,10 @@ final class CallE2ETests: XCTestCase {
         startChat.tap()
 
         // Wait for chat to open (message composer appears).
-        let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
-        let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch
+        let composer = app.descendants(matching: .any).matching(identifier: "chat_message_input").firstMatch
         let composerDeadline = Date().addingTimeInterval(networkTimeout)
         while Date() < composerDeadline {
-            if msgField.exists || msgFieldFallback.exists { break }
+            if composer.exists { break }
             if let toast = dismissToastIfPresent(app, timeout: 0.5) {
                 if toast.lowercased().contains("failed") || toast.lowercased().contains("not found") {
                     XCTFail("Chat creation failed: \(toast)")
@@ -155,13 +170,27 @@ final class CallE2ETests: XCTestCase {
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        let composer = msgField.exists ? msgField : msgFieldFallback
-        XCTAssertTrue(composer.exists, "Chat composer did not appear within \(networkTimeout)s")
+        guard composer.exists else {
+            XCTFail("Chat composer did not appear within \(networkTimeout)s")
+            return
+        }
 
-        // --- Start call ---
+        // --- Start/open call ---
         let startCall = app.buttons.matching(identifier: "chat_call_start").firstMatch
-        XCTAssertTrue(startCall.waitForExistence(timeout: 10), "Start Call button not found")
-        startCall.tap()
+        let openCall = app.buttons.matching(identifier: "chat_call_open").firstMatch
+        let callButtonDeadline = Date().addingTimeInterval(10)
+        while Date() < callButtonDeadline {
+            if startCall.exists || openCall.exists { break }
+            if let toast = dismissToastIfPresent(app, timeout: 0.3),
+               (toast.lowercased().contains("failed") || toast.lowercased().contains("not found")) {
+                XCTFail("Call control unavailable: \(toast)")
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        let callEntry = startCall.exists ? startCall : openCall
+        XCTAssertTrue(callEntry.exists, "Start/Open Call button not found")
+        callEntry.tap()
 
         // --- Wait for call to become active (or detect failure) ---
         let callActiveText = app.staticTexts["Call active"]
@@ -250,7 +279,7 @@ final class CallE2ETests: XCTestCase {
                 $0.label.hasPrefix("Call ended")
             }
             if !endedTexts.isEmpty { break }
-            // "Start Again" or "Start Call" also means the call is over.
+            // "Start Again" / "Start Call" means the active call is over.
             if app.buttons.matching(identifier: "chat_call_start").firstMatch.exists { break }
             Thread.sleep(forTimeInterval: 0.5)
         }

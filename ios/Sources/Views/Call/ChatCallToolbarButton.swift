@@ -10,7 +10,7 @@ struct ChatCallToolbarButton: View {
     @State private var showMicDeniedAlert = false
 
     private var hasLiveCallForChat: Bool {
-        callForChat?.status.isLive ?? false
+        callForChat?.isLive ?? false
     }
 
     private var isDisabled: Bool {

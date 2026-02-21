@@ -75,7 +75,7 @@ struct ChatView: View {
     @ViewBuilder
     private func loadedChat(_ chat: ChatViewState) -> some View {
         VStack(spacing: 8) {
-            if let liveCall = callFor(chat), liveCall.status.isLive {
+            if let liveCall = callFor(chat), liveCall.isLive {
                 ActiveCallPill(
                     call: liveCall,
                     peerName: chatTitle(chat),
@@ -487,7 +487,7 @@ struct ChatView: View {
 
     private func hasLiveCallElsewhere(chat: ChatViewState) -> Bool {
         guard let activeCall else { return false }
-        return activeCall.chatId != chat.chatId && activeCall.status.isLive
+        return activeCall.chatId != chat.chatId && activeCall.isLive
     }
 
     @ViewBuilder
@@ -671,6 +671,7 @@ private struct QuickReactionBar: View {
         .padding(.vertical, 4)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(TestIds.chatReactionBar)
     }
 }
@@ -697,6 +698,7 @@ private struct MessageActionCard: View {
         .frame(width: 220, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 10, y: 6)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(TestIds.chatActionCard)
     }
 }
@@ -1098,11 +1100,6 @@ private struct MessageBubble: View {
                 switch segment {
                 case .markdown(let text):
                     markdownBubble(text: text)
-                        .onLongPressGesture {
-                            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
-                            impactFeedback.impactOccurred()
-                            onLongPressMessage?(message)
-                        }
                 case .pikaPrompt(let prompt):
                     PikaPromptView(prompt: prompt, message: message, onSelect: onSendMessage)
                 case .pikaHtml(_, let html, let state):
@@ -1123,6 +1120,10 @@ private struct MessageBubble: View {
             if hasReactions {
                 Spacer().frame(height: reactionChipOverlap + 4)
             }
+        }
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 0.8, maximumDistance: 44) {
+            handleLongPress()
         }
         .opacity(activeReactionMessageId == message.id ? 0 : 1)
         .animation(.easeInOut(duration: 0.15), value: activeReactionMessageId == message.id)
@@ -1187,6 +1188,13 @@ private struct MessageBubble: View {
         case (.last, .bottom):
             return roundedCornerRadius
         }
+    }
+
+    private func handleLongPress() {
+        guard onLongPressMessage != nil else { return }
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        onLongPressMessage?(message)
     }
 }
 

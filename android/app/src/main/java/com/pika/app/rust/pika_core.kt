@@ -1688,6 +1688,12 @@ data class CallState (
     , 
     var `status`: CallStatus
     , 
+    var `isLive`: kotlin.Boolean
+    , 
+    var `shouldAutoPresentCallScreen`: kotlin.Boolean
+    , 
+    var `shouldEnableProximityLock`: kotlin.Boolean
+    , 
     var `startedAt`: kotlin.Long?
     , 
     var `isMuted`: kotlin.Boolean
@@ -1713,6 +1719,9 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterTypeCallStatus.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeCallDebugStats.read(buf),
@@ -1724,6 +1733,9 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterString.allocationSize(value.`chatId`) +
             FfiConverterString.allocationSize(value.`peerNpub`) +
             FfiConverterTypeCallStatus.allocationSize(value.`status`) +
+            FfiConverterBoolean.allocationSize(value.`isLive`) +
+            FfiConverterBoolean.allocationSize(value.`shouldAutoPresentCallScreen`) +
+            FfiConverterBoolean.allocationSize(value.`shouldEnableProximityLock`) +
             FfiConverterOptionalLong.allocationSize(value.`startedAt`) +
             FfiConverterBoolean.allocationSize(value.`isMuted`) +
             FfiConverterOptionalTypeCallDebugStats.allocationSize(value.`debug`)
@@ -1734,6 +1746,9 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterString.write(value.`chatId`, buf)
             FfiConverterString.write(value.`peerNpub`, buf)
             FfiConverterTypeCallStatus.write(value.`status`, buf)
+            FfiConverterBoolean.write(value.`isLive`, buf)
+            FfiConverterBoolean.write(value.`shouldAutoPresentCallScreen`, buf)
+            FfiConverterBoolean.write(value.`shouldEnableProximityLock`, buf)
             FfiConverterOptionalLong.write(value.`startedAt`, buf)
             FfiConverterBoolean.write(value.`isMuted`, buf)
             FfiConverterOptionalTypeCallDebugStats.write(value.`debug`, buf)

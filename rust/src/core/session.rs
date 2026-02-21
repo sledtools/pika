@@ -65,6 +65,7 @@ impl AppCore {
         // Build the chat list. Profiles are already in memory, so names and
         // cached picture URLs will be present from the first emission.
         self.load_archived_chats();
+        self.load_call_timeline();
         self.refresh_all_from_storage();
         self.cache_missing_profile_pics();
         self.refresh_my_profile(false);

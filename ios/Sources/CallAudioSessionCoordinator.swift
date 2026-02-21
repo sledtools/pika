@@ -6,21 +6,15 @@ final class CallAudioSessionCoordinator {
     private var isActive = false
 
     func apply(activeCall: CallState?) {
-        if shouldActivate(for: activeCall?.status) {
+        if shouldActivate(for: activeCall) {
             activateIfNeeded()
         } else {
             deactivateIfNeeded()
         }
     }
 
-    private func shouldActivate(for status: CallStatus?) -> Bool {
-        guard let status else { return false }
-        switch status {
-        case .offering, .ringing, .connecting, .active:
-            return true
-        case .ended:
-            return false
-        }
+    private func shouldActivate(for call: CallState?) -> Bool {
+        call?.isLive ?? false
     }
 
     private func activateIfNeeded() {

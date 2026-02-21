@@ -57,6 +57,11 @@ fn nostrconnect_client_pubkey(url: &str) -> Option<String> {
         .and_then(|parsed| parsed.host_str().map(ToString::to_string))
 }
 
+fn nostrconnect_metadata(url: &str) -> Option<serde_json::Value> {
+    let raw = query_param(url, "metadata")?;
+    serde_json::from_str(&raw).ok()
+}
+
 struct TestReconciler {
     updates: Arc<Mutex<Vec<AppUpdate>>>,
 }
@@ -1085,6 +1090,17 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
     assert!(opened_url.contains("metadata="));
     assert!(opened_url.contains("perms="));
     assert!(opened_url.contains("relay="));
+    assert_eq!(query_param(&opened_url, "name").as_deref(), Some("Pika"));
+    assert_eq!(
+        query_param(&opened_url, "url").as_deref(),
+        Some("https://pikachat.org")
+    );
+    let metadata = nostrconnect_metadata(&opened_url).expect("metadata JSON");
+    assert_eq!(metadata.get("name").and_then(|v| v.as_str()), Some("Pika"));
+    assert_eq!(
+        metadata.get("url").and_then(|v| v.as_str()),
+        Some("https://pikachat.org")
+    );
     let connect_uri = connector
         .last_bunker_uri()
         .expect("expected bunker connect URI for signer bootstrap");

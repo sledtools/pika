@@ -25,8 +25,8 @@ final class IOSExternalSignerBridge: ExternalSignerBridge, @unchecked Sendable {
                 errorMessage: "Invalid URL"
             )
         }
-        let redactedTarget = "\(parsed.scheme ?? "url")://\(parsed.host ?? "<unknown>")?<redacted>"
-        NSLog("[PikaSignerBridge] openUrl: \(redactedTarget)")
+        let debugSummary = Self.nostrConnectDebugSummary(for: launchUrl)
+        NSLog("%@", "[PikaSignerBridge] openUrl: \(debugSummary)")
 
         if ProcessInfo.processInfo.environment["PIKA_UI_TEST_CAPTURE_OPEN_URL"] == "1" {
             if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
@@ -104,6 +104,27 @@ final class IOSExternalSignerBridge: ExternalSignerBridge, @unchecked Sendable {
             ?? nostrConnectCallbackUrl
         let separator = trimmed.contains("?") ? "&" : "?"
         return "\(trimmed)\(separator)callback=\(encoded)"
+    }
+
+    private static func nostrConnectDebugSummary(for raw: String) -> String {
+        guard let components = URLComponents(string: raw) else {
+            return "invalid_url"
+        }
+        let scheme = components.scheme ?? "url"
+        let host = components.host ?? "<unknown>"
+        let queryItems = components.queryItems ?? []
+        let keys = Set(queryItems.map { $0.name.lowercased() })
+        let relayCount = queryItems.filter {
+            $0.name.caseInsensitiveCompare("relay") == .orderedSame
+        }.count
+        let callbackScheme = queryItems.first {
+            $0.name.caseInsensitiveCompare("callback") == .orderedSame
+        }
+        .flatMap { item in
+            guard let value = item.value else { return nil }
+            return URL(string: value)?.scheme
+        } ?? "-"
+        return "scheme=\(scheme) host=\(host) keys=\(keys.sorted().joined(separator: ",")) relays=\(relayCount) callback_scheme=\(callbackScheme)"
     }
 
     func requestPublicKey(currentUserHint _: String?) -> ExternalSignerHandshakeResult {

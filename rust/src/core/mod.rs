@@ -528,11 +528,15 @@ impl AppCore {
         if relays.is_empty() {
             anyhow::bail!("No relays configured for signer login");
         }
-        let metadata = serde_json::json!({ "name": "Pika" }).to_string();
+        let metadata = serde_json::json!({
+            "name": "Pika",
+            "url": "https://pikachat.org",
+        })
+        .to_string();
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         query.append_pair("metadata", &metadata);
         query.append_pair("name", "Pika");
-        query.append_pair("url", "https://pika.chat");
+        query.append_pair("url", "https://pikachat.org");
         query.append_pair(
             "perms",
             "get_public_key,sign_event,nip44_encrypt,nip44_decrypt,nip04_encrypt,nip04_decrypt",
@@ -1454,14 +1458,17 @@ impl AppCore {
             &secret,
             &relays,
         );
+        // Persist/arm pending state before app switch so callback can always resume,
+        // even if iOS suspends us immediately after opening Primal.
+        self.start_pending_nostr_connect_login(client_keys, relays, secret, now_seconds());
         if let Err(e) = self.open_external_url(client_uri.clone()) {
             tracing::error!(%e, "nostr_connect: open_external_url failed");
+            self.clear_pending_nostr_connect_login();
             self.clear_busy();
             self.toast(format!("{e:#}"));
             return;
         }
         tracing::info!("nostr_connect: external URL opened, waiting for callback");
-        self.start_pending_nostr_connect_login(client_keys, relays, secret, now_seconds());
     }
 
     fn on_nostr_connect_callback(&mut self, url: String) {

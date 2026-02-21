@@ -57,6 +57,7 @@ Env:
   PIKA_IOS_CONSOLE=1        default to --console
   PIKA_RUST_PROFILE         debug|release (default for run-ios: debug)
   PIKA_NO_RELAY_OVERRIDE=1  disable dev-friendly relay defaults
+  PIKA_IOS_DEVICE_ALLOW_LOCAL_OVERRIDES=1  allow localhost relay/MoQ overrides on physical devices
 EOF
 }
 
@@ -140,6 +141,25 @@ effective_kp_relays() {
   echo "$kp_relays"
 }
 
+contains_localhost_list() {
+  local raw="$1"
+  local item lower
+  IFS=',' read -r -a __items <<<"$raw"
+  for item in "${__items[@]}"; do
+    lower="$(echo "$item" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$lower" == *"127.0.0.1"* || "$lower" == *"localhost"* || "$lower" == *"[::1]"* || "$lower" == *"://::1"* || "$lower" == "::1" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_localhost_url() {
+  local lower
+  lower="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == *"127.0.0.1"* || "$lower" == *"localhost"* || "$lower" == *"[::1]"* || "$lower" == *"://::1"* || "$lower" == "::1" ]]
+}
+
 env_json_for_device() {
   if [ "${PIKA_NO_RELAY_OVERRIDE:-0}" = "1" ]; then
     # Empty dict.
@@ -154,6 +174,32 @@ env_json_for_device() {
   call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
   moq_probe_on_start="${PIKA_MOQ_PROBE_ON_START:-0}"
+
+  if [ "${PIKA_IOS_DEVICE_ALLOW_LOCAL_OVERRIDES:-0}" != "1" ]; then
+    local coerced=0
+    if contains_localhost_list "$relays"; then
+      echo "warning: refusing localhost relay override on physical device; falling back to public relay defaults" >&2
+      relays="$(default_relays)"
+      coerced=1
+    fi
+    if contains_localhost_list "$kp_relays"; then
+      echo "warning: refusing localhost key-package relay override on physical device; falling back to public defaults" >&2
+      kp_relays="$(default_kp_relays)"
+      coerced=1
+    fi
+    if is_localhost_url "$call_moq_url"; then
+      echo "warning: refusing localhost MOQ override on physical device; falling back to deployed MOQ relay" >&2
+      call_moq_url="https://us-east.moq.logos.surf/anon"
+      coerced=1
+    fi
+    if [ "$coerced" = "1" ]; then
+      echo "hint: set PIKA_IOS_DEVICE_ALLOW_LOCAL_OVERRIDES=1 to keep localhost overrides on device" >&2
+    fi
+  fi
+
+  echo "device relay_urls: $relays" >&2
+  echo "device key_package_relay_urls: $kp_relays" >&2
+  echo "device call_moq_url: $call_moq_url" >&2
   python3 - <<PY
 import json
 print(json.dumps({

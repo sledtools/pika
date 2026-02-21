@@ -116,6 +116,9 @@ pub enum InternalEvent {
 
     // Async NIP-46 client-initiated login response became available.
     NostrConnectConnectResponseReady,
+    NostrConnectTimeout {
+        attempt_id: u64,
+    },
 
     // Follow list (NIP-02 kind 3)
     FollowListFetched {

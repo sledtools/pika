@@ -14,6 +14,7 @@ pub enum AppAction {
         bunker_uri: String,
     },
     BeginNostrConnectLogin,
+    ResetNostrConnectPairing,
     RestoreSession {
         nsec: String,
     },
@@ -143,6 +144,7 @@ impl AppAction {
             AppAction::BeginExternalSignerLogin { .. } => "BeginExternalSignerLogin",
             AppAction::BeginBunkerLogin { .. } => "BeginBunkerLogin",
             AppAction::BeginNostrConnectLogin => "BeginNostrConnectLogin",
+            AppAction::ResetNostrConnectPairing => "ResetNostrConnectPairing",
             AppAction::RestoreSession { .. } => "RestoreSession",
             AppAction::RestoreSessionExternalSigner { .. } => "RestoreSessionExternalSigner",
             AppAction::RestoreSessionBunker { .. } => "RestoreSessionBunker",

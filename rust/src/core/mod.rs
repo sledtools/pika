@@ -43,6 +43,8 @@ const DEFAULT_GROUP_NAME: &str = "DM";
 const DEFAULT_GROUP_DESCRIPTION: &str = "";
 
 const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
+const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
+const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
 
 fn diag_nostr_publish_enabled() -> bool {
     match std::env::var("PIKA_DIAG_NOSTR_PUBLISH") {
@@ -100,6 +102,8 @@ enum SessionAuthMode {
 }
 
 struct PendingNostrConnectLogin {
+    attempt_id: u64,
+    started_at_unix: i64,
     client_nsec: String,
     relays: Vec<RelayUrl>,
     secret: String,
@@ -112,6 +116,14 @@ struct PendingNostrConnectLogin {
 struct NostrConnectConnectResponse {
     remote_signer_pubkey: PublicKey,
     agreed_secret: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedPendingNostrConnectLogin {
+    started_at_unix: i64,
+    client_nsec: String,
+    relays: Vec<String>,
+    secret: String,
 }
 
 impl SessionAuthMode {
@@ -187,6 +199,7 @@ pub struct AppCore {
     call_runtime: call_runtime::CallRuntime,
     call_session_params: Option<call_control::CallSessionParams>,
     pending_nostr_connect_login: Option<PendingNostrConnectLogin>,
+    next_nostr_connect_attempt_id: u64,
 }
 
 impl AppCore {
@@ -216,7 +229,7 @@ impl AppCore {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let this = Self {
+        let mut this = Self {
             state,
             rev: 0,
             outbox_seq: 0,
@@ -244,6 +257,7 @@ impl AppCore {
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
             pending_nostr_connect_login: None,
+            next_nostr_connect_attempt_id: 1,
         };
 
         if run_moq_probe {
@@ -261,6 +275,8 @@ impl AppCore {
                 tracing::warn!("moq probe: enabled but call_moq_url missing");
             }
         }
+
+        this.resume_pending_nostr_connect_login_from_disk();
 
         // Ensure FfiApp.state() has an immediately-available snapshot.
         let snapshot = this.state.clone();
@@ -307,6 +323,12 @@ impl AppCore {
         self.rev += 1;
         self.state.rev = self.rev;
         self.rev
+    }
+
+    fn next_nostr_connect_attempt_id(&mut self) -> u64 {
+        let id = self.next_nostr_connect_attempt_id;
+        self.next_nostr_connect_attempt_id = self.next_nostr_connect_attempt_id.saturating_add(1);
+        id
     }
 
     fn commit_state_snapshot(&self, snapshot: &crate::state::AppState) {
@@ -553,13 +575,17 @@ impl AppCore {
 
         // Some signers omit `#p` on connect responses. Subscribe by kind and
         // rely on successful decryption + response validation to identify ours.
+        let since_unix = now_seconds()
+            .saturating_sub(NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS as i64)
+            .max(0) as u64;
         let filter = Filter::new()
             .kind(Kind::NostrConnect)
-            .since(Timestamp::now());
+            .since(Timestamp::from(since_unix));
         client.subscribe(filter, None).await?;
 
         let mut notifications = client.notifications();
-        let timeout_at = std::time::Instant::now() + Duration::from_secs(95);
+        let timeout_at =
+            std::time::Instant::now() + Duration::from_secs(NOSTR_CONNECT_LOGIN_TIMEOUT_SECS);
         let outcome = loop {
             let now = std::time::Instant::now();
             if now >= timeout_at {
@@ -923,33 +949,240 @@ impl AppCore {
         Self::normalize_nostr_connect_secret(candidate)
     }
 
+    fn nostr_connect_client_nsec_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("nostr_connect_client_nsec.txt")
+    }
+
     fn nostr_connect_secret_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("nostr_connect_secret.txt")
     }
 
-    fn load_or_create_nostr_connect_secret(&self) -> String {
-        let path = self.nostr_connect_secret_path();
-        if let Ok(existing) = std::fs::read_to_string(&path) {
-            if let Some(secret) = Self::normalize_nostr_connect_secret(&existing) {
-                return secret;
-            }
-        }
-
-        let secret = Self::make_nostr_connect_secret();
-        if let Err(e) = std::fs::write(&path, &secret) {
-            tracing::warn!(%e, path = %path.display(), "nostr_connect: failed to persist client secret");
-        }
-        secret
+    fn nostr_connect_pending_login_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("nostr_connect_pending_login.json")
     }
 
-    fn maybe_persist_nostr_connect_secret(&self, secret: &str) {
+    fn load_or_create_nostr_connect_pairing(&self) -> (Keys, String) {
+        let existing_keys = std::fs::read_to_string(self.nostr_connect_client_nsec_path())
+            .ok()
+            .and_then(|raw| Keys::parse(raw.trim()).ok());
+        let existing_secret = std::fs::read_to_string(self.nostr_connect_secret_path())
+            .ok()
+            .and_then(|raw| Self::normalize_nostr_connect_secret(&raw));
+
+        if let (Some(keys), Some(secret)) = (existing_keys, existing_secret) {
+            return (keys, secret);
+        }
+
+        let keys = Keys::generate();
+        let secret = Self::make_nostr_connect_secret();
+        self.maybe_persist_nostr_connect_pairing(&keys, &secret);
+        (keys, secret)
+    }
+
+    fn maybe_persist_nostr_connect_pairing(&self, client_keys: &Keys, secret: &str) {
         let Some(secret) = Self::normalize_nostr_connect_secret(secret) else {
             return;
         };
+
+        let client_nsec = client_keys.secret_key().to_bech32().expect("infallible");
+        let client_nsec_path = self.nostr_connect_client_nsec_path();
+        if let Err(e) = std::fs::write(&client_nsec_path, client_nsec) {
+            tracing::warn!(
+                %e,
+                path = %client_nsec_path.display(),
+                "nostr_connect: failed to persist client nsec"
+            );
+        }
+
         let path = self.nostr_connect_secret_path();
         if let Err(e) = std::fs::write(&path, secret) {
-            tracing::warn!(%e, path = %path.display(), "nostr_connect: failed to update client secret");
+            tracing::warn!(%e, path = %path.display(), "nostr_connect: failed to persist client secret");
         }
+    }
+
+    fn clear_nostr_connect_pairing_data(&self) {
+        for path in [
+            self.nostr_connect_client_nsec_path(),
+            self.nostr_connect_secret_path(),
+        ] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        path = %path.display(),
+                        "nostr_connect: failed to remove pairing file"
+                    );
+                }
+            }
+        }
+    }
+
+    fn persist_pending_nostr_connect_login_snapshot(&self, pending: &PendingNostrConnectLogin) {
+        let payload = PersistedPendingNostrConnectLogin {
+            started_at_unix: pending.started_at_unix,
+            client_nsec: pending.client_nsec.clone(),
+            relays: pending
+                .relays
+                .iter()
+                .map(|relay| relay.as_str_without_trailing_slash().to_string())
+                .collect(),
+            secret: pending.secret.clone(),
+        };
+        let path = self.nostr_connect_pending_login_path();
+        let bytes = match serde_json::to_vec(&payload) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(%e, "nostr_connect: failed to serialize pending login snapshot");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::write(&path, bytes) {
+            tracing::warn!(
+                %e,
+                path = %path.display(),
+                "nostr_connect: failed to persist pending login snapshot"
+            );
+        }
+    }
+
+    fn clear_pending_nostr_connect_login_snapshot(&self) {
+        let path = self.nostr_connect_pending_login_path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    path = %path.display(),
+                    "nostr_connect: failed to remove pending login snapshot"
+                );
+            }
+        }
+    }
+
+    fn spawn_nostr_connect_timeout(&self, attempt_id: u64, delay: Duration) {
+        let core_sender = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = core_sender.send(CoreMsg::Internal(Box::new(
+                InternalEvent::NostrConnectTimeout { attempt_id },
+            )));
+        });
+    }
+
+    fn start_pending_nostr_connect_login(
+        &mut self,
+        client_keys: Keys,
+        relays: Vec<RelayUrl>,
+        secret: String,
+        started_at_unix: i64,
+    ) {
+        self.maybe_persist_nostr_connect_pairing(&client_keys, &secret);
+        let connect_response_result = Arc::new(Mutex::new(
+            None::<Result<NostrConnectConnectResponse, String>>,
+        ));
+        self.spawn_nostr_connect_connect_response_waiter(
+            client_keys.clone(),
+            relays.clone(),
+            secret.clone(),
+            connect_response_result.clone(),
+        );
+
+        let attempt_id = self.next_nostr_connect_attempt_id();
+        let pending = PendingNostrConnectLogin {
+            attempt_id,
+            started_at_unix,
+            client_nsec: client_keys.secret_key().to_bech32().expect("infallible"),
+            relays,
+            secret,
+            connect_response_result,
+        };
+        self.persist_pending_nostr_connect_login_snapshot(&pending);
+
+        let elapsed_secs = now_seconds().saturating_sub(started_at_unix).max(0) as u64;
+        let remaining_secs = NOSTR_CONNECT_LOGIN_TIMEOUT_SECS.saturating_sub(elapsed_secs);
+        let timeout_delay = if remaining_secs == 0 {
+            Duration::from_millis(1)
+        } else {
+            Duration::from_secs(remaining_secs)
+        };
+        self.spawn_nostr_connect_timeout(attempt_id, timeout_delay);
+        self.pending_nostr_connect_login = Some(pending);
+    }
+
+    fn clear_pending_nostr_connect_login(&mut self) {
+        self.pending_nostr_connect_login = None;
+        self.clear_pending_nostr_connect_login_snapshot();
+    }
+
+    fn resume_pending_nostr_connect_login_from_disk(&mut self) {
+        let path = self.nostr_connect_pending_login_path();
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return;
+        };
+
+        let pending = match serde_json::from_str::<PersistedPendingNostrConnectLogin>(&raw) {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    path = %path.display(),
+                    "nostr_connect: invalid pending login snapshot; removing"
+                );
+                self.clear_pending_nostr_connect_login_snapshot();
+                return;
+            }
+        };
+
+        let Some(secret) = Self::normalize_nostr_connect_secret(&pending.secret) else {
+            tracing::warn!("nostr_connect: pending login snapshot missing valid secret; removing");
+            self.clear_pending_nostr_connect_login_snapshot();
+            return;
+        };
+
+        let client_keys = match Keys::parse(pending.client_nsec.trim()) {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    "nostr_connect: pending login snapshot has invalid client key; removing"
+                );
+                self.clear_pending_nostr_connect_login_snapshot();
+                return;
+            }
+        };
+
+        let relays: Vec<RelayUrl> = pending
+            .relays
+            .iter()
+            .filter_map(|raw_url| RelayUrl::parse(raw_url).ok())
+            .collect();
+        if relays.is_empty() {
+            tracing::warn!("nostr_connect: pending login snapshot has no valid relays; removing");
+            self.clear_pending_nostr_connect_login_snapshot();
+            return;
+        }
+
+        let elapsed_secs = now_seconds().saturating_sub(pending.started_at_unix).max(0) as u64;
+        if elapsed_secs >= NOSTR_CONNECT_LOGIN_TIMEOUT_SECS {
+            tracing::info!("nostr_connect: dropping stale pending login snapshot");
+            self.clear_pending_nostr_connect_login_snapshot();
+            return;
+        }
+
+        tracing::info!("nostr_connect: resuming pending login from disk");
+        self.set_busy(|b| {
+            b.logging_in = true;
+            b.creating_account = false;
+        });
+        self.start_pending_nostr_connect_login(
+            client_keys,
+            relays,
+            secret,
+            pending.started_at_unix,
+        );
     }
 
     fn start_bunker_signer_session(
@@ -1029,7 +1262,7 @@ impl AppCore {
     }
 
     fn begin_nostr_connect_login(&mut self) {
-        self.pending_nostr_connect_login = None;
+        self.clear_pending_nostr_connect_login();
         tracing::info!("nostr_connect: begin_nostr_connect_login");
 
         if !self.external_signer_enabled() {
@@ -1043,9 +1276,8 @@ impl AppCore {
             b.creating_account = false;
         });
 
-        let client_keys = Keys::generate();
+        let (client_keys, secret) = self.load_or_create_nostr_connect_pairing();
         let relays = self.default_relays();
-        let secret = self.load_or_create_nostr_connect_secret();
         let client_uri = match self.make_nostr_connect_client_uri(&client_keys, &relays, &secret) {
             Ok(uri) => uri,
             Err(e) => {
@@ -1055,16 +1287,6 @@ impl AppCore {
                 return;
             }
         };
-
-        let connect_response_result = Arc::new(Mutex::new(
-            None::<Result<NostrConnectConnectResponse, String>>,
-        ));
-        self.spawn_nostr_connect_connect_response_waiter(
-            client_keys.clone(),
-            relays.clone(),
-            secret.clone(),
-            connect_response_result.clone(),
-        );
 
         tracing::info!(
             uri = %Self::nostr_connect_redacted_uri_for_log(&client_uri),
@@ -1083,13 +1305,7 @@ impl AppCore {
             return;
         }
         tracing::info!("nostr_connect: external URL opened, waiting for callback");
-
-        self.pending_nostr_connect_login = Some(PendingNostrConnectLogin {
-            client_nsec: client_keys.secret_key().to_bech32().expect("infallible"),
-            relays,
-            secret,
-            connect_response_result,
-        });
+        self.start_pending_nostr_connect_login(client_keys, relays, secret, now_seconds());
     }
 
     fn on_nostr_connect_callback(&mut self, url: String) {
@@ -1102,6 +1318,7 @@ impl AppCore {
             Ok(keys) => keys,
             Err(e) => {
                 tracing::error!(%e, "nostr_connect: invalid client key");
+                self.clear_pending_nostr_connect_login_snapshot();
                 self.clear_busy();
                 self.toast(format!("Invalid bunker client key: {e}"));
                 return;
@@ -1114,17 +1331,20 @@ impl AppCore {
             Ok(None) => {
                 // Foreground retry path: response not received yet.
                 tracing::info!("nostr_connect: signer response not ready yet; still waiting");
+                self.persist_pending_nostr_connect_login_snapshot(&pending);
                 self.pending_nostr_connect_login = Some(pending);
                 return;
             }
             Err(e) => {
                 tracing::error!(%e, "nostr_connect: connect response validation failed");
+                self.clear_pending_nostr_connect_login_snapshot();
                 self.clear_busy();
                 self.toast(format!("{e:#}"));
                 return;
             }
         };
-        self.maybe_persist_nostr_connect_secret(&connect_response.agreed_secret);
+        self.clear_pending_nostr_connect_login_snapshot();
+        self.maybe_persist_nostr_connect_pairing(&client_keys, &connect_response.agreed_secret);
         let bunker_uri = self.make_bunker_uri(
             connect_response.remote_signer_pubkey,
             &pending.relays,
@@ -1148,6 +1368,13 @@ impl AppCore {
             tracing::info!("nostr_connect: foregrounded with pending login, continuing");
             self.on_nostr_connect_callback("foreground".to_string());
         }
+    }
+
+    fn reset_nostr_connect_pairing(&mut self) {
+        self.clear_pending_nostr_connect_login();
+        self.clear_nostr_connect_pairing_data();
+        self.clear_busy();
+        self.toast("Nostr Connect pairing reset");
     }
 
     fn restore_bunker_session(&mut self, bunker_uri: String, client_nsec: String) {
@@ -1378,6 +1605,19 @@ impl AppCore {
                     );
                     self.on_nostr_connect_callback("connect-response-ready".to_string());
                 }
+            }
+            InternalEvent::NostrConnectTimeout { attempt_id } => {
+                let pending_attempt = self
+                    .pending_nostr_connect_login
+                    .as_ref()
+                    .map(|pending| pending.attempt_id);
+                if pending_attempt != Some(attempt_id) {
+                    return;
+                }
+                tracing::warn!(attempt_id, "nostr_connect: pending login timed out");
+                self.clear_pending_nostr_connect_login();
+                self.clear_busy();
+                self.toast("Signer connect response timed out");
             }
             InternalEvent::CallRuntimeConnected { call_id } => {
                 if let Some(call) = self.state.active_call.as_mut() {
@@ -2100,6 +2340,9 @@ impl AppCore {
             AppAction::BeginNostrConnectLogin => {
                 self.begin_nostr_connect_login();
             }
+            AppAction::ResetNostrConnectPairing => {
+                self.reset_nostr_connect_pairing();
+            }
             AppAction::NostrConnectCallback { url } => {
                 self.on_nostr_connect_callback(url);
             }
@@ -2140,7 +2383,7 @@ impl AppCore {
                 self.restore_bunker_session(bunker_uri, client_nsec);
             }
             AppAction::Logout => {
-                self.pending_nostr_connect_login = None;
+                self.clear_pending_nostr_connect_login();
                 // Delete the MLS database before tearing down the session so stale
                 // ratchet state doesn't persist across logins.
                 if let Some(sess) = self.session.as_ref() {

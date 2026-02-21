@@ -51,6 +51,12 @@ fn query_param(url: &str, key: &str) -> Option<String> {
         .find_map(|(k, v)| if k == key { Some(v.into_owned()) } else { None })
 }
 
+fn nostrconnect_client_pubkey(url: &str) -> Option<String> {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(ToString::to_string))
+}
+
 struct TestReconciler {
     updates: Arc<Mutex<Vec<AppUpdate>>>,
 }
@@ -79,6 +85,7 @@ struct MockExternalSignerBridge {
     last_hint: Arc<Mutex<Option<String>>>,
     open_url_result: Arc<Mutex<ExternalSignerResult>>,
     last_opened_url: Arc<Mutex<Option<String>>>,
+    open_url_calls: Arc<Mutex<u64>>,
 }
 
 impl MockExternalSignerBridge {
@@ -93,6 +100,7 @@ impl MockExternalSignerBridge {
                 error_message: None,
             })),
             last_opened_url: Arc::new(Mutex::new(None)),
+            open_url_calls: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -103,11 +111,17 @@ impl MockExternalSignerBridge {
     fn last_opened_url(&self) -> Option<String> {
         self.last_opened_url.lock().unwrap().clone()
     }
+
+    fn open_url_calls(&self) -> u64 {
+        *self.open_url_calls.lock().unwrap()
+    }
 }
 
 impl ExternalSignerBridge for MockExternalSignerBridge {
     fn open_url(&self, url: String) -> ExternalSignerResult {
         *self.last_opened_url.lock().unwrap() = Some(url);
+        let mut calls = self.open_url_calls.lock().unwrap();
+        *calls += 1;
         self.open_url_result.lock().unwrap().clone()
     }
 
@@ -1166,17 +1180,23 @@ fn begin_nostr_connect_login_reuses_persisted_secret() {
     );
     let first_url = bridge.last_opened_url().expect("first opened URL");
     let first_secret = query_param(&first_url, "secret").expect("first secret query");
+    let first_client_pubkey =
+        nostrconnect_client_pubkey(&first_url).expect("first nostrconnect host pubkey");
     assert_eq!(first_secret.len(), 32);
 
+    let first_open_calls = bridge.open_url_calls();
     app.dispatch(AppAction::BeginNostrConnectLogin);
     wait_until(
         "second nostrconnect uri opened",
         Duration::from_secs(2),
-        || bridge.last_opened_url().is_some_and(|url| url != first_url),
+        || bridge.open_url_calls() > first_open_calls,
     );
     let second_url = bridge.last_opened_url().expect("second opened URL");
     let second_secret = query_param(&second_url, "secret").expect("second secret query");
+    let second_client_pubkey =
+        nostrconnect_client_pubkey(&second_url).expect("second nostrconnect host pubkey");
     assert_eq!(first_secret, second_secret);
+    assert_eq!(first_client_pubkey, second_client_pubkey);
 
     drop(app);
 
@@ -1201,7 +1221,116 @@ fn begin_nostr_connect_login_reuses_persisted_secret() {
         .last_opened_url()
         .expect("opened URL after restart");
     let restarted_secret = query_param(&restarted_url, "secret").expect("restarted secret query");
+    let restarted_client_pubkey =
+        nostrconnect_client_pubkey(&restarted_url).expect("restarted nostrconnect host pubkey");
     assert_eq!(first_secret, restarted_secret);
+    assert_eq!(first_client_pubkey, restarted_client_pubkey);
+}
+
+#[test]
+fn reset_nostr_connect_pairing_rotates_persisted_client_pair() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge.clone()));
+
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until(
+        "first nostrconnect uri opened",
+        Duration::from_secs(2),
+        || bridge.last_opened_url().is_some(),
+    );
+    let first_url = bridge.last_opened_url().expect("first opened URL");
+    let first_secret = query_param(&first_url, "secret").expect("first secret query");
+    let first_client_pubkey =
+        nostrconnect_client_pubkey(&first_url).expect("first nostrconnect host pubkey");
+
+    app.dispatch(AppAction::ResetNostrConnectPairing);
+    wait_until("busy cleared after reset", Duration::from_secs(2), || {
+        !app.state().busy.logging_in
+    });
+    assert!(app
+        .state()
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("pairing reset"));
+
+    let first_open_calls = bridge.open_url_calls();
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until(
+        "second nostrconnect uri opened",
+        Duration::from_secs(2),
+        || bridge.open_url_calls() > first_open_calls,
+    );
+    let second_url = bridge.last_opened_url().expect("second opened URL");
+    let second_secret = query_param(&second_url, "secret").expect("second secret query");
+    let second_client_pubkey =
+        nostrconnect_client_pubkey(&second_url).expect("second nostrconnect host pubkey");
+
+    assert_ne!(first_secret, second_secret);
+    assert_ne!(first_client_pubkey, second_client_pubkey);
+}
+
+#[test]
+fn pending_nostr_connect_login_survives_app_restart() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir.clone());
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge.clone()));
+
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until("nostrconnect uri opened", Duration::from_secs(2), || {
+        bridge.last_opened_url().is_some()
+    });
+    assert!(app.state().busy.logging_in);
+
+    drop(app);
+
+    let app_after_restart = FfiApp::new(data_dir);
+    let canonical_bunker_uri =
+        "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
+    let (connector, _expected_user_pubkey) =
+        MockBunkerSignerConnector::success(canonical_bunker_uri);
+    app_after_restart.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    wait_until(
+        "restart restored pending busy state",
+        Duration::from_secs(2),
+        || app_after_restart.state().busy.logging_in,
+    );
+
+    app_after_restart.dispatch(AppAction::NostrConnectCallback {
+        url: "pika://nostrconnect-return?remote_signer_pubkey=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    });
+
+    wait_until(
+        "nostrconnect logged in after restart",
+        Duration::from_secs(2),
+        || matches!(app_after_restart.state().auth, AuthState::LoggedIn { .. }),
+    );
+    assert!(!app_after_restart.state().busy.logging_in);
+    assert!(connector.last_bunker_uri().is_some());
 }
 
 #[test]

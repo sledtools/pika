@@ -6,6 +6,7 @@ struct LoginView: View {
     let onLogin: @MainActor (String) -> Void
     let onBunkerLogin: @MainActor (String) -> Void
     let onNostrConnectLogin: @MainActor () -> Void
+    let onResetNostrConnectPairing: @MainActor () -> Void
     @State private var nsecInput = ""
     @State private var bunkerUriInput = ""
 
@@ -126,6 +127,13 @@ struct LoginView: View {
                 .controlSize(.large)
                 .disabled(anyBusy)
                 .accessibilityIdentifier(TestIds.loginNostrConnectSubmit)
+
+                Button("Reset Nostr Connect Pairing") {
+                    onResetNostrConnectPairing()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .accessibilityIdentifier(TestIds.loginNostrConnectReset)
             }
             .padding(.bottom, 32)
         }
@@ -140,7 +148,8 @@ struct LoginView: View {
         onCreateAccount: {},
         onLogin: { _ in },
         onBunkerLogin: { _ in },
-        onNostrConnectLogin: {}
+        onNostrConnectLogin: {},
+        onResetNostrConnectPairing: {}
     )
 }
 
@@ -150,7 +159,8 @@ struct LoginView: View {
         onCreateAccount: {},
         onLogin: { _ in },
         onBunkerLogin: { _ in },
-        onNostrConnectLogin: {}
+        onNostrConnectLogin: {},
+        onResetNostrConnectPairing: {}
     )
 }
 
@@ -160,7 +170,8 @@ struct LoginView: View {
         onCreateAccount: {},
         onLogin: { _ in },
         onBunkerLogin: { _ in },
-        onNostrConnectLogin: {}
+        onNostrConnectLogin: {},
+        onResetNostrConnectPairing: {}
     )
 }
 #endif

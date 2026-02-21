@@ -257,6 +257,10 @@ final class AppManager: AppReconciler {
         dispatch(.beginNostrConnectLogin)
     }
 
+    func resetNostrConnectPairing() {
+        dispatch(.resetNostrConnectPairing)
+    }
+
     func logout() {
         authStore.clear()
         dispatch(.logout)

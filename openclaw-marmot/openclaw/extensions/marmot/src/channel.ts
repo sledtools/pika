@@ -721,6 +721,7 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
       const sidecarCmd = await resolveMarmotSidecarCommand({
         requestedCmd: requestedSidecarCmd,
         log: ctx.log,
+        pinnedVersion: resolved.config.sidecarVersion,
       });
       const relayArgs = (relays.length > 0 ? relays : ["ws://127.0.0.1:18080"]).flatMap((r) => ["--relay", r]);
       const sidecarArgs =

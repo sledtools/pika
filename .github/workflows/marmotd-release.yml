@@ -37,11 +37,14 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/marmotd" "dist/${{ matrix.asset_name }}"
           chmod +x "dist/${{ matrix.asset_name }}"
+          sha256sum "dist/${{ matrix.asset_name }}" > "dist/${{ matrix.asset_name }}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
           if-no-files-found: error
 
   build-macos:
@@ -70,11 +73,14 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/marmotd" "dist/${{ matrix.asset_name }}"
           chmod +x "dist/${{ matrix.asset_name }}"
+          shasum -a 256 "dist/${{ matrix.asset_name }}" > "dist/${{ matrix.asset_name }}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
           if-no-files-found: error
 
   publish-release:

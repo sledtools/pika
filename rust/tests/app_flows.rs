@@ -1123,7 +1123,7 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     };
     let connector = SequenceBunkerSignerConnector::new(vec![
         Err(BunkerConnectError {
-            kind: BunkerConnectErrorKind::Other,
+            kind: BunkerConnectErrorKind::Rejected,
             message: "We don't accept connect requests with new secret.".into(),
         }),
         Ok(output),
@@ -1150,6 +1150,64 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     assert!(
         !seen[1].contains("secret="),
         "retry attempt should drop secret query parameter"
+    );
+}
+
+#[test]
+fn begin_nostr_connect_login_does_not_retry_without_new_secret_marker() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge));
+
+    let signer_keys = Keys::generate();
+    let remote_signer_pubkey = signer_keys.public_key().to_hex();
+    let output = BunkerConnectOutput {
+        user_pubkey: signer_keys.public_key(),
+        canonical_bunker_uri: format!(
+            "bunker://{remote_signer_pubkey}?relay=wss://relay.example.com"
+        ),
+        signer: Arc::new(signer_keys) as Arc<dyn NostrSigner>,
+    };
+    let connector = SequenceBunkerSignerConnector::new(vec![
+        Err(BunkerConnectError {
+            kind: BunkerConnectErrorKind::Rejected,
+            message: "Request rejected by signer policy".into(),
+        }),
+        Ok(output),
+    ]);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+        app.state().busy.logging_in
+    });
+    app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey);
+
+    wait_until("login failed with toast", Duration::from_secs(2), || {
+        app.state().toast.is_some() && !app.state().busy.logging_in
+    });
+    assert!(matches!(app.state().auth, AuthState::LoggedOut));
+    assert!(app
+        .state()
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("rejected"));
+    assert_eq!(
+        connector.seen_uris().len(),
+        1,
+        "should not retry when error does not mention new secret"
     );
 }
 

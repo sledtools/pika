@@ -45,6 +45,8 @@ const DEFAULT_GROUP_DESCRIPTION: &str = "";
 const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
 const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
 const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
+const NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT: &str = "nostr_connect_pairing";
+const NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT: &str = "nostr_connect_pending";
 
 fn diag_nostr_publish_enabled() -> bool {
     match std::env::var("PIKA_DIAG_NOSTR_PUBLISH") {
@@ -116,6 +118,12 @@ struct PendingNostrConnectLogin {
 struct NostrConnectConnectResponse {
     remote_signer_pubkey: PublicKey,
     agreed_secret: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedNostrConnectPairing {
+    client_nsec: String,
+    secret: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -486,6 +494,10 @@ impl AppCore {
             return detail.to_string();
         }
         "Bunker login failed".to_string()
+    }
+
+    fn is_bunker_new_secret_rejection(err: &BunkerConnectError) -> bool {
+        err.message.to_lowercase().contains("new secret")
     }
 
     fn open_external_url(&self, url: String) -> anyhow::Result<()> {
@@ -982,16 +994,129 @@ impl AppCore {
         std::path::Path::new(&self.data_dir).join("nostr_connect_pending_login.json")
     }
 
-    fn load_or_create_nostr_connect_pairing(&self) -> (Keys, String) {
+    fn nostr_connect_scoped_keyring_account(&self, account: &str) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hasher::write(&mut hasher, self.data_dir.as_bytes());
+        let digest = std::hash::Hasher::finish(&hasher);
+        format!("{account}.{digest:016x}")
+    }
+
+    fn nostr_connect_keyring_entry(&self, account: &str) -> Option<keyring_core::Entry> {
+        if let Err(e) = crate::mdk_support::init_keyring_once() {
+            tracing::warn!(%e, "nostr_connect: keyring init failed");
+            return None;
+        }
+        let scoped_account = self.nostr_connect_scoped_keyring_account(account);
+        match keyring_core::Entry::new(crate::mdk_support::SERVICE_ID, &scoped_account) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!(%e, account, scoped_account, "nostr_connect: keyring entry unavailable");
+                None
+            }
+        }
+    }
+
+    fn get_nostr_connect_keyring_value(&self, account: &str) -> Option<String> {
+        let entry = self.nostr_connect_keyring_entry(account)?;
+        match entry.get_password() {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(%e, account, "nostr_connect: keyring read failed");
+                None
+            }
+        }
+    }
+
+    fn set_nostr_connect_keyring_value(&self, account: &str, value: &str) -> bool {
+        let Some(entry) = self.nostr_connect_keyring_entry(account) else {
+            return false;
+        };
+        match entry.set_password(value) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(%e, account, "nostr_connect: keyring write failed");
+                false
+            }
+        }
+    }
+
+    fn clear_nostr_connect_keyring_value(&self, account: &str) {
+        let Some(entry) = self.nostr_connect_keyring_entry(account) else {
+            return;
+        };
+        match entry.delete_credential() {
+            Ok(()) => {}
+            Err(keyring_core::Error::NoEntry) => {}
+            Err(e) => {
+                tracing::warn!(%e, account, "nostr_connect: keyring delete failed");
+            }
+        }
+    }
+
+    fn load_nostr_connect_pairing_from_keyring(&self) -> Option<(Keys, String)> {
+        let raw = self.get_nostr_connect_keyring_value(NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT)?;
+        let parsed = serde_json::from_str::<PersistedNostrConnectPairing>(&raw).ok()?;
+        let keys = Keys::parse(parsed.client_nsec.trim()).ok()?;
+        let secret = Self::normalize_nostr_connect_secret(&parsed.secret)?;
+        Some((keys, secret))
+    }
+
+    fn load_nostr_connect_pairing_from_files(&self) -> Option<(Keys, String)> {
         let existing_keys = std::fs::read_to_string(self.nostr_connect_client_nsec_path())
             .ok()
             .and_then(|raw| Keys::parse(raw.trim()).ok());
         let existing_secret = std::fs::read_to_string(self.nostr_connect_secret_path())
             .ok()
             .and_then(|raw| Self::normalize_nostr_connect_secret(&raw));
+        match (existing_keys, existing_secret) {
+            (Some(keys), Some(secret)) => Some((keys, secret)),
+            _ => None,
+        }
+    }
 
-        if let (Some(keys), Some(secret)) = (existing_keys, existing_secret) {
-            return (keys, secret);
+    fn persist_nostr_connect_pairing_to_keyring(&self, client_keys: &Keys, secret: &str) -> bool {
+        let Some(secret) = Self::normalize_nostr_connect_secret(secret) else {
+            return false;
+        };
+        let payload = PersistedNostrConnectPairing {
+            client_nsec: client_keys.secret_key().to_bech32().expect("infallible"),
+            secret,
+        };
+        let json = match serde_json::to_string(&payload) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(%e, "nostr_connect: pairing serialization failed");
+                return false;
+            }
+        };
+        self.set_nostr_connect_keyring_value(NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT, &json)
+    }
+
+    fn remove_nostr_connect_pairing_files(&self) {
+        for path in [
+            self.nostr_connect_client_nsec_path(),
+            self.nostr_connect_secret_path(),
+        ] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        path = %path.display(),
+                        "nostr_connect: failed to remove pairing file"
+                    );
+                }
+            }
+        }
+    }
+
+    fn load_or_create_nostr_connect_pairing(&self) -> (Keys, String) {
+        if let Some(pairing) = self.load_nostr_connect_pairing_from_keyring() {
+            return pairing;
+        }
+        if let Some(pairing) = self.load_nostr_connect_pairing_from_files() {
+            return pairing;
         }
 
         let keys = Keys::generate();
@@ -1004,6 +1129,11 @@ impl AppCore {
         let Some(secret) = Self::normalize_nostr_connect_secret(secret) else {
             return;
         };
+
+        if self.persist_nostr_connect_pairing_to_keyring(client_keys, &secret) {
+            self.remove_nostr_connect_pairing_files();
+            return;
+        }
 
         let client_nsec = client_keys.secret_key().to_bech32().expect("infallible");
         let client_nsec_path = self.nostr_connect_client_nsec_path();
@@ -1022,22 +1152,23 @@ impl AppCore {
     }
 
     fn clear_nostr_connect_pairing_data(&self) {
-        for path in [
-            self.nostr_connect_client_nsec_path(),
-            self.nostr_connect_secret_path(),
-        ] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(
-                        %e,
-                        path = %path.display(),
-                        "nostr_connect: failed to remove pairing file"
-                    );
-                }
+        self.clear_nostr_connect_keyring_value(NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT);
+        self.remove_nostr_connect_pairing_files();
+    }
+
+    fn load_pending_nostr_connect_login_snapshot(
+        &self,
+    ) -> Option<PersistedPendingNostrConnectLogin> {
+        if let Some(raw) =
+            self.get_nostr_connect_keyring_value(NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT)
+        {
+            if let Ok(snapshot) = serde_json::from_str::<PersistedPendingNostrConnectLogin>(&raw) {
+                return Some(snapshot);
             }
         }
+
+        let raw = std::fs::read_to_string(self.nostr_connect_pending_login_path()).ok()?;
+        serde_json::from_str::<PersistedPendingNostrConnectLogin>(&raw).ok()
     }
 
     fn persist_pending_nostr_connect_login_snapshot(&self, pending: &PendingNostrConnectLogin) {
@@ -1059,6 +1190,14 @@ impl AppCore {
                 return;
             }
         };
+
+        if let Ok(json) = String::from_utf8(bytes.clone()) {
+            if self.set_nostr_connect_keyring_value(NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT, &json) {
+                self.clear_pending_nostr_connect_login_file_snapshot();
+                return;
+            }
+        }
+
         if let Err(e) = Self::write_private_file(&path, &bytes) {
             tracing::warn!(
                 %e,
@@ -1068,7 +1207,7 @@ impl AppCore {
         }
     }
 
-    fn clear_pending_nostr_connect_login_snapshot(&self) {
+    fn clear_pending_nostr_connect_login_file_snapshot(&self) {
         let path = self.nostr_connect_pending_login_path();
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -1081,6 +1220,11 @@ impl AppCore {
                 );
             }
         }
+    }
+
+    fn clear_pending_nostr_connect_login_snapshot(&self) {
+        self.clear_nostr_connect_keyring_value(NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT);
+        self.clear_pending_nostr_connect_login_file_snapshot();
     }
 
     fn spawn_nostr_connect_timeout(&self, attempt_id: u64, delay: Duration) {
@@ -1139,22 +1283,8 @@ impl AppCore {
     }
 
     fn resume_pending_nostr_connect_login_from_disk(&mut self) {
-        let path = self.nostr_connect_pending_login_path();
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let Some(pending) = self.load_pending_nostr_connect_login_snapshot() else {
             return;
-        };
-
-        let pending = match serde_json::from_str::<PersistedPendingNostrConnectLogin>(&raw) {
-            Ok(snapshot) => snapshot,
-            Err(e) => {
-                tracing::warn!(
-                    %e,
-                    path = %path.display(),
-                    "nostr_connect: invalid pending login snapshot; removing"
-                );
-                self.clear_pending_nostr_connect_login_snapshot();
-                return;
-            }
         };
 
         let Some(secret) = Self::normalize_nostr_connect_secret(&pending.secret) else {
@@ -1223,7 +1353,8 @@ impl AppCore {
             Ok(output) => output,
             Err(primary_error) => {
                 let primary_msg = self.bunker_login_error_message(&primary_error);
-                let should_retry_without_secret = primary_msg.to_lowercase().contains("new secret");
+                let should_retry_without_secret =
+                    Self::is_bunker_new_secret_rejection(&primary_error);
                 if !should_retry_without_secret {
                     tracing::error!(%primary_msg, "nostr_connect: bunker connect failed");
                     return Err(anyhow::anyhow!(primary_msg));

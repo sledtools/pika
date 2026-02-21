@@ -272,6 +272,10 @@ final class AppManager: AppReconciler {
     }
 
     func onOpenURL(_ url: URL) {
+        guard isExpectedNostrConnectCallback(url) else {
+            NSLog("[PikaAppManager] onOpenURL ignored unexpected URL: \(url.absoluteString)")
+            return
+        }
         NSLog("[PikaAppManager] onOpenURL dispatching NostrConnectCallback: \(url.absoluteString)")
         dispatch(.nostrConnectCallback(url: url.absoluteString))
     }
@@ -349,6 +353,12 @@ final class AppManager: AppReconciler {
         case .externalSigner:
             break
         }
+    }
+
+    private func isExpectedNostrConnectCallback(_ url: URL) -> Bool {
+        guard url.host?.lowercased() == "nostrconnect-return" else { return false }
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "pika" || scheme == "pika-dev" || scheme == "pika-test"
     }
 }
 

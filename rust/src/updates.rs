@@ -119,6 +119,10 @@ pub enum InternalEvent {
     NostrConnectTimeout {
         attempt_id: u64,
     },
+    // Rust integration-test hook: inject a validated connect response without relays.
+    NostrConnectInjectConnectResponseForTests {
+        remote_signer_pubkey: String,
+    },
 
     // Follow list (NIP-02 kind 3)
     FollowListFetched {

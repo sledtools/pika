@@ -123,6 +123,10 @@ final class KeychainNsecStore {
             try? FileManager.default.removeItem(at: url)
             keychainLog.info("clearNsec: removed file fallback")
         }
+        if let legacy = legacyFileFallbackURL(), legacy != fileFallbackURL() {
+            try? FileManager.default.removeItem(at: legacy)
+            keychainLog.info("clearNsec: removed legacy file fallback")
+        }
     }
 
     /// Switch to the file-based fallback. Only allowed when `fileFallbackAllowed` is true
@@ -145,9 +149,24 @@ final class KeychainNsecStore {
         return true
     }
 
-    // MARK: - File fallback (Application Support / .pika_nsec, simulator only)
+    // MARK: - File fallback (Application Support / account-scoped path, simulator only)
 
     private func fileFallbackURL() -> URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let safeAccount = account
+            .map { ch in
+                if ch.isLetter || ch.isNumber || ch == "-" || ch == "_" {
+                    return ch
+                }
+                return "_"
+            }
+        return dir.appendingPathComponent(".pika_nsec_\(String(safeAccount))")
+    }
+
+    private func legacyFileFallbackURL() -> URL? {
+        guard account == "nsec" else { return nil }
         guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
@@ -155,14 +174,17 @@ final class KeychainNsecStore {
     }
 
     private func fileGet() -> String? {
-        guard let url = fileFallbackURL() else { return nil }
-        guard let data = try? Data(contentsOf: url),
-              let nsec = String(data: data, encoding: .utf8), !nsec.isEmpty else {
-            keychainLog.warning("getNsec: no nsec found (file fallback)")
-            return nil
+        guard let primary = fileFallbackURL() else { return nil }
+        let candidates = [primary, legacyFileFallbackURL()].compactMap { $0 }
+        for url in candidates {
+            if let data = try? Data(contentsOf: url),
+               let nsec = String(data: data, encoding: .utf8), !nsec.isEmpty {
+                keychainLog.info("getNsec: found stored nsec (file fallback)")
+                return nsec
+            }
         }
-        keychainLog.info("getNsec: found stored nsec (file fallback)")
-        return nsec
+        keychainLog.warning("getNsec: no nsec found (file fallback)")
+        return nil
     }
 
     private func fileSet(_ nsec: String) {

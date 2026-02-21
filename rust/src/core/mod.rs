@@ -850,12 +850,7 @@ impl AppCore {
         pending: &mut PendingNostrConnectLogin,
         callback_url: &str,
     ) -> anyhow::Result<Option<NostrConnectConnectResponse>> {
-        if let Some(pubkey) = self.parse_remote_signer_from_callback(callback_url) {
-            return Ok(Some(NostrConnectConnectResponse {
-                remote_signer_pubkey: pubkey,
-                agreed_secret: pending.secret.clone(),
-            }));
-        }
+        let callback_signer_hint = self.parse_remote_signer_from_callback(callback_url);
 
         let next = match pending.connect_response_result.lock() {
             Ok(mut slot) => slot.take(),
@@ -863,7 +858,14 @@ impl AppCore {
         };
 
         match next {
-            Some(Ok(pubkey)) => Ok(Some(pubkey)),
+            Some(Ok(connect_response)) => {
+                if let Some(callback_signer) = callback_signer_hint {
+                    if callback_signer != connect_response.remote_signer_pubkey {
+                        anyhow::bail!("Signer callback pubkey did not match connect response");
+                    }
+                }
+                Ok(Some(connect_response))
+            }
             Some(Err(e)) => Err(anyhow::anyhow!("{e}")),
             None => Ok(None),
         }
@@ -897,7 +899,7 @@ impl AppCore {
 
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
+                if let Err(e) = Self::write_private_file(&path, json.as_bytes()) {
                     tracing::warn!(%e, path = %path.display(), "nostr_connect: failed to write debug snapshot");
                 } else {
                     tracing::info!(path = %path.display(), "nostr_connect: wrote debug snapshot");
@@ -949,6 +951,25 @@ impl AppCore {
         Self::normalize_nostr_connect_secret(candidate)
     }
 
+    fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+
+        std::fs::write(path, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+
     fn nostr_connect_client_nsec_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("nostr_connect_client_nsec.txt")
     }
@@ -986,7 +1007,7 @@ impl AppCore {
 
         let client_nsec = client_keys.secret_key().to_bech32().expect("infallible");
         let client_nsec_path = self.nostr_connect_client_nsec_path();
-        if let Err(e) = std::fs::write(&client_nsec_path, client_nsec) {
+        if let Err(e) = Self::write_private_file(&client_nsec_path, client_nsec.as_bytes()) {
             tracing::warn!(
                 %e,
                 path = %client_nsec_path.display(),
@@ -995,7 +1016,7 @@ impl AppCore {
         }
 
         let path = self.nostr_connect_secret_path();
-        if let Err(e) = std::fs::write(&path, secret) {
+        if let Err(e) = Self::write_private_file(&path, secret.as_bytes()) {
             tracing::warn!(%e, path = %path.display(), "nostr_connect: failed to persist client secret");
         }
     }
@@ -1038,7 +1059,7 @@ impl AppCore {
                 return;
             }
         };
-        if let Err(e) = std::fs::write(&path, bytes) {
+        if let Err(e) = Self::write_private_file(&path, &bytes) {
             tracing::warn!(
                 %e,
                 path = %path.display(),
@@ -1618,6 +1639,39 @@ impl AppCore {
                 self.clear_pending_nostr_connect_login();
                 self.clear_busy();
                 self.toast("Signer connect response timed out");
+            }
+            InternalEvent::NostrConnectInjectConnectResponseForTests {
+                remote_signer_pubkey,
+            } => {
+                let parsed = match PublicKey::parse(remote_signer_pubkey.trim()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            %e,
+                            "nostr_connect: test injection had invalid signer pubkey"
+                        );
+                        return;
+                    }
+                };
+                let mut should_continue = false;
+                if let Some(pending) = self.pending_nostr_connect_login.as_mut() {
+                    let injected = NostrConnectConnectResponse {
+                        remote_signer_pubkey: parsed,
+                        agreed_secret: pending.secret.clone(),
+                    };
+                    match pending.connect_response_result.lock() {
+                        Ok(mut slot) => {
+                            *slot = Some(Ok(injected));
+                        }
+                        Err(poison) => {
+                            *poison.into_inner() = Some(Ok(injected));
+                        }
+                    }
+                    should_continue = true;
+                }
+                if should_continue {
+                    self.on_nostr_connect_callback("connect-response-ready".to_string());
+                }
             }
             InternalEvent::CallRuntimeConnected { call_id } => {
                 if let Some(call) = self.state.active_call.as_mut() {

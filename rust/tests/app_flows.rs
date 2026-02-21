@@ -1069,9 +1069,9 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
     assert!(app.state().busy.logging_in);
     assert!(connector.last_bunker_uri().is_none());
 
-    app.dispatch(AppAction::NostrConnectCallback {
-        url: "pika://nostrconnect-return?remote_signer_pubkey=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
-    });
+    app.inject_nostr_connect_connect_response_for_tests(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    );
 
     wait_until("nostrconnect logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -1134,9 +1134,7 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     wait_until("nostrconnect pending", Duration::from_secs(2), || {
         app.state().busy.logging_in
     });
-    app.dispatch(AppAction::NostrConnectCallback {
-        url: format!("pika://nostrconnect-return?remote_signer_pubkey={remote_signer_pubkey}"),
-    });
+    app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey.clone());
 
     wait_until("nostrconnect logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -1320,9 +1318,9 @@ fn pending_nostr_connect_login_survives_app_restart() {
         || app_after_restart.state().busy.logging_in,
     );
 
-    app_after_restart.dispatch(AppAction::NostrConnectCallback {
-        url: "pika://nostrconnect-return?remote_signer_pubkey=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
-    });
+    app_after_restart.inject_nostr_connect_connect_response_for_tests(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    );
 
     wait_until(
         "nostrconnect logged in after restart",
@@ -1374,6 +1372,44 @@ fn nostr_connect_callback_without_pending_is_noop() {
 }
 
 #[test]
+fn nostr_connect_callback_without_connect_response_does_not_log_in() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir);
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge));
+
+    let canonical_bunker_uri =
+        "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
+    let (connector, _expected_user_pubkey) =
+        MockBunkerSignerConnector::success(canonical_bunker_uri);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+        app.state().busy.logging_in
+    });
+
+    app.dispatch(AppAction::NostrConnectCallback {
+        url: "pika://nostrconnect-return?remote_signer_pubkey=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    });
+
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(matches!(app.state().auth, AuthState::LoggedOut));
+    assert!(app.state().busy.logging_in);
+    assert!(connector.last_bunker_uri().is_none());
+}
+
+#[test]
 fn foregrounded_continues_pending_nostr_connect_login() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
@@ -1405,10 +1441,9 @@ fn foregrounded_continues_pending_nostr_connect_login() {
     // Simulate returning to app without URL callback.
     app.dispatch(AppAction::Foregrounded);
 
-    // Then receive callback carrying signer identity.
-    app.dispatch(AppAction::NostrConnectCallback {
-        url: "pika://nostrconnect-return?remote_signer_pubkey=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
-    });
+    app.inject_nostr_connect_connect_response_for_tests(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    );
 
     wait_until(
         "nostrconnect logged in via foreground",

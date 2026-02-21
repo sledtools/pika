@@ -146,4 +146,12 @@ impl FfiApp {
             }
         }
     }
+
+    pub fn inject_nostr_connect_connect_response_for_tests(&self, remote_signer_pubkey: String) {
+        let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
+            InternalEvent::NostrConnectInjectConnectResponseForTests {
+                remote_signer_pubkey,
+            },
+        )));
+    }
 }

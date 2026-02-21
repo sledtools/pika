@@ -45,6 +45,7 @@ impl ManagerModel {
         let update_rev = match &update {
             AppUpdate::FullState(state) => state.rev,
             AppUpdate::AccountCreated { rev, .. } => *rev,
+            AppUpdate::BunkerSessionDescriptor { rev, .. } => *rev,
         };
 
         // Side-effect updates must not be dropped, even if stale.
@@ -87,6 +88,9 @@ impl ManagerModel {
                     nsec_store.set_nsec(&nsec);
                 }
                 self.pending_login_nsec = None;
+                self.state.rev = rev;
+            }
+            AppUpdate::BunkerSessionDescriptor { rev, .. } => {
                 self.state.rev = rev;
             }
         }
@@ -331,6 +335,7 @@ fn lock_subscribers(lock: &Mutex<Vec<Sender<()>>>) -> std::sync::MutexGuard<'_, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_core::AuthMode;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -341,6 +346,7 @@ mod tests {
             AuthState::LoggedIn {
                 npub: "npub1test".to_string(),
                 pubkey: "pubkey".to_string(),
+                mode: AuthMode::LocalNsec,
             }
         } else {
             AuthState::LoggedOut

@@ -211,6 +211,7 @@ pre-merge-pika: fmt
   just test --lib --tests
   cd android && ./gradlew :app:compileDebugAndroidTestKotlin
   cargo build -p pika-cli
+  just desktop-check
   actionlint
   npx --yes @justinmoon/agent-tools check-docs
   npx --yes @justinmoon/agent-tools check-justfile

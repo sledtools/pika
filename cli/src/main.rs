@@ -358,6 +358,27 @@ fn is_imeta_tag(tag: &Tag) -> bool {
     matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
 }
 
+fn mime_from_extension(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "heic" => Some("image/heic"),
+        "svg" => Some("image/svg+xml"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mp3" => Some("audio/mpeg"),
+        "ogg" => Some("audio/ogg"),
+        "wav" => Some("audio/wav"),
+        "pdf" => Some("application/pdf"),
+        "txt" | "md" => Some("text/plain"),
+        _ => None,
+    }
+}
+
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     let parsed: Vec<String> = values
         .iter()
@@ -692,6 +713,7 @@ async fn upload_media(
     let resolved_mime = mime_type
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .or_else(|| mime_from_extension(file))
         .unwrap_or("application/octet-stream")
         .to_string();
 

@@ -154,14 +154,6 @@ pub enum Message {
     FollowPeer,
     UnfollowPeer,
     CopyPeerNpub,
-    // Device management
-    ShowDeviceManagement,
-    CloseDeviceManagement,
-    ToggleAutoAddDevices,
-    AcceptPendingDevice(String),
-    RejectPendingDevice(String),
-    AcceptAllPendingDevices,
-    RejectAllPendingDevices,
     // Calling
     StartCall,
     StartVideoCall,
@@ -497,53 +489,6 @@ impl DesktopApp {
             Message::CopyAppVersion => {
                 self.profile_toast = Some("Copied app version".to_string());
                 return iced::clipboard::write(self.app_version_display.clone());
-            }
-
-            // ── Device management ─────────────────────────────────────
-            Message::ShowDeviceManagement => {
-                self.clear_all_overlays();
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::FetchMyDevices);
-                    manager.dispatch(AppAction::PushScreen {
-                        screen: Screen::DeviceManagement,
-                    });
-                }
-            }
-            Message::CloseDeviceManagement => {
-                if let Some(manager) = &self.manager {
-                    let mut stack = self.state.router.screen_stack.clone();
-                    if matches!(stack.last(), Some(Screen::DeviceManagement)) {
-                        stack.pop();
-                        manager.dispatch(AppAction::UpdateScreenStack { stack });
-                    }
-                }
-            }
-            Message::ToggleAutoAddDevices => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::SetAutoAddDevices {
-                        enabled: !self.state.auto_add_devices,
-                    });
-                }
-            }
-            Message::AcceptPendingDevice(fingerprint) => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::AcceptPendingDevice { fingerprint });
-                }
-            }
-            Message::RejectPendingDevice(fingerprint) => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::RejectPendingDevice { fingerprint });
-                }
-            }
-            Message::AcceptAllPendingDevices => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::AcceptAllPendingDevices);
-                }
-            }
-            Message::RejectAllPendingDevices => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::RejectAllPendingDevices);
-                }
             }
 
             // ── Group info ────────────────────────────────────────────
@@ -911,12 +856,6 @@ impl DesktopApp {
                 &self.app_version_display,
                 self.state.my_profile.picture_url.as_deref(),
                 cache,
-            )
-        } else if matches!(route.detail_pane, DesktopDetailPane::DeviceManagement) {
-            views::device_management::device_management_view(
-                &self.state.my_devices,
-                &self.state.pending_devices,
-                self.state.auto_add_devices,
             )
         } else if matches!(route.detail_pane, DesktopDetailPane::GroupInfo { .. }) {
             if let Some(chat) = &self.state.current_chat {

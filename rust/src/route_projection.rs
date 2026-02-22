@@ -43,7 +43,6 @@ pub enum DesktopDetailPane {
     None,
     GroupInfo { chat_id: String },
     PeerProfile { pubkey: String },
-    DeviceManagement,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,8 +90,6 @@ pub fn project_desktop(state: &AppState) -> DesktopRouteState {
         DesktopDetailPane::GroupInfo {
             chat_id: chat_id.clone(),
         }
-    } else if matches!(active_screen, Screen::DeviceManagement) {
-        DesktopDetailPane::DeviceManagement
     } else {
         DesktopDetailPane::None
     };

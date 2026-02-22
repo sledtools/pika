@@ -242,21 +242,18 @@ impl AppCore {
                         InternalEvent::KeyPackagePublished {
                             ok: false,
                             error: Some(format!("key package sign failed: {e}")),
-                            event_id: None,
                         },
                     )));
                     return;
                 }
             };
 
-            let my_event_id = event.id.to_hex();
             let relay_list: Vec<String> = publish_relays.iter().map(|r| r.to_string()).collect();
             if publish_relays.is_empty() {
                 let _ = tx.send(CoreMsg::Internal(Box::new(
                     InternalEvent::KeyPackagePublished {
                         ok: false,
                         error: Some("no relays configured".to_string()),
-                        event_id: None,
                     },
                 )));
                 return;
@@ -280,7 +277,6 @@ impl AppCore {
                             InternalEvent::KeyPackagePublished {
                                 ok: true,
                                 error: None,
-                                event_id: Some(my_event_id),
                             },
                         )));
                         return;
@@ -324,7 +320,6 @@ impl AppCore {
                 InternalEvent::KeyPackagePublished {
                     ok: false,
                     error: last_err,
-                    event_id: None,
                 },
             )));
         });
@@ -504,65 +499,6 @@ impl AppCore {
                     .gift_wrap_to(relays.clone(), &peer_pubkey, rumor, tags.clone())
                     .await;
             }
-        });
-    }
-
-    /// Fetch key packages for our own pubkey from relays and send back any that
-    /// belong to other devices (i.e. not our own current key package).
-    pub(super) fn check_for_other_devices(&mut self) {
-        if !self.is_logged_in() || !self.network_enabled() {
-            return;
-        }
-        let Some(sess) = self.session.as_ref() else {
-            return;
-        };
-        // Skip if we have no groups — nothing to add the device to.
-        if sess.groups.is_empty() {
-            return;
-        }
-        let client = sess.client.clone();
-        let my_pubkey = sess.pubkey;
-        let tx = self.core_sender.clone();
-        let my_kp_ids = self.my_kp_event_ids.clone();
-        let mut kp_relays: BTreeSet<RelayUrl> = BTreeSet::new();
-        for r in self.key_package_relays() {
-            kp_relays.insert(r);
-        }
-        for r in self.default_relays() {
-            kp_relays.insert(r);
-        }
-        let relay_list: Vec<RelayUrl> = kp_relays.into_iter().collect();
-
-        self.runtime.spawn(async move {
-            for r in relay_list.iter().cloned() {
-                let _ = client.add_relay(r).await;
-            }
-            client.connect().await;
-            client.wait_for_connection(Duration::from_secs(5)).await;
-
-            let kp_filter = Filter::new()
-                .author(my_pubkey)
-                .kind(Kind::MlsKeyPackage)
-                .limit(10);
-            let events: Vec<_> = match client.fetch_events(kp_filter, Duration::from_secs(8)).await
-            {
-                Ok(events) => events
-                    .into_iter()
-                    .filter(|e| !my_kp_ids.contains(&e.id.to_hex()))
-                    .collect(),
-                Err(e) => {
-                    tracing::debug!(%e, "check_for_other_devices: fetch failed");
-                    return;
-                }
-            };
-            if events.is_empty() {
-                return;
-            }
-            let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::OtherDeviceKeyPackagesFetched {
-                    key_package_events: events,
-                },
-            )));
         });
     }
 

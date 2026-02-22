@@ -23,7 +23,6 @@ import com.pika.app.rust.Screen
 import com.pika.app.ui.screens.CallSurface
 import com.pika.app.ui.screens.ChatListScreen
 import com.pika.app.ui.screens.ChatScreen
-import com.pika.app.ui.screens.DeviceManagementScreen
 import com.pika.app.ui.screens.GroupInfoScreen
 import com.pika.app.ui.screens.LoginScreen
 import com.pika.app.ui.screens.NewChatScreen
@@ -94,7 +93,6 @@ fun PikaApp(manager: AppManager) {
                             )
                         is Screen.GroupInfo -> GroupInfoScreen(manager = manager, chatId = screen.chatId, padding = padding)
                         is Screen.Login -> LoginScreen(manager = manager, padding = padding)
-                        is Screen.DeviceManagement -> DeviceManagementScreen(manager = manager, padding = padding)
                     }
                 }
             }

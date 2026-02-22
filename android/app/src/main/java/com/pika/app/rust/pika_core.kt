@@ -616,9 +616,6 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfaceAppReconcilerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`update`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-internal interface UniffiCallbackInterfaceVideoFrameReceiverMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`callId`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
-}
 internal interface UniffiCallbackInterfaceExternalSignerBridgeMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -656,25 +653,6 @@ internal open class UniffiVTableCallbackInterfaceAppReconciler(
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `reconcile` = other.`reconcile`
-    }
-
-}
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "onVideoFrame")
-internal open class UniffiVTableCallbackInterfaceVideoFrameReceiver(
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `onVideoFrame`: UniffiCallbackInterfaceVideoFrameReceiverMethod0? = null,
-) : Structure() {
-    class UniffiByValue(
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `onVideoFrame`: UniffiCallbackInterfaceVideoFrameReceiverMethod0? = null,
-    ): UniffiVTableCallbackInterfaceVideoFrameReceiver(`uniffiFree`,`uniffiClone`,`onVideoFrame`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceVideoFrameReceiver) {
-        `uniffiFree` = other.`uniffiFree`
-        `uniffiClone` = other.`uniffiClone`
-        `onVideoFrame` = other.`onVideoFrame`
     }
 
 }
@@ -742,19 +720,13 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_listen_for_updates(
     ): Short
-    external fun uniffi_pika_core_checksum_method_ffiapp_send_video_frame(
-    ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge(
-    ): Short
-    external fun uniffi_pika_core_checksum_method_ffiapp_set_video_frame_receiver(
     ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_state(
     ): Short
     external fun uniffi_pika_core_checksum_constructor_ffiapp_new(
     ): Short
     external fun uniffi_pika_core_checksum_method_appreconciler_reconcile(
-    ): Short
-    external fun uniffi_pika_core_checksum_method_videoframereceiver_on_video_frame(
     ): Short
     external fun uniffi_pika_core_checksum_method_externalsignerbridge_open_url(
     ): Short
@@ -788,7 +760,6 @@ internal object UniffiLib {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "pika_core"))
         uniffiCallbackInterfaceAppReconciler.register(this)
         uniffiCallbackInterfaceExternalSignerBridge.register(this)
-        uniffiCallbackInterfaceVideoFrameReceiver.register(this)
         
     }
     external fun uniffi_pika_core_fn_clone_ffiapp(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -801,17 +772,11 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_pika_core_fn_method_ffiapp_send_video_frame(`ptr`: Long,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_set_external_signer_bridge(`ptr`: Long,`bridge`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_pika_core_fn_method_ffiapp_set_video_frame_receiver(`ptr`: Long,`receiver`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_pika_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
-    ): Unit
-    external fun uniffi_pika_core_fn_init_callback_vtable_videoframereceiver(`vtable`: UniffiVTableCallbackInterfaceVideoFrameReceiver,
     ): Unit
     external fun uniffi_pika_core_fn_init_callback_vtable_externalsignerbridge(`vtable`: UniffiVTableCallbackInterfaceExternalSignerBridge,
     ): Unit
@@ -940,13 +905,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_pika_core_checksum_method_ffiapp_listen_for_updates() != 54024.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_pika_core_checksum_method_ffiapp_send_video_frame() != 39589.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge() != 60161.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_pika_core_checksum_method_ffiapp_set_video_frame_receiver() != 45698.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_ffiapp_state() != 64637.toShort()) {
@@ -956,9 +915,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_appreconciler_reconcile() != 10811.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_pika_core_checksum_method_videoframereceiver_on_video_frame() != 12741.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_externalsignerbridge_open_url() != 29331.toShort()) {
@@ -1342,25 +1298,6 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
     }
 }
 
-/**
- * @suppress
- */
-public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
-    override fun read(buf: ByteBuffer): ByteArray {
-        val len = buf.getInt()
-        val byteArr = ByteArray(len)
-        buf.get(byteArr)
-        return byteArr
-    }
-    override fun allocationSize(value: ByteArray): ULong {
-        return 4UL + value.size.toULong()
-    }
-    override fun write(value: ByteArray, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        buf.put(value)
-    }
-}
-
 
 // This template implements a class for working with a Rust struct via a handle
 // to the live Rust struct on the other side of the FFI.
@@ -1463,11 +1400,7 @@ public interface FfiAppInterface {
     
     fun `listenForUpdates`(`reconciler`: AppReconciler)
     
-    fun `sendVideoFrame`(`payload`: kotlin.ByteArray)
-    
     fun `setExternalSignerBridge`(`bridge`: ExternalSignerBridge)
-    
-    fun `setVideoFrameReceiver`(`receiver`: VideoFrameReceiver)
     
     fun `state`(): AppState
     
@@ -1602,18 +1535,6 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     
     
 
-    override fun `sendVideoFrame`(`payload`: kotlin.ByteArray)
-        = 
-    callWithHandle {
-    uniffiRustCall() { _status ->
-    UniffiLib.uniffi_pika_core_fn_method_ffiapp_send_video_frame(
-        it,
-        FfiConverterByteArray.lower(`payload`),_status)
-}
-    }
-    
-    
-
     override fun `setExternalSignerBridge`(`bridge`: ExternalSignerBridge)
         = 
     callWithHandle {
@@ -1621,18 +1542,6 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     UniffiLib.uniffi_pika_core_fn_method_ffiapp_set_external_signer_bridge(
         it,
         FfiConverterTypeExternalSignerBridge.lower(`bridge`),_status)
-}
-    }
-    
-    
-
-    override fun `setVideoFrameReceiver`(`receiver`: VideoFrameReceiver)
-        = 
-    callWithHandle {
-    uniffiRustCall() { _status ->
-    UniffiLib.uniffi_pika_core_fn_method_ffiapp_set_video_frame_receiver(
-        it,
-        FfiConverterTypeVideoFrameReceiver.lower(`receiver`),_status)
 }
     }
     
@@ -1714,12 +1623,6 @@ data class AppState (
     , 
     var `callTimeline`: List<CallTimelineEvent>
     , 
-    var `myDevices`: List<DeviceInfo>
-    , 
-    var `pendingDevices`: List<DeviceInfo>
-    , 
-    var `autoAddDevices`: kotlin.Boolean
-    , 
     var `toast`: kotlin.String?
     
 ){
@@ -1748,9 +1651,6 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypePeerProfileState.read(buf),
             FfiConverterOptionalTypeCallState.read(buf),
             FfiConverterSequenceTypeCallTimelineEvent.read(buf),
-            FfiConverterSequenceTypeDeviceInfo.read(buf),
-            FfiConverterSequenceTypeDeviceInfo.read(buf),
-            FfiConverterBoolean.read(buf),
             FfiConverterOptionalString.read(buf),
         )
     }
@@ -1767,9 +1667,6 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypePeerProfileState.allocationSize(value.`peerProfile`) +
             FfiConverterOptionalTypeCallState.allocationSize(value.`activeCall`) +
             FfiConverterSequenceTypeCallTimelineEvent.allocationSize(value.`callTimeline`) +
-            FfiConverterSequenceTypeDeviceInfo.allocationSize(value.`myDevices`) +
-            FfiConverterSequenceTypeDeviceInfo.allocationSize(value.`pendingDevices`) +
-            FfiConverterBoolean.allocationSize(value.`autoAddDevices`) +
             FfiConverterOptionalString.allocationSize(value.`toast`)
     )
 
@@ -1785,9 +1682,6 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalTypePeerProfileState.write(value.`peerProfile`, buf)
             FfiConverterOptionalTypeCallState.write(value.`activeCall`, buf)
             FfiConverterSequenceTypeCallTimelineEvent.write(value.`callTimeline`, buf)
-            FfiConverterSequenceTypeDeviceInfo.write(value.`myDevices`, buf)
-            FfiConverterSequenceTypeDeviceInfo.write(value.`pendingDevices`, buf)
-            FfiConverterBoolean.write(value.`autoAddDevices`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
     }
 }
@@ -1859,12 +1753,6 @@ data class CallDebugStats (
     var `jitterBufferMs`: kotlin.UInt
     , 
     var `lastRttMs`: kotlin.UInt?
-    , 
-    var `videoTx`: kotlin.ULong
-    , 
-    var `videoRx`: kotlin.ULong
-    , 
-    var `videoRxDecryptFail`: kotlin.ULong
     
 ){
     
@@ -1886,9 +1774,6 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterOptionalUInt.read(buf),
-            FfiConverterULong.read(buf),
-            FfiConverterULong.read(buf),
-            FfiConverterULong.read(buf),
         )
     }
 
@@ -1897,10 +1782,7 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.allocationSize(value.`rxFrames`) +
             FfiConverterULong.allocationSize(value.`rxDropped`) +
             FfiConverterUInt.allocationSize(value.`jitterBufferMs`) +
-            FfiConverterOptionalUInt.allocationSize(value.`lastRttMs`) +
-            FfiConverterULong.allocationSize(value.`videoTx`) +
-            FfiConverterULong.allocationSize(value.`videoRx`) +
-            FfiConverterULong.allocationSize(value.`videoRxDecryptFail`)
+            FfiConverterOptionalUInt.allocationSize(value.`lastRttMs`)
     )
 
     override fun write(value: CallDebugStats, buf: ByteBuffer) {
@@ -1909,9 +1791,6 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.write(value.`rxDropped`, buf)
             FfiConverterUInt.write(value.`jitterBufferMs`, buf)
             FfiConverterOptionalUInt.write(value.`lastRttMs`, buf)
-            FfiConverterULong.write(value.`videoTx`, buf)
-            FfiConverterULong.write(value.`videoRx`, buf)
-            FfiConverterULong.write(value.`videoRxDecryptFail`, buf)
     }
 }
 
@@ -1935,10 +1814,6 @@ data class CallState (
     var `startedAt`: kotlin.Long?
     , 
     var `isMuted`: kotlin.Boolean
-    , 
-    var `isVideoCall`: kotlin.Boolean
-    , 
-    var `isCameraEnabled`: kotlin.Boolean
     , 
     var `debug`: CallDebugStats?
     
@@ -1966,8 +1841,6 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterBoolean.read(buf),
-            FfiConverterBoolean.read(buf),
-            FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeCallDebugStats.read(buf),
         )
     }
@@ -1982,8 +1855,6 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterBoolean.allocationSize(value.`shouldEnableProximityLock`) +
             FfiConverterOptionalLong.allocationSize(value.`startedAt`) +
             FfiConverterBoolean.allocationSize(value.`isMuted`) +
-            FfiConverterBoolean.allocationSize(value.`isVideoCall`) +
-            FfiConverterBoolean.allocationSize(value.`isCameraEnabled`) +
             FfiConverterOptionalTypeCallDebugStats.allocationSize(value.`debug`)
     )
 
@@ -1997,8 +1868,6 @@ public object FfiConverterTypeCallState: FfiConverterRustBuffer<CallState> {
             FfiConverterBoolean.write(value.`shouldEnableProximityLock`, buf)
             FfiConverterOptionalLong.write(value.`startedAt`, buf)
             FfiConverterBoolean.write(value.`isMuted`, buf)
-            FfiConverterBoolean.write(value.`isVideoCall`, buf)
-            FfiConverterBoolean.write(value.`isCameraEnabled`, buf)
             FfiConverterOptionalTypeCallDebugStats.write(value.`debug`, buf)
     }
 }
@@ -2277,79 +2146,6 @@ public object FfiConverterTypeChatViewState: FfiConverterRustBuffer<ChatViewStat
             FfiConverterSequenceTypeChatMessage.write(value.`messages`, buf)
             FfiConverterBoolean.write(value.`canLoadOlder`, buf)
             FfiConverterSequenceTypeTypingMember.write(value.`typingMembers`, buf)
-    }
-}
-
-
-
-/**
- * Info about one of the user's own devices (derived from key packages on relays).
- */
-data class DeviceInfo (
-    /**
-     * Hex event ID of the key package event.
-     */
-    var `keyPackageEventId`: kotlin.String
-    , 
-    /**
-     * JSON of the full key package event (for use with AddMyDevice).
-     */
-    var `keyPackageEventJson`: kotlin.String
-    , 
-    /**
-     * Stable short identifier for display (e.g. "a3f8b2c1").
-     * For the current device: derived from local device ID.
-     * For other devices: derived from key package content hash.
-     */
-    var `fingerprint`: kotlin.String
-    , 
-    /**
-     * Timestamp the key package was published (created_at).
-     */
-    var `publishedAt`: kotlin.Long
-    , 
-    /**
-     * Whether this is the current device's key package.
-     */
-    var `isCurrentDevice`: kotlin.Boolean
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
-    override fun read(buf: ByteBuffer): DeviceInfo {
-        return DeviceInfo(
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
-            FfiConverterLong.read(buf),
-            FfiConverterBoolean.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: DeviceInfo) = (
-            FfiConverterString.allocationSize(value.`keyPackageEventId`) +
-            FfiConverterString.allocationSize(value.`keyPackageEventJson`) +
-            FfiConverterString.allocationSize(value.`fingerprint`) +
-            FfiConverterLong.allocationSize(value.`publishedAt`) +
-            FfiConverterBoolean.allocationSize(value.`isCurrentDevice`)
-    )
-
-    override fun write(value: DeviceInfo, buf: ByteBuffer) {
-            FfiConverterString.write(value.`keyPackageEventId`, buf)
-            FfiConverterString.write(value.`keyPackageEventJson`, buf)
-            FfiConverterString.write(value.`fingerprint`, buf)
-            FfiConverterLong.write(value.`publishedAt`, buf)
-            FfiConverterBoolean.write(value.`isCurrentDevice`, buf)
     }
 }
 
@@ -3048,15 +2844,6 @@ sealed class AppAction {
         companion object
     }
     
-    data class StartVideoCall(
-        val `chatId`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
     data class AcceptCall(
         val `chatId`: kotlin.String) : AppAction()
         
@@ -3079,9 +2866,6 @@ sealed class AppAction {
     
     
     object ToggleMute : AppAction()
-    
-    
-    object ToggleCamera : AppAction()
     
     
     data class CreateGroupChat(
@@ -3132,51 +2916,6 @@ sealed class AppAction {
 
         companion object
     }
-    
-    data class AddMyDevice(
-        val `keyPackageEventJson`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    object FetchMyDevices : AppAction()
-    
-    
-    data class SetAutoAddDevices(
-        val `enabled`: kotlin.Boolean) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class AcceptPendingDevice(
-        val `fingerprint`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class RejectPendingDevice(
-        val `fingerprint`: kotlin.String) : AppAction()
-        
-    {
-        
-
-        companion object
-    }
-    
-    object AcceptAllPendingDevices : AppAction()
-    
-    
-    object RejectAllPendingDevices : AppAction()
-    
     
     data class ArchiveChat(
         val `chatId`: kotlin.String) : AppAction()
@@ -3351,82 +3090,63 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             22 -> AppAction.StartCall(
                 FfiConverterString.read(buf),
                 )
-            23 -> AppAction.StartVideoCall(
+            23 -> AppAction.AcceptCall(
                 FfiConverterString.read(buf),
                 )
-            24 -> AppAction.AcceptCall(
+            24 -> AppAction.RejectCall(
                 FfiConverterString.read(buf),
                 )
-            25 -> AppAction.RejectCall(
-                FfiConverterString.read(buf),
-                )
-            26 -> AppAction.EndCall
-            27 -> AppAction.ToggleMute
-            28 -> AppAction.ToggleCamera
-            29 -> AppAction.CreateGroupChat(
+            25 -> AppAction.EndCall
+            26 -> AppAction.ToggleMute
+            27 -> AppAction.CreateGroupChat(
                 FfiConverterSequenceString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            30 -> AppAction.AddGroupMembers(
+            28 -> AppAction.AddGroupMembers(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            31 -> AppAction.RemoveGroupMembers(
+            29 -> AppAction.RemoveGroupMembers(
                 FfiConverterString.read(buf),
                 FfiConverterSequenceString.read(buf),
                 )
-            32 -> AppAction.LeaveGroup(
+            30 -> AppAction.LeaveGroup(
                 FfiConverterString.read(buf),
                 )
-            33 -> AppAction.RenameGroup(
+            31 -> AppAction.RenameGroup(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            34 -> AppAction.AddMyDevice(
+            32 -> AppAction.ArchiveChat(
                 FfiConverterString.read(buf),
                 )
-            35 -> AppAction.FetchMyDevices
-            36 -> AppAction.SetAutoAddDevices(
-                FfiConverterBoolean.read(buf),
-                )
-            37 -> AppAction.AcceptPendingDevice(
-                FfiConverterString.read(buf),
-                )
-            38 -> AppAction.RejectPendingDevice(
-                FfiConverterString.read(buf),
-                )
-            39 -> AppAction.AcceptAllPendingDevices
-            40 -> AppAction.RejectAllPendingDevices
-            41 -> AppAction.ArchiveChat(
-                FfiConverterString.read(buf),
-                )
-            42 -> AppAction.ReactToMessage(
+            33 -> AppAction.ReactToMessage(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            43 -> AppAction.TypingStarted(
+            34 -> AppAction.TypingStarted(
                 FfiConverterString.read(buf),
                 )
-            44 -> AppAction.ClearToast
-            45 -> AppAction.Foregrounded
-            46 -> AppAction.NostrConnectCallback(
+            35 -> AppAction.ClearToast
+            36 -> AppAction.Foregrounded
+            37 -> AppAction.NostrConnectCallback(
                 FfiConverterString.read(buf),
                 )
-            47 -> AppAction.ReloadConfig
-            48 -> AppAction.OpenPeerProfile(
+            38 -> AppAction.ReloadConfig
+            39 -> AppAction.OpenPeerProfile(
                 FfiConverterString.read(buf),
                 )
-            49 -> AppAction.ClosePeerProfile
-            50 -> AppAction.SetPushToken(
+            40 -> AppAction.ClosePeerProfile
+            41 -> AppAction.SetPushToken(
                 FfiConverterString.read(buf),
                 )
-            51 -> AppAction.ReregisterPush
-            52 -> AppAction.RefreshFollowList
-            53 -> AppAction.FollowUser(
+            42 -> AppAction.ReregisterPush
+            43 -> AppAction.RefreshFollowList
+            44 -> AppAction.FollowUser(
                 FfiConverterString.read(buf),
                 )
-            54 -> AppAction.UnfollowUser(
+            45 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -3593,13 +3313,6 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`chatId`)
             )
         }
-        is AppAction.StartVideoCall -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`chatId`)
-            )
-        }
         is AppAction.AcceptCall -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -3621,12 +3334,6 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             )
         }
         is AppAction.ToggleMute -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.ToggleCamera -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -3669,52 +3376,6 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
                 + FfiConverterString.allocationSize(value.`chatId`)
                 + FfiConverterString.allocationSize(value.`name`)
-            )
-        }
-        is AppAction.AddMyDevice -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`keyPackageEventJson`)
-            )
-        }
-        is AppAction.FetchMyDevices -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.SetAutoAddDevices -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterBoolean.allocationSize(value.`enabled`)
-            )
-        }
-        is AppAction.AcceptPendingDevice -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`fingerprint`)
-            )
-        }
-        is AppAction.RejectPendingDevice -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterString.allocationSize(value.`fingerprint`)
-            )
-        }
-        is AppAction.AcceptAllPendingDevices -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
-        is AppAction.RejectAllPendingDevices -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
             )
         }
         is AppAction.ArchiveChat -> {
@@ -3930,157 +3591,116 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
-            is AppAction.StartVideoCall -> {
+            is AppAction.AcceptCall -> {
                 buf.putInt(23)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
-            is AppAction.AcceptCall -> {
+            is AppAction.RejectCall -> {
                 buf.putInt(24)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
-            is AppAction.RejectCall -> {
-                buf.putInt(25)
-                FfiConverterString.write(value.`chatId`, buf)
-                Unit
-            }
             is AppAction.EndCall -> {
-                buf.putInt(26)
+                buf.putInt(25)
                 Unit
             }
             is AppAction.ToggleMute -> {
-                buf.putInt(27)
-                Unit
-            }
-            is AppAction.ToggleCamera -> {
-                buf.putInt(28)
+                buf.putInt(26)
                 Unit
             }
             is AppAction.CreateGroupChat -> {
-                buf.putInt(29)
+                buf.putInt(27)
                 FfiConverterSequenceString.write(value.`peerNpubs`, buf)
                 FfiConverterString.write(value.`groupName`, buf)
                 Unit
             }
             is AppAction.AddGroupMembers -> {
-                buf.putInt(30)
+                buf.putInt(28)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterSequenceString.write(value.`peerNpubs`, buf)
                 Unit
             }
             is AppAction.RemoveGroupMembers -> {
-                buf.putInt(31)
+                buf.putInt(29)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterSequenceString.write(value.`memberPubkeys`, buf)
                 Unit
             }
             is AppAction.LeaveGroup -> {
-                buf.putInt(32)
+                buf.putInt(30)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.RenameGroup -> {
-                buf.putInt(33)
+                buf.putInt(31)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`name`, buf)
                 Unit
             }
-            is AppAction.AddMyDevice -> {
-                buf.putInt(34)
-                FfiConverterString.write(value.`keyPackageEventJson`, buf)
-                Unit
-            }
-            is AppAction.FetchMyDevices -> {
-                buf.putInt(35)
-                Unit
-            }
-            is AppAction.SetAutoAddDevices -> {
-                buf.putInt(36)
-                FfiConverterBoolean.write(value.`enabled`, buf)
-                Unit
-            }
-            is AppAction.AcceptPendingDevice -> {
-                buf.putInt(37)
-                FfiConverterString.write(value.`fingerprint`, buf)
-                Unit
-            }
-            is AppAction.RejectPendingDevice -> {
-                buf.putInt(38)
-                FfiConverterString.write(value.`fingerprint`, buf)
-                Unit
-            }
-            is AppAction.AcceptAllPendingDevices -> {
-                buf.putInt(39)
-                Unit
-            }
-            is AppAction.RejectAllPendingDevices -> {
-                buf.putInt(40)
-                Unit
-            }
             is AppAction.ArchiveChat -> {
-                buf.putInt(41)
+                buf.putInt(32)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.ReactToMessage -> {
-                buf.putInt(42)
+                buf.putInt(33)
                 FfiConverterString.write(value.`chatId`, buf)
                 FfiConverterString.write(value.`messageId`, buf)
                 FfiConverterString.write(value.`emoji`, buf)
                 Unit
             }
             is AppAction.TypingStarted -> {
-                buf.putInt(43)
+                buf.putInt(34)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.ClearToast -> {
-                buf.putInt(44)
+                buf.putInt(35)
                 Unit
             }
             is AppAction.Foregrounded -> {
-                buf.putInt(45)
+                buf.putInt(36)
                 Unit
             }
             is AppAction.NostrConnectCallback -> {
-                buf.putInt(46)
+                buf.putInt(37)
                 FfiConverterString.write(value.`url`, buf)
                 Unit
             }
             is AppAction.ReloadConfig -> {
-                buf.putInt(47)
+                buf.putInt(38)
                 Unit
             }
             is AppAction.OpenPeerProfile -> {
-                buf.putInt(48)
+                buf.putInt(39)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.ClosePeerProfile -> {
-                buf.putInt(49)
+                buf.putInt(40)
                 Unit
             }
             is AppAction.SetPushToken -> {
-                buf.putInt(50)
+                buf.putInt(41)
                 FfiConverterString.write(value.`token`, buf)
                 Unit
             }
             is AppAction.ReregisterPush -> {
-                buf.putInt(51)
+                buf.putInt(42)
                 Unit
             }
             is AppAction.RefreshFollowList -> {
-                buf.putInt(52)
+                buf.putInt(43)
                 Unit
             }
             is AppAction.FollowUser -> {
-                buf.putInt(53)
+                buf.putInt(44)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.UnfollowUser -> {
-                buf.putInt(54)
+                buf.putInt(45)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
@@ -4683,9 +4303,6 @@ sealed class Screen {
         companion object
     }
     
-    object DeviceManagement : Screen()
-    
-    
 
     
 
@@ -4712,7 +4329,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             6 -> Screen.GroupInfo(
                 FfiConverterString.read(buf),
                 )
-            7 -> Screen.DeviceManagement
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4756,12 +4372,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 + FfiConverterString.allocationSize(value.`chatId`)
             )
         }
-        is Screen.DeviceManagement -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-            )
-        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -4790,10 +4400,6 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             is Screen.GroupInfo -> {
                 buf.putInt(6)
                 FfiConverterString.write(value.`chatId`, buf)
-                Unit
-            }
-            is Screen.DeviceManagement -> {
-                buf.putInt(7)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5025,71 +4631,6 @@ internal object uniffiCallbackInterfaceExternalSignerBridge {
  * @suppress
  */
 public object FfiConverterTypeExternalSignerBridge: FfiConverterCallbackInterface<ExternalSignerBridge>()
-
-
-
-
-
-/**
- * Platform-side callback for receiving decoded video frames from remote peers.
- * Called from the video worker thread at ~30fps during active video calls.
- */
-public interface VideoFrameReceiver {
-    
-    fun `onVideoFrame`(`callId`: kotlin.String, `payload`: kotlin.ByteArray)
-    
-    companion object
-}
-
-
-
-// Put the implementation in an object so we don't pollute the top-level namespace
-internal object uniffiCallbackInterfaceVideoFrameReceiver {
-    internal object `onVideoFrame`: UniffiCallbackInterfaceVideoFrameReceiverMethod0 {
-        override fun callback(`uniffiHandle`: Long,`callId`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
-            val uniffiObj = FfiConverterTypeVideoFrameReceiver.handleMap.get(uniffiHandle)
-            val makeCall = { ->
-                uniffiObj.`onVideoFrame`(
-                    FfiConverterString.lift(`callId`),
-                    FfiConverterByteArray.lift(`payload`),
-                )
-            }
-            val writeReturn = { _: Unit -> Unit }
-            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
-        }
-    }
-
-    internal object uniffiFree: UniffiCallbackInterfaceFree {
-        override fun callback(handle: Long) {
-            FfiConverterTypeVideoFrameReceiver.handleMap.remove(handle)
-        }
-    }
-
-    internal object uniffiClone: UniffiCallbackInterfaceClone {
-        override fun callback(handle: Long): Long {
-            return FfiConverterTypeVideoFrameReceiver.handleMap.clone(handle)
-        }
-    }
-
-    internal var vtable = UniffiVTableCallbackInterfaceVideoFrameReceiver.UniffiByValue(
-        uniffiFree,
-        uniffiClone,
-        `onVideoFrame`,
-    )
-
-    // Registers the foreign callback with the Rust side.
-    // This method is generated for each callback interface.
-    internal fun register(lib: UniffiLib) {
-        lib.uniffi_pika_core_fn_init_callback_vtable_videoframereceiver(vtable)
-    }
-}
-
-/**
- * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
- *
- * @suppress
- */
-public object FfiConverterTypeVideoFrameReceiver: FfiConverterCallbackInterface<VideoFrameReceiver>()
 
 
 
@@ -5487,34 +5028,6 @@ public object FfiConverterSequenceTypeChatSummary: FfiConverterRustBuffer<List<C
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeChatSummary.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceTypeDeviceInfo: FfiConverterRustBuffer<List<DeviceInfo>> {
-    override fun read(buf: ByteBuffer): List<DeviceInfo> {
-        val len = buf.getInt()
-        return List<DeviceInfo>(len) {
-            FfiConverterTypeDeviceInfo.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<DeviceInfo>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterTypeDeviceInfo.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<DeviceInfo>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterTypeDeviceInfo.write(it, buf)
         }
     }
 }

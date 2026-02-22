@@ -227,17 +227,7 @@ private func screenView(
             isDeveloperModeEnabledProvider: { manager.isDeveloperModeEnabled },
             onEnableDeveloperMode: { manager.enableDeveloperMode() },
             onWipeLocalData: { manager.wipeLocalDataForDeveloperTools() },
-            nsecProvider: { manager.getNsec() },
-            devices: state.myDevices,
-            autoAddDevices: state.autoAddDevices,
-            onToggleAutoAddDevices: { enabled in manager.dispatch(.setAutoAddDevices(enabled: enabled)) },
-            onFetchDevices: { manager.dispatch(.fetchMyDevices) },
-            onAddDevice: { json in manager.dispatch(.addMyDevice(keyPackageEventJson: json)) },
-            pendingDevices: state.pendingDevices,
-            onAcceptDevice: { fp in manager.dispatch(.acceptPendingDevice(fingerprint: fp)) },
-            onRejectDevice: { fp in manager.dispatch(.rejectPendingDevice(fingerprint: fp)) },
-            onAcceptAll: { manager.dispatch(.acceptAllPendingDevices) },
-            onRejectAll: { manager.dispatch(.rejectAllPendingDevices) }
+            nsecProvider: { manager.getNsec() }
         )
     case .newChat:
         NewChatView(
@@ -350,19 +340,6 @@ private func screenView(
                 )
             }
         }
-    case .deviceManagement:
-        DeviceManagementView(
-            devices: state.myDevices,
-            pendingDevices: state.pendingDevices,
-            autoAddDevices: state.autoAddDevices,
-            onToggleAutoAdd: { enabled in manager.dispatch(.setAutoAddDevices(enabled: enabled)) },
-            onAddDevice: { json in manager.dispatch(.addMyDevice(keyPackageEventJson: json)) },
-            onAcceptDevice: { fp in manager.dispatch(.acceptPendingDevice(fingerprint: fp)) },
-            onRejectDevice: { fp in manager.dispatch(.rejectPendingDevice(fingerprint: fp)) },
-            onAcceptAll: { manager.dispatch(.acceptAllPendingDevices) },
-            onRejectAll: { manager.dispatch(.rejectAllPendingDevices) },
-            onRefresh: { manager.dispatch(.fetchMyDevices) }
-        )
     }
 }
 

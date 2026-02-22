@@ -15,16 +15,6 @@ struct MyNpubQrSheet: View {
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
-    let devices: [DeviceInfo]
-    let autoAddDevices: Bool
-    let onToggleAutoAddDevices: @MainActor (_ enabled: Bool) -> Void
-    let onFetchDevices: @MainActor () -> Void
-    let onAddDevice: @MainActor (_ json: String) -> Void
-    let pendingDevices: [DeviceInfo]
-    let onAcceptDevice: @MainActor (_ fingerprint: String) -> Void
-    let onRejectDevice: @MainActor (_ fingerprint: String) -> Void
-    let onAcceptAll: @MainActor () -> Void
-    let onRejectAll: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var showNsec = false
@@ -57,16 +47,6 @@ struct MyNpubQrSheet: View {
         isDeveloperModeEnabledProvider: @MainActor @escaping () -> Bool,
         onEnableDeveloperMode: @MainActor @escaping () -> Void,
         onWipeLocalData: @MainActor @escaping () -> Void,
-        devices: [DeviceInfo] = [],
-        autoAddDevices: Bool = false,
-        onToggleAutoAddDevices: @MainActor @escaping (_ enabled: Bool) -> Void = { _ in },
-        onFetchDevices: @MainActor @escaping () -> Void = {},
-        onAddDevice: @MainActor @escaping (_ json: String) -> Void = { _ in },
-        pendingDevices: [DeviceInfo] = [],
-        onAcceptDevice: @MainActor @escaping (_ fingerprint: String) -> Void = { _ in },
-        onRejectDevice: @MainActor @escaping (_ fingerprint: String) -> Void = { _ in },
-        onAcceptAll: @MainActor @escaping () -> Void = {},
-        onRejectAll: @MainActor @escaping () -> Void = {},
         showLogoutConfirm: Bool = false
     ) {
         self.npub = npub
@@ -79,16 +59,6 @@ struct MyNpubQrSheet: View {
         self.isDeveloperModeEnabledProvider = isDeveloperModeEnabledProvider
         self.onEnableDeveloperMode = onEnableDeveloperMode
         self.onWipeLocalData = onWipeLocalData
-        self.devices = devices
-        self.autoAddDevices = autoAddDevices
-        self.onToggleAutoAddDevices = onToggleAutoAddDevices
-        self.onFetchDevices = onFetchDevices
-        self.onAddDevice = onAddDevice
-        self.pendingDevices = pendingDevices
-        self.onAcceptDevice = onAcceptDevice
-        self.onRejectDevice = onRejectDevice
-        self.onAcceptAll = onAcceptAll
-        self.onRejectAll = onRejectAll
         self._showLogoutConfirm = State(initialValue: showLogoutConfirm)
     }
 
@@ -251,26 +221,6 @@ struct MyNpubQrSheet: View {
     }
 
     @ViewBuilder
-    private var devicesSection: some View {
-        Section {
-            NavigationLink("Devices") {
-                DeviceManagementView(
-                    devices: devices,
-                    pendingDevices: pendingDevices,
-                    autoAddDevices: autoAddDevices,
-                    onToggleAutoAdd: onToggleAutoAddDevices,
-                    onAddDevice: onAddDevice,
-                    onAcceptDevice: onAcceptDevice,
-                    onRejectDevice: onRejectDevice,
-                    onAcceptAll: onAcceptAll,
-                    onRejectAll: onRejectAll,
-                    onRefresh: onFetchDevices
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
     private var notificationsSection: some View {
         Section {
             NavigationLink("Notifications") {
@@ -340,7 +290,6 @@ struct MyNpubQrSheet: View {
         }
         appVersionSection
         developerSection
-        devicesSection
         notificationsSection
         logoutSection
     }
@@ -570,12 +519,7 @@ struct MyNpubQrSheet: View {
         onLogout: {},
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
-        onWipeLocalData: {},
-        devices: [],
-        autoAddDevices: true,
-        onToggleAutoAddDevices: { _ in },
-        onFetchDevices: {},
-        onAddDevice: { _ in }
+        onWipeLocalData: {}
     )
 }
 
@@ -591,11 +535,6 @@ struct MyNpubQrSheet: View {
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
         onWipeLocalData: {},
-        devices: [],
-        autoAddDevices: true,
-        onToggleAutoAddDevices: { _ in },
-        onFetchDevices: {},
-        onAddDevice: { _ in },
         showLogoutConfirm: true
     )
 }

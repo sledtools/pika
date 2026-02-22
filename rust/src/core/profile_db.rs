@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rusqlite::Connection;
 
@@ -15,16 +15,6 @@ pub fn open_profile_db(data_dir: &str) -> Result<Connection, rusqlite::Error> {
             about TEXT,
             picture_url TEXT,
             event_created_at INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS my_devices (
-            fingerprint TEXT PRIMARY KEY,
-            key_package_event_id TEXT NOT NULL,
-            key_package_event_json TEXT NOT NULL,
-            published_at INTEGER NOT NULL,
-            is_current_device INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS rejected_devices (
-            fingerprint TEXT PRIMARY KEY
         );
         CREATE TABLE IF NOT EXISTS follows (
             pubkey TEXT PRIMARY KEY
@@ -181,82 +171,6 @@ pub fn add_follow(conn: &Connection, pubkey: &str) {
 pub fn remove_follow(conn: &Connection, pubkey: &str) {
     if let Err(e) = conn.execute("DELETE FROM follows WHERE pubkey = ?1", [pubkey]) {
         tracing::warn!(%e, pubkey, "failed to remove follow from cache db");
-    }
-}
-
-// ── Device cache ─────────────────────────────────────────────────────
-
-pub fn load_devices(conn: &Connection) -> Vec<crate::state::DeviceInfo> {
-    let mut stmt = match conn.prepare(
-        "SELECT fingerprint, key_package_event_id, key_package_event_json, published_at, is_current_device
-         FROM my_devices ORDER BY is_current_device DESC, published_at DESC",
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(%e, "failed to prepare device load query");
-            return vec![];
-        }
-    };
-    let rows = match stmt.query_map([], |row| {
-        Ok(crate::state::DeviceInfo {
-            fingerprint: row.get(0)?,
-            key_package_event_id: row.get(1)?,
-            key_package_event_json: row.get(2)?,
-            published_at: row.get(3)?,
-            is_current_device: row.get::<_, i32>(4)? != 0,
-        })
-    }) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(%e, "failed to query devices from cache db");
-            return vec![];
-        }
-    };
-    rows.flatten().collect()
-}
-
-pub fn load_rejected_fingerprints(conn: &Connection) -> HashSet<String> {
-    let mut set = HashSet::new();
-    let mut stmt = match conn.prepare("SELECT fingerprint FROM rejected_devices") {
-        Ok(s) => s,
-        Err(_) => return set,
-    };
-    let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
-        Ok(r) => r,
-        Err(_) => return set,
-    };
-    for fp in rows.flatten() {
-        set.insert(fp);
-    }
-    set
-}
-
-pub fn add_rejected_fingerprint(conn: &Connection, fingerprint: &str) {
-    let _ = conn.execute(
-        "INSERT OR IGNORE INTO rejected_devices (fingerprint) VALUES (?1)",
-        [fingerprint],
-    );
-}
-
-pub fn save_devices(conn: &Connection, devices: &[crate::state::DeviceInfo]) {
-    if let Err(e) = conn.execute("DELETE FROM my_devices", []) {
-        tracing::warn!(%e, "failed to clear device cache");
-        return;
-    }
-    for d in devices {
-        if let Err(e) = conn.execute(
-            "INSERT INTO my_devices (fingerprint, key_package_event_id, key_package_event_json, published_at, is_current_device)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                d.fingerprint,
-                d.key_package_event_id,
-                d.key_package_event_json,
-                d.published_at,
-                d.is_current_device as i32,
-            ],
-        ) {
-            tracing::warn!(%e, fingerprint = d.fingerprint, "failed to save device to cache db");
-        }
     }
 }
 

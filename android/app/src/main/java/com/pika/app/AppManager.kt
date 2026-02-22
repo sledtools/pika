@@ -57,9 +57,6 @@ class AppManager private constructor(context: Context) : AppReconciler {
             peerProfile = null,
             activeCall = null,
             callTimeline = emptyList(),
-            myDevices = emptyList(),
-            pendingDevices = emptyList(),
-            autoAddDevices = true,
             toast = null,
         ),
     )

@@ -1,16 +1,5 @@
 use base64::Engine as _;
 use nostr_sdk::prelude::*;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
-/// Compute a short hex fingerprint from arbitrary bytes.
-/// Uses a fast non-crypto hash — this is for display only, not security.
-pub(super) fn fingerprint_hash(data: &[u8]) -> String {
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    let h = hasher.finish();
-    format!("{:08x}", h as u32)
-}
 
 pub(super) fn extract_relays_from_key_package_event(event: &Event) -> Option<Vec<RelayUrl>> {
     for t in event.tags.iter() {

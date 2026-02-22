@@ -19,27 +19,7 @@ pub struct AppState {
     pub peer_profile: Option<PeerProfileState>,
     pub active_call: Option<CallState>,
     pub call_timeline: Vec<CallTimelineEvent>,
-    pub my_devices: Vec<DeviceInfo>,
-    pub pending_devices: Vec<DeviceInfo>,
-    pub auto_add_devices: bool,
     pub toast: Option<String>,
-}
-
-/// Info about one of the user's own devices (derived from key packages on relays).
-#[derive(uniffi::Record, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct DeviceInfo {
-    /// Hex event ID of the key package event.
-    pub key_package_event_id: String,
-    /// JSON of the full key package event (for use with AddMyDevice).
-    pub key_package_event_json: String,
-    /// Stable short identifier for display (e.g. "a3f8b2c1").
-    /// For the current device: derived from local device ID.
-    /// For other devices: derived from key package content hash.
-    pub fingerprint: String,
-    /// Timestamp the key package was published (created_at).
-    pub published_at: i64,
-    /// Whether this is the current device's key package.
-    pub is_current_device: bool,
 }
 
 impl AppState {
@@ -59,9 +39,6 @@ impl AppState {
             peer_profile: None,
             active_call: None,
             call_timeline: vec![],
-            my_devices: vec![],
-            pending_devices: vec![],
-            auto_add_devices: true,
             toast: None,
         }
     }
@@ -204,7 +181,6 @@ pub enum Screen {
     NewChat,
     NewGroupChat,
     GroupInfo { chat_id: String },
-    DeviceManagement,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]

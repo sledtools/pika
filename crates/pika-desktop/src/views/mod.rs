@@ -3,7 +3,6 @@ pub mod call_banner;
 pub mod call_screen;
 pub mod chat_rail;
 pub mod conversation;
-pub mod device_management;
 pub mod empty_state;
 pub mod group_info;
 pub mod login;

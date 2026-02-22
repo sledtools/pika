@@ -94,7 +94,7 @@ use nostr_sdk::prelude::*;
 
 use interop::{
     extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
-    fingerprint_hash, normalize_peer_key_package_event_for_mdk, referenced_key_package_event_id,
+    normalize_peer_key_package_event_for_mdk, referenced_key_package_event_id,
 };
 
 const DEFAULT_GROUP_NAME: &str = "DM";
@@ -378,11 +378,6 @@ pub struct AppCore {
     call_timeline_logged_keys: HashSet<String>,
     pending_nostr_connect_login: Option<PendingNostrConnectLogin>,
     next_nostr_connect_attempt_id: u64,
-
-    // Multi-device: event IDs of key packages we published (to skip in auto-add).
-    my_kp_event_ids: HashSet<String>,
-    // Multi-device: fingerprints the user explicitly rejected.
-    rejected_device_fingerprints: HashSet<String>,
 }
 
 impl AppCore {
@@ -396,8 +391,7 @@ impl AppCore {
         bunker_signer_connector: SharedBunkerSignerConnector,
     ) -> Self {
         let config = config::load_app_config(&data_dir);
-        let mut state = crate::state::AppState::empty();
-        state.auto_add_devices = config.auto_add_devices.unwrap_or(true);
+        let state = crate::state::AppState::empty();
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -479,8 +473,6 @@ impl AppCore {
             call_timeline_logged_keys: HashSet::new(),
             pending_nostr_connect_login: None,
             next_nostr_connect_attempt_id: 1,
-            my_kp_event_ids: HashSet::new(),
-            rejected_device_fingerprints: HashSet::new(),
         };
 
         if run_moq_probe {
@@ -500,12 +492,6 @@ impl AppCore {
         }
 
         this.resume_pending_nostr_connect_login_from_disk();
-
-        // Load cached device list so the devices screen is instant.
-        if let Some(conn) = this.profile_db.as_ref() {
-            this.state.my_devices = profile_db::load_devices(conn);
-            this.rejected_device_fingerprints = profile_db::load_rejected_fingerprints(conn);
-        }
 
         // Ensure FfiApp.state() has an immediately-available snapshot.
         let snapshot = this.state.clone();
@@ -2452,11 +2438,7 @@ impl AppCore {
                     }
                 }
             }
-            InternalEvent::KeyPackagePublished {
-                ok,
-                ref error,
-                ref event_id,
-            } => {
+            InternalEvent::KeyPackagePublished { ok, ref error } => {
                 tracing::info!(ok, ?error, "key_package_published");
                 if !ok {
                     let msg = error.clone().unwrap_or_else(|| "unknown error".into());
@@ -2467,16 +2449,6 @@ impl AppCore {
                         self.toast("Key package publish delayed: relay connection is not ready");
                     } else {
                         self.toast(format!("Key package publish failed: {msg}"));
-                    }
-                } else {
-                    // Track our own KP event IDs so we can skip them in auto-add.
-                    if let Some(eid) = event_id {
-                        self.my_kp_event_ids.insert(eid.clone());
-                    }
-                    // After successfully publishing our KP, check for other devices
-                    // that may need to be added to our groups (if enabled).
-                    if self.state.auto_add_devices {
-                        self.check_for_other_devices();
                     }
                 }
             }
@@ -2538,13 +2510,13 @@ impl AppCore {
             }
             InternalEvent::PeerKeyPackageFetched {
                 peer_pubkey,
-                key_package_events,
+                key_package_event,
                 error,
             } => {
                 let network_enabled = self.network_enabled();
                 tracing::info!(
                     peer = %peer_pubkey.to_hex(),
-                    kp_count = key_package_events.len(),
+                    kp_found = key_package_event.is_some(),
                     ?error,
                     "peer_key_package_fetched"
                 );
@@ -2553,24 +2525,20 @@ impl AppCore {
                     self.toast(err);
                     return;
                 }
-                if key_package_events.is_empty() {
+                let Some(kp_event) = key_package_event else {
                     self.set_busy(|b| b.creating_chat = false);
                     self.toast("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
                     return;
-                }
-                // Normalize all key packages for MDK.
-                let kp_events: Vec<Event> = key_package_events
-                    .iter()
-                    .map(normalize_peer_key_package_event_for_mdk)
-                    .collect();
+                };
+                let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
 
-                // Merge our default relays with any relays the peer advertised in their key packages.
+                // Merge our default relays with any relays the peer advertised in their key package.
+                let peer_relays =
+                    extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
                 let mut group_relays = self.default_relays();
-                for kp in &kp_events {
-                    for r in extract_relays_from_key_package_event(kp).unwrap_or_default() {
-                        if !group_relays.contains(&r) {
-                            group_relays.push(r);
-                        }
+                for r in peer_relays.iter().cloned() {
+                    if !group_relays.contains(&r) {
+                        group_relays.push(r);
                     }
                 }
                 let group_result = {
@@ -2579,32 +2547,16 @@ impl AppCore {
                         return;
                     };
 
-                    // Validate and filter key packages (skip invalid ones).
-                    let valid_kps: Vec<Event> = kp_events
-                        .into_iter()
-                        .filter(|ev| {
-                            if let Err(e) = sess.mdk.parse_key_package(ev) {
-                                tracing::warn!(
-                                    kp_id = %ev.id.to_hex(),
-                                    %e,
-                                    "skipping invalid peer key package"
-                                );
-                                false
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
-
-                    if valid_kps.is_empty() {
+                    // Validate peer key package before use (spec-v2).
+                    if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
                         self.set_busy(|b| b.creating_chat = false);
-                        self.toast(
-                            "No valid peer key packages found. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64).".to_string()
-                        );
+                        self.toast(format!(
+                            "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
+                        ));
                         return;
                     }
 
-                    // Create group (1:1 DM) with all valid key packages (multi-device).
+                    // Create group (1:1 DM).
                     let admins = vec![sess.pubkey, peer_pubkey];
                     let config = NostrGroupConfigData {
                         name: DEFAULT_GROUP_NAME.to_string(),
@@ -2616,15 +2568,18 @@ impl AppCore {
                         admins,
                     };
 
-                    let group_result = match sess.mdk.create_group(&sess.pubkey, valid_kps, config)
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            self.set_busy(|b| b.creating_chat = false);
-                            self.toast(format!("Create group failed: {e}"));
-                            return;
-                        }
-                    };
+                    let group_result =
+                        match sess
+                            .mdk
+                            .create_group(&sess.pubkey, vec![kp_event.clone()], config)
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                self.set_busy(|b| b.creating_chat = false);
+                                self.toast(format!("Create group failed: {e}"));
+                                return;
+                            }
+                        };
 
                     group_result
                 };
@@ -2799,30 +2754,15 @@ impl AppCore {
                         .map(normalize_peer_key_package_event_for_mdk)
                         .collect();
 
-                    // Validate and filter key packages (skip invalid ones gracefully).
-                    let valid_kps: Vec<Event> = kp_events
-                        .into_iter()
-                        .filter(|ev| {
-                            if let Err(e) = sess.mdk.parse_key_package(ev) {
-                                tracing::warn!(
-                                    kp_id = %ev.id.to_hex(),
-                                    %e,
-                                    "skipping invalid key package during add_members"
-                                );
-                                false
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
-
-                    if valid_kps.is_empty() {
-                        self.set_busy(|b| b.creating_chat = false);
-                        self.toast("No valid key packages found for peers".to_string());
-                        return;
+                    for ev in &kp_events {
+                        if let Err(e) = sess.mdk.parse_key_package(ev) {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Invalid key package: {e}"));
+                            return;
+                        }
                     }
 
-                    let result = match sess.mdk.add_members(&entry.mls_group_id, &valid_kps) {
+                    let result = match sess.mdk.add_members(&entry.mls_group_id, &kp_events) {
                         Ok(r) => r,
                         Err(e) => {
                             self.set_busy(|b| b.creating_chat = false);
@@ -2831,15 +2771,7 @@ impl AppCore {
                         }
                     };
 
-                    // Deduplicate pubkeys (multi-device: multiple KPs per peer).
-                    let added: Vec<PublicKey> = {
-                        let mut seen = BTreeSet::new();
-                        valid_kps
-                            .iter()
-                            .filter(|e| seen.insert(e.pubkey))
-                            .map(|e| e.pubkey)
-                            .collect()
-                    };
+                    let added: Vec<PublicKey> = kp_events.iter().map(|e| e.pubkey).collect();
                     self.publish_evolution_event(
                         &chat_id,
                         entry.mls_group_id,
@@ -2879,27 +2811,12 @@ impl AppCore {
                         return;
                     };
 
-                    // Validate and filter key packages (skip invalid ones gracefully).
-                    let valid_kps: Vec<Event> = kp_events
-                        .into_iter()
-                        .filter(|ev| {
-                            if let Err(e) = sess.mdk.parse_key_package(ev) {
-                                tracing::warn!(
-                                    kp_id = %ev.id.to_hex(),
-                                    %e,
-                                    "skipping invalid key package during create_group"
-                                );
-                                false
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
-
-                    if valid_kps.is_empty() {
-                        self.set_busy(|b| b.creating_chat = false);
-                        self.toast("No valid key packages found for peers".to_string());
-                        return;
+                    for ev in &kp_events {
+                        if let Err(e) = sess.mdk.parse_key_package(ev) {
+                            self.set_busy(|b| b.creating_chat = false);
+                            self.toast(format!("Invalid key package: {e}"));
+                            return;
+                        }
                     }
 
                     let admins = vec![sess.pubkey];
@@ -2917,7 +2834,7 @@ impl AppCore {
                     let group_result =
                         match sess
                             .mdk
-                            .create_group(&sess.pubkey, valid_kps.clone(), config)
+                            .create_group(&sess.pubkey, kp_events.clone(), config)
                         {
                             Ok(r) => r,
                             Err(e) => {
@@ -3182,88 +3099,6 @@ impl AppCore {
                     }
                 }
                 self.toast("Failed to update follow list".to_string());
-                self.emit_state();
-            }
-            InternalEvent::OtherDeviceKeyPackagesFetched { key_package_events } => {
-                let Some(sess) = self.session.as_mut() else {
-                    return;
-                };
-                if sess.groups.is_empty() {
-                    return;
-                }
-
-                // Filter to valid key packages that aren't already consumed by our own MDK instance.
-                let valid_kps: Vec<Event> = key_package_events
-                    .into_iter()
-                    .map(|ev| normalize_peer_key_package_event_for_mdk(&ev))
-                    .filter(|ev| sess.mdk.parse_key_package(ev).is_ok())
-                    .collect();
-
-                if valid_kps.is_empty() {
-                    return;
-                }
-
-                if self.state.auto_add_devices {
-                    // Auto-add mode: add devices to all groups immediately.
-                    tracing::info!(
-                        kp_count = valid_kps.len(),
-                        "other_device_key_packages: attempting auto-add"
-                    );
-                    self.auto_add_device_kps(&valid_kps);
-                } else {
-                    // Manual mode: add to pending list.
-                    // Filter out: rejected, already-known devices, and our own.
-                    let known_fps: HashSet<String> = self
-                        .state
-                        .my_devices
-                        .iter()
-                        .map(|d| d.fingerprint.clone())
-                        .collect();
-                    let pending: Vec<crate::state::DeviceInfo> = valid_kps
-                        .iter()
-                        .map(|ev| {
-                            let fp = fingerprint_hash(ev.content.as_bytes());
-                            crate::state::DeviceInfo {
-                                key_package_event_id: ev.id.to_hex(),
-                                key_package_event_json: serde_json::to_string(ev)
-                                    .unwrap_or_default(),
-                                fingerprint: fp,
-                                published_at: ev.created_at.as_secs() as i64,
-                                is_current_device: false,
-                            }
-                        })
-                        .filter(|d| {
-                            !self.rejected_device_fingerprints.contains(&d.fingerprint)
-                                && !known_fps.contains(&d.fingerprint)
-                        })
-                        .collect();
-
-                    if !pending.is_empty() {
-                        // Dedup by fingerprint, keep newest.
-                        let mut by_fp: HashMap<String, crate::state::DeviceInfo> = HashMap::new();
-                        for existing in self.state.pending_devices.drain(..) {
-                            by_fp.insert(existing.fingerprint.clone(), existing);
-                        }
-                        for d in pending {
-                            let entry = by_fp
-                                .entry(d.fingerprint.clone())
-                                .or_insert_with(|| d.clone());
-                            if d.published_at > entry.published_at {
-                                *entry = d;
-                            }
-                        }
-                        self.state.pending_devices = by_fp.into_values().collect();
-                        self.emit_state();
-                    }
-                }
-            }
-            InternalEvent::MyDevicesFetched { mut devices } => {
-                // Current device always first.
-                devices.sort_by(|a, b| b.is_current_device.cmp(&a.is_current_device));
-                self.state.my_devices = devices;
-                if let Some(conn) = self.profile_db.as_ref() {
-                    profile_db::save_devices(conn, &self.state.my_devices);
-                }
                 self.emit_state();
             }
             InternalEvent::GroupMessageReceived { event } => {
@@ -3848,11 +3683,11 @@ impl AppCore {
 
                     match client.fetch_events(kp_filter, Duration::from_secs(8)).await {
                         Ok(events) => {
-                            let kp_events: Vec<Event> = events.into_iter().collect();
+                            let best = events.into_iter().max_by_key(|e| e.created_at);
                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                 InternalEvent::PeerKeyPackageFetched {
                                     peer_pubkey,
-                                    key_package_events: kp_events,
+                                    key_package_event: best,
                                     error: None,
                                 },
                             )));
@@ -3861,7 +3696,7 @@ impl AppCore {
                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                 InternalEvent::PeerKeyPackageFetched {
                                     peer_pubkey,
-                                    key_package_events: vec![],
+                                    key_package_event: None,
                                     error: Some(format!("Fetch peer key package failed: {e}")),
                                 },
                             )));
@@ -4205,11 +4040,11 @@ impl AppCore {
                         };
                         match res {
                             Ok(events) => {
-                                let peer_kps: Vec<Event> = events.into_iter().collect();
-                                if peer_kps.is_empty() {
-                                    failed.push((*pk, "No key package found".into()));
+                                let best = events.into_iter().max_by_key(|e| e.created_at);
+                                if let Some(ev) = best {
+                                    all_kp_events.push(ev);
                                 } else {
-                                    all_kp_events.extend(peer_kps);
+                                    failed.push((*pk, "No key package found".into()));
                                 }
                             }
                             Err(e) => {
@@ -4333,11 +4168,10 @@ impl AppCore {
                         };
                         match res {
                             Ok(events) => {
-                                let peer_kps: Vec<Event> = events.into_iter().collect();
-                                if peer_kps.is_empty() {
-                                    failed.push((*pk, "No key package found".into()));
+                                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                                    kp_events.push(ev);
                                 } else {
-                                    kp_events.extend(peer_kps);
+                                    failed.push((*pk, "No key package found".into()));
                                 }
                             }
                             Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
@@ -4377,265 +4211,6 @@ impl AppCore {
                         },
                     )));
                 });
-            }
-            AppAction::AddMyDevice {
-                key_package_event_json,
-            } => {
-                if !self.is_logged_in() {
-                    self.toast("Please log in first");
-                    return;
-                }
-                if !self.network_enabled() {
-                    self.toast("Network disabled");
-                    return;
-                }
-
-                // Parse the key package event from JSON.
-                let kp_event: Event = match serde_json::from_str(&key_package_event_json) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        self.toast(format!("Invalid key package event JSON: {e}"));
-                        return;
-                    }
-                };
-
-                let Some(sess) = self.session.as_mut() else {
-                    return;
-                };
-
-                // Verify the key package belongs to the same pubkey (our own device).
-                if kp_event.pubkey != sess.pubkey {
-                    self.toast(
-                        "Key package is not from your identity. Cannot add a different user as your device."
-                            .to_string(),
-                    );
-                    return;
-                }
-
-                let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
-
-                // Validate the key package.
-                if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
-                    self.toast(format!("Invalid key package: {e}"));
-                    return;
-                }
-
-                // Add the new device to every group we're in.
-                // Collect results first to avoid borrow conflicts with self.
-                let groups: Vec<(String, GroupIndexEntry)> = sess
-                    .groups
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-
-                let kp_pubkey = kp_event.pubkey;
-                let mut evolution_results: Vec<(
-                    String,
-                    mdk_core::prelude::GroupId,
-                    Event,
-                    Option<Vec<UnsignedEvent>>,
-                )> = Vec::new();
-                let mut failed_count = 0u32;
-                for (chat_id, entry) in &groups {
-                    match sess
-                        .mdk
-                        .add_members(&entry.mls_group_id, std::slice::from_ref(&kp_event))
-                    {
-                        Ok(result) => {
-                            evolution_results.push((
-                                chat_id.clone(),
-                                entry.mls_group_id.clone(),
-                                result.evolution_event,
-                                result.welcome_rumors,
-                            ));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                chat_id,
-                                %e,
-                                "add_my_device: failed to add device to group"
-                            );
-                            failed_count += 1;
-                        }
-                    }
-                }
-
-                // Now publish evolution events (requires &mut self).
-                let added_count = evolution_results.len() as u32;
-                for (chat_id, mls_group_id, evo_event, welcome_rumors) in evolution_results {
-                    self.publish_evolution_event(
-                        &chat_id,
-                        mls_group_id,
-                        evo_event,
-                        welcome_rumors,
-                        vec![kp_pubkey],
-                    );
-                }
-
-                if added_count > 0 {
-                    self.toast(format!(
-                        "Device added to {added_count} group(s){}",
-                        if failed_count > 0 {
-                            format!(" ({failed_count} failed)")
-                        } else {
-                            String::new()
-                        }
-                    ));
-                } else {
-                    self.toast("Failed to add device to any groups".to_string());
-                }
-
-                self.refresh_all_from_storage();
-            }
-            AppAction::FetchMyDevices => {
-                if !self.is_logged_in() || !self.network_enabled() {
-                    return;
-                }
-                let (client, tx, my_pubkey) = {
-                    let Some(sess) = self.session.as_ref() else {
-                        return;
-                    };
-                    (sess.client.clone(), self.core_sender.clone(), sess.pubkey)
-                };
-                let kp_relays = self.key_package_relays();
-                let default_relays = self.default_relays();
-                let my_kp_ids = self.my_kp_event_ids.clone();
-                // Stable fingerprint for THIS device: hash of local device ID.
-                let local_fingerprint = fingerprint_hash(self.push_device_id.as_bytes());
-                self.runtime.spawn(async move {
-                    let mut all_relays: BTreeSet<RelayUrl> = BTreeSet::new();
-                    for r in kp_relays {
-                        all_relays.insert(r);
-                    }
-                    for r in default_relays {
-                        all_relays.insert(r);
-                    }
-                    let relay_list: Vec<RelayUrl> = all_relays.into_iter().collect();
-                    for r in relay_list.iter().cloned() {
-                        let _ = client.add_relay(r).await;
-                    }
-                    client.connect().await;
-                    client.wait_for_connection(Duration::from_secs(5)).await;
-
-                    let kp_filter = Filter::new()
-                        .author(my_pubkey)
-                        .kind(Kind::MlsKeyPackage)
-                        .limit(20);
-                    let devices = match client.fetch_events(kp_filter, Duration::from_secs(8)).await
-                    {
-                        Ok(events) => {
-                            // Build DeviceInfo for each KP event.
-                            let all: Vec<crate::state::DeviceInfo> = events
-                                .into_iter()
-                                .map(|ev| {
-                                    let is_current = my_kp_ids.contains(&ev.id.to_hex());
-                                    // Stable fingerprint: for our own device use the
-                                    // local device ID hash; for others hash the KP content.
-                                    let fingerprint = if is_current {
-                                        local_fingerprint.clone()
-                                    } else {
-                                        fingerprint_hash(ev.content.as_bytes())
-                                    };
-                                    crate::state::DeviceInfo {
-                                        key_package_event_id: ev.id.to_hex(),
-                                        key_package_event_json: serde_json::to_string(&ev)
-                                            .unwrap_or_default(),
-                                        fingerprint,
-                                        published_at: ev.created_at.as_secs() as i64,
-                                        is_current_device: is_current,
-                                    }
-                                })
-                                .collect();
-                            // Dedup by fingerprint: keep only the newest KP per device.
-                            let mut by_fp: std::collections::HashMap<
-                                String,
-                                crate::state::DeviceInfo,
-                            > = std::collections::HashMap::new();
-                            for d in all {
-                                let entry = by_fp.entry(d.fingerprint.clone()).or_insert(d.clone());
-                                if d.published_at > entry.published_at {
-                                    *entry = d;
-                                }
-                            }
-                            by_fp.into_values().collect()
-                        }
-                        Err(e) => {
-                            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                                format!("Failed to fetch devices: {e}"),
-                            ))));
-                            return;
-                        }
-                    };
-                    let _ = tx.send(CoreMsg::Internal(Box::new(
-                        InternalEvent::MyDevicesFetched { devices },
-                    )));
-                });
-            }
-            AppAction::SetAutoAddDevices { enabled } => {
-                self.state.auto_add_devices = enabled;
-                // Persist to config file.
-                let config_path = std::path::Path::new(&self.data_dir).join("pika_config.json");
-                let mut value = std::fs::read(&config_path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                if let Some(obj) = value.as_object_mut() {
-                    obj.insert("auto_add_devices".into(), serde_json::Value::Bool(enabled));
-                }
-                let _ = std::fs::write(&config_path, value.to_string());
-                self.config = config::load_app_config(&self.data_dir);
-                self.emit_state();
-            }
-            AppAction::AcceptPendingDevice { fingerprint } => {
-                let device = self
-                    .state
-                    .pending_devices
-                    .iter()
-                    .find(|d| d.fingerprint == fingerprint)
-                    .cloned();
-                if let Some(device) = device {
-                    // Parse the KP event and add it via AddMyDevice logic.
-                    if let Ok(ev) = serde_json::from_str::<Event>(&device.key_package_event_json) {
-                        let ev = normalize_peer_key_package_event_for_mdk(&ev);
-                        self.auto_add_device_kps(&[ev]);
-                    }
-                    self.state
-                        .pending_devices
-                        .retain(|d| d.fingerprint != fingerprint);
-                    self.emit_state();
-                }
-            }
-            AppAction::RejectPendingDevice { fingerprint } => {
-                self.state
-                    .pending_devices
-                    .retain(|d| d.fingerprint != fingerprint);
-                self.rejected_device_fingerprints
-                    .insert(fingerprint.clone());
-                if let Some(conn) = self.profile_db.as_ref() {
-                    profile_db::add_rejected_fingerprint(conn, &fingerprint);
-                }
-                self.emit_state();
-            }
-            AppAction::AcceptAllPendingDevices => {
-                let pending = self.state.pending_devices.drain(..).collect::<Vec<_>>();
-                for device in &pending {
-                    if let Ok(ev) = serde_json::from_str::<Event>(&device.key_package_event_json) {
-                        let ev = normalize_peer_key_package_event_for_mdk(&ev);
-                        self.auto_add_device_kps(&[ev]);
-                    }
-                }
-                self.emit_state();
-            }
-            AppAction::RejectAllPendingDevices => {
-                let pending = self.state.pending_devices.drain(..).collect::<Vec<_>>();
-                for device in &pending {
-                    self.rejected_device_fingerprints
-                        .insert(device.fingerprint.clone());
-                    if let Some(conn) = self.profile_db.as_ref() {
-                        profile_db::add_rejected_fingerprint(conn, &device.fingerprint);
-                    }
-                }
-                self.emit_state();
             }
             AppAction::RemoveGroupMembers {
                 chat_id,
@@ -4761,70 +4336,6 @@ impl AppCore {
     ///   3. Welcome delivery (only after merge)
     ///
     /// TODO: A second group mutation (add/remove member) before the background
-    /// Add key packages to all groups. Used by auto-add and accept-pending flows.
-    fn auto_add_device_kps(&mut self, valid_kps: &[Event]) {
-        let Some(sess) = self.session.as_mut() else {
-            return;
-        };
-        let groups: Vec<(String, GroupIndexEntry)> = sess
-            .groups
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        #[allow(clippy::type_complexity)]
-        let mut evolution_results: Vec<(
-            String,
-            mdk_core::prelude::GroupId,
-            Event,
-            Option<Vec<UnsignedEvent>>,
-            PublicKey,
-        )> = Vec::new();
-        let mut added_count = 0u32;
-        for (chat_id, entry) in &groups {
-            for kp in valid_kps {
-                match sess
-                    .mdk
-                    .add_members(&entry.mls_group_id, std::slice::from_ref(kp))
-                {
-                    Ok(result) => {
-                        evolution_results.push((
-                            chat_id.clone(),
-                            entry.mls_group_id.clone(),
-                            result.evolution_event,
-                            result.welcome_rumors,
-                            kp.pubkey,
-                        ));
-                        added_count += 1;
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            chat_id,
-                            kp_id = %kp.id.to_hex(),
-                            %e,
-                            "auto-add device to group skipped"
-                        );
-                    }
-                }
-            }
-        }
-
-        for (chat_id, mls_group_id, evo_event, welcome_rumors, pk) in evolution_results {
-            self.publish_evolution_event(
-                &chat_id,
-                mls_group_id,
-                evo_event,
-                welcome_rumors,
-                vec![pk],
-            );
-        }
-
-        if added_count > 0 {
-            tracing::info!(added_count, "auto-added new device to groups");
-            self.refresh_all_from_storage();
-        }
-    }
-
     /// merge completes will fail because OpenMLS rejects new commits while one
     /// is pending. This surfaces as an error toast but doesn't corrupt state.
     /// Consider adding a per-group operation lock if this becomes a UX problem.

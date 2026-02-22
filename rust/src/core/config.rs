@@ -43,8 +43,6 @@ pub(super) struct AppConfig {
     pub(super) notification_url: Option<String>,
     // Dev-only: run a one-shot QUIC+TLS probe on startup and log PASS/FAIL.
     pub(super) moq_probe_on_start: Option<bool>,
-    // Multi-device: automatically add new devices to all groups (default: true).
-    pub(super) auto_add_devices: Option<bool>,
 }
 
 pub(super) fn load_app_config(data_dir: &str) -> AppConfig {

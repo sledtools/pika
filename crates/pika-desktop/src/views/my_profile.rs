@@ -117,18 +117,6 @@ pub fn my_profile_view<'a>(
 
     content = content.push(container(version_row).width(Fill));
 
-    // ── Devices ────────────────────────────────────────────────────
-    content = content.push(
-        container(
-            button(text("Devices").size(14).center())
-                .on_press(Message::ShowDeviceManagement)
-                .padding([10, 24])
-                .style(theme::secondary_button_style),
-        )
-        .width(Fill)
-        .align_x(Alignment::Center),
-    );
-
     // ── Logout ──────────────────────────────────────────────────────
     content = content.push(Space::new().height(Fill));
 

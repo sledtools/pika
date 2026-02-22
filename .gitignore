@@ -23,6 +23,8 @@ ios/build-device/
 ios/build-appstore/
 ios/Frameworks/
 ios/**/xcuserdata/
+ios/Pika.xcodeproj/project.pbxproj
+ios/Pika.xcodeproj/xcshareddata/xcschemes/Pika.xcscheme
 ios/Bindings/*.swift
 ios/Bindings/*.h
 ios/Bindings/*.modulemap

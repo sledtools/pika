@@ -293,6 +293,7 @@ struct ChatView: View {
                         .id(bottomAnchorId)
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .coordinateSpace(name: "chatScroll")
                 .defaultScrollAnchor(.bottom)
                 .simultaneousGesture(
@@ -823,8 +824,8 @@ private struct FocusedMessageCard: View {
     private var markdownContent: some View {
         Markdown(message.displayContent)
             .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
-            .multilineTextAlignment(message.isMine ? .trailing : .leading)
-            .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var isLikelyLongMessage: Bool {
@@ -850,7 +851,7 @@ private struct ReactionChips: View {
                         if reaction.count > 1 {
                             Text("\(reaction.count)")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(reaction.reactedByMe ? .white : .primary)
                         }
                     }
                     .padding(.horizontal, 6)
@@ -858,7 +859,7 @@ private struct ReactionChips: View {
                     .background(
                         reaction.reactedByMe
                             ? Color.blue.opacity(0.85)
-                            : Color(white: 0.22)
+                            : Color(uiColor: .systemGray5)
                     )
                     .clipShape(Capsule())
                     .overlay(
@@ -944,11 +945,27 @@ private struct BottomVisibleKey: PreferenceKey {
 
 private struct GlassInputModifier: ViewModifier {
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+                .padding(12)
+        } else {
+            content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(12)
+        }
+        #else
         content
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
             .padding(12)
+        #endif
     }
 }
 
@@ -956,12 +973,25 @@ private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
     @ViewBuilder var content: Bar
 
     func body(content view: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            view.safeAreaBar(edge: .bottom) { content }
+        } else {
+            view.safeAreaInset(edge: .bottom) {
+                VStack(spacing: 0) {
+                    Divider()
+                    content
+                }
+            }
+        }
+        #else
         view.safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 Divider()
                 content
             }
         }
+        #endif
     }
 }
 
@@ -1111,7 +1141,7 @@ private struct MessageGroupRow: View {
 
     private var outgoingRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            Spacer(minLength: 24)
+            Spacer(minLength: 48)
 
             VStack(alignment: .trailing, spacing: 3) {
                 MessageBubbleStack(
@@ -1245,10 +1275,10 @@ private struct MessageBubble: View {
     }
 
     private func markdownBubble(text: String) -> some View {
-        VStack(alignment: message.isMine ? .trailing : .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 3) {
             Markdown(text)
                 .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
-                .multilineTextAlignment(message.isMine ? .trailing : .leading)
+                .multilineTextAlignment(.leading)
 
             Text(timestampText)
                 .font(.caption2)

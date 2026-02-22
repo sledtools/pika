@@ -9,6 +9,7 @@ struct LoginView: View {
     let onResetNostrConnectPairing: @MainActor () -> Void
     @State private var nsecInput = ""
     @State private var bunkerUriInput = ""
+    @State private var showAdvanced = false
 
     var body: some View {
         let createBusy = state.creatingAccount
@@ -89,51 +90,68 @@ struct LoginView: View {
                 .disabled(anyBusy || nsecInput.isEmpty)
                 .accessibilityIdentifier(TestIds.loginSubmit)
 
-                TextField("Enter bunker URI", text: $bunkerUriInput)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        showAdvanced.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Advanced")
+                            .font(.caption)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+
+                if showAdvanced {
+                    TextField("Enter bunker URI", text: $bunkerUriInput)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(anyBusy)
+                        .accessibilityIdentifier(TestIds.loginBunkerUriInput)
+
+                    Button {
+                        onBunkerLogin(bunkerUriInput)
+                    } label: {
+                        if loginBusy {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Log In with Bunker")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(anyBusy || bunkerUriInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier(TestIds.loginBunkerSubmit)
+
+                    Button {
+                        onNostrConnectLogin()
+                    } label: {
+                        if loginBusy {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Log In with Nostr Connect")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     .disabled(anyBusy)
-                    .accessibilityIdentifier(TestIds.loginBunkerUriInput)
+                    .accessibilityIdentifier(TestIds.loginNostrConnectSubmit)
 
-                Button {
-                    onBunkerLogin(bunkerUriInput)
-                } label: {
-                    if loginBusy {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text("Log In with Bunker")
-                            .frame(maxWidth: .infinity)
+                    Button("Reset Nostr Connect Pairing") {
+                        onResetNostrConnectPairing()
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .accessibilityIdentifier(TestIds.loginNostrConnectReset)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(anyBusy || bunkerUriInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier(TestIds.loginBunkerSubmit)
-
-                Button {
-                    onNostrConnectLogin()
-                } label: {
-                    if loginBusy {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text("Log In with Nostr Connect")
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(anyBusy)
-                .accessibilityIdentifier(TestIds.loginNostrConnectSubmit)
-
-                Button("Reset Nostr Connect Pairing") {
-                    onResetNostrConnectPairing()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .accessibilityIdentifier(TestIds.loginNostrConnectReset)
             }
             .padding(.bottom, 32)
         }

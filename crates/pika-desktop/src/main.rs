@@ -1,20 +1,17 @@
 mod app_manager;
+mod screen;
 mod theme;
 mod video;
 mod video_shader;
 mod views;
 
 use app_manager::AppManager;
-use iced::widget::operation;
-use iced::widget::{column, container, row, rule, text};
+use iced::widget::{column, container, text};
 use iced::{Element, Fill, Font, Size, Subscription, Task, Theme};
-use pika_core::{
-    project_desktop, AppAction, AppState, AuthState, CallStatus, DesktopDetailPane,
-    DesktopShellMode, Screen,
-};
+use pika_core::{project_desktop, AppAction, AppState, AuthState, CallStatus, DesktopShellMode};
 use std::time::Duration;
 
-fn app_version_display() -> String {
+pub fn app_version_display() -> String {
     let version = env!("CARGO_PKG_VERSION");
     if let Some(build) = option_env!("PIKA_BUILD_NUMBER") {
         format!("v{version} ({build})")
@@ -49,123 +46,31 @@ fn manager_update_stream(manager: &AppManager) -> impl iced::futures::Stream<Ite
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UiOverlay {
-    None,
-    NewChat,
-    NewGroup,
-    MyProfile,
-}
-
-struct DesktopApp {
-    manager: Option<AppManager>,
-    boot_error: Option<String>,
-    state: AppState,
-    avatar_cache: std::cell::RefCell<views::avatar::AvatarCache>,
-    cached_profiles: Vec<pika_core::FollowListEntry>,
-    nsec_input: String,
-    new_chat_input: String,
-    new_chat_search: String,
-    filtered_follows: Vec<pika_core::FollowListEntry>,
-    message_input: String,
-    reply_to_message_id: Option<String>,
-    // Mention autocomplete (group chats)
-    show_mention_picker: bool,
-    mention_query: String,
-    inserted_mentions: Vec<(String, String)>, // (display_tag, npub)
-    optimistic_selected_chat_id: Option<String>,
-    overlay: UiOverlay,
-    // Group creation
-    group_name_input: String,
-    selected_group_members: Vec<String>,
-    // My profile
-    profile_name_draft: String,
-    profile_about_draft: String,
-    app_version_display: String,
-    profile_toast: Option<String>,
-    // Group info
-    group_info_name_draft: String,
-    group_info_npub_input: String,
-    // Reactions
-    emoji_picker_message_id: Option<String>,
-    hovered_message_id: Option<String>,
-    // Calling
-    show_call_screen: bool,
-    // Video
-    video_pipeline: video::DesktopVideoPipeline,
+enum Screen {
+    Home(Box<screen::home::State>),
+    Login(screen::login::State),
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     CoreUpdated,
+    Home(screen::home::Message),
+    Login(screen::login::Message),
     RelativeTimeTick,
-    NsecChanged(String),
-    Login,
-    CreateAccount,
-    Logout,
-    ResetLocalSessionData,
-    ResetRelayConfig,
-    NewChatChanged(String),
-    NewChatSearchChanged(String),
-    StartChat,
-    StartChatWith(String),
-    ToggleNewChatForm,
-    OpenChat(String),
-    MessageChanged(String),
-    SendMessage,
-    SetReplyTarget(String),
-    CancelReplyTarget,
-    JumpToMessage(String),
-    ClearToast,
-    // Group creation
-    ToggleNewGroupForm,
-    GroupNameChanged(String),
-    ToggleGroupMember(String),
-    AddManualGroupMember,
-    CreateGroup,
-    // My profile
-    ToggleMyProfile,
-    ProfileNameChanged(String),
-    ProfileAboutChanged(String),
-    SaveProfile,
-    CopyNpub,
-    CopyAppVersion,
-    // Group info
-    ShowGroupInfo,
-    CloseGroupInfo,
-    GroupInfoNameChanged(String),
-    RenameGroup,
-    AddGroupMember,
-    RemoveGroupMember(String),
-    LeaveGroup,
-    GroupInfoNpubChanged(String),
-    // Reactions
-    ReactToMessage { message_id: String, emoji: String },
-    ToggleEmojiPicker(String),
-    CloseEmojiPicker,
-    HoverMessage(String),
-    UnhoverMessage,
-    // Mention autocomplete
-    MentionSelected { npub: String, name: String },
-    MentionSelectTop,
-    // Peer profile
-    OpenPeerProfile(String),
-    ClosePeerProfile,
-    FollowPeer,
-    UnfollowPeer,
-    CopyPeerNpub,
-    // Calling
-    StartCall,
-    StartVideoCall,
-    AcceptCall,
-    RejectCall,
-    EndCall,
-    ToggleMute,
-    ToggleCamera,
-    OpenCallScreen,
-    DismissCallScreen,
-    CallTimerTick,
-    VideoFrameTick,
+}
+
+enum DesktopApp {
+    BootError {
+        error: String,
+    },
+    Loaded {
+        app_version_display: String,
+        avatar_cache: std::cell::RefCell<views::avatar::AvatarCache>,
+        cached_profiles: Vec<pika_core::FollowListEntry>,
+        manager: AppManager,
+        screen: Screen,
+        state: AppState,
+    },
 }
 
 impl DesktopApp {
@@ -176,593 +81,149 @@ impl DesktopApp {
             .to_string();
         let cached_profiles = pika_core::load_cached_profiles(&data_dir);
 
-        let (manager, boot_error, state) = match AppManager::new() {
+        let app = match AppManager::new() {
             Ok(manager) => {
                 let state = manager.state();
-                (Some(manager), None, state)
+                let route = project_desktop(&state);
+                let screen = if matches!(route.shell_mode, DesktopShellMode::Login) {
+                    Screen::Login(screen::login::State::new())
+                } else {
+                    Screen::Home(Box::new(screen::home::State::new(&state)))
+                };
+
+                Self::Loaded {
+                    app_version_display: app_version_display(),
+                    avatar_cache: std::cell::RefCell::new(views::avatar::AvatarCache::new()),
+                    cached_profiles,
+                    manager,
+                    screen,
+                    state,
+                }
             }
-            Err(error) => (
-                None,
-                Some(format!("failed to start desktop manager: {error}")),
-                AppState::empty(),
-            ),
+            Err(error) => Self::BootError {
+                error: format!("failed to start desktop manager: {error}"),
+            },
         };
 
-        (
-            Self::from_boot_state(cached_profiles, manager, boot_error, state),
-            Task::none(),
-        )
+        (app, Task::none())
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        if let Some(manager) = &self.manager {
-            let core_updates = Subscription::run_with(manager.clone(), manager_update_stream)
-                .map(|_| Message::CoreUpdated);
-            let relative_time_ticks =
-                iced::time::every(Duration::from_secs(30)).map(|_| Message::RelativeTimeTick);
+        match self {
+            DesktopApp::BootError { .. } => Subscription::none(),
+            DesktopApp::Loaded {
+                manager,
+                screen,
+                state,
+                ..
+            } => {
+                let core_updates = Subscription::run_with(manager.clone(), manager_update_stream)
+                    .map(|_| Message::CoreUpdated);
+                let relative_time_ticks =
+                    iced::time::every(Duration::from_secs(30)).map(|_| Message::RelativeTimeTick);
 
-            let mut subs = vec![core_updates, relative_time_ticks];
+                let mut subs = vec![core_updates, relative_time_ticks];
 
-            if self.show_mention_picker {
-                subs.push(iced::keyboard::listen().filter_map(|event| match event {
-                    iced::keyboard::Event::KeyPressed {
-                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab),
-                        ..
-                    } => Some(Message::MentionSelectTop),
-                    _ => None,
-                }));
-            }
-            let is_active_call = self
-                .state
-                .active_call
-                .as_ref()
-                .is_some_and(|c| matches!(c.status, CallStatus::Active));
-            let is_video_call = self
-                .state
-                .active_call
-                .as_ref()
-                .is_some_and(|c| c.is_video_call);
+                if let Screen::Home(ref main) = screen {
+                    if main.show_call_screen
+                        && state
+                            .active_call
+                            .as_ref()
+                            .is_some_and(|c| matches!(c.status, CallStatus::Active))
+                    {
+                        subs.push(
+                            iced::time::every(Duration::from_secs(1))
+                                .map(|_| Message::Home(screen::home::Message::CallTimerTick)),
+                        );
+                    }
 
-            if self.show_call_screen && is_active_call {
-                subs.push(
-                    iced::time::every(Duration::from_secs(1)).map(|_| Message::CallTimerTick),
-                );
+                    // Poll for new video frames at ~30fps during video calls.
+                    let is_video_call = state.active_call.as_ref().is_some_and(|c| c.is_video_call);
+                    let is_active_call = state
+                        .active_call
+                        .as_ref()
+                        .is_some_and(|c| matches!(c.status, CallStatus::Active));
+                    if is_video_call && is_active_call {
+                        subs.push(
+                            iced::time::every(Duration::from_millis(33))
+                                .map(|_| Message::Home(screen::home::Message::VideoFrameTick)),
+                        );
+                    }
+                }
+
+                Subscription::batch(subs)
             }
-            // Poll for new video frames at ~30fps during video calls.
-            // The decoder runs at full speed; this just controls how often
-            // iced picks up the latest frame for display.
-            if is_video_call && is_active_call {
-                subs.push(
-                    iced::time::every(Duration::from_millis(33)).map(|_| Message::VideoFrameTick),
-                );
-            }
-            Subscription::batch(subs)
-        } else {
-            Subscription::none()
         }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::CoreUpdated => self.sync_from_manager(),
-            Message::RelativeTimeTick => self.retry_follow_list_if_needed(),
-            Message::NsecChanged(nsec) => self.nsec_input = nsec,
-            Message::Login => {
-                if let Some(manager) = &self.manager {
-                    manager.login_with_nsec(self.nsec_input.trim().to_string());
+        match self {
+            DesktopApp::BootError { .. } => {}
+            DesktopApp::Loaded {
+                avatar_cache,
+                cached_profiles,
+                manager,
+                screen,
+                state,
+                ..
+            } => match message {
+                Message::CoreUpdated => {
+                    self.sync_from_manager();
                 }
-            }
-            Message::CreateAccount => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::CreateAccount);
-                }
-            }
-            Message::Logout => {
-                if let Some(manager) = &self.manager {
-                    manager.logout();
-                }
-                self.avatar_cache.borrow_mut().clear();
-                self.optimistic_selected_chat_id = None;
-                self.profile_toast = None;
-                self.reply_to_message_id = None;
-                self.clear_all_overlays();
-            }
-            Message::ResetLocalSessionData => {
-                if let Some(manager) = &self.manager {
-                    manager.clear_local_session_for_recovery();
-                    manager.dispatch(AppAction::ClearToast);
-                }
-                self.optimistic_selected_chat_id = None;
-                self.reply_to_message_id = None;
-                self.clear_all_overlays();
-            }
-            Message::ResetRelayConfig => {
-                if let Some(manager) = &self.manager {
-                    manager.reset_relay_config_to_defaults();
-                }
-            }
-            Message::NewChatChanged(value) => self.new_chat_input = value,
-            Message::NewChatSearchChanged(value) => {
-                self.new_chat_search = value;
-                self.refilter_follows();
-            }
-            Message::ToggleNewChatForm => {
-                let opening = self.overlay != UiOverlay::NewChat;
-                self.clear_all_overlays();
-                if opening {
-                    self.overlay = UiOverlay::NewChat;
-                    self.refilter_follows();
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RefreshFollowList);
-                    }
-                }
-            }
-            Message::StartChat => {
-                let peer_npub = self.new_chat_input.trim().to_string();
-                if peer_npub.is_empty() {
-                    return Task::none();
-                }
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::CreateChat { peer_npub });
-                }
-            }
-            Message::StartChatWith(peer_npub) => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::CreateChat { peer_npub });
-                }
-                // Keep form open — it will show a loading state via busy.creating_chat.
-                // Form closes when the next core state update reports completion.
-            }
-            Message::OpenChat(chat_id) => {
-                self.optimistic_selected_chat_id = Some(chat_id.clone());
-                self.emoji_picker_message_id = None;
-                self.show_mention_picker = false;
-                self.mention_query.clear();
-                self.inserted_mentions.clear();
-                self.clear_all_overlays();
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::OpenChat { chat_id });
-                }
-            }
-            Message::MessageChanged(value) => {
-                if !value.trim().is_empty() {
-                    if let Some(chat) = &self.state.current_chat {
-                        if let Some(manager) = &self.manager {
-                            manager.dispatch(AppAction::TypingStarted {
-                                chat_id: chat.chat_id.clone(),
-                            });
-                        }
-                    }
-                }
-                let was_showing = self.show_mention_picker;
-                let is_group = self
-                    .state
-                    .current_chat
-                    .as_ref()
-                    .map(|c| c.is_group)
-                    .unwrap_or(false);
-                if is_group {
-                    if let Some(at_pos) = value.rfind('@') {
-                        let prefix = &value[..at_pos];
-                        let is_word_start =
-                            prefix.is_empty() || prefix.ends_with(' ') || prefix.ends_with('\n');
-                        if is_word_start {
-                            let query = &value[at_pos + 1..];
-                            if !query.contains(' ') {
-                                self.show_mention_picker = true;
-                                self.mention_query = query.to_string();
-                            } else {
-                                self.show_mention_picker = false;
-                                self.mention_query.clear();
+                Message::Home(message) => {
+                    if let Screen::Home(ref mut home_state) = screen {
+                        if let Some(event) =
+                            home_state.update(message, state, manager, &cached_profiles)
+                        {
+                            match event {
+                                screen::home::Event::AppAction(action) => {
+                                    manager.dispatch(action);
+                                }
+                                screen::home::Event::Logout => {
+                                    manager.logout();
+                                    avatar_cache.borrow_mut().clear();
+                                    *screen = Screen::Login(screen::login::State::new());
+                                }
+                                screen::home::Event::Task(task) => {
+                                    return task.map(Message::Home);
+                                }
                             }
-                        } else if self.show_mention_picker {
-                            self.show_mention_picker = false;
-                            self.mention_query.clear();
                         }
-                    } else if self.show_mention_picker {
-                        self.show_mention_picker = false;
-                        self.mention_query.clear();
                     }
                 }
-                self.message_input = value;
-                if was_showing != self.show_mention_picker {
-                    return operation::focus(views::conversation::MESSAGE_INPUT_ID);
-                }
-            }
-            Message::SendMessage => {
-                let content = self.message_input.trim().to_string();
-                if content.is_empty() {
-                    return Task::none();
-                }
-                let mut wire = content;
-                for (display, npub) in &self.inserted_mentions {
-                    wire = wire.replace(display.as_str(), &format!("nostr:{npub}"));
-                }
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::SendMessage {
-                            chat_id: chat.chat_id.clone(),
-                            content: wire,
-                            kind: None,
-                            reply_to_message_id: self.reply_to_message_id.clone(),
-                        });
-                    }
-                    self.message_input.clear();
-                    self.inserted_mentions.clear();
-                    self.show_mention_picker = false;
-                    self.mention_query.clear();
-                    self.reply_to_message_id = None;
-                    self.emoji_picker_message_id = None;
-                }
-            }
-            Message::SetReplyTarget(message_id) => {
-                self.reply_to_message_id = Some(message_id);
-            }
-            Message::CancelReplyTarget => {
-                self.reply_to_message_id = None;
-            }
-            Message::JumpToMessage(message_id) => {
-                let Some(chat) = &self.state.current_chat else {
-                    return Task::none();
-                };
-                return views::conversation::jump_to_message_task(chat, &message_id);
-            }
-            Message::ClearToast => {
-                if self.profile_toast.is_some() {
-                    self.profile_toast = None;
-                } else if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::ClearToast);
-                }
-            }
-
-            // ── Group creation ────────────────────────────────────────
-            Message::ToggleNewGroupForm => {
-                let opening = self.overlay != UiOverlay::NewGroup;
-                self.clear_all_overlays();
-                if opening {
-                    self.overlay = UiOverlay::NewGroup;
-                    self.refilter_follows();
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RefreshFollowList);
+                Message::Login(message) => {
+                    if let Screen::Login(ref mut login_state) = screen {
+                        if let Some(event) = login_state.update(message) {
+                            match event {
+                                screen::login::Event::AppAction(action) => {
+                                    manager.dispatch(action);
+                                }
+                                screen::login::Event::Login { nsec } => {
+                                    manager.login_with_nsec(nsec);
+                                }
+                                screen::login::Event::ResetLocalSessionData => {
+                                    manager.clear_local_session_for_recovery();
+                                    manager.dispatch(AppAction::ClearToast);
+                                }
+                                screen::login::Event::ResetRelayConfig => {
+                                    manager.reset_relay_config_to_defaults();
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            Message::GroupNameChanged(value) => self.group_name_input = value,
-            Message::ToggleGroupMember(npub) => {
-                if let Some(pos) = self.selected_group_members.iter().position(|n| n == &npub) {
-                    self.selected_group_members.remove(pos);
-                } else {
-                    self.selected_group_members.push(npub);
+                Message::RelativeTimeTick => {
+                    self.retry_follow_list_if_needed();
                 }
-            }
-            Message::AddManualGroupMember => {
-                let npub = self.new_chat_input.trim().to_string();
-                if !npub.is_empty() && !self.selected_group_members.contains(&npub) {
-                    self.selected_group_members.push(npub);
-                    self.new_chat_input.clear();
-                }
-            }
-            Message::CreateGroup => {
-                if self.selected_group_members.is_empty() {
-                    return Task::none();
-                }
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::CreateGroupChat {
-                        peer_npubs: self.selected_group_members.clone(),
-                        group_name: self.group_name_input.clone(),
-                    });
-                }
-                // Keep form open with spinner — sync_from_manager will close it
-                // when creating_chat transitions to false (matching iOS behavior).
-                self.optimistic_selected_chat_id = None;
-            }
-
-            // ── My profile ────────────────────────────────────────────
-            Message::ToggleMyProfile => {
-                let opening = self.overlay != UiOverlay::MyProfile;
-                self.clear_all_overlays();
-                if opening {
-                    self.overlay = UiOverlay::MyProfile;
-                    self.profile_name_draft = self.state.my_profile.name.clone();
-                    self.profile_about_draft = self.state.my_profile.about.clone();
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RefreshMyProfile);
-                    }
-                }
-            }
-            Message::ProfileNameChanged(value) => self.profile_name_draft = value,
-            Message::ProfileAboutChanged(value) => self.profile_about_draft = value,
-            Message::SaveProfile => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::SaveMyProfile {
-                        name: self.profile_name_draft.clone(),
-                        about: self.profile_about_draft.clone(),
-                    });
-                }
-            }
-            Message::CopyNpub => {
-                if let AuthState::LoggedIn { ref npub, .. } = self.state.auth {
-                    self.profile_toast = Some("Copied npub".to_string());
-                    return iced::clipboard::write(npub.clone());
-                }
-            }
-            Message::CopyAppVersion => {
-                self.profile_toast = Some("Copied app version".to_string());
-                return iced::clipboard::write(self.app_version_display.clone());
-            }
-
-            // ── Group info ────────────────────────────────────────────
-            Message::ShowGroupInfo => {
-                self.clear_all_overlays();
-                if let Some(chat) = &self.state.current_chat {
-                    self.group_info_name_draft = chat.group_name.clone().unwrap_or_default();
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::PushScreen {
-                            screen: Screen::GroupInfo {
-                                chat_id: chat.chat_id.clone(),
-                            },
-                        });
-                    }
-                }
-            }
-            Message::CloseGroupInfo => {
-                self.group_info_npub_input.clear();
-                if let Some(manager) = &self.manager {
-                    let mut stack = self.state.router.screen_stack.clone();
-                    if matches!(stack.last(), Some(Screen::GroupInfo { .. })) {
-                        stack.pop();
-                        manager.dispatch(AppAction::UpdateScreenStack { stack });
-                    }
-                }
-            }
-            Message::GroupInfoNameChanged(value) => self.group_info_name_draft = value,
-            Message::RenameGroup => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RenameGroup {
-                            chat_id: chat.chat_id.clone(),
-                            name: self.group_info_name_draft.clone(),
-                        });
-                    }
-                }
-            }
-            Message::GroupInfoNpubChanged(value) => self.group_info_npub_input = value,
-            Message::AddGroupMember => {
-                let npub = self.group_info_npub_input.trim().to_string();
-                if npub.is_empty() {
-                    return Task::none();
-                }
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::AddGroupMembers {
-                            chat_id: chat.chat_id.clone(),
-                            peer_npubs: vec![npub],
-                        });
-                    }
-                }
-                self.group_info_npub_input.clear();
-            }
-            Message::RemoveGroupMember(pubkey) => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RemoveGroupMembers {
-                            chat_id: chat.chat_id.clone(),
-                            member_pubkeys: vec![pubkey],
-                        });
-                    }
-                }
-            }
-            Message::LeaveGroup => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::LeaveGroup {
-                            chat_id: chat.chat_id.clone(),
-                        });
-                    }
-                }
-                self.clear_all_overlays();
-            }
-
-            // ── Peer profile ──────────────────────────────────────────
-            Message::OpenPeerProfile(pubkey) => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::OpenPeerProfile { pubkey });
-                }
-            }
-            Message::ClosePeerProfile => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::ClosePeerProfile);
-                }
-            }
-            Message::FollowPeer => {
-                if let Some(profile) = &self.state.peer_profile {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::FollowUser {
-                            pubkey: profile.pubkey.clone(),
-                        });
-                    }
-                }
-            }
-            Message::UnfollowPeer => {
-                if let Some(profile) = &self.state.peer_profile {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::UnfollowUser {
-                            pubkey: profile.pubkey.clone(),
-                        });
-                    }
-                }
-            }
-            Message::CopyPeerNpub => {
-                if let Some(profile) = &self.state.peer_profile {
-                    self.profile_toast = Some("Copied npub".to_string());
-                    return iced::clipboard::write(profile.npub.clone());
-                }
-            }
-
-            // ── Reactions ──────────────────────────────────────────
-            Message::ReactToMessage { message_id, emoji } => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::ReactToMessage {
-                            chat_id: chat.chat_id.clone(),
-                            message_id,
-                            emoji,
-                        });
-                    }
-                }
-                self.emoji_picker_message_id = None;
-            }
-            Message::ToggleEmojiPicker(message_id) => {
-                if self.emoji_picker_message_id.as_deref() == Some(&message_id) {
-                    self.emoji_picker_message_id = None;
-                } else {
-                    self.emoji_picker_message_id = Some(message_id);
-                }
-            }
-            Message::CloseEmojiPicker => {
-                self.emoji_picker_message_id = None;
-            }
-            Message::HoverMessage(id) => {
-                self.hovered_message_id = Some(id);
-            }
-            Message::UnhoverMessage => {
-                self.hovered_message_id = None;
-            }
-
-            // ── Mention autocomplete ──────────────────────────────────
-            Message::MentionSelected { npub, name } => {
-                let display_tag = format!("@{name}");
-                if let Some(at_pos) = self.message_input.rfind('@') {
-                    self.message_input.truncate(at_pos);
-                }
-                self.message_input.push_str(&display_tag);
-                self.message_input.push(' ');
-                self.inserted_mentions.push((display_tag, npub));
-                self.show_mention_picker = false;
-                self.mention_query.clear();
-                return operation::focus(views::conversation::MESSAGE_INPUT_ID);
-            }
-            Message::MentionSelectTop => {
-                if !self.show_mention_picker {
-                    return Task::none();
-                }
-                let members = self
-                    .state
-                    .current_chat
-                    .as_ref()
-                    .map(|c| &c.members[..])
-                    .unwrap_or(&[]);
-                let q = self.mention_query.to_lowercase();
-                let top = if q.is_empty() {
-                    members.first()
-                } else {
-                    members.iter().find(|m| {
-                        m.name
-                            .as_deref()
-                            .map(|n| n.to_lowercase().starts_with(&q))
-                            .unwrap_or(false)
-                            || m.npub.to_lowercase().starts_with(&q)
-                    })
-                };
-                if let Some(member) = top {
-                    let name = member
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| member.npub.chars().take(8).collect());
-                    let display_tag = format!("@{name}");
-                    if let Some(at_pos) = self.message_input.rfind('@') {
-                        self.message_input.truncate(at_pos);
-                    }
-                    self.message_input.push_str(&display_tag);
-                    self.message_input.push(' ');
-                    self.inserted_mentions
-                        .push((display_tag, member.npub.clone()));
-                    self.show_mention_picker = false;
-                    self.mention_query.clear();
-                    return operation::focus(views::conversation::MESSAGE_INPUT_ID);
-                }
-            }
-
-            // ── Calling ──────────────────────────────────────────────
-            Message::StartCall => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::StartCall {
-                            chat_id: chat.chat_id.clone(),
-                        });
-                    }
-                }
-                self.show_call_screen = true;
-            }
-            Message::StartVideoCall => {
-                if let Some(chat) = &self.state.current_chat {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::StartVideoCall {
-                            chat_id: chat.chat_id.clone(),
-                        });
-                    }
-                }
-                self.show_call_screen = true;
-            }
-            Message::AcceptCall => {
-                if let Some(call) = &self.state.active_call {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::AcceptCall {
-                            chat_id: call.chat_id.clone(),
-                        });
-                    }
-                }
-                self.show_call_screen = true;
-            }
-            Message::RejectCall => {
-                if let Some(call) = &self.state.active_call {
-                    if let Some(manager) = &self.manager {
-                        manager.dispatch(AppAction::RejectCall {
-                            chat_id: call.chat_id.clone(),
-                        });
-                    }
-                }
-                self.show_call_screen = false;
-            }
-            Message::EndCall => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::EndCall);
-                }
-            }
-            Message::ToggleMute => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::ToggleMute);
-                }
-            }
-            Message::ToggleCamera => {
-                if let Some(manager) = &self.manager {
-                    manager.dispatch(AppAction::ToggleCamera);
-                }
-            }
-            Message::OpenCallScreen => {
-                self.show_call_screen = true;
-            }
-            Message::DismissCallScreen => {
-                self.show_call_screen = false;
-            }
-            Message::CallTimerTick => {
-                // No-op: triggers a re-render so the duration display updates.
-            }
-            Message::VideoFrameTick => {
-                // Check for stale remote video and trigger re-render for new frames.
-                self.video_pipeline.check_staleness();
-            }
+            },
         }
 
         Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let route = project_desktop(&self.state);
-
-        // ── Boot error ──────────────────────────────────────────────
-        if let Some(error) = &self.boot_error {
-            return container(
+        match self {
+            DesktopApp::BootError { error } => container(
                 column![
                     text("Pika Desktop").size(24).color(theme::TEXT_PRIMARY),
                     text(error).color(theme::DANGER),
@@ -772,408 +233,92 @@ impl DesktopApp {
             .center_x(Fill)
             .center_y(Fill)
             .style(theme::surface_style)
-            .into();
-        }
-
-        // ── Login screen ────────────────────────────────────────────
-        if matches!(route.shell_mode, DesktopShellMode::Login) {
-            let is_restoring = self
-                .manager
-                .as_ref()
-                .map_or(false, |m| m.is_restoring_session());
-            let show_recovery = self.should_offer_recovery_controls();
-
-            return views::login::login_view(
-                &self.nsec_input,
-                self.state.busy.creating_account,
-                is_restoring,
-                self.state.toast.as_deref(),
-                show_recovery,
-                self.should_offer_relay_reset(),
-            );
-        }
-
-        // ── Main 3-pane layout ──────────────────────────────────────
-
-        // Toast bar (optional)
-        let mut main_column = column![];
-        if let Some(toast_msg) = self
-            .profile_toast
-            .as_deref()
-            .or(self.state.toast.as_deref())
-        {
-            let show_relay_reset = self.profile_toast.is_none() && self.should_offer_relay_reset();
-            main_column = main_column.push(views::toast::toast_bar(toast_msg, show_relay_reset));
-        }
-
-        // Incoming call banner (visible regardless of which pane/overlay is active)
-        if let Some(call) = &self.state.active_call {
-            if matches!(call.status, CallStatus::Ringing) {
-                let peer_name = self
-                    .state
-                    .chat_list
-                    .iter()
-                    .find(|c| c.chat_id == call.chat_id)
-                    .and_then(|c| c.members.first())
-                    .and_then(|m| m.name.as_deref())
-                    .unwrap_or("Unknown");
-                main_column = main_column.push(views::call_banner::incoming_call_banner(
-                    peer_name,
-                    call.is_video_call,
-                ));
-            }
-        }
-
-        let cache = &mut *self.avatar_cache.borrow_mut();
-        cache.reset_budget();
-
-        // Chat rail (left sidebar)
-        let my_profile_pic = self.state.my_profile.picture_url.as_deref();
-        let selected_chat_id = effective_selected_chat_id(
-            route.selected_chat_id.as_deref(),
-            self.optimistic_selected_chat_id.as_deref(),
-        );
-        let rail = views::chat_rail::chat_rail_view(
-            &self.state.chat_list,
-            selected_chat_id,
-            self.overlay == UiOverlay::NewChat,
-            self.overlay == UiOverlay::NewGroup,
-            self.overlay == UiOverlay::MyProfile,
-            my_profile_pic,
-            cache,
-        );
-
-        // Center pane routing (mutually exclusive overlays)
-        let center_pane: Element<'_, Message> = if self.overlay == UiOverlay::MyProfile {
-            let npub = match &self.state.auth {
-                AuthState::LoggedIn { npub, .. } => npub.as_str(),
-                _ => "",
-            };
-            views::my_profile::my_profile_view(
-                &self.profile_name_draft,
-                &self.profile_about_draft,
-                npub,
-                &self.app_version_display,
-                self.state.my_profile.picture_url.as_deref(),
-                cache,
-            )
-        } else if matches!(route.detail_pane, DesktopDetailPane::GroupInfo { .. }) {
-            if let Some(chat) = &self.state.current_chat {
-                let my_pubkey = match &self.state.auth {
-                    AuthState::LoggedIn { pubkey, .. } => pubkey.as_str(),
-                    _ => "",
-                };
-                views::group_info::group_info_view(
-                    chat,
-                    &self.group_info_name_draft,
-                    &self.group_info_npub_input,
-                    my_pubkey,
-                    cache,
-                )
-            } else {
-                views::empty_state::empty_state_view()
-            }
-        } else if self.overlay == UiOverlay::NewGroup {
-            views::new_group_chat::new_group_chat_view(
-                &self.filtered_follows,
-                &self.group_name_input,
-                &self.new_chat_input,
-                &self.selected_group_members,
-                self.state.busy.creating_chat,
-                self.state.busy.fetching_follow_list,
-                &self.new_chat_search,
-                cache,
-            )
-        } else if self.overlay == UiOverlay::NewChat {
-            views::new_chat::new_chat_view(
-                &self.filtered_follows,
-                &self.new_chat_input,
-                self.state.busy.creating_chat,
-                self.state.busy.fetching_follow_list,
-                &self.new_chat_search,
-                cache,
-            )
-        } else if self.show_call_screen && self.state.active_call.is_some() {
-            let call = self.state.active_call.as_ref().unwrap();
-            let peer_name = self
-                .state
-                .current_chat
-                .as_ref()
-                .and_then(|c| c.members.first())
-                .and_then(|m| m.name.as_deref())
-                .unwrap_or("Unknown");
-            views::call_screen::call_screen_view(call, peer_name, &self.video_pipeline)
-        } else if matches!(route.detail_pane, DesktopDetailPane::PeerProfile { .. }) {
-            if let Some(profile) = &self.state.peer_profile {
-                views::peer_profile::peer_profile_view(profile, cache)
-            } else {
-                views::empty_state::empty_state_view()
-            }
-        } else if route.selected_chat_id.is_some() {
-            if let Some(chat) = &self.state.current_chat {
-                let replying_to = self.reply_to_message_id.as_ref().and_then(|reply_id| {
-                    chat.messages.iter().find(|message| message.id == *reply_id)
-                });
-                views::conversation::conversation_view(
-                    chat,
-                    &self.message_input,
-                    self.state.active_call.as_ref(),
-                    self.emoji_picker_message_id.as_deref(),
-                    self.hovered_message_id.as_deref(),
-                    replying_to,
-                    self.show_mention_picker,
-                    &self.mention_query,
-                    cache,
-                )
-            } else {
-                views::empty_state::empty_state_view()
-            }
-        } else {
-            views::empty_state::empty_state_view()
-        };
-
-        let content = row![rail, rule::vertical(1), center_pane].height(Fill);
-
-        main_column = main_column.push(content);
-
-        container(main_column)
-            .width(Fill)
-            .height(Fill)
-            .style(theme::surface_style)
-            .into()
-    }
-
-    fn from_boot_state(
-        cached_profiles: Vec<pika_core::FollowListEntry>,
-        manager: Option<AppManager>,
-        boot_error: Option<String>,
-        state: AppState,
-    ) -> Self {
-        Self {
-            manager,
-            boot_error,
-            state,
-            avatar_cache: std::cell::RefCell::new(views::avatar::AvatarCache::new()),
-            cached_profiles,
-            nsec_input: String::new(),
-            new_chat_input: String::new(),
-            new_chat_search: String::new(),
-            filtered_follows: Vec::new(),
-            message_input: String::new(),
-            reply_to_message_id: None,
-            show_mention_picker: false,
-            mention_query: String::new(),
-            inserted_mentions: Vec::new(),
-            optimistic_selected_chat_id: None,
-            overlay: UiOverlay::None,
-            group_name_input: String::new(),
-            selected_group_members: Vec::new(),
-            profile_name_draft: String::new(),
-            profile_about_draft: String::new(),
-            app_version_display: app_version_display(),
-            profile_toast: None,
-            group_info_name_draft: String::new(),
-            group_info_npub_input: String::new(),
-            emoji_picker_message_id: None,
-            hovered_message_id: None,
-            show_call_screen: false,
-            video_pipeline: video::DesktopVideoPipeline::new(),
+            .into(),
+            DesktopApp::Loaded {
+                app_version_display,
+                avatar_cache,
+                manager,
+                screen,
+                state,
+                ..
+            } => match screen {
+                Screen::Home(ref home) => home
+                    .view(&state, &avatar_cache, &app_version_display)
+                    .map(Message::Home),
+                Screen::Login(ref login) => login.view(&state, &manager).map(Message::Login),
+            },
         }
     }
+
+    // ── Core state synchronisation ──────────────────────────────────────────
 
     fn sync_from_manager(&mut self) {
-        let Some(manager) = self.manager.clone() else {
-            return;
-        };
-
-        let latest = manager.state();
-        if latest.rev != self.state.rev {
-            // On login transition, dispatch Foregrounded to load profiles.
-            let was_logged_out = matches!(self.state.auth, AuthState::LoggedOut);
-            let now_logged_in = matches!(latest.auth, AuthState::LoggedIn { .. });
-            if was_logged_out && now_logged_in {
-                manager.dispatch(AppAction::Foregrounded);
-            }
-
-            // Close new-chat form once creating_chat finishes.
-            if self.state.busy.creating_chat
-                && !latest.busy.creating_chat
-                && self.overlay == UiOverlay::NewChat
-            {
-                self.overlay = UiOverlay::None;
-                self.new_chat_input.clear();
-            }
-
-            // Close new-group form once creating_chat finishes.
-            if self.state.busy.creating_chat
-                && !latest.busy.creating_chat
-                && self.overlay == UiOverlay::NewGroup
-            {
-                self.clear_all_overlays();
-            }
-
-            // Sync my_profile drafts when profile state updates.
-            if self.overlay == UiOverlay::MyProfile
-                && self.state.my_profile.name != latest.my_profile.name
-            {
-                self.profile_name_draft = latest.my_profile.name.clone();
-                self.profile_about_draft = latest.my_profile.about.clone();
-            }
-
-            let latest_route = project_desktop(&latest);
-            if let Some(optimistic_chat_id) = self.optimistic_selected_chat_id.as_deref() {
-                let authoritative_selection = latest_route.selected_chat_id.as_deref();
-                if authoritative_selection == Some(optimistic_chat_id)
-                    || authoritative_selection.is_some()
-                    || matches!(latest_route.shell_mode, DesktopShellMode::Login)
-                {
-                    self.optimistic_selected_chat_id = None;
+        match self {
+            DesktopApp::BootError { .. } => {}
+            DesktopApp::Loaded {
+                avatar_cache,
+                cached_profiles,
+                manager,
+                screen,
+                state,
+                ..
+            } => {
+                let latest = manager.state();
+                if latest.rev == state.rev {
+                    self.retry_follow_list_if_needed();
+                    return;
                 }
-            }
 
-            // Auto-dismiss call screen when call ends.
-            let had_call = self.state.active_call.is_some();
-            let has_call = latest.active_call.is_some();
-            if had_call && !has_call {
-                self.show_call_screen = false;
-            }
+                // Detect auth transitions for screen changes.
+                let was_logged_out = matches!(state.auth, AuthState::LoggedOut);
+                let now_logged_in = matches!(latest.auth, AuthState::LoggedIn { .. });
+                let was_logged_in = matches!(state.auth, AuthState::LoggedIn { .. });
+                let now_logged_out = matches!(latest.auth, AuthState::LoggedOut);
 
-            // Sync video pipeline with call state.
-            self.video_pipeline
-                .sync_with_call(latest.active_call.as_ref(), &manager);
-
-            self.state = latest;
-            if let Some(reply_id) = self.reply_to_message_id.as_ref() {
-                let still_present = self
-                    .state
-                    .current_chat
-                    .as_ref()
-                    .map(|chat| chat.messages.iter().any(|msg| &msg.id == reply_id))
-                    .unwrap_or(false);
-                if !still_present {
-                    self.reply_to_message_id = None;
+                if was_logged_out && now_logged_in {
+                    // Login succeeded → transition to Main screen.
+                    manager.dispatch(AppAction::Foregrounded);
+                    if !matches!(screen, Screen::Home(_)) {
+                        *screen = Screen::Home(Box::new(screen::home::State::new(&latest)));
+                    }
+                } else if was_logged_in && now_logged_out {
+                    // Logged out externally (e.g. session expired) → show Login.
+                    avatar_cache.borrow_mut().clear();
+                    if !matches!(screen, Screen::Login(_)) {
+                        *screen = Screen::Login(screen::login::State::new());
+                    }
                 }
-            }
-            if matches!(self.overlay, UiOverlay::NewChat | UiOverlay::NewGroup) {
-                self.refilter_follows();
+
+                // Delegate screen-specific sync.
+                if let Screen::Home(ref mut main) = screen {
+                    main.sync_from_update(&state, &latest, manager, &cached_profiles);
+                }
+
+                *state = latest;
+                self.retry_follow_list_if_needed();
             }
         }
-
-        self.retry_follow_list_if_needed();
     }
 
     fn retry_follow_list_if_needed(&self) {
-        let needs_follows = matches!(self.overlay, UiOverlay::NewChat | UiOverlay::NewGroup);
-        if needs_follows
-            && self.state.follow_list.is_empty()
-            && !self.state.busy.fetching_follow_list
-        {
-            if let Some(manager) = &self.manager {
-                manager.dispatch(AppAction::RefreshFollowList);
+        match self {
+            DesktopApp::BootError { .. } => {}
+            DesktopApp::Loaded {
+                manager,
+                screen,
+                state,
+                ..
+            } => {
+                let needs_follows = if let Screen::Home(ref home) = screen {
+                    home.needs_follow_list()
+                } else {
+                    false
+                };
+                if needs_follows && state.follow_list.is_empty() && !state.busy.fetching_follow_list
+                {
+                    manager.dispatch(AppAction::RefreshFollowList);
+                }
             }
         }
-    }
-
-    fn clear_all_overlays(&mut self) {
-        self.overlay = UiOverlay::None;
-        self.new_chat_input.clear();
-        self.new_chat_search.clear();
-        self.group_name_input.clear();
-        self.selected_group_members.clear();
-        self.group_info_npub_input.clear();
-    }
-
-    fn should_offer_recovery_controls(&self) -> bool {
-        let from_toast = self
-            .state
-            .toast
-            .as_deref()
-            .map(|toast| {
-                toast.contains("Login failed")
-                    || toast.contains("open encrypted mdk sqlite db")
-                    || toast.contains("keyring")
-            })
-            .unwrap_or(false);
-        let restoring = self
-            .manager
-            .as_ref()
-            .map(|m| m.is_restoring_session())
-            .unwrap_or(false);
-        from_toast || restoring
-    }
-
-    fn should_offer_relay_reset(&self) -> bool {
-        self.state
-            .toast
-            .as_deref()
-            .map(|toast| {
-                toast.contains("relay")
-                    || toast.contains("no relays")
-                    || toast.contains("not connected")
-            })
-            .unwrap_or(false)
-    }
-
-    fn refilter_follows(&mut self) {
-        // Use the relay follow list if available, otherwise fall back to
-        // all cached profiles from the on-disk database.
-        let source = if self.state.follow_list.is_empty() {
-            &self.cached_profiles
-        } else {
-            &self.state.follow_list
-        };
-
-        // Filter out ourselves from the list.
-        let my_npub = match &self.state.auth {
-            AuthState::LoggedIn { npub, .. } => Some(npub.as_str()),
-            _ => None,
-        };
-        let base: Vec<_> = source
-            .iter()
-            .filter(|e| my_npub != Some(e.npub.as_str()))
-            .cloned()
-            .collect();
-
-        if self.new_chat_search.is_empty() {
-            self.filtered_follows = base;
-        } else {
-            let q = self.new_chat_search.to_lowercase();
-            self.filtered_follows = base
-                .into_iter()
-                .filter(|e| {
-                    e.name.as_deref().unwrap_or("").to_lowercase().contains(&q)
-                        || e.username
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&q)
-                        || e.npub.to_lowercase().contains(&q)
-                })
-                .collect();
-        }
-    }
-}
-
-fn effective_selected_chat_id<'a>(
-    route_selected_chat_id: Option<&'a str>,
-    optimistic_selected_chat_id: Option<&'a str>,
-) -> Option<&'a str> {
-    optimistic_selected_chat_id.or(route_selected_chat_id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::effective_selected_chat_id;
-
-    #[test]
-    fn effective_selected_chat_prefers_optimistic_selection() {
-        let selected = effective_selected_chat_id(Some("route-chat"), Some("optimistic-chat"));
-        assert_eq!(selected, Some("optimistic-chat"));
-    }
-
-    #[test]
-    fn effective_selected_chat_falls_back_to_projected_selection() {
-        let selected = effective_selected_chat_id(Some("route-chat"), None);
-        assert_eq!(selected, Some("route-chat"));
     }
 }

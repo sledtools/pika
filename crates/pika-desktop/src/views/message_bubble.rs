@@ -2,8 +2,8 @@ use iced::widget::{button, column, container, mouse_area, row, text, Space};
 use iced::{border, Background, Color, Element, Fill, Font, Theme};
 use pika_core::{ChatMessage, MessageDeliveryState};
 
+use super::conversation::Message;
 use crate::theme;
-use crate::Message;
 
 /// Font used for emoji rendering. Falls back through system fonts (Noto Color
 /// Emoji on Linux, Apple Color Emoji on macOS, Segoe UI Emoji on Windows).

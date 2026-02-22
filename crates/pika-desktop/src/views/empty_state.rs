@@ -4,7 +4,7 @@ use iced::{Element, Fill, Theme};
 use crate::theme;
 
 /// Centered placeholder shown when no conversation is selected.
-pub fn empty_state_view<'a, M: 'a>() -> Element<'a, M, Theme> {
+pub fn view<'a, M: 'a>() -> Element<'a, M, Theme> {
     container(
         column![
             text("Select a conversation")

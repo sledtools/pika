@@ -7,7 +7,6 @@ use iced::widget::shader::{self, Viewport};
 use iced::Rectangle;
 
 use crate::video::DecodedFrame;
-use crate::Message;
 
 /// Shader-based video renderer that maintains a persistent GPU texture.
 ///
@@ -28,7 +27,7 @@ impl VideoShaderProgram {
     }
 }
 
-impl shader::Program<Message> for VideoShaderProgram {
+impl<Message: Send + 'static> shader::Program<Message> for VideoShaderProgram {
     type State = ();
     type Primitive = VideoFramePrimitive;
 

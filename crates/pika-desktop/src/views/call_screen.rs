@@ -4,7 +4,18 @@ use pika_core::{CallState, CallStatus};
 
 use crate::theme;
 use crate::video::DesktopVideoPipeline;
-use crate::Message;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    DismissCallScreen,
+    AcceptCall,
+    RejectCall,
+    StartCall,
+    StartVideoCall,
+    EndCall,
+    ToggleMute,
+    ToggleCamera,
+}
 
 /// Full-screen call overlay (matches the iOS CallScreenView layout).
 pub fn call_screen_view<'a>(
@@ -105,7 +116,7 @@ fn build_video_call_layout<'a>(
     // Video background: shader widget renders directly to a persistent GPU texture
     // (no flicker from Handle::from_rgba texture recreation).
     let video_bg: Element<'a, Message, Theme> = if has_video {
-        shader(program).width(Fill).height(Fill).into()
+        shader(program).width(Fill).into()
     } else {
         // No remote frame yet — show waiting message on black background
         container(

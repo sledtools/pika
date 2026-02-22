@@ -4,10 +4,17 @@ use pika_core::ChatSummary;
 
 use crate::theme;
 use crate::views::avatar::avatar_circle;
-use crate::Message;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    ClickMyProfile,
+    ClickNewChat,
+    ClickNewGroup,
+    OpenChat(String),
+}
 
 /// Left sidebar containing the chat list and action buttons.
-pub fn chat_rail_view<'a>(
+pub fn view<'a>(
     chat_list: &[ChatSummary],
     selected_id: Option<&str>,
     show_new_chat_form: bool,
@@ -33,11 +40,11 @@ pub fn chat_rail_view<'a>(
         text("Chats").size(20).color(theme::TEXT_PRIMARY),
         Space::new().width(Fill),
         button(text("Chat +").size(12).color(theme::TEXT_PRIMARY).center())
-            .on_press(Message::ToggleNewChatForm)
+            .on_press(Message::ClickNewChat)
             .padding([4, 8])
             .style(new_chat_style),
         button(text("Group +").size(12).color(theme::TEXT_PRIMARY).center())
-            .on_press(Message::ToggleNewGroupForm)
+            .on_press(Message::ClickNewGroup)
             .padding([4, 8])
             .style(new_group_style),
     ]
@@ -71,7 +78,7 @@ pub fn chat_rail_view<'a>(
 
     rail = rail.push(
         button(profile_btn_content)
-            .on_press(Message::ToggleMyProfile)
+            .on_press(Message::ClickMyProfile)
             .width(Fill)
             .padding([6, 8])
             .style(profile_style),

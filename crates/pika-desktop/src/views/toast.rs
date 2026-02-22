@@ -2,7 +2,12 @@ use iced::widget::{button, container, row, text};
 use iced::{Element, Fill, Theme};
 
 use crate::theme;
-use crate::Message;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    ClearToast,
+    ResetRelayConfig,
+}
 
 /// Full-width toast notification bar.
 pub fn toast_bar(message: &str, show_relay_reset: bool) -> Element<'_, Message, Theme> {

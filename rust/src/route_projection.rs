@@ -55,6 +55,7 @@ pub enum DesktopModal {
 pub struct DesktopRouteState {
     pub shell_mode: DesktopShellMode,
     pub active_screen: Screen,
+    // TODO: ChatId newtype
     pub selected_chat_id: Option<String>,
     pub detail_pane: DesktopDetailPane,
     pub modal: DesktopModal,

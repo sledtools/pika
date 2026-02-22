@@ -354,8 +354,7 @@ impl AppCore {
                     &my_pubkey_hex,
                     &m.tags,
                 );
-                let (mut display_content, mentions) = resolve_mentions(&m.content, &sender_names);
-                display_content = Self::preview_text_with_media(&display_content, &media);
+                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
 
                 // Aggregate reactions for this message.
                 let reactions = if let Some(rxns) = reaction_map.get(&id) {
@@ -418,8 +417,7 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Pending);
-                let (mut display_content, mentions) = resolve_mentions(&lm.content, &sender_names);
-                display_content = Self::preview_text_with_media(&display_content, &lm.media);
+                let (display_content, mentions) = resolve_mentions(&lm.content, &sender_names);
                 msgs.push(ChatMessage {
                     id,
                     sender_pubkey: lm.sender_pubkey,
@@ -550,8 +548,7 @@ impl AppCore {
                     &my_pubkey_hex,
                     &m.tags,
                 );
-                let (mut display_content, mentions) = resolve_mentions(&m.content, &sender_names);
-                display_content = Self::preview_text_with_media(&display_content, &media);
+                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
                 ChatMessage {
                     id,
                     sender_pubkey: sender_hex,

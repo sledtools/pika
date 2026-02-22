@@ -288,6 +288,15 @@ private func screenView(
             },
             onDownloadMedia: { chatId, messageId, hash in
                 manager.dispatch(.downloadChatMedia(chatId: chatId, messageId: messageId, originalHashHex: hash))
+            },
+            onSendMedia: { chatId, data, mimeType, filename, caption in
+                manager.dispatch(.sendChatMedia(
+                    chatId: chatId,
+                    dataBase64: data.base64EncodedString(),
+                    mimeType: mimeType,
+                    filename: filename,
+                    caption: caption
+                ))
             }
         )
         .onAppear {

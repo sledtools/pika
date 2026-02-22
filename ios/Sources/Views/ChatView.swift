@@ -1,5 +1,6 @@
 import SwiftUI
 import MarkdownUI
+import PhotosUI
 import WebKit
 
 // WKWebView requires a resolvable HTTPS baseURL for loadHTMLString to allow
@@ -23,6 +24,8 @@ struct ChatView: View {
     let onReact: (@MainActor (String, String) -> Void)?
     let onTypingStarted: (@MainActor () -> Void)?
     let onDownloadMedia: (@MainActor (String, String, String) -> Void)?
+    let onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)?
+    @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var shouldStickToBottom = true
@@ -54,7 +57,8 @@ struct ChatView: View {
         onTapSender: (@MainActor (String) -> Void)? = nil,
         onReact: (@MainActor (String, String) -> Void)? = nil,
         onTypingStarted: (@MainActor () -> Void)? = nil,
-        onDownloadMedia: (@MainActor (String, String, String) -> Void)? = nil
+        onDownloadMedia: (@MainActor (String, String, String) -> Void)? = nil,
+        onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)? = nil
     ) {
         self.chatId = chatId
         self.state = state
@@ -69,6 +73,7 @@ struct ChatView: View {
         self.onReact = onReact
         self.onTypingStarted = onTypingStarted
         self.onDownloadMedia = onDownloadMedia
+        self.onSendMedia = onSendMedia
     }
 
     var body: some View {
@@ -209,7 +214,23 @@ struct ChatView: View {
                                             activeReactionMessageId = nil
                                             showContextActionCard = false
                                         }
-                                    }
+                                    },
+                                    onSaveMedia: message.media.first(where: {
+                                        $0.mimeType.hasPrefix("image/") && $0.localPath != nil
+                                    }) != nil ? {
+                                        for attachment in message.media {
+                                            guard attachment.mimeType.hasPrefix("image/"),
+                                                  let path = attachment.localPath,
+                                                  let image = UIImage(contentsOfFile: path)
+                                            else { continue }
+                                            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                                        }
+                                        withAnimation(.easeOut(duration: 0.15)) {
+                                            contextMenuMessage = nil
+                                            activeReactionMessageId = nil
+                                            showContextActionCard = false
+                                        }
+                                    } : nil
                                 )
                             }
                         }
@@ -597,6 +618,14 @@ struct ChatView: View {
             }
 
             HStack(spacing: 10) {
+                if onSendMedia != nil {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                    }
+                    .tint(.secondary)
+                }
+
                 TextEditor(text: $messageText)
                     .focused($isInputFocused)
                     .frame(minHeight: 36, maxHeight: 150)
@@ -660,6 +689,39 @@ struct ChatView: View {
                 .accessibilityIdentifier(TestIds.chatSend)
             }
             .modifier(GlassInputModifier())
+            .onChange(of: selectedPhotoItem) { _, item in
+                guard let item else { return }
+                Task {
+                    defer { selectedPhotoItem = nil }
+                    guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+
+                    // Determine MIME type from supported content types
+                    let mimeType: String
+                    if let contentType = item.supportedContentTypes.first {
+                        mimeType = contentType.preferredMIMEType ?? "image/jpeg"
+                    } else {
+                        mimeType = "image/jpeg"
+                    }
+
+                    // Determine filename from MIME type
+                    let ext = switch mimeType {
+                    case "image/png": "png"
+                    case "image/gif": "gif"
+                    case "image/webp": "webp"
+                    case "image/heic": "heic"
+                    default: "jpg"
+                    }
+                    let filename = "photo.\(ext)"
+
+                    // Use message text as caption if non-empty
+                    let caption = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !caption.isEmpty {
+                        messageText = ""
+                    }
+
+                    onSendMedia?(chatId, data, mimeType, filename, caption)
+                }
+            }
         }
     }
 }
@@ -768,6 +830,7 @@ private struct QuickReactionBar: View {
 private struct MessageActionCard: View {
     let onCopy: () -> Void
     let onReply: () -> Void
+    var onSaveMedia: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -789,6 +852,17 @@ private struct MessageActionCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(TestIds.chatActionCopy)
+
+            if let onSaveMedia {
+                Button {
+                    onSaveMedia()
+                } label: {
+                    Label("Save Photo", systemImage: "square.and.arrow.down")
+                        .font(.body.weight(.medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(14)
         .frame(width: 220, alignment: .leading)
@@ -815,32 +889,47 @@ private struct FocusedMessageCard: View {
                 ForEach(message.media, id: \.originalHashHex) { attachment in
                     MediaAttachmentView(
                         attachment: attachment,
-                        isMine: message.isMine
+                        isMine: message.isMine,
+                        maxMediaWidth: maxWidth,
+                        maxMediaHeight: maxHeight
                     )
-                }
-            }
-
-            VStack(alignment: message.isMine ? .trailing : .leading, spacing: 6) {
-                if hasText {
-                    if isLikelyLongMessage {
-                        ScrollView(showsIndicators: false) {
-                            markdownContent
+                    .overlay(alignment: .bottomTrailing) {
+                        if !hasText {
+                            Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)).formatted(date: .omitted, time: .shortened))
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.78))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.black.opacity(0.4), in: Capsule())
+                                .padding(6)
                         }
-                        .frame(maxHeight: maxHeight)
-                    } else {
-                        markdownContent
                     }
                 }
-
-                Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)).formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
             }
-            .padding(.horizontal, 12)
-            .padding(.top, hasMedia && hasText ? 6 : 8)
-            .padding(.bottom, 6)
+
+            if hasText || !hasMedia {
+                VStack(alignment: message.isMine ? .trailing : .leading, spacing: 6) {
+                    if hasText {
+                        if isLikelyLongMessage {
+                            ScrollView(showsIndicators: false) {
+                                markdownContent
+                            }
+                            .frame(maxHeight: maxHeight)
+                        } else {
+                            markdownContent
+                        }
+                    }
+
+                    Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)).formatted(date: .omitted, time: .shortened))
+                        .font(.caption2)
+                        .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, hasMedia && hasText ? 6 : 8)
+                .padding(.bottom, 6)
+            }
         }
-        .background(message.isMine ? Color.blue : Color(uiColor: .systemGray5))
+        .background(hasMedia && !hasText ? Color.clear : (message.isMine ? Color.blue : Color(uiColor: .systemGray5)))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .frame(maxWidth: maxWidth, alignment: message.isMine ? .trailing : .leading)
     }
@@ -1239,9 +1328,9 @@ private struct MessageBubbleStack: View {
 private struct MediaAttachmentView: View {
     let attachment: ChatMediaAttachment
     let isMine: Bool
+    var maxMediaWidth: CGFloat = 240
+    var maxMediaHeight: CGFloat = .infinity
     var onDownload: (() -> Void)? = nil
-
-    private let maxMediaWidth: CGFloat = 240
 
     private var isImage: Bool {
         attachment.mimeType.hasPrefix("image/")
@@ -1252,6 +1341,15 @@ private struct MediaAttachmentView: View {
             return CGFloat(w) / CGFloat(h)
         }
         return 4.0 / 3.0
+    }
+
+    private var imageSize: CGSize {
+        let w = maxMediaWidth
+        let h = w / aspectRatio
+        if h > maxMediaHeight {
+            return CGSize(width: maxMediaHeight * aspectRatio, height: maxMediaHeight)
+        }
+        return CGSize(width: w, height: h)
     }
 
     var body: some View {
@@ -1272,7 +1370,7 @@ private struct MediaAttachmentView: View {
             } placeholder: {
                 imagePlaceholder
             }
-            .frame(width: maxMediaWidth, height: maxMediaWidth / aspectRatio)
+            .frame(width: imageSize.width, height: imageSize.height)
             .clipped()
         } else {
             Button {
@@ -1292,14 +1390,14 @@ private struct MediaAttachmentView: View {
                 }
             }
             .buttonStyle(.plain)
-            .frame(width: maxMediaWidth, height: maxMediaWidth / aspectRatio)
+            .frame(width: imageSize.width, height: imageSize.height)
         }
     }
 
     private var imagePlaceholder: some View {
         Rectangle()
             .fill(isMine ? Color.white.opacity(0.15) : Color.gray.opacity(0.2))
-            .frame(width: maxMediaWidth, height: maxMediaWidth / aspectRatio)
+            .frame(width: imageSize.width, height: imageSize.height)
     }
 
     private var fileRow: some View {
@@ -1427,6 +1525,17 @@ private struct MessageBubble: View {
                         onDownloadMedia?(message.id, attachment.originalHashHex)
                     }
                 )
+                .overlay(alignment: .bottomTrailing) {
+                    if !hasText {
+                        Text(timestampText)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.4), in: Capsule())
+                            .padding(6)
+                    }
+                }
             }
 
             if hasText {
@@ -1445,21 +1554,9 @@ private struct MessageBubble: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
                 .padding(.bottom, 6)
-            } else {
-                HStack {
-                    Spacer()
-                    Text(timestampText)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.78))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.4), in: Capsule())
-                }
-                .padding(6)
-                .offset(y: -6)
             }
         }
-        .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
+        .background(hasText ? (message.isMine ? Color.blue : Color.gray.opacity(0.2)) : Color.clear)
         .clipShape(UnevenRoundedRectangle(cornerRadii: bubbleRadii, style: .continuous))
     }
 

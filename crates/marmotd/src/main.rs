@@ -58,6 +58,21 @@ enum Command {
         giftwrap_lookback_sec: u64,
     },
 
+    /// Initialize identity from an nsec (bech32 or hex). Writes identity.json into --state-dir.
+    ///
+    /// If identity.json already exists with a different key, prints a warning.
+    /// If mdk.sqlite exists, warns that it may contain stale MLS state from a previous identity.
+    /// Does not overwrite identity.json if the provided nsec already matches.
+    Init {
+        /// Nostr secret key (nsec1... bech32 or hex)
+        #[arg(long)]
+        nsec: String,
+
+        /// Folder-local state directory (will be created if missing)
+        #[arg(long, default_value = ".state/marmotd")]
+        state_dir: PathBuf,
+    },
+
     /// Long-running JSONL sidecar daemon intended to be embedded/invoked by OpenClaw.
     Daemon {
         /// Relay websocket URL(s), e.g. wss://relay.damus.io. Repeatable.
@@ -245,6 +260,9 @@ async fn main() -> anyhow::Result<()> {
                 Ok(())
             }
         },
+        Command::Init { nsec, state_dir } => {
+            init_identity(&nsec, &state_dir).context("init failed")
+        }
         Command::Bot {
             relay,
             state_dir,
@@ -1768,6 +1786,71 @@ fn load_or_create_keys(identity_path: &Path) -> anyhow::Result<Keys> {
     )
     .context("write identity json")?;
     Ok(keys)
+}
+
+fn init_identity(nsec: &str, state_dir: &Path) -> anyhow::Result<()> {
+    let keys = Keys::parse(nsec).context("parse nsec (accepts bech32 nsec1... or hex)")?;
+    let new_pubkey_hex = keys.public_key().to_hex().to_lowercase();
+    let new_secret_hex = keys.secret_key().to_secret_hex();
+
+    ensure_dir(state_dir).context("create state dir")?;
+
+    let identity_path = state_dir.join("identity.json");
+    let db_path = state_dir.join("mdk.sqlite");
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    if let Ok(raw) = std::fs::read_to_string(&identity_path)
+        && let Ok(existing) = serde_json::from_str::<IdentityFile>(&raw)
+    {
+        if existing.public_key_hex.to_lowercase() == new_pubkey_hex {
+            info!("identity.json already matches the provided nsec, nothing to do");
+            info!("pubkey={new_pubkey_hex}");
+            return Ok(());
+        }
+        warnings.push(format!(
+            "identity.json exists with a DIFFERENT pubkey (existing={}, new={})",
+            existing.public_key_hex.to_lowercase(),
+            new_pubkey_hex
+        ));
+    }
+
+    if db_path.exists() {
+        warnings.push(format!(
+            "mdk.sqlite exists at {}; it may contain MLS state from a previous identity. \
+             Consider removing it if you are switching keys.",
+            db_path.display()
+        ));
+    }
+
+    if !warnings.is_empty() {
+        for w in &warnings {
+            warn!("{w}");
+        }
+        eprint!("Continue anyway? (yes/abort): ");
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .context("read stdin")?;
+        let input = input.trim().to_lowercase();
+        if input != "yes" {
+            anyhow::bail!("aborted by user");
+        }
+    }
+
+    let f = IdentityFile {
+        secret_key_hex: new_secret_hex,
+        public_key_hex: new_pubkey_hex.clone(),
+    };
+    std::fs::write(
+        &identity_path,
+        format!("{}\n", serde_json::to_string_pretty(&f)?),
+    )
+    .context("write identity.json")?;
+
+    info!("identity.json written to {}", identity_path.display());
+    info!("pubkey={new_pubkey_hex}");
+    Ok(())
 }
 
 fn ensure_dir(dir: &Path) -> anyhow::Result<()> {

@@ -105,6 +105,13 @@ enum InCmd {
         #[serde(default = "default_channels")]
         channels: u16,
     },
+    InitGroup {
+        #[serde(default)]
+        request_id: Option<String>,
+        peer_pubkey: String,
+        #[serde(default = "default_group_name")]
+        group_name: String,
+    },
     Shutdown {
         #[serde(default)]
         request_id: Option<String>,
@@ -178,6 +185,11 @@ enum OutMsg {
         sample_rate: u32,
         channels: u8,
     },
+    GroupCreated {
+        nostr_group_id: String,
+        mls_group_id: String,
+        peer_pubkey: String,
+    },
 }
 
 fn default_channels() -> u16 {
@@ -190,6 +202,10 @@ fn default_reject_reason() -> String {
 
 fn default_end_reason() -> String {
     "user_hangup".to_string()
+}
+
+fn default_group_name() -> String {
+    "DM".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2591,6 +2607,126 @@ pub async fn daemon_main(
                                 result,
                             });
                         });
+                    }
+                    InCmd::InitGroup { request_id, peer_pubkey: peer_str, group_name } => {
+                        let peer_pubkey = match PublicKey::parse(&peer_str) {
+                            Ok(pk) => pk,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "bad_pubkey", format!("invalid peer_pubkey: {e}"))).ok();
+                                continue;
+                            }
+                        };
+
+                        if relay_urls.is_empty() {
+                            out_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
+                            continue;
+                        }
+
+                        // Fetch peer key packages from all configured relays (up to 10 for multi-device).
+                        let kp_filter = Filter::new()
+                            .author(peer_pubkey)
+                            .kind(Kind::MlsKeyPackage)
+                            .limit(10);
+                        let kp_events = match client
+                            .fetch_events_from(relay_urls.clone(), kp_filter, Duration::from_secs(10))
+                            .await
+                        {
+                            Ok(evs) => evs,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "fetch_failed", format!("fetch key packages: {e:#}"))).ok();
+                                continue;
+                            }
+                        };
+
+                        // Validate key packages (skip invalid ones).
+                        let valid_kps: Vec<Event> = kp_events
+                            .into_iter()
+                            .filter(|ev| {
+                                if let Err(e) = mdk.parse_key_package(ev) {
+                                    warn!(kp_id = %ev.id.to_hex(), %e, "skipping invalid peer key package");
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect();
+
+                        if valid_kps.is_empty() {
+                            out_tx.send(out_error(request_id, "no_key_packages", "no valid key packages found for peer")).ok();
+                            continue;
+                        }
+
+                        // Create group.
+                        let config = NostrGroupConfigData::new(
+                            group_name,
+                            String::new(),
+                            None,
+                            None,
+                            None,
+                            relay_urls.clone(),
+                            vec![keys.public_key(), peer_pubkey],
+                        );
+
+                        let group_result = match mdk.create_group(&keys.public_key(), valid_kps, config) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "mdk_error", format!("create_group: {e:#}"))).ok();
+                                continue;
+                            }
+                        };
+
+                        let nostr_group_id_hex = hex::encode(group_result.group.nostr_group_id);
+                        let mls_group_id_hex = hex::encode(group_result.group.mls_group_id.as_slice());
+
+                        // Send welcome giftwraps to the peer.
+                        let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
+                        let mut publish_failed = false;
+                        for rumor in group_result.welcome_rumors {
+                            let giftwrap = match EventBuilder::gift_wrap(
+                                &keys,
+                                &peer_pubkey,
+                                rumor,
+                                [Tag::expiration(expires)],
+                            )
+                            .await
+                            {
+                                Ok(gw) => gw,
+                                Err(e) => {
+                                    out_tx.send(out_error(request_id.clone(), "gift_wrap_failed", format!("{e:#}"))).ok();
+                                    publish_failed = true;
+                                    break;
+                                }
+                            };
+                            if let Err(e) = publish_and_confirm_multi(&client, &relay_urls, &giftwrap, "init_group_welcome").await {
+                                out_tx.send(out_error(request_id.clone(), "publish_failed", format!("{e:#}"))).ok();
+                                publish_failed = true;
+                                break;
+                            }
+                        }
+                        if publish_failed {
+                            continue;
+                        }
+
+                        // Subscribe to new group messages.
+                        match crate::subscribe_group_msgs(&client, &nostr_group_id_hex).await {
+                            Ok(sid) => {
+                                group_subs.insert(sid, nostr_group_id_hex.clone());
+                            }
+                            Err(err) => {
+                                warn!("[marmotd] subscribe group msgs failed after init_group: {err:#}");
+                            }
+                        }
+
+                        out_tx.send(out_ok(request_id, Some(json!({
+                            "nostr_group_id": nostr_group_id_hex,
+                            "mls_group_id": mls_group_id_hex,
+                            "peer_pubkey": peer_pubkey.to_hex(),
+                        })))).ok();
+                        out_tx.send(OutMsg::GroupCreated {
+                            nostr_group_id: nostr_group_id_hex,
+                            mls_group_id: mls_group_id_hex,
+                            peer_pubkey: peer_pubkey.to_hex(),
+                        }).ok();
                     }
                     InCmd::Shutdown { request_id } => {
                         out_tx.send(out_ok(request_id, None)).ok();

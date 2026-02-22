@@ -53,6 +53,12 @@ type SidecarOutMsg =
       audio_path: string;
       sample_rate: number;
       channels: number;
+    }
+  | {
+      type: "group_created";
+      nostr_group_id: string;
+      mls_group_id: string;
+      peer_pubkey: string;
     };
 
 type SidecarInCmd =
@@ -68,6 +74,7 @@ type SidecarInCmd =
   | { cmd: "end_call"; request_id: string; call_id: string; reason?: string }
   | { cmd: "send_audio_response"; request_id: string; call_id: string; tts_text: string }
   | { cmd: "send_audio_file"; request_id: string; call_id: string; audio_path: string; sample_rate: number; channels?: number }
+  | { cmd: "init_group"; request_id: string; peer_pubkey: string; group_name?: string }
   | { cmd: "shutdown"; request_id: string };
 
 type SidecarEventHandler = (msg: SidecarOutMsg) => void | Promise<void>;
@@ -310,6 +317,12 @@ export class MarmotSidecar {
 
   async sendAudioFile(callId: string, audioPath: string, sampleRate: number, channels?: number): Promise<unknown> {
     return await this.request({ cmd: "send_audio_file", call_id: callId, audio_path: audioPath, sample_rate: sampleRate, channels } as any);
+  }
+
+  async initGroup(peerPubkey: string, groupName?: string): Promise<{ nostr_group_id: string; mls_group_id: string; peer_pubkey: string }> {
+    const result = await this.request({ cmd: "init_group", peer_pubkey: peerPubkey, group_name: groupName } as any);
+    const r = result as any;
+    return { nostr_group_id: r.nostr_group_id, mls_group_id: r.mls_group_id, peer_pubkey: r.peer_pubkey };
   }
 
   async shutdown(): Promise<void> {

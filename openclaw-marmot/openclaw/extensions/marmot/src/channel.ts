@@ -748,6 +748,37 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
       await sidecar.setRelays(relays);
       await sidecar.publishKeypackage(relays);
 
+      // If the bot has no groups yet and an owner is configured, create a DM
+      // group with the owner so the bot can reach them immediately.
+      // Fire-and-forget so it doesn't block startup.
+      {
+        const ownerCfg = resolved.config.owner;
+        const ownerPk: string | undefined = ownerCfg
+          ? String(Array.isArray(ownerCfg) ? ownerCfg[0] : ownerCfg).trim().toLowerCase()
+          : undefined;
+        if (ownerPk) {
+          void (async () => {
+            try {
+              const groupsResult = (await sidecar.listGroups()) as any;
+              const groups: unknown[] = groupsResult?.groups ?? [];
+              if (groups.length === 0) {
+                ctx.log?.info(
+                  `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
+                );
+                const created = await sidecar.initGroup(ownerPk);
+                ctx.log?.info(
+                  `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
+                );
+              }
+            } catch (err) {
+              ctx.log?.warn(
+                `[${resolved.accountId}] failed to init owner DM group: ${err}`,
+              );
+            }
+          })();
+        }
+      }
+
       const groupPolicy = resolved.config.groupPolicy ?? "allowlist";
       const groupAllowFrom =
         (resolved.config.groupAllowFrom ?? []).map((x) => String(x).trim().toLowerCase()).filter(Boolean);
@@ -844,6 +875,12 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
         if (ev.type === "group_joined") {
           ctx.log?.info(
             `[${resolved.accountId}] group_joined nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id}`,
+          );
+          return;
+        }
+        if (ev.type === "group_created") {
+          ctx.log?.info(
+            `[${resolved.accountId}] group_created nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} peer=${ev.peer_pubkey}`,
           );
           return;
         }

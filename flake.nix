@@ -337,6 +337,9 @@ PGEOF
               createdb pika_notifications
             fi
 
+            # Point git at the repo's shared hooks directory.
+            git config --local core.hooksPath .githooks 2>/dev/null || true
+
             echo ""
             echo "Pika dev environment ready"
             echo "  Rust:         $(rustc --version)"

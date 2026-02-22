@@ -847,6 +847,12 @@ export const marmotPlugin: ChannelPlugin<ResolvedMarmotAccount> = {
           );
           return;
         }
+        if (ev.type === "group_created") {
+          ctx.log?.info(
+            `[${resolved.accountId}] group_created nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} peer=${ev.peer_pubkey}`,
+          );
+          return;
+        }
         if (ev.type === "call_invite_received") {
           if (!isGroupAllowed(ev.nostr_group_id)) {
             ctx.log?.debug(

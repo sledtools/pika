@@ -606,6 +606,16 @@ ios-build-sim: ios-xcframework ios-xcodeproj
     SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
 
+# Build, install, and launch Pika on an iPad simulator.
+ios-run-ipad: ios-xcframework ios-xcodeproj
+    udid="$(./tools/ios-ipad-sim-ensure | sed -n 's/^ok: ipad simulator ready (udid=\(.*\))$/\1/p')"; \
+    if [ -z "$udid" ]; then echo "error: could not determine iPad simulator udid"; exit 1; fi; \
+    SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \
+    ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -destination "id=$udid" -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" && \
+    xcrun simctl install "$udid" ios/build/Build/Products/Debug-iphonesimulator/Pika.app && \
+    xcrun simctl launch "$udid" "${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" && \
+    open -a Simulator
+
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj
     udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"; \

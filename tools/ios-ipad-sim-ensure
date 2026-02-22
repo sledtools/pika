@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ensures there is a booted iPad simulator available.
+# Prints "ok: ipad simulator ready (udid=<UDID>)" on success.
+
+DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+if [ -z "${DEV_DIR:-}" ]; then
+  echo "error: Xcode not found under /Applications" >&2
+  exit 1
+fi
+export DEVELOPER_DIR="$DEV_DIR"
+
+SIMCTL="$DEV_DIR/usr/bin/simctl"
+
+# Pick the latest available iOS runtime.
+runtime_id="$(
+  "$SIMCTL" list -j runtimes | python3 -c '
+import json,sys,re
+j=json.load(sys.stdin)
+r=[]
+for rt in j.get("runtimes",[]):
+  ident=rt.get("identifier") or ""
+  name=rt.get("name") or ""
+  avail=rt.get("isAvailable")
+  if not name.startswith("iOS "):
+    continue
+  if avail is False:
+    continue
+  m=re.search(r"iOS-(\d+)-(\d+)$", ident)
+  if not m:
+    continue
+  r.append((int(m.group(1)), int(m.group(2)), ident))
+r.sort()
+sys.stdout.write(r[-1][2] if r else "")
+'
+)"
+if [ -z "${runtime_id:-}" ]; then
+  echo "error: Failed to determine an iOS runtime identifier from simctl." >&2
+  "$SIMCTL" list runtimes >&2 || true
+  exit 1
+fi
+
+# Find an iPad device type via JSON. Prefer "iPad Air 13-inch", fall back to any iPad.
+device_type_id="$(
+  "$SIMCTL" list -j devicetypes | python3 -c '
+import json,sys
+j=json.load(sys.stdin)
+prefs=["iPad Air 13","iPad Pro 13","iPad"]
+for p in prefs:
+  for dt in j.get("devicetypes",[]):
+    if p in dt.get("name",""):
+      sys.stdout.write(dt["identifier"])
+      sys.exit(0)
+'
+)"
+if [ -z "${device_type_id:-}" ]; then
+  echo "error: Failed to determine an iPad device type id from simctl." >&2
+  "$SIMCTL" list devicetypes >&2 || true
+  exit 1
+fi
+
+device_name="Pika iPad"
+udid="$(
+  "$SIMCTL" list -j devices | python3 -c '
+import json,sys
+j=json.load(sys.stdin)
+for runtime,devs in j.get("devices",{}).items():
+  for d in devs:
+    if d.get("name","") == "'"$device_name"'":
+      sys.stdout.write(d["udid"])
+      sys.exit(0)
+'
+)"
+if [ -z "${udid:-}" ]; then
+  udid="$("$SIMCTL" create "$device_name" "$device_type_id" "$runtime_id" | tr -d '[:space:]')"
+  echo "created simulator: $device_name ($udid)"
+fi
+
+"$SIMCTL" boot "$udid" >/dev/null 2>&1 || true
+if "$SIMCTL" help 2>/dev/null | grep -q "bootstatus"; then
+  "$SIMCTL" bootstatus "$udid" -b >/dev/null 2>&1 || true
+fi
+
+echo "ok: ipad simulator ready (udid=$udid)"

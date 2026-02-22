@@ -1,4 +1,3 @@
-Read `~/configs/GLOBAL-AGENTS.md` (fallback: https://raw.githubusercontent.com/justinmoon/configs/master/GLOBAL-AGENTS.md). Skip if both unavailable.
 Run `./scripts/agent-brief` first thing to get a live context snapshot.
 
 ## Related codebases

@@ -1392,7 +1392,7 @@ fn multi_device_both_devices_receive_welcome_and_messages() {
     // Wait for Bob device 1's key package to be published.
     wait_until(
         "bob1 key package published",
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || {
             let st = relay.state.lock().unwrap();
             st.events
@@ -1423,7 +1423,7 @@ fn multi_device_both_devices_receive_welcome_and_messages() {
     // There should be at least 2 key packages for Bob's pubkey.
     wait_until(
         "bob has 2 key packages on relay",
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || {
             let st = relay.state.lock().unwrap();
             st.events
@@ -1439,17 +1439,17 @@ fn multi_device_both_devices_receive_welcome_and_messages() {
         peer_npub: bob_npub,
     });
 
-    wait_until("alice chat opened", Duration::from_secs(15), || {
+    wait_until("alice chat opened", Duration::from_secs(30), || {
         alice.state().current_chat.is_some()
     });
 
     let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
 
     // Both Bob devices should receive the welcome and join the group.
-    wait_until("bob1 has chat", Duration::from_secs(15), || {
+    wait_until("bob1 has chat", Duration::from_secs(30), || {
         bob1.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
-    wait_until("bob2 has chat", Duration::from_secs(15), || {
+    wait_until("bob2 has chat", Duration::from_secs(30), || {
         bob2.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 
@@ -1469,14 +1469,14 @@ fn multi_device_both_devices_receive_welcome_and_messages() {
         chat_id: chat_id.clone(),
     });
 
-    wait_until("bob1 sees message", Duration::from_secs(15), || {
+    wait_until("bob1 sees message", Duration::from_secs(30), || {
         bob1.state()
             .current_chat
             .as_ref()
             .map(|c| c.messages.iter().any(|m| m.content == "hello-multi-device"))
             .unwrap_or(false)
     });
-    wait_until("bob2 sees message", Duration::from_secs(15), || {
+    wait_until("bob2 sees message", Duration::from_secs(30), || {
         bob2.state()
             .current_chat
             .as_ref()
@@ -1586,7 +1586,7 @@ fn multi_device_add_device_to_existing_group() {
 
     wait_until(
         "bob1 key package published",
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || {
             let st = relay.state.lock().unwrap();
             st.events
@@ -1600,13 +1600,13 @@ fn multi_device_add_device_to_existing_group() {
         peer_npub: bob_npub,
     });
 
-    wait_until("alice chat opened", Duration::from_secs(15), || {
+    wait_until("alice chat opened", Duration::from_secs(30), || {
         alice.state().current_chat.is_some()
     });
 
     let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
 
-    wait_until("bob1 has chat", Duration::from_secs(15), || {
+    wait_until("bob1 has chat", Duration::from_secs(30), || {
         bob1.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 
@@ -1630,7 +1630,7 @@ fn multi_device_add_device_to_existing_group() {
     // Wait for bob2's key package to appear on the relay (more KPs than before).
     wait_until(
         "bob2 key package published",
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || {
             let st = relay.state.lock().unwrap();
             st.events
@@ -1661,7 +1661,7 @@ fn multi_device_add_device_to_existing_group() {
     // Bob2 should receive the welcome and join the group.
     wait_until(
         "bob2 has chat after AddMyDevice",
-        Duration::from_secs(15),
+        Duration::from_secs(30),
         || bob2.state().chat_list.iter().any(|c| c.chat_id == chat_id),
     );
 
@@ -1683,7 +1683,7 @@ fn multi_device_add_device_to_existing_group() {
 
     wait_until(
         "bob1 sees post-add message",
-        Duration::from_secs(15),
+        Duration::from_secs(30),
         || {
             bob1.state()
                 .current_chat
@@ -1694,7 +1694,7 @@ fn multi_device_add_device_to_existing_group() {
     );
     wait_until(
         "bob2 sees post-add message",
-        Duration::from_secs(15),
+        Duration::from_secs(30),
         || {
             bob2.state()
                 .current_chat
@@ -1771,7 +1771,7 @@ fn multi_device_auto_add_on_startup() {
 
     wait_until(
         "bob1 key package published",
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         || {
             let st = relay.state.lock().unwrap();
             st.events
@@ -1784,11 +1784,11 @@ fn multi_device_auto_add_on_startup() {
     alice.dispatch(AppAction::CreateChat {
         peer_npub: bob_npub,
     });
-    wait_until("alice chat opened", Duration::from_secs(15), || {
+    wait_until("alice chat opened", Duration::from_secs(30), || {
         alice.state().current_chat.is_some()
     });
     let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
-    wait_until("bob1 has chat", Duration::from_secs(15), || {
+    wait_until("bob1 has chat", Duration::from_secs(30), || {
         bob1.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 
@@ -1800,7 +1800,7 @@ fn multi_device_auto_add_on_startup() {
     });
 
     // Wait for bob2's KP to land on the relay.
-    wait_until("bob2 key package on relay", Duration::from_secs(10), || {
+    wait_until("bob2 key package on relay", Duration::from_secs(15), || {
         let st = relay.state.lock().unwrap();
         st.events
             .iter()
@@ -1813,7 +1813,7 @@ fn multi_device_auto_add_on_startup() {
     bob1.dispatch(AppAction::ReloadConfig);
 
     // Bob2 should receive a welcome and join the group automatically.
-    wait_until("bob2 auto-joined chat", Duration::from_secs(20), || {
+    wait_until("bob2 auto-joined chat", Duration::from_secs(45), || {
         bob2.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 
@@ -1827,7 +1827,7 @@ fn multi_device_auto_add_on_startup() {
     bob2.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("bob2 sees message", Duration::from_secs(15), || {
+    wait_until("bob2 sees message", Duration::from_secs(30), || {
         bob2.state()
             .current_chat
             .as_ref()

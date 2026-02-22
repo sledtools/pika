@@ -16,8 +16,74 @@ on:
         default: pre-merge
 
 jobs:
-  check-pika:
+  detect-changes:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    runs-on: ubuntu-latest
+    outputs:
+      pika: ${{ steps.filter.outputs.pika || 'true' }}
+      marmotd: ${{ steps.filter.outputs.marmotd || 'true' }}
+      rmp: ${{ steps.filter.outputs.rmp || 'true' }}
+      notifications: ${{ steps.filter.outputs.notifications || 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            pika:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'justfile'
+              - '.github/**'
+              - 'rust/**'
+              - 'cli/**'
+              - 'crates/pika-desktop/**'
+              - 'crates/pika-media/**'
+              - 'crates/pika-nse/**'
+              - 'crates/pika-tls/**'
+              - 'uniffi-bindgen/**'
+              - 'android/**'
+              - 'ios/**'
+              - 'docs/**'
+              - 'scripts/**'
+              - 'tools/**'
+            marmotd:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'justfile'
+              - '.github/workflows/pre-merge.yml'
+              - 'crates/marmotd/**'
+              - 'openclaw-marmot/**'
+              - 'crates/pika-media/**'
+              - 'crates/pika-tls/**'
+            rmp:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'justfile'
+              - '.github/workflows/pre-merge.yml'
+              - 'crates/rmp-cli/**'
+            notifications:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'justfile'
+              - '.github/workflows/pre-merge.yml'
+              - 'crates/pika-notifications/**'
+
+  check-pika:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +111,8 @@ jobs:
       - run: nix develop .#default -c just pre-merge-pika
 
   check-marmotd:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.marmotd == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     environment:
       name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && 'ci-approval' || 'ci-auto' }}
@@ -75,7 +142,8 @@ jobs:
       - run: nix develop .#default -c just pre-merge-marmotd
 
   check-rmp:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.rmp == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +171,8 @@ jobs:
       - run: nix develop .#rmp -c just pre-merge-rmp
 
   check-notifications:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge')
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.notifications == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -132,24 +201,29 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [check-pika, check-marmotd, check-rmp, check-notifications]
+    needs: [detect-changes, check-pika, check-marmotd, check-rmp, check-notifications]
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          if [[ "${{ needs.check-pika.result }}" != "success" ]]; then
-            echo "check-pika failed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-marmotd.result }}" != "success" ]]; then
-            echo "check-marmotd failed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-rmp.result }}" != "success" ]]; then
-            echo "check-rmp failed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-notifications.result }}" != "success" ]]; then
-            echo "check-notifications failed"
+      - name: Evaluate lane results
+        run: |
+          failed=""
+          for lane in pika marmotd rmp notifications; do
+            result=""
+            case "$lane" in
+              pika)          result="${{ needs.check-pika.result }}" ;;
+              marmotd)       result="${{ needs.check-marmotd.result }}" ;;
+              rmp)           result="${{ needs.check-rmp.result }}" ;;
+              notifications) result="${{ needs.check-notifications.result }}" ;;
+            esac
+            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+              echo "check-$lane: $result (ok)"
+            else
+              echo "check-$lane: $result (FAILED)"
+              failed="${failed}check-${lane} "
+            fi
+          done
+          if [[ -n "$failed" ]]; then
+            echo "::error::Failed lanes: $failed"
             exit 1
           fi
 

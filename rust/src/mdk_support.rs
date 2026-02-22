@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
 use mdk_core::{MdkConfig, MDK};
-use mdk_sqlite_storage::{error::Error as MdkStorageError, MdkSqliteStorage};
+use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::PublicKey;
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
@@ -128,8 +128,13 @@ fn mdk_config() -> MdkConfig {
 fn is_legacy_missing_file_key_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
-            .downcast_ref::<MdkStorageError>()
-            .map(|storage_err| matches!(storage_err, MdkStorageError::WrongEncryptionKey))
+            .downcast_ref::<mdk_sqlite_storage::error::Error>()
+            .map(|storage_err| {
+                matches!(
+                    storage_err,
+                    mdk_sqlite_storage::error::Error::WrongEncryptionKey
+                )
+            })
             .unwrap_or(false)
     })
 }

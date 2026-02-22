@@ -694,11 +694,17 @@ fn wipe_local_data_removes_persistent_files() {
         matches!(app.state().auth, AuthState::LoggedOut)
     });
 
+    // wipe_local_data() runs after emit_auth() on the core thread, so the
+    // shared state may show LoggedOut before file cleanup + recreation is
+    // complete. Wait for the recreated push_device_id to appear.
+    wait_until("push device id recreated", Duration::from_secs(2), || {
+        push_device_id_path.exists()
+    });
+
     assert!(!mdk_path.exists());
     assert!(!data_dir.join("dev_wipe_marker.txt").exists());
     assert!(migration_sentinel.exists());
     assert!(profile_db_path.exists());
-    assert!(push_device_id_path.exists());
     let new_push_device_id = std::fs::read_to_string(&push_device_id_path).unwrap();
     assert!(!new_push_device_id.trim().is_empty());
     assert_ne!(old_push_device_id.trim(), new_push_device_id.trim());

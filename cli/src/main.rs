@@ -45,7 +45,7 @@ struct Cli {
     #[arg(long)]
     relay: Vec<String>,
 
-    /// Key-package relay URLs (default: wellorder.net, yakihonne x2, satlantis)
+    /// Key-package relay URLs (default: wellorder.net, yakihonne x2)
     #[arg(long)]
     kp_relay: Vec<String>,
 
@@ -1092,7 +1092,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     Ok(())
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://blossom.yakihonne.com";
+const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn cmd_profile(cli: &Cli) -> anyhow::Result<()> {

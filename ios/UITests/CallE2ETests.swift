@@ -119,7 +119,7 @@ final class CallE2ETests: XCTestCase {
         let relays = buildEnv["PIKA_RELAY_URLS"] ?? dotenv["PIKA_RELAY_URLS"]
             ?? "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
         let kpRelays = buildEnv["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? dotenv["PIKA_KEY_PACKAGE_RELAY_URLS"]
-            ?? "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io"
+            ?? "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com"
         let moqUrl = buildEnv["PIKA_CALL_MOQ_URL"] ?? dotenv["PIKA_CALL_MOQ_URL"]
             ?? "https://us-east.moq.logos.surf/anon"
 

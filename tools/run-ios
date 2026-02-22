@@ -145,7 +145,7 @@ default_relays() {
 }
 
 default_kp_relays() {
-  echo "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io"
+  echo "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com"
 }
 
 effective_relays() {

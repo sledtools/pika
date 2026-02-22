@@ -49,7 +49,7 @@ Make `--relay` optional with defaults matching the app. Also add `--kp-relay` fo
 | Purpose | Relays |
 |---------|--------|
 | Message relays (`DEFAULT_RELAY_URLS`) | `wss://relay.damus.io`, `wss://relay.primal.net`, `wss://nos.lol` |
-| Key package relays (`DEFAULT_KEY_PACKAGE_RELAY_URLS`) | `wss://nostr-pub.wellorder.net`, `wss://nostr-01.yakihonne.com`, `wss://nostr-02.yakihonne.com`, `wss://relay.satlantis.io` |
+| Key package relays (`DEFAULT_KEY_PACKAGE_RELAY_URLS`) | `wss://nostr-pub.wellorder.net`, `wss://nostr-01.yakihonne.com`, `wss://nostr-02.yakihonne.com` |
 
 **New global options:**
 
@@ -58,7 +58,7 @@ Make `--relay` optional with defaults matching the app. Also add `--kp-relay` fo
 #[arg(long)]
 relay: Vec<String>,
 
-/// Key-package relay URLs (default: wellorder.net, yakihonne x2, satlantis)
+/// Key-package relay URLs (default: wellorder.net, yakihonne x2)
 #[arg(long)]
 kp_relay: Vec<String>,
 ```
@@ -209,7 +209,7 @@ pika-cli update-profile (--name <NAME> | --picture <FILE_PATH> | both)
 Reuse patterns from `rust/src/core/profile.rs`:
 
 - **Metadata construction**: Load existing metadata from relay (via `client.fetch_metadata()`), overlay edits, preserve unmapped fields. Use the same `nostr_sdk::Metadata` struct.
-- **Blossom upload**: Use `nostr_blossom::BlossomClient`. Upload to `https://blossom.yakihonne.com`. The upload returns a `BlobDescriptor` with the URL.
+- **Blossom upload**: Use `nostr_blossom::BlossomClient`. Upload to `https://us-east.nostr.pikachat.org`. The upload returns a `BlobDescriptor` with the URL.
 - **Publish**: `client.set_metadata(&metadata).await`.
 
 ### Output
@@ -217,7 +217,7 @@ Reuse patterns from `rust/src/core/profile.rs`:
 ```json
 {
   "name": "Alice",
-  "picture_url": "https://blossom.yakihonne.com/abc123.jpg",
+  "picture_url": "https://us-east.nostr.pikachat.org/abc123.jpg",
   "pubkey": "abc...",
   "npub": "npub1..."
 }

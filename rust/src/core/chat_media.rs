@@ -407,16 +407,20 @@ impl AppCore {
         self.publish_chat_message_with_tags(
             pending.chat_id,
             pending.caption,
+            Kind::ChatMessage,
             vec![imeta_tag],
+            None,
             media,
         );
     }
 
-    fn publish_chat_message_with_tags(
+    pub(super) fn publish_chat_message_with_tags(
         &mut self,
         chat_id: String,
         content: String,
+        kind: Kind,
         tags: Vec<Tag>,
+        reply_to_message_id: Option<String>,
         media: Vec<ChatMediaAttachment>,
     ) {
         let network_enabled = self.network_enabled();
@@ -446,7 +450,7 @@ impl AppCore {
             let mut rumor = UnsignedEvent::new(
                 sess.pubkey,
                 Timestamp::from(ts as u64),
-                Kind::Custom(9),
+                kind,
                 tags,
                 content.clone(),
             );
@@ -469,7 +473,7 @@ impl AppCore {
                         content: content.clone(),
                         timestamp: ts,
                         sender_pubkey: sess.pubkey.to_hex(),
-                        reply_to_message_id: None,
+                        reply_to_message_id: reply_to_message_id.clone(),
                         seq,
                         media: media.clone(),
                     },

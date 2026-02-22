@@ -668,6 +668,7 @@ interop-rust-manual:
     ./tools/interop-rust-baseline --manual
 
 # ── pika-cli (Marmot protocol CLI) ──────────────────────────────────────────
+# Run the cli
 
 # Build pika-cli (debug).
 cli-build:
@@ -683,6 +684,12 @@ cli-identity STATE_DIR=".pika-cli" RELAY="ws://127.0.0.1:7777":
 
 # Quick smoke test: two users, local relay, send+receive.
 
-# Requires a Nostr relay running at RELAY (e.g. `strfry` or `nostr-rs-relay`).
-cli-smoke RELAY="ws://127.0.0.1:7777":
-    ./tools/cli-smoke --relay {{ RELAY }}
+# Starts its own relay automatically (requires nostr-rs-relay via `nix develop`).
+cli-smoke:
+    ./tools/cli-smoke
+
+# Quick smoke test including encrypted media upload/download over Blossom.
+
+# Starts its own relay automatically. Requires internet for the default Blossom server.
+cli-smoke-media:
+    ./tools/cli-smoke --with-media

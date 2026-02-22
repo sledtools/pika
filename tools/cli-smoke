@@ -3,24 +3,35 @@ set -euo pipefail
 
 # Quick smoke test: two users, local relay, send+receive.
 #
-# Replaces the long inline `cli-smoke` recipe in `justfile`.
+# Starts its own nostr-rs-relay on a free port, runs the test, then cleans up.
+# Requires nostr-rs-relay on PATH (available via `nix develop`).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-relay="ws://127.0.0.1:7777"
+# shellcheck source=lib/local-e2e-fixture.sh
+source "$ROOT/tools/lib/local-e2e-fixture.sh"
+
+with_media=0
+external_relay=""
 
 usage() {
   cat >&2 <<EOF
-usage: ./tools/cli-smoke [--relay <ws://...>]
+usage: ./tools/cli-smoke [--relay <ws://...>] [--with-media]
+
+If --relay is omitted, a local nostr-rs-relay is started automatically.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --relay)
-      relay="${2:-}"
+      external_relay="${2:-}"
       shift 2
+      ;;
+    --with-media)
+      with_media=1
+      shift
       ;;
     -h|--help)
       usage
@@ -33,51 +44,137 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+STATE_DIR="$(mktemp -d /tmp/pika-cli-smoke.XXXXXX)"
+
+cleanup() {
+  if [ -n "${RELAY_PID:-}" ]; then
+    kill "${RELAY_PID}" >/dev/null 2>&1 || true
+    wait "${RELAY_PID}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# ── Relay ────────────────────────────────────────────────────────────────────
+
+if [ -n "$external_relay" ]; then
+  relay="$external_relay"
+else
+  pika_fixture_need nostr-rs-relay
+
+  RELAY_PORT="$(pika_fixture_pick_free_port)"
+  RELAY_DB_DIR="${STATE_DIR}/relay-db"
+  mkdir -p "$RELAY_DB_DIR"
+
+  RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
+  pika_fixture_rewrite_relay_config \
+    "$ROOT/tools/nostr-rs-relay-config.toml" \
+    "$RELAY_CONFIG_TMP" \
+    "$RELAY_PORT" \
+    "$RELAY_DB_DIR"
+
+  RELAY_LOG="${STATE_DIR}/relay.log"
+  pika_fixture_start_relay "$RELAY_DB_DIR" "$RELAY_CONFIG_TMP" "$RELAY_LOG"
+  RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
+
+  if ! pika_fixture_wait_for_tcp "127.0.0.1" "$RELAY_PORT" 200 0.05; then
+    echo "error: local relay did not start on port ${RELAY_PORT}" >&2
+    cat "$RELAY_LOG" >&2 || true
+    exit 1
+  fi
+
+  relay="ws://127.0.0.1:${RELAY_PORT}"
+  echo "relay: $relay (pid $RELAY_PID)"
+fi
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
 CLI="cargo run -q -p pika-cli --"
 
 json_get() {
   local expr="$1"
-  python3 - <<PY
+  python3 -c "
 import json,sys
 obj=json.load(sys.stdin)
 print($expr)
-PY
+"
 }
 
+# ── Test ─────────────────────────────────────────────────────────────────────
+
 echo "=== Alice: create identity ==="
-ALICE="$($CLI --state-dir "$TMPDIR/alice" --relay "$relay" identity)"
+ALICE="$($CLI --state-dir "$STATE_DIR/alice" --relay "$relay" identity)"
 ALICE_PK="$(echo "$ALICE" | json_get "obj['pubkey']")"
 echo "Alice pubkey: $ALICE_PK"
 
 echo "=== Bob: create identity ==="
-BOB="$($CLI --state-dir "$TMPDIR/bob" --relay "$relay" identity)"
+BOB="$($CLI --state-dir "$STATE_DIR/bob" --relay "$relay" identity)"
 BOB_PK="$(echo "$BOB" | json_get "obj['pubkey']")"
 echo "Bob pubkey: $BOB_PK"
 
 echo "=== Both: publish key packages ==="
-$CLI --state-dir "$TMPDIR/alice" --relay "$relay" publish-kp
-$CLI --state-dir "$TMPDIR/bob" --relay "$relay" publish-kp
+$CLI --state-dir "$STATE_DIR/alice" --relay "$relay" publish-kp
+$CLI --state-dir "$STATE_DIR/bob" --relay "$relay" publish-kp
 
 echo "=== Alice: invite Bob ==="
-INVITE="$($CLI --state-dir "$TMPDIR/alice" --relay "$relay" invite --peer "$BOB_PK")"
+INVITE="$($CLI --state-dir "$STATE_DIR/alice" --relay "$relay" invite --peer "$BOB_PK")"
 GROUP="$(echo "$INVITE" | json_get "obj['nostr_group_id']")"
 echo "Group: $GROUP"
 
+echo "=== Bob: sync welcomes (listen 3s) ==="
+$CLI --state-dir "$STATE_DIR/bob" --relay "$relay" listen --timeout 3 --lookback 300 >/dev/null || true
+
 echo "=== Bob: check welcomes ==="
-WELCOMES="$($CLI --state-dir "$TMPDIR/bob" --relay "$relay" welcomes)"
+WELCOMES="$($CLI --state-dir "$STATE_DIR/bob" --relay "$relay" welcomes)"
 echo "$WELCOMES"
 WRAPPER="$(echo "$WELCOMES" | json_get "obj['welcomes'][0]['wrapper_event_id']")"
 
 echo "=== Bob: accept welcome ==="
-$CLI --state-dir "$TMPDIR/bob" --relay "$relay" accept-welcome --wrapper-event-id "$WRAPPER"
+$CLI --state-dir "$STATE_DIR/bob" --relay "$relay" accept-welcome --wrapper-event-id "$WRAPPER"
 
 echo "=== Alice: send message ==="
-$CLI --state-dir "$TMPDIR/alice" --relay "$relay" send --group "$GROUP" --content "hello from alice"
+$CLI --state-dir "$STATE_DIR/alice" --relay "$relay" send --group "$GROUP" --content "hello from alice"
+
+echo "=== Bob: sync inbox (listen 3s) ==="
+$CLI --state-dir "$STATE_DIR/bob" --relay "$relay" listen --timeout 3 --lookback 300 >/dev/null || true
 
 echo "=== Bob: read messages ==="
-$CLI --state-dir "$TMPDIR/bob" --relay "$relay" messages --group "$GROUP"
+$CLI --state-dir "$STATE_DIR/bob" --relay "$relay" messages --group "$GROUP"
+
+if [ "$with_media" -eq 1 ]; then
+  echo "=== Alice: send media ==="
+  MEDIA_SRC="$STATE_DIR/sample-media.txt"
+  printf "hello media %s\n" "$(date +%s)" >"$MEDIA_SRC"
+  $CLI --state-dir "$STATE_DIR/alice" --relay "$relay" \
+    send \
+    --group "$GROUP" \
+    --media "$MEDIA_SRC" \
+    --mime-type "text/plain" \
+    --content "media from alice"
+
+  echo "=== Bob: sync media message (listen 5s) ==="
+  $CLI --state-dir "$STATE_DIR/bob" --relay "$relay" listen --timeout 5 --lookback 300 >/dev/null || true
+
+  echo "=== Bob: read messages with media ==="
+  BOB_MSGS="$($CLI --state-dir "$STATE_DIR/bob" --relay "$relay" messages --group "$GROUP")"
+  echo "$BOB_MSGS"
+
+  MEDIA_MSG_ID="$(echo "$BOB_MSGS" | json_get "next((m['message_id'] for m in reversed(obj['messages']) if len(m.get('media', [])) > 0), '')")"
+  if [ -z "${MEDIA_MSG_ID:-}" ]; then
+    echo "error: could not find media attachment in Bob's messages" >&2
+    exit 1
+  fi
+
+  echo "=== Bob: download/decrypt media ==="
+  MEDIA_OUT="$STATE_DIR/bob-downloaded-media.txt"
+  $CLI --state-dir "$STATE_DIR/bob" --relay "$relay" \
+    download-media "$MEDIA_MSG_ID" \
+    --output "$MEDIA_OUT"
+
+  if ! cmp -s "$MEDIA_SRC" "$MEDIA_OUT"; then
+    echo "error: downloaded media does not match source file" >&2
+    exit 1
+  fi
+fi
 
 echo "=== SMOKE TEST PASSED ==="
-

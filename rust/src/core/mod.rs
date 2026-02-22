@@ -3894,8 +3894,6 @@ impl AppCore {
                     self.toast("Please log in first");
                     return;
                 }
-                let network_enabled = self.network_enabled();
-                let fallback_relays = self.default_relays();
 
                 let kind = kind.map(Kind::from).unwrap_or(Kind::ChatMessage);
 
@@ -3907,201 +3905,46 @@ impl AppCore {
                     .map(|id| id.trim().to_string())
                     .filter(|id| !id.is_empty());
 
-                // Nostr timestamps are second-granularity; rapid sends can share the same second.
-                // Keep outgoing timestamps monotonic to avoid tie-related paging nondeterminism.
-                let ts = {
-                    let now = now_seconds();
-                    if now <= self.last_outgoing_ts {
-                        self.last_outgoing_ts += 1;
-                    } else {
-                        self.last_outgoing_ts = now;
-                    }
-                    self.last_outgoing_ts
-                };
-                let (client, wrapper, relays, rumor_id_hex) = {
-                    let Some(sess) = self.session.as_mut() else {
+                // Build reply tags if replying to an existing message.
+                let mut tags = Vec::new();
+                let effective_reply_to = {
+                    let Some(sess) = self.session.as_ref() else {
                         return;
                     };
-                    let Some(group) = sess.groups.get(&chat_id).cloned() else {
-                        self.toast("Chat not found");
-                        return;
-                    };
-
-                    // Build rumor and ensure stable id for optimistic UI.
-                    let mut tags = Vec::new();
-                    let effective_reply_to_message_id =
-                        reply_to_message_id.as_ref().and_then(|reply_to_id| {
-                            let reply_event_id = EventId::parse(reply_to_id).ok()?;
-                            let reply_target = sess
-                                .mdk
-                                .get_message(&group.mls_group_id, &reply_event_id)
-                                .ok()
-                                .flatten()?;
-                            let p_tag = Tag::parse(vec![
-                                "p".to_string(),
-                                reply_target.pubkey.to_hex(),
-                                String::new(),
-                            ])
-                            .ok()?;
-                            let k_tag = Tag::parse(vec![
-                                "k".to_string(),
-                                reply_target.kind.as_u16().to_string(),
-                            ])
-                            .ok()?;
-                            tags.push(Tag::event(reply_event_id));
-                            tags.push(p_tag);
-                            tags.push(k_tag);
-                            Some(reply_event_id.to_hex())
-                        });
-
-                    let mut rumor = UnsignedEvent::new(
-                        sess.pubkey,
-                        Timestamp::from(ts as u64),
-                        kind,
-                        tags,
-                        content.clone(),
-                    );
-                    rumor.ensure_id();
-                    let rumor_id_hex = rumor.id().to_hex();
-
-                    // Optimistic UI: mark as pending immediately.
-                    self.delivery_overrides
-                        .entry(chat_id.clone())
-                        .or_default()
-                        .insert(rumor_id_hex.clone(), MessageDeliveryState::Pending);
-
-                    // Ensure UI can render the message even if MDK storage doesn't immediately
-                    // surface it in get_messages().
-                    self.outbox_seq = self.outbox_seq.wrapping_add(1);
-                    let seq = self.outbox_seq;
-                    self.local_outbox
-                        .entry(chat_id.clone())
-                        .or_default()
-                        .insert(
-                            rumor_id_hex.clone(),
-                            LocalOutgoing {
-                                content: content.clone(),
-                                timestamp: ts,
-                                sender_pubkey: sess.pubkey.to_hex(),
-                                reply_to_message_id: effective_reply_to_message_id.clone(),
-                                seq,
-                                media: vec![],
-                            },
-                        );
-
-                    let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
-                        Ok(e) => e,
-                        Err(e) => {
-                            self.toast(format!("Encrypt failed: {e}"));
-                            self.delivery_overrides
-                                .entry(chat_id.clone())
-                                .or_default()
-                                .insert(
-                                    rumor_id_hex.clone(),
-                                    MessageDeliveryState::Failed {
-                                        reason: format!("encrypt failed: {e}"),
-                                    },
-                                );
-                            // Reflect failure immediately in the UI.
-                            self.refresh_current_chat_if_open(&chat_id);
-                            self.refresh_chat_list_from_storage();
-                            return;
-                        }
-                    };
-
-                    // Save wrapper for retries.
-                    self.pending_sends
-                        .entry(chat_id.clone())
-                        .or_default()
-                        .insert(
-                            rumor_id_hex.clone(),
-                            PendingSend {
-                                wrapper_event: wrapper.clone(),
-                                rumor_id_hex: rumor_id_hex.clone(),
-                            },
-                        );
-
-                    let relays: Vec<RelayUrl> = if network_enabled {
-                        sess.mdk
-                            .get_relays(&group.mls_group_id)
+                    reply_to_message_id.as_ref().and_then(|reply_to_id| {
+                        let reply_event_id = EventId::parse(reply_to_id).ok()?;
+                        let group = sess.groups.get(&chat_id)?;
+                        let reply_target = sess
+                            .mdk
+                            .get_message(&group.mls_group_id, &reply_event_id)
                             .ok()
-                            .map(|s| s.into_iter().collect())
-                            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                            .unwrap_or_else(|| fallback_relays.clone())
-                    } else {
-                        vec![]
-                    };
-
-                    (sess.client.clone(), wrapper, relays, rumor_id_hex)
+                            .flatten()?;
+                        let p_tag = Tag::parse(vec![
+                            "p".to_string(),
+                            reply_target.pubkey.to_hex(),
+                            String::new(),
+                        ])
+                        .ok()?;
+                        let k_tag = Tag::parse(vec![
+                            "k".to_string(),
+                            reply_target.kind.as_u16().to_string(),
+                        ])
+                        .ok()?;
+                        tags.push(Tag::event(reply_event_id));
+                        tags.push(p_tag);
+                        tags.push(k_tag);
+                        Some(reply_event_id.to_hex())
+                    })
                 };
 
-                // Update slices from storage (includes the new message).
-                self.prune_local_outbox(&chat_id);
-                self.refresh_chat_list_from_storage();
-                self.refresh_current_chat_if_open(&chat_id);
-
-                if !network_enabled {
-                    // Deterministic tests: treat as immediate success.
-                    let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                        InternalEvent::PublishMessageResult {
-                            chat_id,
-                            rumor_id: rumor_id_hex,
-                            ok: true,
-                            error: None,
-                        },
-                    )));
-                    return;
-                }
-
-                // Fire-and-forget (optimistic): report Sent immediately regardless of relay
-                // acceptance. Errors are best-effort logged only.
-                let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                    InternalEvent::PublishMessageResult {
-                        chat_id: chat_id.clone(),
-                        rumor_id: rumor_id_hex.clone(),
-                        ok: true,
-                        error: None,
-                    },
-                )));
-
-                let diag = diag_nostr_publish_enabled();
-                let wrapper_id = wrapper.id.to_hex();
-                let wrapper_kind = wrapper.kind.as_u16();
-                let relay_list: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
-                self.runtime.spawn(async move {
-                    let out = client.send_event_to(relays, &wrapper).await;
-                    match out {
-                        Ok(output) => {
-                            if diag {
-                                tracing::info!(
-                                    target: "pika_core::nostr_publish",
-                                    context = "group_message",
-                                    rumor_id = %rumor_id_hex,
-                                    event_id = %wrapper_id,
-                                    kind = wrapper_kind,
-                                    relays = ?relay_list,
-                                    success = ?output.success,
-                                    failed = ?output.failed,
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            if diag {
-                                tracing::info!(
-                                    target: "pika_core::nostr_publish",
-                                    context = "group_message",
-                                    rumor_id = %rumor_id_hex,
-                                    event_id = %wrapper_id,
-                                    kind = wrapper_kind,
-                                    relays = ?relay_list,
-                                    error = %e,
-                                );
-                            } else {
-                                tracing::warn!(%e, "message broadcast failed");
-                            }
-                        }
-                    }
-                });
+                self.publish_chat_message_with_tags(
+                    chat_id,
+                    content,
+                    kind,
+                    tags,
+                    effective_reply_to,
+                    vec![],
+                );
             }
             AppAction::SendChatMedia {
                 chat_id,

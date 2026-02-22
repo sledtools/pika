@@ -259,7 +259,7 @@ maybe_write_config() {
     relays="wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
   fi
   if [ -z "${kp_relays:-}" ]; then
-    kp_relays="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io"
+    kp_relays="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com"
   fi
 
   # Comma-separated list -> JSON array.

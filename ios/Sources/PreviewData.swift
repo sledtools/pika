@@ -194,6 +194,16 @@ enum PreviewAppState {
         )
     }
 
+    static var chatDetailMedia: AppState {
+        base(
+            rev: 35,
+            router: Router(defaultScreen: .chat(chatId: "chat-media"), screenStack: [.chat(chatId: "chat-media")]),
+            auth: .loggedIn(npub: sampleNpub, pubkey: samplePubkey, mode: .localNsec),
+            myProfile: sampleProfile,
+            currentChat: chatViewStateMedia()
+        )
+    }
+
     static var toastVisible: AppState {
         base(
             rev: 40,
@@ -272,6 +282,7 @@ enum PreviewAppState {
                 isMine: true,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -288,6 +299,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -304,6 +316,7 @@ enum PreviewAppState {
                 isMine: true,
                 delivery: failed ? .failed(reason: "Network timeout") : .pending,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -339,6 +352,7 @@ enum PreviewAppState {
                 isMine: idx.isMultiple(of: 2),
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -371,6 +385,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -387,6 +402,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -403,6 +419,7 @@ enum PreviewAppState {
                 isMine: true,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -419,6 +436,7 @@ enum PreviewAppState {
                 isMine: true,
                 delivery: .pending,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -435,6 +453,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -451,6 +470,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -467,6 +487,7 @@ enum PreviewAppState {
                 isMine: false,
                 delivery: .sent,
                 reactions: [],
+                media: [],
                 pollTally: [],
                 myPollVote: nil,
                 htmlState: nil
@@ -494,6 +515,115 @@ enum PreviewAppState {
             isAdmin: true,
             messages: messages,
             canLoadOlder: true,
+            typingMembers: []
+        )
+    }
+
+    private static func chatViewStateMedia() -> ChatViewState {
+        let messages: [ChatMessage] = [
+            // Image not yet downloaded (download placeholder)
+            ChatMessage(
+                id: "media-1",
+                senderPubkey: samplePeerPubkey,
+                senderName: "Anthony",
+                content: "",
+                displayContent: "",
+                replyToMessageId: nil,
+                mentions: [],
+                timestamp: 1_709_002_001,
+                isMine: false,
+                delivery: .sent,
+                reactions: [],
+                media: [
+                    ChatMediaAttachment(
+                        originalHashHex: "abc123",
+                        encryptedHashHex: "def456",
+                        url: "https://blossom.example.com/abc123",
+                        mimeType: "image/jpeg",
+                        filename: "sunset.jpg",
+                        width: 1200,
+                        height: 800,
+                        nonceHex: "00",
+                        schemeVersion: "v1",
+                        localPath: nil
+                    ),
+                ],
+                pollTally: [],
+                myPollVote: nil,
+                htmlState: nil
+            ),
+            // Image with caption, already downloaded (simulated local path)
+            ChatMessage(
+                id: "media-2",
+                senderPubkey: samplePubkey,
+                senderName: nil,
+                content: "Check out this view!",
+                displayContent: "Check out this view!",
+                replyToMessageId: nil,
+                mentions: [],
+                timestamp: 1_709_002_050,
+                isMine: true,
+                delivery: .sent,
+                reactions: [],
+                media: [
+                    ChatMediaAttachment(
+                        originalHashHex: "789abc",
+                        encryptedHashHex: nil,
+                        url: "https://blossom.example.com/789abc",
+                        mimeType: "image/png",
+                        filename: "mountain.png",
+                        width: 900,
+                        height: 1200,
+                        nonceHex: "00",
+                        schemeVersion: "v1",
+                        localPath: nil
+                    ),
+                ],
+                pollTally: [],
+                myPollVote: nil,
+                htmlState: nil
+            ),
+            // Non-image file attachment
+            ChatMessage(
+                id: "media-3",
+                senderPubkey: samplePeerPubkey,
+                senderName: "Anthony",
+                content: "Here's the doc",
+                displayContent: "Here's the doc",
+                replyToMessageId: nil,
+                mentions: [],
+                timestamp: 1_709_002_100,
+                isMine: false,
+                delivery: .sent,
+                reactions: [],
+                media: [
+                    ChatMediaAttachment(
+                        originalHashHex: "file001",
+                        encryptedHashHex: nil,
+                        url: "https://blossom.example.com/file001",
+                        mimeType: "application/pdf",
+                        filename: "report.pdf",
+                        width: nil,
+                        height: nil,
+                        nonceHex: "00",
+                        schemeVersion: "v1",
+                        localPath: nil
+                    ),
+                ],
+                pollTally: [],
+                myPollVote: nil,
+                htmlState: nil
+            ),
+        ]
+
+        return ChatViewState(
+            chatId: "chat-media",
+            isGroup: false,
+            groupName: nil,
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Anthony", pictureUrl: nil)],
+            isAdmin: false,
+            messages: messages,
+            canLoadOlder: false,
             typingMembers: []
         )
     }

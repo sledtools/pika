@@ -323,9 +323,24 @@ pub struct ChatMessage {
     pub is_mine: bool,
     pub delivery: MessageDeliveryState,
     pub reactions: Vec<ReactionSummary>,
+    pub media: Vec<ChatMediaAttachment>,
     pub poll_tally: Vec<PollTally>,
     pub my_poll_vote: Option<String>,
     pub html_state: Option<String>,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct ChatMediaAttachment {
+    pub original_hash_hex: String,
+    pub encrypted_hash_hex: Option<String>,
+    pub url: String,
+    pub mime_type: String,
+    pub filename: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub nonce_hex: String,
+    pub scheme_version: String,
+    pub local_path: Option<String>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

@@ -22,6 +22,7 @@ End-to-end encrypted messaging for iOS and Android, built on [MLS](https://messa
 | Polls | ✅ | ✅ | |
 | Interactive widgets (HTML) | ✅ | | |
 | QR code scan / display | ✅ | ✅ | |
+| Encrypted media upload/download | ✅ | | |
 | Profile photo upload | ✅ | ✅ | |
 | Follow / unfollow contacts | ✅ | ✅ | ✅ |
 

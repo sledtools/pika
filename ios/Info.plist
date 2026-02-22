@@ -48,6 +48,8 @@
 	<string>Scan QR codes to start new chats.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice calls require microphone access.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos from chats to your photo library.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>

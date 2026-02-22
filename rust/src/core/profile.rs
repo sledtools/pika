@@ -7,8 +7,6 @@ use crate::state::MyProfileState;
 
 use super::*;
 
-// TODO: Prefer user-advertised blossom servers (once we ingest and cache them from Nostr).
-const DEFAULT_BLOSSOM_SERVERS: &[&str] = &["https://blossom.yakihonne.com"];
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 impl AppCore {
@@ -130,6 +128,7 @@ impl AppCore {
         );
         let mime_type = Self::normalized_profile_field(mime_type);
 
+        let blossom_servers = self.blossom_servers();
         let (client, local_keys, tx) = {
             let Some(sess) = self.session.as_ref() else {
                 return;
@@ -142,9 +141,17 @@ impl AppCore {
         };
 
         self.runtime.spawn(async move {
+            if blossom_servers.is_empty() {
+                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::MyProfileError {
+                    message: "No valid Blossom servers configured".to_string(),
+                    toast: true,
+                })));
+                return;
+            }
+
             let mut last_error: Option<String> = None;
 
-            for server in DEFAULT_BLOSSOM_SERVERS {
+            for server in &blossom_servers {
                 let base_url = match Url::parse(server) {
                     Ok(url) => url,
                     Err(e) => {

@@ -1,14 +1,17 @@
 mod mdk_util;
 mod relay_util;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
+use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
+use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 // Same defaults as the Pika app (rust/src/core/config.rs).
 const DEFAULT_RELAY_URLS: &[&str] = &[
@@ -42,7 +45,7 @@ struct Cli {
     #[arg(long)]
     relay: Vec<String>,
 
-    /// Key-package relay URLs (default: wellorder.net, yakihonne x2, satlantis)
+    /// Key-package relay URLs (default: wellorder.net, yakihonne x2)
     #[arg(long)]
     kp_relay: Vec<String>,
 
@@ -112,13 +115,19 @@ Tip: 'pika-cli send --to npub1...' does this automatically for 1:1 DMs.")]
   pika-cli groups")]
     Groups,
 
-    /// Send a message to a group or a peer
+    /// Send a message (with optional media) to a group or a peer
     #[command(after_help = "Examples:
   pika-cli send --to npub1xyz... --content \"hey!\"
   pika-cli send --group <hex-group-id> --content \"hello\"
+  pika-cli send --to npub1xyz... --media photo.jpg
+  pika-cli send --group <hex-group-id> --media doc.pdf --mime-type application/pdf
+  pika-cli send --group <hex-group-id> --media pic.png --content \"check this out\"
 
 When using --to, pika-cli searches your groups for an existing 1:1 DM.
-If none exists, it automatically creates one and sends your message.")]
+If none exists, it automatically creates one and sends your message.
+
+When --media is provided, the file is encrypted and uploaded to a Blossom
+server, and --content becomes the caption (optional).")]
     Send {
         /// Nostr group ID (hex) — send directly to this group
         #[arg(long, conflicts_with = "to")]
@@ -128,9 +137,41 @@ If none exists, it automatically creates one and sends your message.")]
         #[arg(long, conflicts_with = "group")]
         to: Option<String>,
 
-        /// Message content
-        #[arg(long)]
+        /// Message content (or caption when --media is used)
+        #[arg(long, default_value = "")]
         content: String,
+
+        /// Local file to encrypt, upload, and attach
+        #[arg(long)]
+        media: Option<PathBuf>,
+
+        /// MIME type for --media (defaults to application/octet-stream)
+        #[arg(long, requires = "media")]
+        mime_type: Option<String>,
+
+        /// Override filename stored in media metadata
+        #[arg(long, requires = "media")]
+        filename: Option<String>,
+
+        /// Blossom server URL (repeatable; defaults to blossom.yakihonne.com)
+        #[arg(long = "blossom", requires = "media")]
+        blossom_servers: Vec<String>,
+    },
+
+    /// Download and decrypt a media attachment from a message
+    #[command(after_help = "Examples:
+  pika-cli download-media <message-id>
+  pika-cli download-media <message-id> --output photo.jpg
+
+The message ID is shown in `pika-cli messages` output.
+If --output is omitted, the original filename from the sender is used.")]
+    DownloadMedia {
+        /// Message ID (hex) containing the media attachment
+        message_id: String,
+
+        /// Output file path (defaults to the original filename)
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 
     /// Fetch and decrypt recent messages from a group
@@ -207,8 +248,29 @@ async fn main() -> anyhow::Result<()> {
         Command::Welcomes => cmd_welcomes(&cli),
         Command::AcceptWelcome { wrapper_event_id } => cmd_accept_welcome(&cli, wrapper_event_id),
         Command::Groups => cmd_groups(&cli),
-        Command::Send { group, to, content } => {
-            cmd_send(&cli, group.as_deref(), to.as_deref(), content).await
+        Command::Send {
+            group,
+            to,
+            content,
+            media,
+            mime_type,
+            filename,
+            blossom_servers,
+        } => {
+            cmd_send(
+                &cli,
+                group.as_deref(),
+                to.as_deref(),
+                content,
+                media.as_deref(),
+                mime_type.as_deref(),
+                filename.as_deref(),
+                blossom_servers,
+            )
+            .await
+        }
+        Command::DownloadMedia { message_id, output } => {
+            cmd_download_media(&cli, message_id, output.as_deref()).await
         }
         Command::Messages { group, limit } => cmd_messages(&cli, group, *limit),
         Command::Profile => cmd_profile(&cli).await,
@@ -288,6 +350,108 @@ fn find_group(
 
 fn print(v: serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(&v).expect("json encode"));
+}
+
+/// Fetch recent group messages from the relay and feed them through
+/// `mdk.process_message` so the local MLS epoch is up-to-date before we
+/// attempt to create a new message.
+async fn ingest_group_backlog(
+    mdk: &mdk_util::PikaMdk,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    nostr_group_id_hex: &str,
+) -> anyhow::Result<()> {
+    let filter = Filter::new()
+        .kind(Kind::MlsGroupMessage)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
+        .limit(200);
+
+    let events = client
+        .fetch_events_from(relay_urls.to_vec(), filter, Duration::from_secs(10))
+        .await
+        .context("fetch group backlog")?;
+
+    for ev in events.iter() {
+        // Errors are expected (own messages bouncing back, already-processed
+        // events, etc.) — the important thing is that commits get applied.
+        let _ = mdk.process_message(ev);
+    }
+
+    Ok(())
+}
+
+const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
+
+fn is_imeta_tag(tag: &Tag) -> bool {
+    matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
+}
+
+fn mime_from_extension(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "heic" => Some("image/heic"),
+        "svg" => Some("image/svg+xml"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mp3" => Some("audio/mpeg"),
+        "ogg" => Some("audio/ogg"),
+        "wav" => Some("audio/wav"),
+        "pdf" => Some("application/pdf"),
+        "txt" | "md" => Some("text/plain"),
+        _ => None,
+    }
+}
+
+fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
+    let parsed: Vec<String> = values
+        .iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
+        })
+        .collect();
+    if !parsed.is_empty() {
+        return parsed;
+    }
+    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+}
+
+fn message_media_refs(
+    mdk: &mdk_util::PikaMdk,
+    group_id: &GroupId,
+    tags: &Tags,
+) -> Vec<serde_json::Value> {
+    let manager = mdk.media_manager(group_id.clone());
+    tags.iter()
+        .filter(|tag| is_imeta_tag(tag))
+        .filter_map(|tag| manager.parse_imeta_tag(tag).ok())
+        .map(media_ref_to_json)
+        .collect()
+}
+
+fn media_ref_to_json(reference: MediaReference) -> serde_json::Value {
+    let (width, height) = reference
+        .dimensions
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+    json!({
+        "original_hash_hex": hex::encode(reference.original_hash),
+        "url": reference.url,
+        "mime_type": reference.mime_type,
+        "filename": reference.filename,
+        "width": width,
+        "height": height,
+        "nonce_hex": hex::encode(reference.nonce),
+        "scheme_version": reference.scheme_version,
+    })
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -545,11 +709,129 @@ fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Encrypt and upload a media file to Blossom, returning the imeta tag.
+async fn upload_media(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    mls_group_id: &GroupId,
+    file: &Path,
+    mime_type: Option<&str>,
+    filename: Option<&str>,
+    blossom_servers: &[String],
+) -> anyhow::Result<(Tag, serde_json::Value)> {
+    let bytes =
+        std::fs::read(file).with_context(|| format!("read media file {}", file.display()))?;
+    if bytes.is_empty() {
+        anyhow::bail!("media file is empty");
+    }
+    if bytes.len() > MAX_CHAT_MEDIA_BYTES {
+        anyhow::bail!("media too large (max 32 MB)");
+    }
+
+    let resolved_filename = filename
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            file.file_name()
+                .and_then(|f| f.to_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "file.bin".to_string());
+    let resolved_mime = mime_type
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| mime_from_extension(file))
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let manager = mdk.media_manager(mls_group_id.clone());
+    let mut upload = manager
+        .encrypt_for_upload_with_options(
+            &bytes,
+            &resolved_mime,
+            &resolved_filename,
+            &MediaProcessingOptions::default(),
+        )
+        .context("encrypt media for upload")?;
+    let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+    let expected_hash_hex = hex::encode(upload.encrypted_hash);
+
+    let upload_servers = blossom_servers_or_default(blossom_servers);
+
+    let mut uploaded_url: Option<String> = None;
+    let mut used_server: Option<String> = None;
+    let mut descriptor_sha256_hex: Option<String> = None;
+    let mut last_error: Option<String> = None;
+    for server in &upload_servers {
+        let base_url = match Url::parse(server) {
+            Ok(url) => url,
+            Err(e) => {
+                last_error = Some(format!("{server}: {e}"));
+                continue;
+            }
+        };
+        let blossom = BlossomClient::new(base_url);
+        let descriptor = match blossom
+            .upload_blob(
+                encrypted_data.clone(),
+                Some(upload.mime_type.clone()),
+                None,
+                Some(keys),
+            )
+            .await
+        {
+            Ok(descriptor) => descriptor,
+            Err(e) => {
+                last_error = Some(format!("{server}: {e}"));
+                continue;
+            }
+        };
+
+        let descriptor_hash_hex = descriptor.sha256.to_string();
+        if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
+            last_error = Some(format!(
+                "{server}: uploaded hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
+            ));
+            continue;
+        }
+
+        uploaded_url = Some(descriptor.url.to_string());
+        used_server = Some(server.clone());
+        descriptor_sha256_hex = Some(descriptor_hash_hex);
+        break;
+    }
+
+    let Some(uploaded_url) = uploaded_url else {
+        anyhow::bail!(
+            "blossom upload failed: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        );
+    };
+
+    let imeta_tag = manager.create_imeta_tag(&upload, &uploaded_url);
+    let media_json = json!({
+        "blossom_server": used_server,
+        "uploaded_url": uploaded_url,
+        "original_hash_hex": hex::encode(upload.original_hash),
+        "encrypted_hash_hex": expected_hash_hex,
+        "descriptor_sha256_hex": descriptor_sha256_hex,
+        "mime_type": upload.mime_type,
+        "filename": upload.filename,
+        "bytes": bytes.len(),
+    });
+    Ok((imeta_tag, media_json))
+}
+
 async fn cmd_send(
     cli: &Cli,
     group_hex: Option<&str>,
     to_str: Option<&str>,
     content: &str,
+    media: Option<&Path>,
+    mime_type: Option<&str>,
+    filename: Option<&str>,
+    blossom_servers: &[String],
 ) -> anyhow::Result<()> {
     if group_hex.is_none() && to_str.is_none() {
         anyhow::bail!(
@@ -557,73 +839,61 @@ async fn cmd_send(
              Use --group <HEX> to send to a known group, or --to <NPUB> to send to a peer."
         );
     }
+    if media.is_none() && content.is_empty() {
+        anyhow::bail!("--content is required (or use --media to send a file)");
+    }
 
     let (keys, mdk) = open(cli)?;
 
-    match (group_hex, to_str) {
+    // ── Resolve target group ────────────────────────────────────────────
+    struct ResolvedTarget {
+        group: mdk_storage_traits::groups::types::Group,
+        auto_created: bool,
+    }
+
+    let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
+
+    let (resolved, client) = match (group_hex, to_str) {
         (Some(gid), _) => {
-            // Direct send to a known group — original behavior.
-            let client = client(cli, &keys).await?;
-            let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
             let group = find_group(&mdk, gid)?;
-            let ngid = hex::encode(group.nostr_group_id);
-
-            let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
-            let msg_event = mdk
-                .create_message(&group.mls_group_id, rumor)
-                .context("create message")?;
-            relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message").await?;
-            client.shutdown().await;
-
-            print(json!({
-                "event_id": msg_event.id.to_hex(),
-                "nostr_group_id": ngid,
-            }));
+            let c = client(cli, &keys).await?;
+            (
+                ResolvedTarget {
+                    group,
+                    auto_created: false,
+                },
+                c,
+            )
         }
         (_, Some(peer_str)) => {
-            // Smart send: find existing 1:1 DM or auto-create one.
             let peer_pubkey = PublicKey::parse(peer_str.trim())
                 .with_context(|| format!("parse peer key: {peer_str}"))?;
             let my_pubkey = keys.public_key();
 
             // Search for an existing 1:1 DM with this peer.
             let groups = mdk.get_groups().context("get groups")?;
-            let mut found_group = None;
-            for g in &groups {
+            let found = groups.into_iter().find(|g| {
                 let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
                 let others: Vec<_> = members.iter().filter(|p| *p != &my_pubkey).collect();
-                if others.len() == 1 && *others[0] == peer_pubkey {
-                    found_group = Some(g.clone());
-                    break;
-                }
-            }
+                others.len() == 1 && *others[0] == peer_pubkey
+            });
 
-            if let Some(group) = found_group {
-                // Existing DM found — send to it.
-                let client = client(cli, &keys).await?;
-                let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
-                let ngid = hex::encode(group.nostr_group_id);
-
-                let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
-                let msg_event = mdk
-                    .create_message(&group.mls_group_id, rumor)
-                    .context("create message")?;
-                relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message")
-                    .await?;
-                client.shutdown().await;
-
-                print(json!({
-                    "event_id": msg_event.id.to_hex(),
-                    "nostr_group_id": ngid,
-                }));
+            if let Some(group) = found {
+                let c = client(cli, &keys).await?;
+                (
+                    ResolvedTarget {
+                        group,
+                        auto_created: false,
+                    },
+                    c,
+                )
             } else {
-                // No existing DM — create one, send welcome + message.
-                let client = client_all(cli, &keys).await?;
-                let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
+                // Auto-create a DM group.
+                let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
 
                 let peer_kp = relay_util::fetch_latest_key_package(
-                    &client,
+                    &c,
                     &peer_pubkey,
                     &kp_relays,
                     Duration::from_secs(10),
@@ -645,35 +915,155 @@ async fn cmd_send(
                     .create_group(&my_pubkey, vec![peer_kp], config)
                     .context("create group")?;
 
-                let ngid = hex::encode(result.group.nostr_group_id);
-
-                // Send welcome giftwraps.
                 for rumor in result.welcome_rumors {
                     let giftwrap = EventBuilder::gift_wrap(&keys, &peer_pubkey, rumor, [])
                         .await
                         .context("build giftwrap")?;
-                    relay_util::publish_and_confirm(&client, &relays, &giftwrap, "welcome").await?;
+                    relay_util::publish_and_confirm(&c, &relays, &giftwrap, "welcome").await?;
                 }
 
-                // Send the message.
-                let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
-                let msg_event = mdk
-                    .create_message(&result.group.mls_group_id, rumor)
-                    .context("create message")?;
-                relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message")
-                    .await?;
-                client.shutdown().await;
-
-                print(json!({
-                    "event_id": msg_event.id.to_hex(),
-                    "nostr_group_id": ngid,
-                    "auto_created_group": true,
-                }));
+                (
+                    ResolvedTarget {
+                        group: result.group,
+                        auto_created: true,
+                    },
+                    c,
+                )
             }
         }
         _ => unreachable!(),
+    };
+
+    let ngid = hex::encode(resolved.group.nostr_group_id);
+
+    // ── Catch up: process any pending group messages from the relay ─────
+    // Without this, sending twice without running `listen` in between can
+    // leave the local MLS epoch stale, producing ciphertext that peers
+    // (who are on a newer epoch) cannot decrypt.
+    ingest_group_backlog(&mdk, &client, &relays, &ngid).await?;
+
+    // ── Upload media (if any) ───────────────────────────────────────────
+    let mut tags: Vec<Tag> = Vec::new();
+    let mut media_json: Option<serde_json::Value> = None;
+
+    if let Some(file) = media {
+        let (imeta_tag, mj) = upload_media(
+            &keys,
+            &mdk,
+            &resolved.group.mls_group_id,
+            file,
+            mime_type,
+            filename,
+            blossom_servers,
+        )
+        .await?;
+        tags.push(imeta_tag);
+        media_json = Some(mj);
     }
 
+    // ── Build and send MLS message ──────────────────────────────────────
+    let rumor = EventBuilder::new(Kind::ChatMessage, content)
+        .tags(tags)
+        .build(keys.public_key());
+    let msg_event = mdk
+        .create_message(&resolved.group.mls_group_id, rumor)
+        .context("create message")?;
+    relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message").await?;
+    client.shutdown().await;
+
+    let mut out = json!({
+        "event_id": msg_event.id.to_hex(),
+        "nostr_group_id": ngid,
+    });
+    if resolved.auto_created {
+        out["auto_created_group"] = json!(true);
+    }
+    if let Some(mj) = media_json {
+        out["media"] = mj;
+    }
+    print(out);
+    Ok(())
+}
+
+async fn cmd_download_media(
+    cli: &Cli,
+    message_id_hex: &str,
+    output_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    let (_keys, mdk) = open(cli)?;
+    let message_id = EventId::from_hex(message_id_hex.trim()).context("parse message id")?;
+
+    // Scan groups to find the one containing this message.
+    let groups = mdk.get_groups().context("get groups")?;
+    let mut found = None;
+    for g in &groups {
+        if let Ok(Some(msg)) = mdk.get_message(&g.mls_group_id, &message_id) {
+            found = Some((g.mls_group_id.clone(), msg));
+            break;
+        }
+    }
+    let (mls_group_id, message) =
+        found.ok_or_else(|| anyhow!("message {message_id_hex} not found in any group"))?;
+
+    let manager = mdk.media_manager(mls_group_id);
+    let media_ref = message
+        .tags
+        .iter()
+        .filter(|tag| is_imeta_tag(tag))
+        .filter_map(|tag| manager.parse_imeta_tag(tag).ok())
+        .next()
+        .ok_or_else(|| anyhow!("message has no media attachments"))?;
+
+    let response = reqwest::Client::new()
+        .get(media_ref.url.as_str())
+        .send()
+        .await
+        .with_context(|| format!("download encrypted media from {}", media_ref.url))?;
+    if !response.status().is_success() {
+        anyhow::bail!("download failed: HTTP {}", response.status());
+    }
+    let encrypted_data = response.bytes().await.context("read media response body")?;
+    let decrypted = manager
+        .decrypt_from_download(&encrypted_data, &media_ref)
+        .context("decrypt downloaded media")?;
+
+    let original_hash_hex = hex::encode(media_ref.original_hash);
+    let decrypted_hash_hex = hex::encode(Sha256::digest(&decrypted));
+    if !decrypted_hash_hex.eq_ignore_ascii_case(&original_hash_hex) {
+        anyhow::bail!(
+            "decrypted hash mismatch (expected {original_hash_hex}, got {decrypted_hash_hex})"
+        );
+    }
+
+    // Resolve output path: explicit --output > original filename > fallback
+    let default_name = if media_ref.filename.is_empty() {
+        "download.bin"
+    } else {
+        &media_ref.filename
+    };
+    let resolved_output = match output_path {
+        Some(p) => p.to_path_buf(),
+        None => PathBuf::from(default_name),
+    };
+
+    if let Some(parent) = resolved_output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create output dir {}", parent.display()))?;
+        }
+    }
+    std::fs::write(&resolved_output, &decrypted)
+        .with_context(|| format!("write decrypted media to {}", resolved_output.display()))?;
+
+    print(json!({
+        "message_id": message_id.to_hex(),
+        "original_hash_hex": original_hash_hex,
+        "mime_type": media_ref.mime_type,
+        "filename": media_ref.filename,
+        "url": media_ref.url.to_string(),
+        "output_path": resolved_output,
+        "bytes": decrypted.len(),
+    }));
     Ok(())
 }
 
@@ -694,6 +1084,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
                 "from_pubkey": m.pubkey.to_hex(),
                 "content": m.content,
                 "created_at": m.created_at.as_secs(),
+                "media": message_media_refs(&mdk, &group.mls_group_id, &m.tags),
             })
         })
         .collect();
@@ -701,7 +1092,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     Ok(())
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://blossom.yakihonne.com";
+const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn cmd_profile(cli: &Cli) -> anyhow::Result<()> {
@@ -823,7 +1214,10 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
     let mut rx = client.notifications();
 
     // Subscribe to giftwrap (welcomes).
-    let since = Timestamp::now() - Duration::from_secs(lookback_sec);
+    // NIP-59 randomises the outer created_at to ±48 h, so the lookback for
+    // giftwraps must be at least 2 days regardless of the caller's --lookback.
+    let gift_lookback = lookback_sec.max(2 * 86400);
+    let gift_since = Timestamp::now() - Duration::from_secs(gift_lookback);
     // Giftwraps are authored by the sender; recipients are indicated via the `p` tag.
     // Filtering by `pubkey(...)` would only match events *we* authored and would miss inbound invites.
     let gift_filter = Filter::new()
@@ -832,12 +1226,12 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
             SingleLetterTag::lowercase(Alphabet::P),
             keys.public_key().to_hex(),
         )
-        .since(since)
+        .since(gift_since)
         .limit(200);
     let gift_sub = client.subscribe(gift_filter, None).await?;
 
     // Subscribe to all known groups.
-    let mut group_subs = std::collections::HashMap::<SubscriptionId, String>::new();
+    let mut group_subs = std::collections::HashMap::<SubscriptionId, (String, GroupId)>::new();
     if let Ok(groups) = mdk.get_groups() {
         for g in &groups {
             let ngid = hex::encode(g.nostr_group_id);
@@ -847,7 +1241,7 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
                 .since(Timestamp::now() - Duration::from_secs(lookback_sec))
                 .limit(200);
             if let Ok(out) = client.subscribe(filter, None).await {
-                group_subs.insert(out.val, ngid);
+                group_subs.insert(out.val, (ngid, g.mls_group_id.clone()));
             }
         }
     }
@@ -932,10 +1326,9 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
             if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
                 mdk.process_message(&event)
             {
-                let ngid = group_subs
-                    .get(&subscription_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let Some((ngid, mls_group_id)) = group_subs.get(&subscription_id).cloned() else {
+                    continue;
+                };
                 let line = json!({
                     "type": "message",
                     "nostr_group_id": ngid,
@@ -943,6 +1336,7 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
                     "content": msg.content,
                     "created_at": msg.created_at.as_secs(),
                     "message_id": msg.id.to_hex(),
+                    "media": message_media_refs(&mdk, &mls_group_id, &msg.tags),
                 });
                 println!("{}", serde_json::to_string(&line).unwrap());
             }

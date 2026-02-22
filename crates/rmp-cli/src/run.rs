@@ -411,7 +411,7 @@ fn maybe_write_ios_relay_config(
         .ok()
         .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io".into());
+        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com".into());
 
     let relay_items: Vec<String> = relays
         .split(',')
@@ -994,7 +994,7 @@ fn maybe_write_android_relay_config(
         .ok()
         .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com,wss://relay.satlantis.io".into());
+        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com".into());
 
     let relay_items: Vec<String> = relays
         .split(',')

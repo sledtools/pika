@@ -15,7 +15,7 @@ impl AppCore {
     }
 
     pub(super) fn refresh_chat_list_from_storage(&mut self) {
-        let Some(sess) = self.session.as_mut() else {
+        let Some(sess) = self.session.as_ref() else {
             self.state.chat_list = vec![];
             self.emit_chat_list();
             return;
@@ -131,7 +131,7 @@ impl AppCore {
 
             let unread_count = *self.unread_counts.get(&chat_id).unwrap_or(&0);
 
-            let last_message = last_message.map(|msg| {
+            let last_message = last_message.map(|msg: String| {
                 if msg.contains("```pika-prompt-response\n") {
                     "Voted in poll".to_string()
                 } else if msg.contains("```pika-html-update ") {
@@ -166,7 +166,9 @@ impl AppCore {
         }
 
         list.sort_by_key(|c| std::cmp::Reverse(c.last_message_at.unwrap_or(0)));
-        sess.groups = index;
+        if let Some(sess) = self.session.as_mut() {
+            sess.groups = index;
+        }
         self.state.chat_list = list;
         self.emit_chat_list();
         self.sync_push_subscriptions();
@@ -240,7 +242,7 @@ impl AppCore {
     }
 
     pub(super) fn refresh_current_chat(&mut self, chat_id: &str) {
-        let Some(sess) = self.session.as_mut() else {
+        let Some(sess) = self.session.as_ref() else {
             self.state.current_chat = None;
             self.emit_current_chat();
             return;
@@ -327,6 +329,13 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let media = self.chat_media_attachments_for_tags(
+                    &sess.mdk,
+                    &entry.mls_group_id,
+                    chat_id,
+                    &my_pubkey_hex,
+                    &m.tags,
+                );
                 let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
 
                 // Aggregate reactions for this message.
@@ -365,6 +374,7 @@ impl AppCore {
                     is_mine,
                     delivery,
                     reactions,
+                    media,
                     poll_tally: vec![],
                     my_poll_vote: None,
                     html_state: None,
@@ -402,6 +412,7 @@ impl AppCore {
                     is_mine: true,
                     delivery,
                     reactions: vec![],
+                    media: lm.media,
                     poll_tally: vec![],
                     my_poll_vote: None,
                     html_state: None,
@@ -449,7 +460,7 @@ impl AppCore {
     }
 
     pub(super) fn load_older_messages(&mut self, chat_id: &str, limit: usize) {
-        let Some(sess) = self.session.as_mut() else {
+        let Some(sess) = self.session.as_ref() else {
             return;
         };
         let Some(entry) = sess.groups.get(chat_id).cloned() else {
@@ -512,6 +523,13 @@ impl AppCore {
                     .and_then(|map| map.get(&id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
+                let media = self.chat_media_attachments_for_tags(
+                    &sess.mdk,
+                    &entry.mls_group_id,
+                    chat_id,
+                    &my_pubkey_hex,
+                    &m.tags,
+                );
                 let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
                 ChatMessage {
                     id,
@@ -525,6 +543,7 @@ impl AppCore {
                     is_mine,
                     delivery,
                     reactions: vec![],
+                    media,
                     poll_tally: vec![],
                     my_poll_vote: None,
                     html_state: None,
@@ -814,6 +833,7 @@ mod tests {
             is_mine: false,
             delivery: MessageDeliveryState::Sent,
             reactions: vec![],
+            media: vec![],
             poll_tally: vec![],
             my_poll_vote: None,
             html_state: None,

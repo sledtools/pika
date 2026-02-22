@@ -53,7 +53,7 @@ struct ChatListView: View {
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
-                    Text(chat.lastMessage ?? "No messages yet")
+                    Text(chatPreviewText(chat.lastMessage))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -283,3 +283,11 @@ struct ChatListView: View {
     }
 }
 #endif
+
+private func chatPreviewText(_ lastMessage: String?) -> String {
+    guard let msg = lastMessage else { return "No messages yet" }
+    if msg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "Media"
+    }
+    return msg
+}

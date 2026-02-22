@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use nostr_sdk::prelude::RelayUrl;
+use nostr_sdk::prelude::{RelayUrl, Url};
 use serde::Deserialize;
 
 use super::AppCore;
@@ -20,10 +20,14 @@ const DEFAULT_KEY_PACKAGE_RELAY_URLS: &[&str] = &[
     "wss://nostr-pub.wellorder.net",
     "wss://nostr-01.yakihonne.com",
     "wss://nostr-02.yakihonne.com",
-    "wss://relay.satlantis.io",
 ];
 const DEFAULT_CALL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
+
+const DEFAULT_BLOSSOM_SERVERS: &[&str] = &[
+    "https://us-east.nostr.pikachat.org",
+    "https://eu.nostr.pikachat.org",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -32,6 +36,7 @@ pub(super) struct AppConfig {
     pub(super) enable_external_signer: Option<bool>,
     pub(super) relay_urls: Option<Vec<String>>,
     pub(super) key_package_relay_urls: Option<Vec<String>>,
+    pub(super) blossom_servers: Option<Vec<String>>,
     pub(super) call_moq_url: Option<String>,
     pub(super) call_broadcast_prefix: Option<String>,
     pub(super) call_audio_backend: Option<String>,
@@ -121,6 +126,29 @@ impl AppCore {
         DEFAULT_KEY_PACKAGE_RELAY_URLS
             .iter()
             .filter_map(|u| RelayUrl::parse(u).ok())
+            .collect()
+    }
+
+    pub(super) fn blossom_servers(&self) -> Vec<String> {
+        if let Some(urls) = &self.config.blossom_servers {
+            let parsed: Vec<String> = urls
+                .iter()
+                .filter_map(|u| {
+                    let t = u.trim();
+                    if t.is_empty() {
+                        return None;
+                    }
+                    Url::parse(t).ok().map(|_| t.to_string())
+                })
+                .collect();
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+
+        DEFAULT_BLOSSOM_SERVERS
+            .iter()
+            .filter_map(|u| Url::parse(u).ok().map(|_| (*u).to_string()))
             .collect()
     }
 

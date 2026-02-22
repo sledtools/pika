@@ -55,6 +55,17 @@ pub enum InternalEvent {
         ok: bool,
         error: Option<String>,
     },
+    ChatMediaUploadCompleted {
+        request_id: String,
+        uploaded_url: Option<String>,
+        descriptor_sha256_hex: Option<String>,
+        error: Option<String>,
+    },
+    ChatMediaDownloadFetched {
+        request_id: String,
+        encrypted_data: Option<Vec<u8>>,
+        error: Option<String>,
+    },
     KeyPackagePublished {
         ok: bool,
         error: Option<String>,

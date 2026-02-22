@@ -39,7 +39,7 @@ struct AvatarView: View {
 
 // MARK: - Cached image loader
 
-private final class ImageCache: @unchecked Sendable {
+final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
     private let cache = NSCache<NSURL, UIImage>()
 
@@ -57,7 +57,7 @@ private final class ImageCache: @unchecked Sendable {
 }
 
 @MainActor
-private final class ImageLoader: ObservableObject {
+final class ImageLoader: ObservableObject {
     @Published var image: UIImage?
     private var url: URL?
     private var task: Task<Void, Never>?
@@ -95,7 +95,7 @@ private final class ImageLoader: ObservableObject {
     }
 }
 
-private struct CachedAsyncImage<Content: View, Placeholder: View>: View {
+struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     let url: URL
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder

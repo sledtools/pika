@@ -38,7 +38,6 @@ const DEFAULT_KEY_PACKAGE_RELAYS: &[&str] = &[
     "wss://nostr-pub.wellorder.net",
     "wss://nostr-01.yakihonne.com",
     "wss://nostr-02.yakihonne.com",
-    "wss://relay.satlantis.io",
 ];
 
 const DEFAULT_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";

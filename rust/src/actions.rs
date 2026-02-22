@@ -57,6 +57,18 @@ pub enum AppAction {
         kind: Option<u16>,
         reply_to_message_id: Option<String>,
     },
+    SendChatMedia {
+        chat_id: String,
+        data_base64: String,
+        mime_type: String,
+        filename: String,
+        caption: String,
+    },
+    DownloadChatMedia {
+        chat_id: String,
+        message_id: String,
+        original_hash_hex: String,
+    },
     RetryMessage {
         chat_id: String,
         message_id: String,
@@ -195,6 +207,8 @@ impl AppAction {
             // Chat
             AppAction::CreateChat { .. } => "CreateChat",
             AppAction::SendMessage { .. } => "SendMessage",
+            AppAction::SendChatMedia { .. } => "SendChatMedia",
+            AppAction::DownloadChatMedia { .. } => "DownloadChatMedia",
             AppAction::RetryMessage { .. } => "RetryMessage",
             AppAction::OpenChat { .. } => "OpenChat",
             AppAction::LoadOlderMessages { .. } => "LoadOlderMessages",

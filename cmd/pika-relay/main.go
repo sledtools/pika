@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log"
@@ -10,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"syscall"
 
 	"fiatjaf.com/nostr"
@@ -68,11 +69,11 @@ func main() {
 
 	bl.LoadBlob = func(ctx context.Context, sha256 string, ext string) (io.ReadSeeker, *url.URL, error) {
 		path := filepath.Join(mediaDir, sha256)
-		data, err := os.ReadFile(path)
+		reader, err := newFileReadSeeker(ctx, path)
 		if err != nil {
 			return nil, nil, err
 		}
-		return bytes.NewReader(data), nil, nil
+		return reader, nil, nil
 	}
 
 	bl.DeleteBlob = func(ctx context.Context, sha256 string, ext string) error {
@@ -120,4 +121,54 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+type fileReadSeeker struct {
+	file      *os.File
+	reader    *io.SectionReader
+	closeOnce sync.Once
+}
 
+func newFileReadSeeker(ctx context.Context, path string) (*fileReadSeeker, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+
+	frs := &fileReadSeeker{
+		file:   f,
+		reader: io.NewSectionReader(f, 0, info.Size()),
+	}
+
+	runtime.SetFinalizer(frs, func(s *fileReadSeeker) {
+		s.close()
+	})
+
+	go func() {
+		<-ctx.Done()
+		frs.close()
+	}()
+
+	return frs, nil
+}
+
+func (f *fileReadSeeker) Read(p []byte) (int, error) {
+	n, err := f.reader.Read(p)
+	if err == io.EOF {
+		f.close()
+	}
+	return n, err
+}
+
+func (f *fileReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	return f.reader.Seek(offset, whence)
+}
+
+func (f *fileReadSeeker) close() {
+	f.closeOnce.Do(func() {
+		_ = f.file.Close()
+	})
+}

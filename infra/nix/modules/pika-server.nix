@@ -5,6 +5,9 @@
 let
   serverPort = 8080;
   dbName = "pika_server";
+  serviceUser = dbName;
+  serviceGroup = dbName;
+  serviceStateDir = "/var/lib/pika-server";
 in
 {
   imports = [
@@ -24,9 +27,10 @@ in
       ensureDBOwnership = true;
     }];
     authentication = lib.mkForce ''
-      local all all trust
-      host all all 127.0.0.1/32 trust
-      host all all ::1/128 trust
+      local all postgres peer
+      local ${dbName} ${dbName} peer
+      host ${dbName} ${dbName} 127.0.0.1/32 scram-sha-256
+      host ${dbName} ${dbName} ::1/128 scram-sha-256
     '';
   };
 
@@ -51,37 +55,37 @@ in
 
   sops.secrets."apns_key" = {
     format = "yaml";
-    owner = "pika-server";
-    group = "users";
+    owner = serviceUser;
+    group = serviceGroup;
     mode = "0400";
-    path = "/var/lib/pika-server/apns-key.p8";
+    path = "${serviceStateDir}/apns-key.p8";
   };
 
   sops.secrets."apns_key_id" = {
     format = "yaml";
-    owner = "pika-server";
-    group = "users";
+    owner = serviceUser;
+    group = serviceGroup;
     mode = "0400";
   };
 
   sops.secrets."apns_team_id" = {
     format = "yaml";
-    owner = "pika-server";
-    group = "users";
+    owner = serviceUser;
+    group = serviceGroup;
     mode = "0400";
   };
 
   sops.secrets."fcm_credentials" = {
     format = "yaml";
-    owner = "pika-server";
-    group = "users";
+    owner = serviceUser;
+    group = serviceGroup;
     mode = "0400";
-    path = "/var/lib/pika-server/fcm-credentials.json";
+    path = "${serviceStateDir}/fcm-credentials.json";
   };
 
   sops.templates."pika-server-env" = {
-    owner = "pika-server";
-    group = "users";
+    owner = serviceUser;
+    group = serviceGroup;
     mode = "0400";
     content = ''
       DATABASE_URL=postgresql://${dbName}@/${dbName}
@@ -91,23 +95,23 @@ in
       APNS_KEY_ID=${config.sops.placeholder."apns_key_id"}
       APNS_TEAM_ID=${config.sops.placeholder."apns_team_id"}
       APNS_TOPIC=org.pikachat.pika
-      # FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
+      FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
       RUST_LOG=info
     '';
   };
 
-  users.users."pika-server" = {
+  users.users."${serviceUser}" = {
     isSystemUser = true;
-    group = "pika-server";
-    home = "/var/lib/pika-server";
+    group = serviceGroup;
+    home = serviceStateDir;
     createHome = true;
   };
-  users.groups."pika-server" = {};
+  users.groups."${serviceGroup}" = {};
 
   systemd.services.pika-server = {
     description = "Pika notification server";
     wantedBy = [ "multi-user.target" ];
-    after = [ "network-online.target" "postgresql.service" "sops-nix.service" ];
+    after = [ "network-online.target" "postgresql.service" "sops-install-secrets.service" ];
     wants = [ "network-online.target" ];
     requires = [ "postgresql.service" ];
 
@@ -118,9 +122,9 @@ in
 
     serviceConfig = {
       Type = "simple";
-      User = "pika-server";
-      Group = "pika-server";
-      WorkingDirectory = "/var/lib/pika-server";
+      User = serviceUser;
+      Group = serviceGroup;
+      WorkingDirectory = serviceStateDir;
       EnvironmentFile = [ config.sops.templates."pika-server-env".path ];
       ExecStart = "${pikaServerPkg}/bin/pika-server";
       Restart = "always";
@@ -129,12 +133,12 @@ in
       PrivateTmp = true;
       ProtectSystem = "strict";
       ProtectHome = true;
-      ReadWritePaths = [ "/var/lib/pika-server" ];
+      ReadWritePaths = [ serviceStateDir ];
     };
   };
 
   systemd.tmpfiles.rules = [
-    "d /var/lib/pika-server 0750 pika-server pika-server -"
+    "d ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
     "d /etc/age 0700 root root -"
   ];
 

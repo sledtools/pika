@@ -40,9 +40,7 @@ let
   discoverJson = builtins.toJSON {
     relays = [
       { host = "us-east.moq.pikachat.org"; region = "us-east"; location = "Ashburn, VA"; }
-      { host = "us-west.moq.pikachat.org"; region = "us-west"; location = "Hillsboro, OR"; }
       { host = "eu.moq.pikachat.org"; region = "eu-central"; location = "Falkenstein, DE"; }
-      { host = "asia.moq.pikachat.org"; region = "ap-southeast"; location = "Singapore"; }
     ];
   };
 in

@@ -67,7 +67,6 @@ relay-initial-deploy name:
     echo ""
 
     cd "{{FLAKE_ROOT}}"
-    git add -A
 
     nix run github:nix-community/nixos-anywhere -- \
         --flake ".#$NAME" \
@@ -231,7 +230,6 @@ server-initial-deploy:
     echo ""
 
     cd "{{FLAKE_ROOT}}"
-    git add -A
 
     nix run github:nix-community/nixos-anywhere -- \
         --flake ".#$NAME" \
@@ -345,7 +343,7 @@ server-destroy:
 
 # ── pika-relay (Nostr relay + Blossom media server) ──────────────────
 # relay-us-east (us-east.nostr.pikachat.org)  → Ashburn, VA    cpx21
-# relay-eu      (eu.nostr.pikachat.org)       → Falkenstein, DE cpx21
+# relay-eu      (eu.nostr.pikachat.org)       → Falkenstein, DE cax11
 
 # Create both pika-relay servers
 pika-relay-create-all:
@@ -395,7 +393,6 @@ pika-relay-initial-deploy name:
     echo ""
 
     cd "{{FLAKE_ROOT}}"
-    git add -A
 
     nix run github:nix-community/nixos-anywhere -- \
         --flake ".#$NAME" \
@@ -561,7 +558,6 @@ build-initial-deploy ip=PIKA_BUILD_IP:
     echo ""
 
     cd "{{FLAKE_ROOT}}"
-    git add -A
 
     nix run github:nix-community/nixos-anywhere -- \
         --flake ".#pika-build" \

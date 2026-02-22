@@ -88,11 +88,16 @@ async fn main() -> anyhow::Result<()> {
 
     // FCM configuration (optional — logs only when not configured)
     let fcm_client = match std::env::var("FCM_CREDENTIALS_PATH") {
-        Ok(path) if !path.is_empty() => {
-            let client = FcmClient::new(&path).await?;
-            info!("FCM client configured");
-            Some(Arc::new(client))
-        }
+        Ok(path) if !path.is_empty() => match FcmClient::new(&path).await {
+            Ok(client) => {
+                info!("FCM client configured");
+                Some(Arc::new(client))
+            }
+            Err(err) => {
+                warn!(error = %err, "FCM configuration invalid; continuing without Android push");
+                None
+            }
+        },
         _ => {
             warn!("FCM not configured — will log instead of sending");
             None

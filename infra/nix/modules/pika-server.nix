@@ -51,6 +51,7 @@ in
   sops = {
     age.keyFile = "/etc/age/key.txt";
     defaultSopsFile = ../../secrets/pika-server.yaml;
+    useSystemdActivation = true;
   };
 
   sops.secrets."apns_key" = {

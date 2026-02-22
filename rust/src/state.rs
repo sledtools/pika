@@ -229,6 +229,7 @@ pub struct MemberInfo {
     pub npub: String,
     pub name: Option<String>,
     pub picture_url: Option<String>,
+    pub is_admin: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

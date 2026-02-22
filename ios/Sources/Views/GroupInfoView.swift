@@ -78,9 +78,11 @@ struct GroupInfoView: View {
                         Text("You")
                             .font(.body.weight(.medium))
                         Spacer()
-                        Text("Admin")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if chat.isAdmin {
+                            Text("Admin")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     ForEach(chat.members, id: \.pubkey) { member in
@@ -106,6 +108,11 @@ struct GroupInfoView: View {
                                     }
                                 }
                                 Spacer()
+                                if member.isAdmin {
+                                    Text("Admin")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .buttonStyle(.plain)

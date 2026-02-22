@@ -92,6 +92,7 @@ impl AppCore {
                     npub: m.pubkey.to_bech32().unwrap_or_else(|_| m.pubkey.to_hex()),
                     name: m.name.clone(),
                     picture_url: m.picture_url.clone(),
+                    is_admin: admin_pubkeys.contains(&m.pubkey.to_hex()),
                 })
                 .collect();
 
@@ -441,6 +442,7 @@ impl AppCore {
                 npub: m.pubkey.to_bech32().unwrap_or_else(|_| m.pubkey.to_hex()),
                 name: m.name.clone(),
                 picture_url: m.picture_url.clone(),
+                is_admin: entry.admin_pubkeys.contains(&m.pubkey.to_hex()),
             })
             .collect();
 

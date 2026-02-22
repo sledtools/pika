@@ -165,7 +165,7 @@ enum PreviewAppState {
                 chatId: "chat-empty",
                 isGroup: false,
                 groupName: nil,
-                members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Empty Chat", pictureUrl: nil)],
+                members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Empty Chat", pictureUrl: nil, isAdmin: false)],
                 isAdmin: false,
                 messages: [],
                 canLoadOlder: false,
@@ -255,7 +255,7 @@ enum PreviewAppState {
             chatId: id,
             isGroup: false,
             groupName: nil,
-            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil)],
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil, isAdmin: false)],
             lastMessage: lastMessage,
             lastMessageAt: 1_709_000_000,
             unreadCount: unread
@@ -321,7 +321,7 @@ enum PreviewAppState {
             chatId: id,
             isGroup: false,
             groupName: nil,
-            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil)],
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: name, pictureUrl: nil, isAdmin: false)],
             isAdmin: false,
             messages: messages,
             canLoadOlder: true,
@@ -357,7 +357,7 @@ enum PreviewAppState {
             chatId: "chat-long",
             isGroup: false,
             groupName: nil,
-            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Long Thread", pictureUrl: nil)],
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Long Thread", pictureUrl: nil, isAdmin: false)],
             isAdmin: false,
             messages: messages,
             canLoadOlder: true,
@@ -497,13 +497,15 @@ enum PreviewAppState {
                     pubkey: samplePeerPubkey,
                     npub: samplePeerNpub,
                     name: "Anthony",
-                    pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce"
+                    pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce",
+                    isAdmin: false
                 ),
                 MemberInfo(
                     pubkey: sampleThirdPubkey,
                     npub: sampleThirdNpub,
                     name: "benthecarman",
-                    pictureUrl: nil
+                    pictureUrl: nil,
+                    isAdmin: false
                 ),
             ],
             isAdmin: true,
@@ -614,7 +616,7 @@ enum PreviewAppState {
             chatId: "chat-media",
             isGroup: false,
             groupName: nil,
-            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Anthony", pictureUrl: nil)],
+            members: [MemberInfo(pubkey: samplePeerPubkey, npub: samplePeerNpub, name: "Anthony", pictureUrl: nil, isAdmin: false)],
             isAdmin: false,
             messages: messages,
             canLoadOlder: false,

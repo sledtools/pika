@@ -188,11 +188,13 @@ fun GroupInfoScreen(manager: AppManager, chatId: String, padding: PaddingValues)
                         style = MaterialTheme.typography.bodyLarge,
                         modifier = Modifier.weight(1f),
                     )
-                    Text(
-                        "Admin",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (isAdmin) {
+                        Text(
+                            "Admin",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -345,6 +347,13 @@ private fun MemberRow(
                     maxLines = 1,
                 )
             }
+        }
+        if (member.isAdmin) {
+            Text(
+                "Admin",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (isAdmin) {
             IconButton(onClick = onRemove) {

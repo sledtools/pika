@@ -1972,3 +1972,93 @@ fn react_to_message_shows_reaction_on_message() {
     assert_eq!(msg2.reactions[0].count, 1);
     assert!(msg2.reactions[0].reacted_by_me);
 }
+
+#[test]
+fn reactions_survive_interleaved_typing_indicators() {
+    let dir = tempdir().unwrap();
+    write_config(&dir.path().to_string_lossy(), true);
+    let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("logged in", Duration::from_secs(2), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let npub = match app.state().auth {
+        AuthState::LoggedIn { ref npub, .. } => npub.clone(),
+        _ => panic!("expected logged in"),
+    };
+    app.dispatch(AppAction::CreateChat { peer_npub: npub });
+    wait_until("chat created", Duration::from_secs(2), || {
+        !app.state().chat_list.is_empty()
+    });
+
+    let chat_id = app.state().chat_list[0].chat_id.clone();
+    app.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("chat opened", Duration::from_secs(2), || {
+        app.state().current_chat.is_some()
+    });
+
+    // Send a message.
+    app.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: "hello".into(),
+        kind: None,
+        reply_to_message_id: None,
+    });
+    wait_until("message appears", Duration::from_secs(2), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .and_then(|c| c.messages.last())
+            .map(|m| m.content == "hello")
+            .unwrap_or(false)
+    });
+
+    let message_id = app
+        .state()
+        .current_chat
+        .as_ref()
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .id
+        .clone();
+
+    // Send many typing indicators to pollute storage pagination.
+    for _ in 0..60 {
+        app.dispatch(AppAction::TypingStarted {
+            chat_id: chat_id.clone(),
+        });
+        // Reset debounce by waiting or just let the debounce block them.
+    }
+
+    // React to the message.
+    app.dispatch(AppAction::ReactToMessage {
+        chat_id: chat_id.clone(),
+        message_id: message_id.clone(),
+        emoji: "\u{2764}\u{FE0F}".into(),
+    });
+    wait_until(
+        "reaction visible despite typing indicators",
+        Duration::from_secs(2),
+        || {
+            app.state()
+                .current_chat
+                .as_ref()
+                .and_then(|c| c.messages.iter().find(|m| m.id == message_id))
+                .map(|m| !m.reactions.is_empty())
+                .unwrap_or(false)
+        },
+    );
+
+    let s = app.state();
+    let chat = s.current_chat.as_ref().unwrap();
+    let msg = chat.messages.iter().find(|m| m.id == message_id).unwrap();
+    assert_eq!(msg.reactions[0].emoji, "\u{2764}\u{FE0F}");
+    assert!(msg.reactions[0].reacted_by_me);
+    // Typing indicators must not leak as messages.
+    assert_eq!(chat.messages.len(), 1);
+}

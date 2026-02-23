@@ -277,20 +277,34 @@ impl AppCore {
         }
 
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
-        let limit = desired.max(50);
-        let messages = sess
-            .mdk
-            .get_messages(
-                &entry.mls_group_id,
-                Some(Pagination::new(Some(limit), Some(0))),
-            )
-            .unwrap_or_default();
+        let target = desired.max(50);
 
-        let storage_len = messages.len();
-        let visible_messages: Vec<_> = messages
-            .into_iter()
-            .filter(|m| m.kind == Kind::ChatMessage || m.kind == Kind::Reaction)
-            .collect();
+        // Fetch in batches until we have enough visible messages (ChatMessage +
+        // Reaction).  Stored typing-indicators and other non-visible kinds
+        // consume pagination slots, so a single fetch may not return enough.
+        let mut visible_messages = Vec::new();
+        let mut fetch_offset = 0;
+        let mut storage_len = 0;
+        loop {
+            let batch = sess
+                .mdk
+                .get_messages(
+                    &entry.mls_group_id,
+                    Some(Pagination::new(Some(target), Some(fetch_offset))),
+                )
+                .unwrap_or_default();
+            let batch_len = batch.len();
+            storage_len += batch_len;
+            visible_messages.extend(
+                batch
+                    .into_iter()
+                    .filter(|m| m.kind == Kind::ChatMessage || m.kind == Kind::Reaction),
+            );
+            if batch_len < target || visible_messages.len() >= target {
+                break;
+            }
+            fetch_offset += batch_len;
+        }
 
         // Separate reactions (kind 7) from regular messages.
         // reaction_target_id -> Vec<(emoji, sender_pubkey)>
@@ -426,7 +440,7 @@ impl AppCore {
             local.retain(|id, lm| !present_ids.contains(id) && lm.timestamp >= oldest_loaded_ts);
         }
 
-        let can_load_older = storage_len == limit;
+        let can_load_older = visible_messages.len() >= target;
         self.loaded_count.insert(chat_id.to_string(), storage_len);
 
         process_html_updates(&mut msgs);
@@ -489,16 +503,29 @@ impl AppCore {
             sender_names.insert(my_pubkey_hex.clone(), my_name.clone());
         }
 
-        let offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
-        let page = sess
-            .mdk
-            .get_messages(
-                &entry.mls_group_id,
-                Some(Pagination::new(Some(limit), Some(offset))),
-            )
-            .unwrap_or_default();
+        let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
+        let mut visible_page = Vec::new();
+        let mut total_fetched = 0;
+        loop {
+            let batch = sess
+                .mdk
+                .get_messages(
+                    &entry.mls_group_id,
+                    Some(Pagination::new(
+                        Some(limit),
+                        Some(base_offset + total_fetched),
+                    )),
+                )
+                .unwrap_or_default();
+            let batch_len = batch.len();
+            total_fetched += batch_len;
+            visible_page.extend(batch.into_iter().filter(|m| m.kind == Kind::ChatMessage));
+            if batch_len < limit || visible_page.len() >= limit {
+                break;
+            }
+        }
 
-        if page.is_empty() {
+        if visible_page.is_empty() {
             if let Some(cur) = self.state.current_chat.as_mut() {
                 if cur.chat_id == chat_id {
                     cur.can_load_older = false;
@@ -508,11 +535,8 @@ impl AppCore {
             return;
         }
 
-        let fetched_len = page.len();
-
-        let mut older: Vec<ChatMessage> = page
+        let mut older: Vec<ChatMessage> = visible_page
             .into_iter()
-            .filter(|m| m.kind == Kind::ChatMessage)
             .rev()
             .map(|m| {
                 let id = m.id.to_hex();
@@ -557,9 +581,9 @@ impl AppCore {
             if cur.chat_id == chat_id {
                 older.append(&mut cur.messages);
                 cur.messages = older;
-                cur.can_load_older = fetched_len == limit;
+                cur.can_load_older = total_fetched >= limit;
                 self.loaded_count
-                    .insert(chat_id.to_string(), offset + fetched_len);
+                    .insert(chat_id.to_string(), base_offset + total_fetched);
                 process_html_updates(&mut cur.messages);
                 process_html_state_updates(&mut cur.messages);
                 process_poll_tallies(&mut cur.messages, &my_pubkey_hex);

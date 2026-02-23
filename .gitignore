@@ -56,6 +56,9 @@ secrets/.age-key*.tmp
 secrets/.zapstore-sign-with.*
 .pikachat/
 .pgdata/
+.pika-cli/
+bots/__pycache__/
+tools/agent-pty/__pycache__/
 
 # Avoid accidentally staging enormous vendored build output.
 third_party/pikachat-openclaw/target/

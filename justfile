@@ -717,14 +717,14 @@ cli-smoke:
 cli-smoke-media:
     ./tools/cli-smoke --with-media
 
-# Run `pika-cli agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
+# Run `pikachat agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
 agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
     set -euo pipefail; \
     if [ ! -f .env ]; then \
       echo "error: missing .env in repo root"; \
       exit 1; \
     fi; \
-    cargo build -p marmotd >/dev/null; \
+    cargo build -p pikachat >/dev/null; \
     set -a; \
     source .env; \
     set +a; \
@@ -744,11 +744,11 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
         exit 1; \
       fi; \
     fi; \
-    export PIKA_AGENT_MARMOTD_BIN="$PWD/target/debug/marmotd"; \
+    export PIKA_AGENT_MARMOTD_BIN="$PWD/target/debug/pikachat"; \
     export PIKA_AGENT_MOQ_URLS="{{ MOQ_US }},{{ MOQ_EU }}"; \
-    cargo run -p pika-cli -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new
+    cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new
 
-# Run `pika-cli agent new` in RPC parity mode (quiet marmotd logs for clean TUI).
+# Run `pikachat agent new` in RPC parity mode (quiet marmotd logs for clean TUI).
 agent-fly-rpc RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
     set -euo pipefail; \
     export PIKA_AGENT_UI_MODE=rpc; \

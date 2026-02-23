@@ -1376,7 +1376,7 @@ fn resolve_agent_moq_urls() -> Vec<String> {
         .collect()
 }
 
-fn resolve_marmotd_bin() -> anyhow::Result<PathBuf> {
+fn resolve_agent_daemon_bin() -> anyhow::Result<PathBuf> {
     if let Ok(path) = std::env::var("PIKA_AGENT_MARMOTD_BIN") {
         let candidate = PathBuf::from(path);
         if candidate.exists() {
@@ -1388,22 +1388,35 @@ fn resolve_marmotd_bin() -> anyhow::Result<PathBuf> {
         );
     }
 
-    let mut sibling = std::env::current_exe().context("resolve pika-cli binary path")?;
-    sibling.set_file_name("marmotd");
-    if sibling.exists() {
-        return Ok(sibling);
+    let current_exe = std::env::current_exe().context("resolve pikachat binary path")?;
+
+    let mut sibling_pikachat = current_exe.clone();
+    sibling_pikachat.set_file_name("pikachat");
+    if sibling_pikachat.exists() {
+        return Ok(sibling_pikachat);
     }
 
-    match std::process::Command::new("marmotd")
-        .arg("--version")
-        .status()
-    {
-        Ok(status) if status.success() => Ok(PathBuf::from("marmotd")),
-        _ => anyhow::bail!(
-            "could not find marmotd binary (tried sibling {} and PATH). Build it with `cargo build -p marmotd` or set PIKA_AGENT_MARMOTD_BIN",
-            sibling.display()
-        ),
+    let mut sibling_marmotd = current_exe;
+    sibling_marmotd.set_file_name("marmotd");
+    if sibling_marmotd.exists() {
+        return Ok(sibling_marmotd);
     }
+
+    for command in ["pikachat", "marmotd"] {
+        match std::process::Command::new(command)
+            .arg("--version")
+            .status()
+        {
+            Ok(status) if status.success() => return Ok(PathBuf::from(command)),
+            _ => {}
+        }
+    }
+
+    anyhow::bail!(
+        "could not find pikachat/marmotd binary (tried sibling {} and {}, then PATH). Build with `cargo build -p pikachat` or set PIKA_AGENT_MARMOTD_BIN",
+        sibling_pikachat.display(),
+        sibling_marmotd.display()
+    )
 }
 
 fn launch_agent_pty_client(
@@ -1419,7 +1432,7 @@ fn launch_agent_pty_client(
     if !script_path.exists() {
         anyhow::bail!("missing {} (run from repo root)", script_path.display());
     }
-    let marmotd_bin = resolve_marmotd_bin()?;
+    let marmotd_bin = resolve_agent_daemon_bin()?;
 
     eprintln!();
     eprintln!("Launching PTY agent session...");
@@ -1468,7 +1481,7 @@ fn launch_agent_rpc_parity_ui(
     if !script_path.exists() {
         anyhow::bail!("missing {} (run from repo root)", script_path.display());
     }
-    let marmotd_bin = resolve_marmotd_bin()?;
+    let marmotd_bin = resolve_agent_daemon_bin()?;
 
     eprintln!();
     eprintln!("Launching RPC parity agent session...");

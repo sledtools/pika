@@ -164,6 +164,8 @@ let lastPongAt = Date.now();
 let openAckSeen = false;
 let sawLegacyPtyPayload = false;
 const openAckWaiters = new Set();
+const pendingInviteCallIds = new Set();
+const staleInviteCallIds = new Set();
 
 const waiters = new Set();
 
@@ -197,6 +199,12 @@ function sendCallPayload(payloadObj) {
     call_id: callId,
     payload_hex: encodePayloadHex(payloadObj)
   });
+}
+
+function sendEndCall(callIdToEnd, reason) {
+  const id = String(callIdToEnd ?? "").trim();
+  if (!id) return;
+  sendCmd({ cmd: "end_call", call_id: id, reason });
 }
 
 function decodeCallPayload(msg) {
@@ -1177,6 +1185,20 @@ function spawnDaemon() {
     emitEvent(msg);
 
     const type = String(msg?.type ?? "");
+    if (type === "call_session_started") {
+      const eventCallId = String(msg.call_id ?? "");
+      if (eventCallId && staleInviteCallIds.has(eventCallId)) {
+        sendEndCall(eventCallId, "stale_invite");
+        return;
+      }
+    }
+    if (type === "call_session_ended") {
+      const eventCallId = String(msg.call_id ?? "");
+      if (eventCallId) {
+        pendingInviteCallIds.delete(eventCallId);
+        staleInviteCallIds.delete(eventCallId);
+      }
+    }
     if (type === "error") {
       process.stderr.write(`[daemon] ${String(msg.message ?? "unknown error")}\n`);
       return;
@@ -1211,6 +1233,7 @@ function spawnDaemon() {
 
 function inviteCall(moqUrl) {
   const id = randomUUID();
+  pendingInviteCallIds.add(id);
   sendCmd({
     cmd: "invite_call",
     call_id: id,
@@ -1239,7 +1262,13 @@ async function waitForCallStart(id) {
       20_000,
       `call start ${id}`
     );
-    return String(msg?.type ?? "") === "call_session_started";
+    const type = String(msg?.type ?? "");
+    if (type === "call_session_started") {
+      return true;
+    }
+    pendingInviteCallIds.delete(id);
+    staleInviteCallIds.delete(id);
+    return false;
   } catch {
     return false;
   }
@@ -1363,7 +1392,10 @@ async function requestShutdown(exitCode) {
   }
 
   if (callId) {
-    sendCmd({ cmd: "end_call", call_id: callId, reason: "user_exit" });
+    sendEndCall(callId, "user_exit");
+  }
+  for (const staleId of [...pendingInviteCallIds, ...staleInviteCallIds]) {
+    sendEndCall(staleId, "user_exit");
   }
   sendCmd({ cmd: "shutdown" });
 
@@ -1414,9 +1446,14 @@ async function main() {
       started = true;
       callId = invitedId;
       sessionId = invitedId;
+      pendingInviteCallIds.delete(invitedId);
+      staleInviteCallIds.delete(invitedId);
       resetFramingState();
       break;
     }
+    pendingInviteCallIds.delete(invitedId);
+    staleInviteCallIds.add(invitedId);
+    sendEndCall(invitedId, "relay_fallback");
     process.stderr.write(`[agent] call did not start on ${moqUrl}, trying next relay...\n`);
   }
 

@@ -124,8 +124,8 @@ impl DesktopApp {
 
                 let mut subs = vec![core_updates, relative_time_ticks];
 
-                if let Screen::Home(ref main) = screen {
-                    if main.show_call_screen
+                if let Screen::Home(ref home) = screen {
+                    if home.show_call_screen
                         && state
                             .active_call
                             .as_ref()
@@ -290,8 +290,8 @@ impl DesktopApp {
                 }
 
                 // Delegate screen-specific sync.
-                if let Screen::Home(ref mut main) = screen {
-                    main.sync_from_update(&state, &latest, manager, &cached_profiles);
+                if let Screen::Home(ref mut home) = screen {
+                    home.sync_from_update(&state, &latest, manager, &cached_profiles);
                 }
 
                 *state = latest;

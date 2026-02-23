@@ -212,21 +212,17 @@ impl State {
             Message::CallBanner(msg) => match msg {
                 views::call_banner::Message::Accept => {
                     if let Some(call) = &state.active_call {
-                        {
-                            manager.dispatch(AppAction::AcceptCall {
-                                chat_id: call.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::AcceptCall {
+                            chat_id: call.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = true;
                 }
                 views::call_banner::Message::Reject => {
                     if let Some(call) = &state.active_call {
-                        {
-                            manager.dispatch(AppAction::RejectCall {
-                                chat_id: call.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::RejectCall {
+                            chat_id: call.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = false;
                 }
@@ -236,41 +232,33 @@ impl State {
             Message::CallScreen(msg) => match msg {
                 views::call_screen::Message::StartCall => {
                     if let Some(chat) = &state.current_chat {
-                        {
-                            manager.dispatch(AppAction::StartCall {
-                                chat_id: chat.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::StartCall {
+                            chat_id: chat.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = true;
                 }
                 views::call_screen::Message::StartVideoCall => {
                     if let Some(chat) = &state.current_chat {
-                        {
-                            manager.dispatch(AppAction::StartVideoCall {
-                                chat_id: chat.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::StartVideoCall {
+                            chat_id: chat.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = true;
                 }
                 views::call_screen::Message::AcceptCall => {
                     if let Some(call) = &state.active_call {
-                        {
-                            manager.dispatch(AppAction::AcceptCall {
-                                chat_id: call.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::AcceptCall {
+                            chat_id: call.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = true;
                 }
                 views::call_screen::Message::RejectCall => {
                     if let Some(call) = &state.active_call {
-                        {
-                            manager.dispatch(AppAction::RejectCall {
-                                chat_id: call.chat_id.clone(),
-                            });
-                        }
+                        manager.dispatch(AppAction::RejectCall {
+                            chat_id: call.chat_id.clone(),
+                        });
                     }
                     self.show_call_screen = false;
                 }
@@ -294,9 +282,7 @@ impl State {
                     self.optimistic_selected_chat_id = Some(chat_id.clone());
                     self.conversation.emoji_picker_message_id = None;
                     self.clear_pane();
-                    {
-                        manager.dispatch(AppAction::OpenChat { chat_id });
-                    }
+                    manager.dispatch(AppAction::OpenChat { chat_id });
                 }
                 views::chat_rail::Message::ClickNewChat => {
                     let opening = !matches!(self.pane, Pane::NewChat(_));
@@ -304,9 +290,7 @@ impl State {
                     if opening {
                         let source = follow_source(state, cached_profiles);
                         self.pane = Pane::NewChat(views::new_chat::State::new(source));
-                        {
-                            manager.dispatch(AppAction::RefreshFollowList);
-                        }
+                        manager.dispatch(AppAction::RefreshFollowList);
                     }
                 }
                 views::chat_rail::Message::ClickNewGroup => {
@@ -315,9 +299,7 @@ impl State {
                     if opening {
                         let source = follow_source(state, cached_profiles);
                         self.pane = Pane::NewGroup(views::new_group_chat::State::new(source));
-                        {
-                            manager.dispatch(AppAction::RefreshFollowList);
-                        }
+                        manager.dispatch(AppAction::RefreshFollowList);
                     }
                 }
                 views::chat_rail::Message::ClickMyProfile => {
@@ -326,9 +308,7 @@ impl State {
                     } else {
                         self.pane =
                             Pane::MyProfile(views::my_profile::State::new(&state.my_profile));
-                        {
-                            manager.dispatch(AppAction::RefreshMyProfile);
-                        }
+                        manager.dispatch(AppAction::RefreshMyProfile);
                     }
                 }
             },
@@ -421,53 +401,43 @@ impl State {
                         match event {
                             views::group_info::Event::RenameGroup { name } => {
                                 if let Some(chat) = &state.current_chat {
-                                    {
-                                        manager.dispatch(AppAction::RenameGroup {
-                                            chat_id: chat.chat_id.clone(),
-                                            name,
-                                        });
-                                    }
+                                    manager.dispatch(AppAction::RenameGroup {
+                                        chat_id: chat.chat_id.clone(),
+                                        name,
+                                    });
                                 }
                             }
                             views::group_info::Event::AddMember { npub } => {
                                 if let Some(chat) = &state.current_chat {
-                                    {
-                                        manager.dispatch(AppAction::AddGroupMembers {
-                                            chat_id: chat.chat_id.clone(),
-                                            peer_npubs: vec![npub],
-                                        });
-                                    }
+                                    manager.dispatch(AppAction::AddGroupMembers {
+                                        chat_id: chat.chat_id.clone(),
+                                        peer_npubs: vec![npub],
+                                    });
                                 }
                             }
                             views::group_info::Event::RemoveMember { pubkey } => {
                                 if let Some(chat) = &state.current_chat {
-                                    {
-                                        manager.dispatch(AppAction::RemoveGroupMembers {
-                                            chat_id: chat.chat_id.clone(),
-                                            member_pubkeys: vec![pubkey],
-                                        });
-                                    }
+                                    manager.dispatch(AppAction::RemoveGroupMembers {
+                                        chat_id: chat.chat_id.clone(),
+                                        member_pubkeys: vec![pubkey],
+                                    });
                                 }
                             }
                             views::group_info::Event::LeaveGroup => {
                                 if let Some(chat) = &state.current_chat {
-                                    {
-                                        manager.dispatch(AppAction::LeaveGroup {
-                                            chat_id: chat.chat_id.clone(),
-                                        });
-                                    }
+                                    manager.dispatch(AppAction::LeaveGroup {
+                                        chat_id: chat.chat_id.clone(),
+                                    });
                                 }
                                 self.group_info = None;
                                 self.clear_pane();
                             }
                             views::group_info::Event::Close => {
                                 self.group_info = None;
-                                {
-                                    let mut stack = state.router.screen_stack.clone();
-                                    if matches!(stack.last(), Some(Screen::GroupInfo { .. })) {
-                                        stack.pop();
-                                        manager.dispatch(AppAction::UpdateScreenStack { stack });
-                                    }
+                                let mut stack = state.router.screen_stack.clone();
+                                if matches!(stack.last(), Some(Screen::GroupInfo { .. })) {
+                                    stack.pop();
+                                    manager.dispatch(AppAction::UpdateScreenStack { stack });
                                 }
                             }
                             views::group_info::Event::OpenPeerProfile { pubkey } => {

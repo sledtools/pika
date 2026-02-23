@@ -4,10 +4,12 @@ import Foundation
 @MainActor
 final class CallAudioSessionCoordinator {
     private var isActive = false
+    private var isVideoCall = false
 
     func apply(activeCall: CallState?) {
         if shouldActivate(for: activeCall) {
-            activateIfNeeded()
+            let wantsVideo = activeCall?.isVideoCall ?? false
+            activateIfNeeded(isVideoCall: wantsVideo)
         } else {
             deactivateIfNeeded()
         }
@@ -17,16 +19,26 @@ final class CallAudioSessionCoordinator {
         call?.isLive ?? false
     }
 
-    private func activateIfNeeded() {
-        guard !isActive else { return }
+    private func activateIfNeeded(isVideoCall: Bool) {
+        let modeChanged = isActive && self.isVideoCall != isVideoCall
+        guard !isActive || modeChanged else { return }
+        self.isVideoCall = isVideoCall
         // Native shim justification: cpal does not reliably configure iOS routing/session mode
         // for duplex voice; we need `.playAndRecord` + activation before the streams start.
+        //
+        // .videoChat routes to speaker (user holds phone in front of face).
+        // .voiceChat routes to earpiece (user holds phone to ear).
         let session = AVAudioSession.sharedInstance()
         do {
+            let mode: AVAudioSession.Mode = isVideoCall ? .videoChat : .voiceChat
+            var options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP]
+            if isVideoCall {
+                options.insert(.defaultToSpeaker)
+            }
             try session.setCategory(
                 .playAndRecord,
-                mode: .voiceChat,
-                options: [.allowBluetoothHFP]
+                mode: mode,
+                options: options
             )
             try session.setActive(true)
             isActive = true

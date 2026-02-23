@@ -2725,39 +2725,29 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        // Fetch peer key packages from all configured relays (up to 10 for multi-device).
+                        // Fetch latest peer key package from configured relays.
                         let kp_filter = Filter::new()
                             .author(peer_pubkey)
                             .kind(Kind::MlsKeyPackage)
-                            .limit(10);
+                            .limit(1);
                         let kp_events = match client
                             .fetch_events_from(relay_urls.clone(), kp_filter, Duration::from_secs(10))
                             .await
                         {
                             Ok(evs) => evs,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "fetch_failed", format!("fetch key packages: {e:#}"))).ok();
+                                out_tx.send(out_error(request_id, "fetch_failed", format!("fetch key package: {e:#}"))).ok();
                                 continue;
                             }
                         };
 
-                        // Validate key packages (skip invalid ones).
-                        let valid_kps: Vec<Event> = kp_events
-                            .into_iter()
-                            .filter(|ev| {
-                                if let Err(e) = mdk.parse_key_package(ev) {
-                                    warn!(kp_id = %ev.id.to_hex(), %e, "skipping invalid peer key package");
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .collect();
-
-                        if valid_kps.is_empty() {
-                            out_tx.send(out_error(request_id, "no_key_packages", "no valid key packages found for peer")).ok();
-                            continue;
-                        }
+                        let peer_kp = match kp_events.into_iter().next() {
+                            Some(ev) => ev,
+                            None => {
+                                out_tx.send(out_error(request_id, "no_key_packages", "no key package found for peer")).ok();
+                                continue;
+                            }
+                        };
 
                         // Create group.
                         let config = NostrGroupConfigData::new(
@@ -2770,7 +2760,7 @@ pub async fn daemon_main(
                             vec![keys.public_key(), peer_pubkey],
                         );
 
-                        let group_result = match mdk.create_group(&keys.public_key(), valid_kps, config) {
+                        let group_result = match mdk.create_group(&keys.public_key(), vec![peer_kp], config) {
                             Ok(r) => r,
                             Err(e) => {
                                 out_tx.send(out_error(request_id, "mdk_error", format!("create_group: {e:#}"))).ok();

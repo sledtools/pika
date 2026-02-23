@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::fs::OpenOptions;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -305,10 +304,6 @@ impl VmManager {
 
                     self.ensure_runtime_artifacts().await?;
 
-                    if matches!(variant, SpawnVariant::PrebuiltCow) {
-                        self.ensure_workspace_template().await?;
-                    }
-
                     let runner_path = self.ensure_prebuilt_runner(cpu, memory_mb).await?;
                     timings.insert("runner_resolve_ms".into(), to_ms(phase_start.elapsed()));
                     phase_start = Instant::now();
@@ -512,49 +507,6 @@ impl VmManager {
         let mut guard = self.inner.lock().await;
         guard.warmed_devshells.insert(key);
         Ok(true)
-    }
-
-    async fn ensure_workspace_template(&self) -> anyhow::Result<()> {
-        if self.cfg.workspace_template_path.exists() {
-            return Ok(());
-        }
-
-        let parent = self
-            .cfg
-            .workspace_template_path
-            .parent()
-            .ok_or_else(|| anyhow!("workspace template has no parent"))?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create template parent {}", parent.display()))?;
-
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&self.cfg.workspace_template_path)
-            .with_context(|| {
-                format!(
-                    "create workspace template {}",
-                    self.cfg.workspace_template_path.display()
-                )
-            })?;
-        file.set_len((self.cfg.workspace_size_mb as u64) * 1024 * 1024)
-            .with_context(|| {
-                format!(
-                    "set template size {}",
-                    self.cfg.workspace_template_path.display()
-                )
-            })?;
-
-        run_command(
-            Command::new(&self.cfg.mkfs_ext4_cmd)
-                .arg("-F")
-                .arg("-L")
-                .arg("workspace")
-                .arg(&self.cfg.workspace_template_path),
-            "mkfs workspace template",
-        )
-        .await
     }
 
     async fn ensure_runtime_artifacts(&self) -> anyhow::Result<()> {
@@ -1041,10 +993,14 @@ fn write_prebuilt_base_flake(
         microvm.nixosModules.microvm
         ({{ lib, pkgs, ... }}: {{
           system.stateVersion = "24.11";
+          boot.initrd.systemd.enable = lib.mkForce false;
 
           networking.hostName = "agent-base";
           networking.useDHCP = false;
           networking.networkmanager.enable = lib.mkForce false;
+          networking.firewall.enable = lib.mkForce false;
+          networking.nftables.enable = lib.mkForce false;
+          networking.resolvconf.enable = lib.mkForce false;
           services.resolved.enable = false;
 
           services.openssh = {{
@@ -1155,6 +1111,12 @@ fn write_prebuilt_base_flake(
             '';
           }};
 
+          fileSystems."/workspace" = {{
+            device = "tmpfs";
+            fsType = "tmpfs";
+            options = [ "size={workspace_size_mb}M" "mode=0755" ];
+          }};
+
           microvm = {{
             hypervisor = "cloud-hypervisor";
             vcpu = {cpu};
@@ -1185,13 +1147,6 @@ fn write_prebuilt_base_flake(
               }}
             ];
 
-            volumes = [ {{
-              image = "workspace.img";
-              mountPoint = "/workspace";
-              size = {workspace_size_mb};
-              fsType = "ext4";
-            }} ];
-
             extraArgsScript = "${{pkgs.writeShellScript "runtime-extra-args" ''
               set -euo pipefail
               if [ -f ./metadata/runtime.env ]; then
@@ -1204,25 +1159,6 @@ fn write_prebuilt_base_flake(
               : "''${{MICROVM_MAC:?missing MICROVM_MAC}}"
               echo "--net tap=''${{MICROVM_TAP}},mac=''${{MICROVM_MAC}}"
             ''}}";
-
-            preStart = ''
-              set -euo pipefail
-
-              mode="fresh"
-              if [ -f ./metadata/workspace_mode ]; then
-                mode="$(cat ./metadata/workspace_mode)"
-              fi
-
-              template=""
-              if [ -f ./metadata/workspace_template ]; then
-                template="$(cat ./metadata/workspace_template)"
-              fi
-
-              if [ ! -e workspace.img ] && [ "$mode" = "clone-template" ] && [ -n "$template" ] && [ -f "$template" ]; then
-                ${{pkgs.coreutils}}/bin/cp --reflink=auto "$template" workspace.img || ${{pkgs.coreutils}}/bin/cp "$template" workspace.img
-                ${{pkgs.coreutils}}/bin/chmod 0644 workspace.img
-              fi
-            '';
           }};
         }})
       ];

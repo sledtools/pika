@@ -41,7 +41,6 @@ pub struct Config {
     pub ip_cmd: String,
     pub nix_cmd: String,
     pub ssh_keygen_cmd: String,
-    pub mkfs_ext4_cmd: String,
     pub chown_cmd: String,
     pub chmod_cmd: String,
 }
@@ -123,8 +122,6 @@ impl Config {
             std::env::var("VM_NIX_CMD").unwrap_or_else(|_| "/run/current-system/sw/bin/nix".into());
         let ssh_keygen_cmd = std::env::var("VM_SSH_KEYGEN_CMD")
             .unwrap_or_else(|_| "/run/current-system/sw/bin/ssh-keygen".into());
-        let mkfs_ext4_cmd = std::env::var("VM_MKFS_EXT4_CMD")
-            .unwrap_or_else(|_| "/run/current-system/sw/bin/mkfs.ext4".into());
         let chown_cmd = std::env::var("VM_CHOWN_CMD")
             .unwrap_or_else(|_| "/run/current-system/sw/bin/chown".into());
         let chmod_cmd = std::env::var("VM_CHMOD_CMD")
@@ -165,7 +162,6 @@ impl Config {
             ip_cmd,
             nix_cmd,
             ssh_keygen_cmd,
-            mkfs_ext4_cmd,
             chown_cmd,
             chmod_cmd,
         })

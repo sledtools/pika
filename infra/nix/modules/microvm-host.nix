@@ -127,7 +127,6 @@ in
         "VM_RUNTIME_ARTIFACTS_GUEST_MOUNT=/opt/runtime-artifacts"
         "VM_RUNTIME_ARTIFACTS=pi=${piAgentPkg}"
         "VM_SPAWN_VARIANT_DEFAULT=prebuilt-cow"
-        "VM_MKFS_EXT4_CMD=/run/current-system/sw/bin/mkfs.ext4"
         "VM_CHOWN_CMD=/run/current-system/sw/bin/chown"
         "VM_CHMOD_CMD=/run/current-system/sw/bin/chmod"
         "HOME=${spawnerRunDir}"

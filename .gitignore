@@ -1,4 +1,5 @@
 target/
+.shared-target/
 
 # pikachat-openclaw harness artifacts
 pikachat-openclaw/.state/

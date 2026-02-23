@@ -760,14 +760,13 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     export PIKA_AGENT_MOQ_URLS="{{ MOQ_US }},{{ MOQ_EU }}"; \
     cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new
 
-# Run `pikachat agent new` in RPC parity mode (quiet marmotd logs for clean TUI).
-agent-fly-rpc RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
+# Run `pikachat agent new` over standard Marmot/Nostr transport (no MoQ call transport).
+agent-fly-rpc:
     set -euo pipefail; \
-    export PIKA_AGENT_UI_MODE=rpc; \
-    export PIKA_AGENT_MARMOTD_STDERR=quiet; \
+    export PIKA_AGENT_UI_MODE=nostr; \
     if [ -n "${FLY_BOT_APP_NAME_RPC:-}" ]; then export FLY_BOT_APP_NAME="$FLY_BOT_APP_NAME_RPC"; fi; \
     if [ -n "${FLY_BOT_IMAGE_RPC:-}" ]; then export FLY_BOT_IMAGE="$FLY_BOT_IMAGE_RPC"; export PIKA_AGENT_USE_PINNED_IMAGE=1; fi; \
-    just agent-fly-moq {{ RELAY_EU }} {{ RELAY_US }} {{ MOQ_US }} {{ MOQ_EU }}
+    just agent-fly-moq wss://eu.nostr.pikachat.org wss://us-east.nostr.pikachat.org
 
 # Deterministic PTY replay smoke test over Fly + MoQ (non-interactive).
 agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":

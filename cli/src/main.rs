@@ -60,6 +60,7 @@ const DEFAULT_AGENT_MOQ_URLS: &[&str] = &[
 enum AgentUiMode {
     Pty,
     Rpc,
+    Nostr,
 }
 
 impl AgentUiMode {
@@ -68,14 +69,18 @@ impl AgentUiMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "pty" => Ok(Self::Pty),
             "rpc" => Ok(Self::Rpc),
-            other => anyhow::bail!("invalid PIKA_AGENT_UI_MODE={other}; expected one of: pty, rpc"),
+            "nostr" | "marmot" | "chat" => Ok(Self::Nostr),
+            other => anyhow::bail!(
+                "invalid PIKA_AGENT_UI_MODE={other}; expected one of: pty, rpc, nostr"
+            ),
         }
     }
 
-    fn as_str(self) -> &'static str {
+    fn bridge_call_mode(self) -> Option<&'static str> {
         match self {
-            Self::Pty => "pty",
-            Self::Rpc => "rpc",
+            Self::Pty => Some("pty"),
+            Self::Rpc => Some("rpc"),
+            Self::Nostr => None,
         }
     }
 }
@@ -1262,10 +1267,9 @@ async fn cmd_agent_new(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
     env.insert("STATE_DIR".to_string(), "/app/state".to_string());
     env.insert("NOSTR_SECRET_KEY".to_string(), bot_secret_hex);
     env.insert("ANTHROPIC_API_KEY".to_string(), anthropic_key);
-    env.insert(
-        "PI_BRIDGE_CALL_MODE".to_string(),
-        ui_mode.as_str().to_string(),
-    );
+    if let Some(mode) = ui_mode.bridge_call_mode() {
+        env.insert("PI_BRIDGE_CALL_MODE".to_string(), mode.to_string());
+    }
     for key in ["PI_BRIDGE_REPLAY_FILE", "PI_BRIDGE_REPLAY_SPEED"] {
         if let Ok(value) = std::env::var(key) {
             let trimmed = value.trim();
@@ -1338,6 +1342,7 @@ async fn cmd_agent_new(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
     eprintln!(" done");
     client.shutdown().await;
 
+    let self_pubkey_hex = keys.public_key().to_hex();
     let relay_urls = resolve_relays(cli);
     let moq_urls = resolve_agent_moq_urls();
     match ui_mode {
@@ -1346,6 +1351,15 @@ async fn cmd_agent_new(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
             &relay_urls,
             &moq_urls,
             &nostr_group_id_hex,
+            &bot_pubkey.to_hex(),
+            &machine.id,
+            fly.app_name(),
+        ),
+        AgentUiMode::Nostr => launch_agent_nostr_tui(
+            &cli.state_dir,
+            &relay_urls,
+            &nostr_group_id_hex,
+            &self_pubkey_hex,
             &bot_pubkey.to_hex(),
             &machine.id,
             fly.app_name(),
@@ -1519,6 +1533,115 @@ fn launch_agent_rpc_parity_ui(
         }
         Ok(())
     }
+}
+
+fn resolve_agent_cli_bin() -> anyhow::Result<PathBuf> {
+    if let Ok(path) = std::env::var("PIKA_AGENT_PIKA_CLI_BIN") {
+        let candidate = PathBuf::from(path);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        anyhow::bail!(
+            "PIKA_AGENT_PIKA_CLI_BIN is set but does not exist: {}",
+            candidate.display()
+        );
+    }
+
+    let current_exe = std::env::current_exe().context("resolve pikachat binary path")?;
+    if current_exe.exists() {
+        return Ok(current_exe);
+    }
+
+    match std::process::Command::new("pikachat")
+        .arg("--version")
+        .status()
+    {
+        Ok(status) if status.success() => Ok(PathBuf::from("pikachat")),
+        _ => anyhow::bail!(
+            "could not find pikachat binary (tried current executable and PATH). Build with `cargo build -p pikachat` or set PIKA_AGENT_PIKA_CLI_BIN"
+        ),
+    }
+}
+
+fn launch_agent_nostr_tui(
+    state_dir: &Path,
+    relay_urls: &[String],
+    nostr_group_id_hex: &str,
+    self_pubkey_hex: &str,
+    bot_pubkey_hex: &str,
+    machine_id: &str,
+    fly_app_name: &str,
+) -> anyhow::Result<()> {
+    let script_path = PathBuf::from("tools/agent-tui/agent-tui.mjs");
+    if !script_path.exists() {
+        anyhow::bail!("missing {} (run from repo root)", script_path.display());
+    }
+    ensure_agent_tui_dependencies(&script_path)?;
+    let cli_bin = resolve_agent_cli_bin()?;
+
+    eprintln!();
+    eprintln!("Launching Nostr agent session...");
+    eprintln!("Machine {machine_id} is running in app {fly_app_name}.");
+    eprintln!("Stop with: fly machine stop {machine_id} -a {fly_app_name}");
+    eprintln!();
+
+    let mut cmd = std::process::Command::new("node");
+    cmd.arg(&script_path);
+    cmd.env("PIKA_AGENT_PIKA_CLI_BIN", cli_bin);
+    cmd.env("PIKA_AGENT_STATE_DIR", state_dir);
+    cmd.env("PIKA_AGENT_GROUP_ID", nostr_group_id_hex);
+    cmd.env("PIKA_AGENT_SELF_PUBKEY", self_pubkey_hex);
+    cmd.env("PIKA_AGENT_BOT_PUBKEY", bot_pubkey_hex);
+    cmd.env("PIKA_AGENT_MACHINE_ID", machine_id);
+    cmd.env("PIKA_AGENT_FLY_APP_NAME", fly_app_name);
+    cmd.env("PIKA_AGENT_RELAYS_JSON", serde_json::to_string(relay_urls)?);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        anyhow::bail!("failed to exec node {}: {err}", script_path.display());
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status().context("launch agent tui")?;
+        if !status.success() {
+            anyhow::bail!("agent TUI exited with status {status}");
+        }
+        Ok(())
+    }
+}
+
+fn ensure_agent_tui_dependencies(script_path: &Path) -> anyhow::Result<()> {
+    let Some(script_dir) = script_path.parent() else {
+        anyhow::bail!("invalid script path: {}", script_path.display());
+    };
+    let pi_tui_pkg = script_dir
+        .join("node_modules")
+        .join("@mariozechner")
+        .join("pi-tui")
+        .join("package.json");
+    if pi_tui_pkg.exists() {
+        return Ok(());
+    }
+
+    eprintln!("Installing tools/agent-tui npm dependencies (npm ci)...");
+    let status = std::process::Command::new("npm")
+        .arg("ci")
+        .arg("--no-audit")
+        .arg("--no-fund")
+        .current_dir(script_dir)
+        .status()
+        .with_context(|| format!("run npm ci in {}", script_dir.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "npm ci failed in {}. Install dependencies manually with `cd {} && npm ci`",
+            script_dir.display(),
+            script_dir.display()
+        );
+    }
+    Ok(())
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {

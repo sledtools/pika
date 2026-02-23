@@ -2,6 +2,7 @@ import SwiftUI
 import MarkdownUI
 import PhotosUI
 import AVFAudio
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     let chatId: String
@@ -19,6 +20,7 @@ struct ChatView: View {
     let onDownloadMedia: (@MainActor (String, String, String) -> Void)?
     let onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)?
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var showFileImporter = false
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var shouldStickToBottom = true
@@ -600,6 +602,7 @@ struct ChatView: View {
                     }
                 )
                 .modifier(GlassInputModifier())
+                .padding(.horizontal, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
                 if showMentionPicker, chat.isGroup {
@@ -648,113 +651,55 @@ struct ChatView: View {
                     .padding(.horizontal, 12)
                 }
 
-                HStack(spacing: 10) {
-                    if onSendMedia != nil {
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title2)
-                        }
-                        .tint(.secondary)
-                    }
-
-                    TextEditor(text: $messageText)
-                        .focused($isInputFocused)
-                        .frame(minHeight: 36, maxHeight: 150)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .scrollContentBackground(.hidden)
-                        .onAppear {
-                            if ProcessInfo.processInfo.isiOSAppOnMac {
-                                isInputFocused = true
-                            }
-                        }
-                        .onKeyPress(.return, phases: .down) { keyPress in
-                            if keyPress.modifiers.contains(.shift) {
-                                return .ignored
-                            }
-                            sendMessage()
-                            return .handled
-                        }
-                        .overlay(alignment: .topLeading) {
-                            if messageText.isEmpty {
-                                Text("Message")
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, 5)
-                                    .padding(.top, 8)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                        .onChange(of: messageText) { _, newValue in
-                            if chat.isGroup {
-                                if let atIdx = newValue.lastIndex(of: "@") {
-                                    let prefix = newValue[..<atIdx]
-                                    let isWordStart = prefix.isEmpty || prefix.last == " " || prefix.last == "\n"
-                                    if isWordStart {
-                                        let query = String(newValue[newValue.index(after: atIdx)...])
-                                        if !query.contains(" ") {
-                                            showMentionPicker = true
-                                            mentionQuery = query
-                                        } else {
-                                            showMentionPicker = false
-                                            mentionQuery = ""
-                                        }
-                                    } else if showMentionPicker {
-                                        showMentionPicker = false
-                                        mentionQuery = ""
-                                    }
-                                } else if showMentionPicker {
+                ChatInputBar(
+                    messageText: $messageText,
+                    selectedPhotoItem: $selectedPhotoItem,
+                    showFileImporter: $showFileImporter,
+                    showAttachButton: onSendMedia != nil,
+                    showMicButton: onSendMedia != nil,
+                    isInputFocused: $isInputFocused,
+                    onSend: { sendMessage() },
+                    onStartVoiceRecording: { startVoiceRecording() }
+                )
+                .onChange(of: messageText) { _, newValue in
+                    if chat.isGroup {
+                        if let atIdx = newValue.lastIndex(of: "@") {
+                            let prefix = newValue[..<atIdx]
+                            let isWordStart = prefix.isEmpty || prefix.last == " " || prefix.last == "\n"
+                            if isWordStart {
+                                let query = String(newValue[newValue.index(after: atIdx)...])
+                                if !query.contains(" ") {
+                                    showMentionPicker = true
+                                    mentionQuery = query
+                                } else {
                                     showMentionPicker = false
                                     mentionQuery = ""
                                 }
+                            } else if showMentionPicker {
+                                showMentionPicker = false
+                                mentionQuery = ""
                             }
-                            if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                onTypingStarted?()
-                            }
+                        } else if showMentionPicker {
+                            showMentionPicker = false
+                            mentionQuery = ""
                         }
-                        .accessibilityIdentifier(TestIds.chatMessageInput)
-
-                    if messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, onSendMedia != nil {
-                        Button {
-                            startVoiceRecording()
-                        } label: {
-                            Image(systemName: "mic.fill")
-                                .font(.title2)
-                        }
-                        .transition(.scale.combined(with: .opacity))
-                    } else {
-                        Button(action: { sendMessage() }) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.title2)
-                        }
-                        .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier(TestIds.chatSend)
-                        .transition(.scale.combined(with: .opacity))
+                    }
+                    if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        onTypingStarted?()
                     }
                 }
-                .animation(.easeInOut(duration: 0.15), value: messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .modifier(GlassInputModifier())
                 .onChange(of: selectedPhotoItem) { _, item in
                     guard let item else { return }
                     Task {
                         defer { selectedPhotoItem = nil }
                         guard let data = try? await item.loadTransferable(type: Data.self) else { return }
 
-                        // Determine MIME type from supported content types
-                        let mimeType: String
-                        if let contentType = item.supportedContentTypes.first {
-                            mimeType = contentType.preferredMIMEType ?? "image/jpeg"
-                        } else {
-                            mimeType = "image/jpeg"
-                        }
+                        // Use UTType's preferred extension (covers all image + video types)
+                        let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
+                        let filename = "media.\(ext)"
 
-                        // Determine filename from MIME type
-                        let ext = switch mimeType {
-                        case "image/png": "png"
-                        case "image/gif": "gif"
-                        case "image/webp": "webp"
-                        case "image/heic": "heic"
-                        default: "jpg"
-                        }
-                        let filename = "photo.\(ext)"
+                        // MIME type left empty — Rust infers from filename extension
+                        let mimeType = ""
 
                         // Use message text as caption if non-empty
                         let caption = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -763,6 +708,31 @@ struct ChatView: View {
                         }
 
                         onSendMedia?(chatId, data, mimeType, filename, caption)
+                    }
+                }
+                .fileImporter(
+                    isPresented: $showFileImporter,
+                    allowedContentTypes: [.item],
+                    allowsMultipleSelection: false
+                ) { result in
+                    switch result {
+                    case .success(let urls):
+                        guard let url = urls.first else { return }
+                        let didStartAccess = url.startAccessingSecurityScopedResource()
+                        defer { if didStartAccess { url.stopAccessingSecurityScopedResource() } }
+
+                        guard let data = try? Data(contentsOf: url) else { return }
+
+                        let filename = url.lastPathComponent
+
+                        let caption = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !caption.isEmpty { messageText = "" }
+
+                        // mime_type empty — Rust infers from filename extension
+                        onSendMedia?(chatId, data, "", filename, caption)
+
+                    case .failure(let error):
+                        print("File import error: \(error.localizedDescription)")
                     }
                 }
             }
@@ -1081,32 +1051,6 @@ private struct BottomVisibleKey: PreferenceKey {
     static var defaultValue: CGFloat? = nil
     static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
         value = nextValue() ?? value
-    }
-}
-
-private struct GlassInputModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
-                .padding(12)
-        } else {
-            content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-                .padding(12)
-        }
-        #else
-        content
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .padding(12)
-        #endif
     }
 }
 

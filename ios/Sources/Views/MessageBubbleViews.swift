@@ -368,37 +368,14 @@ struct MediaAttachmentView: View {
     }
 
     private var fileRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "doc")
-                .font(.title3)
-                .foregroundStyle(isMine ? .white.opacity(0.8) : .secondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(attachment.filename)
-                    .font(.subheadline)
-                    .foregroundStyle(isMine ? .white : .primary)
-                    .lineLimit(1)
-                Text(attachment.mimeType)
-                    .font(.caption2)
-                    .foregroundStyle(isMine ? .white.opacity(0.6) : .secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            if attachment.localPath == nil {
-                Button {
-                    onDownload?()
-                } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.title3)
-                        .foregroundStyle(isMine ? .white : .blue)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: maxMediaWidth)
+        FileAttachmentRow(
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            localPath: attachment.localPath,
+            isMine: isMine,
+            onDownload: onDownload
+        )
+        .frame(maxWidth: .infinity, minHeight: 44)
     }
 }
 
@@ -489,10 +466,15 @@ private struct MessageBubble: View {
         .animation(.easeInOut(duration: 0.15), value: activeReactionMessageId == message.id)
     }
 
+    private var hasFileAttachment: Bool {
+        message.media.contains { !$0.mimeType.hasPrefix("image/") && !$0.mimeType.hasPrefix("audio/") }
+    }
+
     @ViewBuilder
     private func mediaBubble(segments: [MessageSegment]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(message.media, id: \.originalHashHex) { attachment in
+                let isImageAttachment = attachment.mimeType.hasPrefix("image/")
                 MediaAttachmentView(
                     attachment: attachment,
                     isMine: message.isMine,
@@ -504,7 +486,8 @@ private struct MessageBubble: View {
                     }
                 )
                 .overlay(alignment: .bottomTrailing) {
-                    if !hasText {
+                    // Floating timestamp only for images without a text caption
+                    if !hasText, isImageAttachment {
                         Text(timestampText)
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.78))
@@ -514,6 +497,16 @@ private struct MessageBubble: View {
                             .padding(6)
                     }
                 }
+            }
+
+            // Inline timestamp for file attachments (non-image) without caption text
+            if !hasText, hasFileAttachment {
+                Text(timestampText)
+                    .font(.caption2)
+                    .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
             }
 
             if hasText {
@@ -534,7 +527,7 @@ private struct MessageBubble: View {
                 .padding(.bottom, 6)
             }
         }
-        .background(hasText ? (message.isMine ? Color.blue : Color.gray.opacity(0.2)) : Color.clear)
+        .background(hasText || hasFileAttachment ? (message.isMine ? Color.blue : Color.gray.opacity(0.2)) : Color.clear)
         .clipShape(UnevenRoundedRectangle(cornerRadii: bubbleRadii, style: .continuous))
     }
 

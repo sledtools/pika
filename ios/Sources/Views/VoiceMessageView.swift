@@ -76,7 +76,7 @@ struct VoiceMessageView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(maxWidth: 240)
+        .frame(maxWidth: .infinity)
     }
 
     private func formatTime(_ time: TimeInterval) -> String {

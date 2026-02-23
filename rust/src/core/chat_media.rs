@@ -12,6 +12,36 @@ use super::*;
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
+fn mime_type_for_extension(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" | "heif" => "image/heic",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "m4v" => "video/x-m4v",
+        "webm" => "video/webm",
+        "avi" => "video/x-msvideo",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "json" => "application/json",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn mime_type_for_filename(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    mime_type_for_extension(ext).to_string()
+}
+
 fn sanitize_filename(filename: &str) -> String {
     let mut out = String::with_capacity(filename.len().min(120));
     for ch in filename.chars().take(120) {
@@ -41,7 +71,8 @@ fn media_file_path(
     media_root(data_dir)
         .join(account_pubkey)
         .join(chat_id)
-        .join(format!("{original_hash_hex}_{name}"))
+        .join(original_hash_hex)
+        .join(name)
 }
 
 fn write_media_file(path: &Path, data: &[u8]) -> Result<(), String> {
@@ -178,6 +209,12 @@ impl AppCore {
             self.toast("Filename is required");
             return;
         }
+
+        let mime_type = if mime_type.trim().is_empty() {
+            mime_type_for_filename(&filename)
+        } else {
+            mime_type.trim().to_string()
+        };
 
         let caption = caption.trim().to_string();
 

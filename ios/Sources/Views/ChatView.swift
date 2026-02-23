@@ -152,8 +152,8 @@ struct ChatView: View {
             }
         }
         .overlay {
-            if let message = contextMenuMessage {
-                GeometryReader { geo in
+            GeometryReader { geo in
+                if let message = contextMenuMessage {
                     ZStack {
                         Color.clear
                             .contentShape(Rectangle())
@@ -237,10 +237,12 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: message.isMine ? .topTrailing : .topLeading)
                         .padding(.top, contextMenuOffset(geo: geo))
                         .padding(.horizontal, 20)
+                        .animation(nil, value: contextMenuAnchorFrame)
                     }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .center)))
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .center)))
             }
+            .allowsHitTesting(contextMenuMessage != nil)
         }
         .sheet(isPresented: $showContextEmojiPicker) {
             if let message = contextMenuMessage {

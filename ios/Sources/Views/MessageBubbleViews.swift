@@ -379,6 +379,13 @@ struct MediaAttachmentView: View {
     }
 }
 
+// MARK: - Bubble frame tracking
+
+/// Mutable reference for tracking the bubble's global frame without triggering SwiftUI re-renders on scroll.
+private class BubbleFrameRef {
+    var frame: CGRect = .zero
+}
+
 // MARK: - Message bubble
 
 private struct MessageBubble: View {
@@ -394,7 +401,7 @@ private struct MessageBubble: View {
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
 
     @State private var isBeingPressed = false
-    @State private var bubbleGlobalFrame: CGRect = .zero
+    @State private var bubbleFrameRef = BubbleFrameRef()
 
     private let roundedCornerRadius: CGFloat = 16
     private let groupedCornerRadius: CGFloat = 6
@@ -458,9 +465,12 @@ private struct MessageBubble: View {
         .contentShape(Rectangle())
         .background(
             GeometryReader { proxy in
-                Color.clear.onAppear {
-                    bubbleGlobalFrame = proxy.frame(in: .global)
-                }
+                let frame = proxy.frame(in: .global)
+                Color.clear
+                    .onAppear { bubbleFrameRef.frame = frame }
+                    .onChange(of: frame) { _, newFrame in
+                        bubbleFrameRef.frame = newFrame
+                    }
             }
         )
         .scaleEffect(isBeingPressed ? 0.96 : 1.0)
@@ -604,7 +614,7 @@ private struct MessageBubble: View {
         guard let onLongPressMessage else { return }
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
-        onLongPressMessage(message, bubbleGlobalFrame)
+        onLongPressMessage(message, bubbleFrameRef.frame)
     }
 }
 

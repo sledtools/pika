@@ -1,7 +1,8 @@
 use iced::widget::{button, column, container, row, scrollable, text, Space};
-use iced::{Alignment, Element, Fill, Length, Theme};
+use iced::{Alignment, Element, Fill, Length, Padding, Theme};
 use pika_core::ChatSummary;
 
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 
@@ -24,54 +25,56 @@ pub fn view<'a>(
     avatar_cache: &mut super::avatar::AvatarCache,
 ) -> Element<'a, Message, Theme> {
     // ── Header ──────────────────────────────────────────────────────
-    let new_chat_style = if show_new_chat_form {
-        theme::primary_button_style
-    } else {
-        theme::secondary_button_style
-    };
-
-    let new_group_style = if show_new_group_form {
-        theme::primary_button_style
-    } else {
-        theme::secondary_button_style
-    };
-
     let header = row![
-        text("Chats").size(20).color(theme::TEXT_PRIMARY),
+        text("Chats")
+            .size(22)
+            .font(icons::BOLD)
+            .color(theme::TEXT_PRIMARY),
         Space::new().width(Fill),
-        button(text("Chat +").size(12).color(theme::TEXT_PRIMARY).center())
-            .on_press(Message::ClickNewChat)
-            .padding([4, 8])
-            .style(new_chat_style),
-        button(text("Group +").size(12).color(theme::TEXT_PRIMARY).center())
-            .on_press(Message::ClickNewGroup)
-            .padding([4, 8])
-            .style(new_group_style),
+        button(
+            text(icons::MESSAGE_SQUARE_PLUS)
+                .font(icons::LUCIDE_FONT)
+                .size(20)
+                .color(theme::TEXT_PRIMARY)
+                .center(),
+        )
+        .on_press(Message::ClickNewChat)
+        .padding([6, 8])
+        .style(theme::icon_button_style(show_new_chat_form)),
+        button(
+            text(icons::USERS)
+                .font(icons::LUCIDE_FONT)
+                .size(20)
+                .color(theme::TEXT_PRIMARY)
+                .center(),
+        )
+        .on_press(Message::ClickNewGroup)
+        .padding([6, 8])
+        .style(theme::icon_button_style(show_new_group_form)),
     ]
-    .spacing(4)
+    .spacing(6)
     .align_y(Alignment::Center)
     .padding([0, 4]);
 
     // ── Chat list ───────────────────────────────────────────────────
-    let chat_items = chat_list.iter().fold(column![].spacing(2), |col, chat| {
+    let chat_items = chat_list.iter().fold(column![].spacing(4), |col, chat| {
         col.push(chat_item(chat, selected_id, avatar_cache))
     });
 
     // ── Assemble rail ───────────────────────────────────────────────
-    let mut rail = column![header].spacing(8).padding(12);
+    let mut rail = column![header].spacing(10).padding(Padding {
+        top: 44.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    });
 
     rail = rail.push(scrollable(chat_items).height(Fill));
 
     // Profile button at bottom
-    let profile_style = if show_my_profile {
-        theme::primary_button_style
-    } else {
-        theme::secondary_button_style
-    };
-
     let profile_btn_content = row![
-        avatar_circle(Some("Me"), my_picture_url, 24.0, avatar_cache),
-        text("My Profile").size(13).color(theme::TEXT_PRIMARY),
+        avatar_circle(Some("Me"), my_picture_url, 28.0, avatar_cache),
+        text("My Profile").size(14).color(theme::TEXT_PRIMARY),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -81,11 +84,11 @@ pub fn view<'a>(
             .on_press(Message::ClickMyProfile)
             .width(Fill)
             .padding([6, 8])
-            .style(profile_style),
+            .style(theme::icon_button_style(show_my_profile)),
     );
 
     container(rail)
-        .width(Length::Fixed(280.0))
+        .width(Length::Fixed(320.0))
         .height(Fill)
         .style(theme::rail_container_style)
         .into()
@@ -104,7 +107,7 @@ fn chat_item<'a>(
 
     let timestamp_text: Element<'a, Message, Theme> = if let Some(ts) = chat.last_message_at {
         text(theme::relative_time(ts))
-            .size(11)
+            .size(12)
             .color(theme::TEXT_FADED)
             .into()
     } else {
@@ -118,12 +121,13 @@ fn chat_item<'a>(
         .and_then(|m| m.picture_url.as_deref());
 
     let avatar: Element<'a, Message, Theme> =
-        avatar_circle(Some(&name), picture_url, 40.0, avatar_cache);
+        avatar_circle(Some(&name), picture_url, 48.0, avatar_cache);
 
     // Name + timestamp row
     let top_row = row![
         text(theme::truncate(&name, 20))
-            .size(14)
+            .size(15)
+            .font(icons::BOLD)
             .color(theme::TEXT_PRIMARY),
         Space::new().width(Fill),
         timestamp_text,
@@ -131,8 +135,8 @@ fn chat_item<'a>(
     .align_y(Alignment::Center);
 
     // Preview + optional badge
-    let mut bottom_row = row![text(theme::truncate(preview, 24))
-        .size(12)
+    let mut bottom_row = row![text(theme::truncate(preview, 30))
+        .size(13)
         .color(theme::TEXT_SECONDARY)
         .wrapping(text::Wrapping::None)]
     .align_y(Alignment::Center);
@@ -154,14 +158,14 @@ fn chat_item<'a>(
         );
     }
 
-    let content = row![avatar, column![top_row, bottom_row].spacing(2).width(Fill),]
-        .spacing(10)
+    let content = row![avatar, column![top_row, bottom_row].spacing(3).width(Fill),]
+        .spacing(12)
         .align_y(Alignment::Center);
 
     button(content)
         .on_press(Message::OpenChat(chat.chat_id.clone()))
         .width(Fill)
-        .padding([8, 8])
+        .padding([10, 12])
         .style(theme::chat_item_style(is_selected))
         .into()
 }

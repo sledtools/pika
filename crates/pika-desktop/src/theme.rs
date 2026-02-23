@@ -1,261 +1,112 @@
-use iced::widget::{button, container, text_input};
-use iced::{border, Background, Border, Color, Theme};
+use iced::widget::{button, container, rule, text_input};
+use iced::{Color, Theme};
 
-// ── Dark palette ────────────────────────────────────────────────────────────
+use crate::design;
 
-pub const SURFACE: Color = Color::from_rgb(0.102, 0.102, 0.180); // #1a1a2e
-pub const RAIL_BG: Color = Color::from_rgb(0.086, 0.086, 0.165); // #16162a
-pub const SENT_BUBBLE: Color = Color::from_rgb(0.0, 0.533, 0.8); // #0088cc
-pub const RECEIVED_BUBBLE: Color = Color::from_rgb(0.165, 0.165, 0.243); // #2a2a3e
-pub const TEXT_PRIMARY: Color = Color::from_rgb(0.933, 0.933, 0.953); // #eeeeF3
-pub const TEXT_SECONDARY: Color = Color::from_rgb(0.600, 0.600, 0.659); // #9999a8
-pub const TEXT_FADED: Color = Color::from_rgb(0.400, 0.400, 0.459); // #666675
-pub const ACCENT_BLUE: Color = Color::from_rgb(0.204, 0.533, 0.961); // #3488f5
-pub const BADGE_BG: Color = Color::from_rgb(0.204, 0.533, 0.961); // #3488f5
-pub const AVATAR_BG: Color = Color::from_rgb(0.145, 0.216, 0.365); // #25375d
-pub const SELECTION_BG: Color = Color::from_rgb(0.133, 0.133, 0.220); // #222238
-pub const HOVER_BG: Color = Color::from_rgb(0.118, 0.118, 0.200); // #1e1e33
-pub const INPUT_BG: Color = Color::from_rgb(0.118, 0.118, 0.200); // #1e1e33
-pub const INPUT_BORDER: Color = Color::from_rgb(0.200, 0.200, 0.282); // #333348
-pub const TOAST_BG: Color = Color::from_rgb(0.204, 0.533, 0.961); // #3488f5
-pub const DANGER: Color = Color::from_rgb(0.906, 0.298, 0.235); // #e74c3c
+// ── Color aliases (from design tokens) ────────────────────────────────────
 
-// ── Reusable style functions ────────────────────────────────────────────────
+pub const RECEIVED_BUBBLE: Color = design::DARK.received_bubble.background;
+pub const TEXT_PRIMARY: Color = design::DARK.background.on;
+pub const TEXT_SECONDARY: Color = design::DARK.background.on_secondary;
+pub const TEXT_FADED: Color = design::DARK.background.on_faded;
+pub const ACCENT_BLUE: Color = design::DARK.accent.base;
+pub const HOVER_BG: Color = design::DARK.background.component.hover;
+pub const INPUT_BORDER: Color = design::DARK.background.divider;
+pub const DANGER: Color = design::DARK.danger.base;
 
+// ── Reusable style functions (delegate to design system) ──────────────────
+
+#[allow(dead_code)]
 pub fn bubble_sent_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(SENT_BUBBLE)),
-        border: border::rounded(12),
-        ..Default::default()
-    }
+    design::DARK.bubble_sent()
 }
 
+#[allow(dead_code)]
 pub fn bubble_received_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(TEXT_PRIMARY),
-        background: Some(Background::Color(RECEIVED_BUBBLE)),
-        border: border::rounded(12),
-        ..Default::default()
-    }
+    design::DARK.bubble_received()
 }
 
 pub fn chat_item_style(is_selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme: &Theme, status: button::Status| {
-        let bg = if is_selected {
-            SELECTION_BG
-        } else {
-            match status {
-                button::Status::Hovered => HOVER_BG,
-                _ => Color::TRANSPARENT,
-            }
-        };
-        button::Style {
-            background: Some(Background::Color(bg)),
-            text_color: TEXT_PRIMARY,
-            border: border::rounded(8),
-            ..Default::default()
-        }
-    }
+    move |_theme: &Theme, status: button::Status| design::DARK.chat_item(is_selected, status)
 }
 
 pub fn primary_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => Color::from_rgb(0.243, 0.573, 1.0),
-        button::Status::Disabled => Color::from_rgb(0.15, 0.35, 0.65),
-        _ => ACCENT_BLUE,
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.button_primary(status)
 }
 
 pub fn secondary_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => HOVER_BG,
-        _ => Color::TRANSPARENT,
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: TEXT_SECONDARY,
-        border: Border {
-            color: INPUT_BORDER,
-            width: 1.0,
-            radius: border::radius(6),
-        },
-        ..Default::default()
-    }
+    design::DARK.button_secondary(status)
 }
 
 pub fn danger_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => Color::from_rgb(0.85, 0.25, 0.20),
-        _ => DANGER,
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.button_danger(status)
+}
+
+pub fn icon_button_style(is_active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme: &Theme, status: button::Status| design::DARK.button_icon(is_active, status)
 }
 
 pub fn dark_input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let border_color = match status {
-        text_input::Status::Focused { .. } => ACCENT_BLUE,
-        text_input::Status::Hovered => TEXT_FADED,
-        _ => INPUT_BORDER,
-    };
-    text_input::Style {
-        background: Background::Color(INPUT_BG),
-        border: Border {
-            color: border_color,
-            width: 1.0,
-            radius: border::radius(6),
-        },
-        icon: TEXT_FADED,
-        placeholder: TEXT_FADED,
-        value: TEXT_PRIMARY,
-        selection: ACCENT_BLUE.scale_alpha(0.3),
-    }
+    design::DARK.text_input(status)
 }
 
 pub fn avatar_container_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(AVATAR_BG)),
-        border: border::rounded(100),
-        ..Default::default()
-    }
+    design::DARK.avatar()
 }
 
 pub fn rail_container_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(RAIL_BG)),
-        ..Default::default()
-    }
+    design::DARK.rail()
 }
 
 pub fn surface_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(SURFACE)),
-        ..Default::default()
-    }
-}
-
-pub fn toast_container_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(TOAST_BG)),
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.surface()
 }
 
 pub fn login_card_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(TEXT_PRIMARY),
-        background: Some(Background::Color(RAIL_BG)),
-        border: Border {
-            color: INPUT_BORDER,
-            width: 1.0,
-            radius: border::radius(12),
-        },
-        ..Default::default()
-    }
-}
-
-pub fn header_bar_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(RAIL_BG)),
-        ..Default::default()
-    }
+    design::DARK.login_card()
 }
 
 pub fn input_bar_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(RAIL_BG)),
-        border: Border {
-            color: INPUT_BORDER,
-            width: 0.0,
-            radius: border::radius(0),
-        },
-        ..Default::default()
-    }
+    design::DARK.input_bar()
 }
 
 pub fn badge_container_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(BADGE_BG)),
-        border: border::rounded(100),
-        ..Default::default()
+    design::DARK.badge()
+}
+
+pub fn subtle_rule_style(_theme: &Theme) -> rule::Style {
+    rule::Style {
+        color: Color::from_rgb(0.125, 0.129, 0.153),
+        radius: 0.0.into(),
+        fill_mode: rule::FillMode::Full,
+        snap: true,
     }
+}
+
+pub fn checkbox_style(is_checked: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| design::DARK.checkbox_indicator(is_checked)
 }
 
 // ── Call screen ─────────────────────────────────────────────────────────────
 
-pub const CALL_BANNER_BG: Color = Color::from_rgb(0.20, 0.78, 0.35); // green (matches CALL_ACCEPT)
-
 pub fn incoming_call_banner_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(CALL_BANNER_BG)),
-        ..Default::default()
-    }
+    design::DARK.call_banner()
 }
 
-pub const CALL_BG: Color = Color::from_rgb(0.06, 0.06, 0.14); // dark blue-black
-pub const CALL_ACCEPT: Color = Color::from_rgb(0.20, 0.78, 0.35); // green
-pub const CALL_MUTED: Color = Color::from_rgb(0.95, 0.60, 0.07); // orange
-
 pub fn call_screen_bg_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(CALL_BG)),
-        ..Default::default()
-    }
+    design::DARK.call_screen_bg()
 }
 
 pub fn call_accept_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => Color::from_rgb(0.24, 0.85, 0.40),
-        _ => CALL_ACCEPT,
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.button_call_accept(status)
 }
 
 pub fn call_muted_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => Color::from_rgb(0.98, 0.65, 0.10),
-        _ => CALL_MUTED,
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.button_call_muted(status)
 }
 
 pub fn call_control_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let bg = match status {
-        button::Status::Hovered => Color::from_rgb(0.22, 0.22, 0.30),
-        _ => Color::from_rgb(0.16, 0.16, 0.24),
-    };
-    button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: Color::WHITE,
-        border: border::rounded(6),
-        ..Default::default()
-    }
+    design::DARK.button_call_control(status)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

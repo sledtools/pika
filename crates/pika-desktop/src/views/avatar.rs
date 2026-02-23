@@ -57,8 +57,11 @@ pub fn avatar_circle<'a, M: 'a>(
     size: f32,
     cache: &mut AvatarCache,
 ) -> Element<'a, M, Theme> {
+    // Render at 2x for HiDPI displays (Retina). The image widget will
+    // scale it down to `size` logical pixels, keeping it crisp at 2x.
+    let render_px = (size * 2.0) as u32;
     if let Some(path) = picture_url.and_then(local_path_from_url) {
-        if let Some(handle) = cache.get_or_load(&path, size as u32) {
+        if let Some(handle) = cache.get_or_load(&path, render_px) {
             return image(handle)
                 .width(Length::Fixed(size))
                 .height(Length::Fixed(size))

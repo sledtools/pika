@@ -1,10 +1,12 @@
 use iced::widget::{
-    button, column, container, operation, row, rule, scrollable, text, text_input, Space,
+    button, column, container, operation, row, scrollable, text, text_input, Space,
 };
 use iced::{Alignment, Element, Fill, Task, Theme};
 use pika_core::{CallState, CallStatus, ChatMessage, ChatViewState};
 use std::collections::HashMap;
 
+use crate::design::BubblePosition;
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 use crate::views::message_bubble::message_bubble;
@@ -176,9 +178,12 @@ impl State {
             String::new()
         };
 
-        let mut header_info = column![text(title.clone()).size(16).color(theme::TEXT_PRIMARY),];
+        let mut header_info = column![text(title.clone())
+            .size(17)
+            .font(icons::BOLD)
+            .color(theme::TEXT_PRIMARY),];
         if !subtitle.is_empty() {
-            header_info = header_info.push(text(subtitle).size(12).color(theme::TEXT_SECONDARY));
+            header_info = header_info.push(text(subtitle).size(13).color(theme::TEXT_SECONDARY));
         }
 
         let picture_url = chat.members.first().and_then(|m| m.picture_url.as_deref());
@@ -197,15 +202,21 @@ impl State {
                 .map(|c| c.chat_id != chat.chat_id && !matches!(c.status, CallStatus::Ended { .. }))
                 .unwrap_or(false);
 
-            let label = if has_live_call_for_chat {
-                "\u{1F4DE}" // telephone receiver (filled feel)
+            let phone_icon = if has_live_call_for_chat {
+                icons::PHONE_INCOMING
             } else {
-                "\u{260E}" // telephone (outline feel)
+                icons::PHONE
             };
 
-            let btn = button(text(label).size(18).center())
-                .padding([4, 10])
-                .style(theme::secondary_button_style);
+            let btn = button(
+                text(phone_icon)
+                    .font(icons::LUCIDE_FONT)
+                    .size(20)
+                    .color(theme::TEXT_PRIMARY)
+                    .center(),
+            )
+            .padding([8, 10])
+            .style(theme::icon_button_style(false));
 
             let audio_btn = if has_live_call_elsewhere {
                 Some(btn.into())
@@ -217,9 +228,15 @@ impl State {
 
             // Video call button (camera icon)
             let video_btn = if !has_live_call_for_chat {
-                let vbtn = button(text("\u{1F4F9}").size(18).center()) // video camera
-                    .padding([4, 10])
-                    .style(theme::secondary_button_style);
+                let vbtn = button(
+                    text(icons::VIDEO)
+                        .font(icons::LUCIDE_FONT)
+                        .size(20)
+                        .color(theme::TEXT_PRIMARY)
+                        .center(),
+                )
+                .padding([8, 10])
+                .style(theme::icon_button_style(false));
                 if has_live_call_elsewhere {
                     Some(vbtn.into())
                 } else {
@@ -234,16 +251,35 @@ impl State {
             (None, None)
         };
 
-        let mut header_row = row![
+        // Profile-clickable area (avatar + name) — hover only on this part
+        let profile_content = row![
             avatar_circle(Some(&*title), picture_url, 36.0, avatar_cache),
             header_info,
         ]
         .spacing(10)
         .align_y(Alignment::Center);
 
-        if call_button.is_some() || video_call_button.is_some() {
-            header_row = header_row.push(Space::new().width(Fill));
-        }
+        let profile_area: Element<'a, Message, Theme> = if chat.is_group {
+            button(profile_content)
+                .on_press(Message::ShowGroupInfo)
+                .padding([8, 12])
+                .style(theme::icon_button_style(false))
+                .into()
+        } else if let Some(peer) = chat.members.first() {
+            let peer_pubkey = peer.pubkey.clone();
+            button(profile_content)
+                .on_press(Message::OpenPeerProfile(peer_pubkey))
+                .padding([8, 12])
+                .style(theme::icon_button_style(false))
+                .into()
+        } else {
+            container(profile_content).padding([8, 12]).into()
+        };
+
+        // Full header row: [profile area] [spacer] [call buttons]
+        let mut header_row =
+            row![profile_area, Space::new().width(Fill)].align_y(Alignment::Center);
+
         if let Some(btn) = video_call_button {
             header_row = header_row.push(btn);
         }
@@ -251,80 +287,56 @@ impl State {
             header_row = header_row.push(btn);
         }
 
-        let header_content = header_row.padding([8, 16]);
-
-        // Make group headers clickable to show group info
-        let header: Element<'a, Message, Theme> = if chat.is_group {
-            container(
-                button(header_content)
-                    .on_press(Message::ShowGroupInfo)
-                    .width(Fill)
-                    .style(|_: &Theme, status: button::Status| {
-                        let bg = match status {
-                            button::Status::Hovered => theme::HOVER_BG,
-                            _ => theme::RAIL_BG,
-                        };
-                        button::Style {
-                            background: Some(iced::Background::Color(bg)),
-                            text_color: theme::TEXT_PRIMARY,
-                            border: iced::border::rounded(0),
-                            ..Default::default()
-                        }
-                    }),
-            )
-            .width(Fill)
-            .into()
-        } else if let Some(peer) = chat.members.first() {
-            let peer_pubkey = peer.pubkey.clone();
-            container(
-                button(header_content)
-                    .on_press(Message::OpenPeerProfile(peer_pubkey))
-                    .width(Fill)
-                    .style(|_: &Theme, status: button::Status| {
-                        let bg = match status {
-                            button::Status::Hovered => theme::HOVER_BG,
-                            _ => theme::RAIL_BG,
-                        };
-                        button::Style {
-                            background: Some(iced::Background::Color(bg)),
-                            text_color: theme::TEXT_PRIMARY,
-                            border: iced::border::rounded(0),
-                            ..Default::default()
-                        }
-                    }),
-            )
-            .width(Fill)
-            .into()
-        } else {
-            container(header_content)
-                .width(Fill)
-                .style(theme::header_bar_style)
-                .into()
-        };
+        let header = container(header_row.padding([4, 4])).width(Fill);
 
         // ── Messages ────────────────────────────────────────────────────
         let is_group = chat.is_group;
         let messages_by_id: HashMap<&str, &ChatMessage> =
             chat.messages.iter().map(|m| (m.id.as_str(), m)).collect();
-        let messages =
-            chat.messages
-                .iter()
-                .fold(column![].spacing(6).padding([8, 16]), |col, msg| {
-                    let reply_target = msg
-                        .reply_to_message_id
-                        .as_deref()
-                        .and_then(|id| messages_by_id.get(id).copied());
-                    let picker_open =
-                        self.emoji_picker_message_id.as_deref() == Some(msg.id.as_str());
-                    let hovered = self.hovered_message_id.as_deref() == Some(msg.id.as_str());
-                    col.push(message_bubble(
-                        msg,
-                        is_group,
-                        reply_target,
-                        picker_open,
-                        hovered,
-                    ))
-                });
+        let messages = {
+            let mut col = column![].padding([8, 16]);
+            let msgs = &chat.messages;
+            for i in 0..msgs.len() {
+                let msg = &msgs[i];
+
+                // Determine grouping: consecutive messages from same sender
+                let same_as_prev = i > 0
+                    && msgs[i - 1].is_mine == msg.is_mine
+                    && msgs[i - 1].sender_pubkey == msg.sender_pubkey;
+                let same_as_next = i + 1 < msgs.len()
+                    && msgs[i + 1].is_mine == msg.is_mine
+                    && msgs[i + 1].sender_pubkey == msg.sender_pubkey;
+
+                let position = match (same_as_prev, same_as_next) {
+                    (false, false) => BubblePosition::Single,
+                    (false, true) => BubblePosition::First,
+                    (true, true) => BubblePosition::Middle,
+                    (true, false) => BubblePosition::Last,
+                };
+
+                // Variable spacing: tight within groups, looser between
+                if i > 0 {
+                    let gap = if same_as_prev { 2 } else { 12 };
+                    col = col.push(Space::new().height(gap));
+                }
+
+                let reply_target = msg
+                    .reply_to_message_id
+                    .as_deref()
+                    .and_then(|id| messages_by_id.get(id).copied());
+                let picker_open = self.emoji_picker_message_id.as_deref() == Some(msg.id.as_str());
+                let hovered = self.hovered_message_id.as_deref() == Some(msg.id.as_str());
+                col = col.push(message_bubble(
+                    msg,
+                    is_group,
+                    reply_target,
+                    picker_open,
+                    hovered,
+                    position,
+                ));
+            }
+            col
+        };
 
         let message_scroll = scrollable(messages)
             .id(CONVERSATION_SCROLL_ID)
@@ -336,14 +348,42 @@ impl State {
         let send_enabled = !self.message_input.trim().is_empty();
 
         let send_button = if send_enabled {
-            button(text("Send").size(14).center())
-                .on_press(Message::SendMessage)
-                .padding([8, 16])
-                .style(theme::primary_button_style)
+            button(
+                text(icons::ARROW_UP)
+                    .font(icons::LUCIDE_FONT)
+                    .size(20)
+                    .center(),
+            )
+            .on_press(Message::SendMessage)
+            .width(36.0)
+            .height(36.0)
+            .style(|_: &Theme, status: button::Status| {
+                let bg = match status {
+                    button::Status::Hovered => theme::ACCENT_BLUE.scale_alpha(0.85),
+                    _ => theme::ACCENT_BLUE,
+                };
+                button::Style {
+                    background: Some(iced::Background::Color(bg)),
+                    text_color: iced::Color::WHITE,
+                    border: iced::border::rounded(9999),
+                    ..Default::default()
+                }
+            })
         } else {
-            button(text("Send").size(14).color(theme::TEXT_FADED).center())
-                .padding([8, 16])
-                .style(theme::secondary_button_style)
+            button(
+                text(icons::ARROW_UP)
+                    .font(icons::LUCIDE_FONT)
+                    .size(20)
+                    .center(),
+            )
+            .width(36.0)
+            .height(36.0)
+            .style(|_: &Theme, _status: button::Status| button::Style {
+                background: Some(iced::Background::Color(theme::HOVER_BG)),
+                text_color: theme::TEXT_FADED,
+                border: iced::border::rounded(9999),
+                ..Default::default()
+            })
         };
 
         let composer = row![
@@ -357,7 +397,7 @@ impl State {
         ]
         .spacing(8)
         .align_y(Alignment::Center)
-        .padding([8, 16]);
+        .padding([10, 16]);
 
         let mut input_column = column![].spacing(6);
         let replying_to = self
@@ -391,9 +431,9 @@ impl State {
             let reply_row = row![
                 column![
                     text(format!("Replying to {sender}"))
-                        .size(12)
+                        .size(13)
                         .color(theme::TEXT_SECONDARY),
-                    text(snippet).size(12).color(theme::TEXT_FADED),
+                    text(snippet).size(13).color(theme::TEXT_FADED),
                 ]
                 .spacing(2)
                 .width(Fill),
@@ -431,7 +471,7 @@ impl State {
                     }
                 };
                 Some(
-                    container(text(label).size(12).color(theme::TEXT_SECONDARY))
+                    container(text(label).size(13).color(theme::TEXT_SECONDARY))
                         .padding([4, 16])
                         .into(),
                 )
@@ -440,9 +480,7 @@ impl State {
             };
 
         // ── Compose ─────────────────────────────────────────────────────
-        let mut layout = column![header, rule::horizontal(1), message_scroll,]
-            .width(Fill)
-            .height(Fill);
+        let mut layout = column![header, message_scroll,].width(Fill).height(Fill);
 
         if let Some(indicator) = typing_indicator {
             layout = layout.push(indicator);

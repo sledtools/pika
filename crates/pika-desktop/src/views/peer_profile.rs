@@ -1,7 +1,8 @@
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{button, column, container, row, text};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use pika_core::PeerProfileState;
 
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 
@@ -36,21 +37,27 @@ pub fn peer_profile_view<'a>(
     profile: &'a PeerProfileState,
     avatar_cache: &mut super::avatar::AvatarCache,
 ) -> Element<'a, Message, Theme> {
-    let mut content = column![].spacing(16).padding([32, 32]).width(Fill);
+    let mut content = column![].spacing(20).padding([24, 32]).width(Fill);
 
-    // ── Close button row ────────────────────────────────────────────
+    // ── Back button (top-left) ───────────────────────────────────────
     content = content.push(
-        row![
-            Space::new().width(Fill),
-            button(text("Close").size(14))
-                .on_press(Message::Close)
-                .padding([6, 16])
-                .style(theme::secondary_button_style),
-        ]
-        .width(Fill),
+        button(
+            row![
+                text(icons::CHEVRON_LEFT)
+                    .font(icons::LUCIDE_FONT)
+                    .size(18)
+                    .color(theme::TEXT_SECONDARY),
+                text("Back").size(14).color(theme::TEXT_SECONDARY),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::Close)
+        .padding([6, 12])
+        .style(theme::icon_button_style(false)),
     );
 
-    // ── Avatar ──────────────────────────────────────────────────────
+    // ── Avatar (centered) ────────────────────────────────────────────
     content = content.push(
         container(avatar_circle(
             profile.name.as_deref(),
@@ -62,15 +69,21 @@ pub fn peer_profile_view<'a>(
         .center_x(Fill),
     );
 
-    // ── Name / About ────────────────────────────────────────────────
+    // ── Name ─────────────────────────────────────────────────────────
     if let Some(name) = &profile.name {
         content = content.push(
-            container(text(name).size(20).color(theme::TEXT_PRIMARY))
-                .width(Fill)
-                .center_x(Fill),
+            container(
+                text(name)
+                    .size(22)
+                    .font(icons::BOLD)
+                    .color(theme::TEXT_PRIMARY),
+            )
+            .width(Fill)
+            .center_x(Fill),
         );
     }
 
+    // ── About ────────────────────────────────────────────────────────
     if let Some(about) = &profile.about {
         if !about.trim().is_empty() {
             content = content.push(
@@ -81,47 +94,62 @@ pub fn peer_profile_view<'a>(
         }
     }
 
-    // ── npub ────────────────────────────────────────────────────────
+    // ── npub (monospace, with copy icon) ─────────────────────────────
     let npub_display = theme::truncated_npub_long(&profile.npub);
     content = content.push(
-        row![
-            text(npub_display)
-                .size(12)
-                .color(theme::TEXT_FADED)
-                .width(Fill),
-            button(text("Copy").size(12))
+        container(
+            row![
+                text(npub_display)
+                    .size(14)
+                    .font(icons::MONO)
+                    .color(theme::TEXT_SECONDARY),
+                button(
+                    text(icons::COPY)
+                        .font(icons::LUCIDE_FONT)
+                        .size(16)
+                        .color(theme::TEXT_SECONDARY)
+                        .center(),
+                )
                 .on_press(Message::CopyNpub)
-                .padding([4, 10])
-                .style(theme::secondary_button_style),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+                .padding([4, 6])
+                .style(theme::icon_button_style(false)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .center_x(Fill),
     );
 
-    // ── Follow / Unfollow ───────────────────────────────────────────
+    // ── Action buttons (centered, compact) ───────────────────────────
     let follow_btn = if profile.is_followed {
-        button(text("Unfollow").size(14).width(Fill).center())
+        button(text("Unfollow").size(14).font(icons::MEDIUM).center())
             .on_press(Message::Unfollow)
-            .width(Fill)
-            .padding([10, 0])
+            .width(Length::Fixed(160.0))
+            .padding([10, 24])
             .style(theme::danger_button_style)
     } else {
-        button(text("Follow").size(14).width(Fill).center())
+        button(text("Follow").size(14).font(icons::MEDIUM).center())
             .on_press(Message::Follow)
-            .width(Fill)
-            .padding([10, 0])
+            .width(Length::Fixed(160.0))
+            .padding([10, 24])
             .style(theme::primary_button_style)
     };
 
-    content = content.push(follow_btn);
+    let message_btn = button(text("Message").size(14).font(icons::MEDIUM).center())
+        .on_press(Message::StartChat(profile.npub.clone()))
+        .width(Length::Fixed(160.0))
+        .padding([10, 24])
+        .style(theme::icon_button_style(false));
 
-    // ── Message button ──────────────────────────────────────────────
     content = content.push(
-        button(text("Message").size(14).width(Fill).center())
-            .on_press(Message::StartChat(profile.npub.clone()))
-            .width(Fill)
-            .padding([10, 0])
-            .style(theme::secondary_button_style),
+        container(
+            row![follow_btn, message_btn]
+                .spacing(12)
+                .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .center_x(Fill),
     );
 
     container(content)

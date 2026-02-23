@@ -1,4 +1,6 @@
 mod app_manager;
+mod design;
+mod icons;
 mod screen;
 mod theme;
 mod video;
@@ -21,14 +23,29 @@ pub fn app_version_display() -> String {
 }
 
 pub fn main() -> iced::Result {
+    let window_settings = iced::window::Settings {
+        size: Size::new(1024.0, 720.0),
+        #[cfg(target_os = "macos")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            title_hidden: true,
+            titlebar_transparent: true,
+            fullsize_content_view: true,
+        },
+        ..Default::default()
+    };
+
     iced::application(DesktopApp::new, DesktopApp::update, DesktopApp::view)
         .title("Pika Desktop")
         .subscription(DesktopApp::subscription)
         .theme(dark_theme)
-        .window_size(Size::new(1024.0, 720.0))
-        .font(include_bytes!("../fonts/UbuntuSansMono.ttf").as_slice())
+        .window(window_settings)
+        .default_font(Font::with_name("Geist"))
+        .font(include_bytes!("../fonts/Geist-Regular.ttf").as_slice())
+        .font(include_bytes!("../fonts/Geist-Medium.ttf").as_slice())
+        .font(include_bytes!("../fonts/Geist-Bold.ttf").as_slice())
+        .font(include_bytes!("../fonts/GeistMono-Regular.ttf").as_slice())
         .font(include_bytes!("../fonts/NotoColorEmoji.ttf").as_slice())
-        .default_font(Font::with_name("Ubuntu Sans Mono"))
+        .font(include_bytes!("../fonts/lucide.ttf").as_slice())
         .run()
 }
 

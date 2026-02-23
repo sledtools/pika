@@ -2,6 +2,7 @@ use iced::widget::{button, column, container, row, scrollable, text, text_input,
 use iced::{Alignment, Element, Fill, Theme};
 use pika_core::FollowListEntry;
 
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 
@@ -92,13 +93,14 @@ impl State {
                 button(
                     text("Creating\u{2026}")
                         .size(14)
+                        .font(icons::MEDIUM)
                         .color(theme::TEXT_FADED)
                         .center(),
                 )
                 .padding([10, 20])
                 .style(theme::secondary_button_style)
             } else {
-                button(text("Start Chat").size(14).center())
+                button(text("Start Chat").size(14).font(icons::MEDIUM).center())
                     .on_press_maybe(if self.input.trim().is_empty() {
                         None
                     } else {

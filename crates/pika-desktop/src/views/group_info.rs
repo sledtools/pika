@@ -2,6 +2,7 @@ use iced::widget::{button, column, container, row, rule, scrollable, text, text_
 use iced::{Alignment, Element, Fill, Theme};
 use pika_core::ChatViewState;
 
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 
@@ -76,16 +77,37 @@ impl State {
         }
     }
 
-    /// Group Info screen shown in the center pane.
+    /// Group Info screen — Signal-style layout.
     pub fn view<'a>(
         &'a self,
         chat: &'a ChatViewState,
         my_pubkey: &str,
         avatar_cache: &mut super::avatar::AvatarCache,
     ) -> Element<'a, Message, Theme> {
-        let mut content = column![].spacing(16).padding([24, 32]).width(Fill);
+        let mut content = column![].spacing(4).width(Fill);
 
-        // ── Group name + edit ───────────────────────────────────────────
+        // ── Back button ──────────────────────────────────────────────
+        content = content.push(
+            container(
+                button(
+                    row![
+                        text(icons::CHEVRON_LEFT)
+                            .font(icons::LUCIDE_FONT)
+                            .size(18)
+                            .color(theme::TEXT_SECONDARY),
+                        text("Back").size(14).color(theme::TEXT_SECONDARY),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .on_press(Message::Close)
+                .padding([8, 12])
+                .style(theme::icon_button_style(false)),
+            )
+            .padding([12, 16]),
+        );
+
+        // ── Group name edit ──────────────────────────────────────────
         let name_row = row![
             text_input("Group name\u{2026}", &self.name_draft)
                 .on_input(Message::NameChanged)
@@ -93,7 +115,7 @@ impl State {
                 .padding(10)
                 .width(Fill)
                 .style(theme::dark_input_style),
-            button(text("Rename").size(14).center())
+            button(text("Rename").size(14).font(icons::MEDIUM).center())
                 .on_press(Message::RenameGroup)
                 .padding([10, 20])
                 .style(theme::primary_button_style),
@@ -101,23 +123,37 @@ impl State {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        content = content.push(name_row);
+        content = content.push(container(name_row).padding([8, 24]));
 
-        content = content.push(rule::horizontal(1));
+        content = content.push(container(rule::horizontal(1)).padding([8, 24]));
 
-        // ── Members header ──────────────────────────────────────────────
+        // ── Members section ──────────────────────────────────────────
         content = content.push(
-            text(format!("Members ({})", chat.members.len()))
-                .size(16)
-                .color(theme::TEXT_PRIMARY),
+            container(
+                text(format!("{} members", chat.members.len()))
+                    .size(14)
+                    .font(icons::BOLD)
+                    .color(theme::TEXT_PRIMARY),
+            )
+            .padding([8, 24]),
         );
 
-        // ── Member list ─────────────────────────────────────────────────
+        // Add member row (if admin)
+        if chat.is_admin {
+            content = content.push(action_row_with_input(
+                icons::PLUS,
+                "npub1\u{2026}",
+                &self.npub_input,
+                self.npub_input.trim().is_empty(),
+            ));
+        }
+
+        // Member list
         let is_admin = chat.is_admin;
         let member_list = chat
             .members
             .iter()
-            .fold(column![].spacing(4), |col, member| {
+            .fold(column![].spacing(0), |col, member| {
                 col.push(member_row(
                     member,
                     is_me(member, my_pubkey),
@@ -128,54 +164,14 @@ impl State {
 
         content = content.push(scrollable(member_list).height(Fill).width(Fill));
 
-        // ── Add member ──────────────────────────────────────────────────
-        if is_admin {
-            let add_row = row![
-                text_input("npub1\u{2026}", &self.npub_input)
-                    .on_input(Message::NpubChanged)
-                    .on_submit(Message::AddMember)
-                    .padding(10)
-                    .width(Fill)
-                    .style(theme::dark_input_style),
-                button(text("Add").size(14).center())
-                    .on_press_maybe(if self.npub_input.trim().is_empty() {
-                        None
-                    } else {
-                        Some(Message::AddMember)
-                    })
-                    .padding([10, 20])
-                    .style(theme::primary_button_style),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
+        content = content.push(container(rule::horizontal(1)).padding([4, 24]));
 
-            content = content.push(add_row);
-        }
-
-        // ── Leave group ─────────────────────────────────────────────────
-        content = content.push(
-            container(
-                button(text("Leave Group").size(14).center())
-                    .on_press(Message::LeaveGroup)
-                    .padding([10, 24])
-                    .style(theme::danger_button_style),
-            )
-            .width(Fill)
-            .align_x(Alignment::Center)
-            .padding([8, 0]),
-        );
-
-        // ── Close button ────────────────────────────────────────────────
-        content = content.push(
-            container(
-                button(text("Close").size(13).color(theme::TEXT_SECONDARY).center())
-                    .on_press(Message::Close)
-                    .padding([8, 20])
-                    .style(theme::secondary_button_style),
-            )
-            .width(Fill)
-            .align_x(Alignment::Center),
-        );
+        // ── Leave group (danger action row) ──────────────────────────
+        content = content.push(danger_action_row(
+            icons::X,
+            "Leave Group",
+            Message::LeaveGroup,
+        ));
 
         container(content)
             .width(Fill)
@@ -191,7 +187,78 @@ fn is_me(member: &pika_core::MemberInfo, my_pubkey: &str) -> bool {
     member.pubkey == my_pubkey
 }
 
-/// A single member row.
+/// Signal-style full-width action row: [icon] [label] — hover shows bg.
+fn danger_action_row<'a>(
+    icon_cp: &'a str,
+    label: &'a str,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    button(
+        row![
+            text(icon_cp)
+                .font(icons::LUCIDE_FONT)
+                .size(18)
+                .color(theme::DANGER),
+            text(label).size(14).color(theme::DANGER),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .on_press(on_press)
+    .width(Fill)
+    .padding([12, 24])
+    .style(|_: &Theme, status: button::Status| {
+        let bg = match status {
+            button::Status::Hovered => theme::HOVER_BG,
+            _ => iced::Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(iced::Background::Color(bg)),
+            text_color: theme::DANGER,
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// Add member input row with icon prefix.
+fn action_row_with_input<'a>(
+    icon_cp: &'a str,
+    placeholder: &'a str,
+    value: &'a str,
+    add_disabled: bool,
+) -> Element<'a, Message, Theme> {
+    let add_btn = button(text("Add").size(14).font(icons::MEDIUM).center())
+        .on_press_maybe(if add_disabled {
+            None
+        } else {
+            Some(Message::AddMember)
+        })
+        .padding([8, 16])
+        .style(theme::primary_button_style);
+
+    container(
+        row![
+            text(icon_cp)
+                .font(icons::LUCIDE_FONT)
+                .size(18)
+                .color(theme::TEXT_SECONDARY),
+            text_input(placeholder, value)
+                .on_input(Message::NpubChanged)
+                .on_submit(Message::AddMember)
+                .padding(8)
+                .width(Fill)
+                .style(theme::dark_input_style),
+            add_btn,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .padding([4, 24])
+    .into()
+}
+
+/// A single member row — Signal style: full-width, hover bg, avatar + name.
 fn member_row<'a>(
     member: &'a pika_core::MemberInfo,
     is_me: bool,
@@ -213,63 +280,66 @@ fn member_row<'a>(
     );
 
     let label = if is_me {
-        format!("{display_name} (You)")
+        "You".to_string()
     } else {
-        display_name.clone()
+        display_name
     };
 
-    let pubkey_for_profile = member.pubkey.clone();
-    let profile_btn = button(
-        row![avatar, text(label).size(14).color(theme::TEXT_PRIMARY),]
-            .spacing(10)
-            .align_y(Alignment::Center),
-    )
-    .on_press_maybe(if is_me {
-        None
-    } else {
-        Some(Message::OpenPeerProfile(pubkey_for_profile))
-    })
-    .padding(0)
-    .style(|_: &Theme, status: button::Status| {
-        let bg = match status {
-            button::Status::Hovered => theme::HOVER_BG,
-            _ => iced::Color::TRANSPARENT,
-        };
-        button::Style {
-            background: Some(iced::Background::Color(bg)),
-            text_color: theme::TEXT_PRIMARY,
-            border: iced::border::rounded(6),
-            ..Default::default()
-        }
-    });
-
-    let mut row_content = row![profile_btn, Space::new().width(Fill),]
-        .spacing(10)
+    let mut row_content = row![avatar, text(label).size(14).color(theme::TEXT_PRIMARY)]
+        .spacing(12)
         .align_y(Alignment::Center);
+
+    row_content = row_content.push(Space::new().width(Fill));
 
     if member.is_admin {
         row_content = row_content.push(text("Admin").size(12).color(theme::TEXT_FADED));
     }
+
     if !is_me && is_admin {
         let pubkey = member.pubkey.clone();
         row_content = row_content.push(
-            button(text("Remove").size(12).color(theme::DANGER).center())
-                .on_press(Message::RemoveMember(pubkey))
-                .padding([4, 10])
-                .style(|_: &Theme, status: button::Status| {
-                    let bg = match status {
-                        button::Status::Hovered => theme::HOVER_BG,
-                        _ => iced::Color::TRANSPARENT,
-                    };
-                    button::Style {
-                        background: Some(iced::Background::Color(bg)),
-                        text_color: theme::DANGER,
-                        border: iced::border::rounded(6),
-                        ..Default::default()
-                    }
-                }),
+            button(
+                text(icons::X)
+                    .font(icons::LUCIDE_FONT)
+                    .size(14)
+                    .color(theme::DANGER),
+            )
+            .on_press(Message::RemoveMember(pubkey))
+            .padding([4, 6])
+            .style(|_: &Theme, status: button::Status| {
+                let bg = match status {
+                    button::Status::Hovered => theme::HOVER_BG,
+                    _ => iced::Color::TRANSPARENT,
+                };
+                button::Style {
+                    background: Some(iced::Background::Color(bg)),
+                    text_color: theme::DANGER,
+                    border: iced::border::rounded(6),
+                    ..Default::default()
+                }
+            }),
         );
     }
 
-    container(row_content).width(Fill).padding([8, 12]).into()
+    let pubkey_for_profile = member.pubkey.clone();
+    button(row_content)
+        .on_press_maybe(if is_me {
+            None
+        } else {
+            Some(Message::OpenPeerProfile(pubkey_for_profile))
+        })
+        .width(Fill)
+        .padding([10, 24])
+        .style(|_: &Theme, status: button::Status| {
+            let bg = match status {
+                button::Status::Hovered => theme::HOVER_BG,
+                _ => iced::Color::TRANSPARENT,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
+                text_color: theme::TEXT_PRIMARY,
+                ..Default::default()
+            }
+        })
+        .into()
 }

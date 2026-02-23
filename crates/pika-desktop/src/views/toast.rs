@@ -1,6 +1,7 @@
 use iced::widget::{button, container, row, text};
-use iced::{Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Theme};
 
+use crate::icons;
 use crate::theme;
 
 #[derive(Debug, Clone)]
@@ -9,11 +10,13 @@ pub enum Message {
     ResetRelayConfig,
 }
 
-/// Full-width toast notification bar.
+/// Floating toast notification — rendered as a right-aligned pill overlay.
+/// The parent should place this inside a `Stack` so it floats above content.
 pub fn toast_bar(message: &str, show_relay_reset: bool) -> Element<'_, Message, Theme> {
-    let mut row = row![text(message).color(iced::Color::WHITE).width(Fill)]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+    let mut row = row![text(message).size(13).color(iced::Color::WHITE)]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
     if show_relay_reset {
         row = row.push(
             button(
@@ -26,24 +29,48 @@ pub fn toast_bar(message: &str, show_relay_reset: bool) -> Element<'_, Message, 
             .style(|_theme: &Theme, _status: button::Status| button::Style {
                 background: Some(iced::Background::Color(crate::theme::DANGER)),
                 text_color: iced::Color::WHITE,
+                border: iced::border::rounded(6),
                 ..Default::default()
             }),
         );
     }
+
     row = row.push(
-        button(text("\u{2715}").color(iced::Color::WHITE).size(14))
-            .on_press(Message::ClearToast)
-            .padding([4, 8])
-            .style(|_theme: &Theme, _status: button::Status| button::Style {
-                background: None,
+        button(
+            text(icons::X)
+                .font(icons::LUCIDE_FONT)
+                .size(14)
+                .color(iced::Color::WHITE)
+                .center(),
+        )
+        .on_press(Message::ClearToast)
+        .padding([4, 6])
+        .style(|_theme: &Theme, status: button::Status| {
+            let bg = match status {
+                button::Status::Hovered => iced::Color::WHITE.scale_alpha(0.15),
+                _ => iced::Color::TRANSPARENT,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
                 text_color: iced::Color::WHITE,
+                border: iced::border::rounded(6),
                 ..Default::default()
-            }),
+            }
+        }),
     );
 
-    container(row)
-        .padding([8, 16])
-        .width(Fill)
-        .style(theme::toast_container_style)
-        .into()
+    // Right-aligned floating pill
+    container(
+        container(row)
+            .padding([8, 16])
+            .style(|_theme: &Theme| container::Style {
+                background: Some(iced::Background::Color(theme::ACCENT_BLUE)),
+                border: iced::border::rounded(8),
+                ..Default::default()
+            }),
+    )
+    .width(Fill)
+    .align_x(iced::Alignment::End)
+    .padding([12, 16])
+    .into()
 }

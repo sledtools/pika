@@ -1,5 +1,5 @@
-use iced::widget::{column, container, row, rule};
-use iced::{Element, Fill, Task, Theme};
+use iced::widget::{column, container, mouse_area, row, rule, Stack};
+use iced::{Element, Fill, Padding, Task, Theme};
 use pika_core::{
     project_desktop, AppAction, AppState, AuthState, CallStatus, DesktopDetailPane,
     DesktopShellMode, FollowListEntry, Screen,
@@ -49,6 +49,8 @@ pub enum Message {
     NewGroup(views::new_group_chat::Message),
     MyProfile(views::my_profile::Message),
     PeerProfile(views::peer_profile::Message),
+    // Window drag (macOS transparent titlebar)
+    DragWindow,
     // Call timer (no-op, triggers re-render)
     CallTimerTick,
     // Video frame tick (triggers re-render for video calls)
@@ -198,6 +200,17 @@ impl State {
         cached_profiles: &[FollowListEntry],
     ) -> Option<Event> {
         match message {
+            // ── Window drag ───────────────────────────────────────────
+            Message::DragWindow => {
+                return Some(Event::Task(iced::window::oldest().then(|id| {
+                    if let Some(id) = id {
+                        iced::window::drag(id)
+                    } else {
+                        Task::none()
+                    }
+                })));
+            }
+
             // ── Toast ─────────────────────────────────────────────────
             Message::Toast(msg) => match msg {
                 views::toast::Message::ClearToast => {
@@ -585,13 +598,17 @@ impl State {
     ) -> Element<'a, Message, Theme> {
         let route = project_desktop(state);
 
-        // ── Toast bar (optional) ────────────────────────────────────
-        let mut main_column = column![];
-        if let Some(toast_msg) = self.profile_toast.as_deref().or(state.toast.as_deref()) {
+        // ── Toast (floating overlay — added to Stack at the end) ───
+        let toast_overlay: Option<Element<'_, Message>> = if let Some(toast_msg) =
+            self.profile_toast.as_deref().or(state.toast.as_deref())
+        {
             let show_relay_reset = self.profile_toast.is_none() && should_offer_relay_reset(state);
-            main_column = main_column
-                .push(views::toast::toast_bar(toast_msg, show_relay_reset).map(Message::Toast));
-        }
+            Some(views::toast::toast_bar(toast_msg, show_relay_reset).map(Message::Toast))
+        } else {
+            None
+        };
+
+        let mut main_column = column![];
 
         // ── Incoming call banner ────────────────────────────────────
         if let Some(call) = &state.active_call {
@@ -695,14 +712,42 @@ impl State {
             views::empty_state::view()
         };
 
-        let content = row![rail, rule::vertical(1), center_pane].height(Fill);
+        // Wrap center pane with top inset for macOS titlebar
+        let center_pane_inset = container(center_pane)
+            .padding(Padding {
+                top: 28.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+            })
+            .width(Fill)
+            .height(Fill);
+
+        let content = row![
+            rail,
+            rule::vertical(1).style(theme::subtle_rule_style),
+            center_pane_inset
+        ]
+        .height(Fill);
         main_column = main_column.push(content);
 
-        container(main_column)
+        let base = container(main_column)
             .width(Fill)
             .height(Fill)
-            .style(theme::surface_style)
-            .into()
+            .style(theme::surface_style);
+
+        // Invisible drag target in the titlebar zone (28px tall, full width)
+        let drag_target =
+            mouse_area(container(column![]).width(Fill).height(28)).on_press(Message::DragWindow);
+
+        // Stack: [content] [drag overlay at top] [toast overlay]
+        let mut stack = Stack::new().push(base).push(drag_target);
+
+        if let Some(toast) = toast_overlay {
+            stack = stack.push(toast);
+        }
+
+        stack.width(Fill).height(Fill).into()
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────

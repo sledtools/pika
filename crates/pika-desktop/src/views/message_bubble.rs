@@ -1,8 +1,10 @@
 use iced::widget::{button, column, container, mouse_area, row, text, Space};
-use iced::{border, Background, Color, Element, Fill, Font, Theme};
+use iced::{border, Alignment, Background, Color, Element, Fill, Font, Theme};
 use pika_core::{ChatMessage, MessageDeliveryState};
 
 use super::conversation::Message;
+use crate::design::{self, BubblePosition};
+use crate::icons;
 use crate::theme;
 
 /// Font used for emoji rendering. Falls back through system fonts (Noto Color
@@ -32,16 +34,9 @@ pub fn message_bubble<'a>(
     reply_target: Option<&'a ChatMessage>,
     emoji_picker_open: bool,
     hovered: bool,
+    position: BubblePosition,
 ) -> Element<'a, Message, Theme> {
     let timestamp = theme::relative_time(msg.timestamp);
-
-    let delivery_indicator = match &msg.delivery {
-        MessageDeliveryState::Pending => " \u{231B}",
-        MessageDeliveryState::Sent => "",
-        MessageDeliveryState::Failed { .. } => " \u{26A0}",
-    };
-
-    let time_text = format!("{timestamp}{delivery_indicator}");
     let msg_id = msg.id.clone();
 
     // Show action icons when hovered or picker is open
@@ -82,8 +77,8 @@ pub fn message_bubble<'a>(
             };
             let preview: Element<'a, Message, Theme> = container(
                 column![
-                    text(sender).size(11).color(theme::TEXT_SECONDARY),
-                    text(snippet).size(11).color(theme::TEXT_FADED),
+                    text(sender).size(12).color(theme::TEXT_SECONDARY),
+                    text(snippet).size(12).color(theme::TEXT_FADED),
                 ]
                 .spacing(2),
             )
@@ -108,16 +103,12 @@ pub fn message_bubble<'a>(
             bubble_content = bubble_content.push(preview);
         }
         bubble_content =
-            bubble_content.push(text(&msg.display_content).size(14).color(Color::WHITE));
-        bubble_content = bubble_content.push(
-            text(time_text)
-                .size(10)
-                .color(Color::WHITE.scale_alpha(0.6)),
-        );
+            bubble_content.push(text(&msg.display_content).size(15).color(Color::WHITE));
+        bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, true));
         let bubble = container(bubble_content)
-            .padding([8, 12])
+            .padding([10, 14])
             .max_width(500)
-            .style(theme::bubble_sent_style);
+            .style(move |_theme: &Theme| design::DARK.bubble_sent_grouped(position));
 
         let mut bubble_row = row![Space::new().width(Fill)]
             .spacing(6)
@@ -140,17 +131,19 @@ pub fn message_bubble<'a>(
     } else {
         // ── Received: left-aligned ──────────────────────────────
         // Signal layout: [bubble] [icons] [spacer]
-        let sender_name = if is_group {
-            msg.sender_name.as_deref().unwrap_or("Unknown")
-        } else {
-            ""
-        };
+        // Only show sender on first/single message in a group
+        let sender_name =
+            if is_group && !matches!(position, BubblePosition::Middle | BubblePosition::Last) {
+                msg.sender_name.as_deref().unwrap_or("Unknown")
+            } else {
+                ""
+            };
 
         let mut bubble_content = column![].spacing(2);
         if !sender_name.is_empty() {
             let sender_pk = msg.sender_pubkey.clone();
             bubble_content = bubble_content.push(
-                button(text(sender_name).size(12).color(theme::ACCENT_BLUE))
+                button(text(sender_name).size(13).color(theme::ACCENT_BLUE))
                     .on_press(Message::OpenPeerProfile(sender_pk))
                     .padding(0)
                     .style(|_: &Theme, _| button::Style {
@@ -165,15 +158,15 @@ pub fn message_bubble<'a>(
         }
         bubble_content = bubble_content.push(
             text(&msg.display_content)
-                .size(14)
+                .size(15)
                 .color(theme::TEXT_PRIMARY),
         );
-        bubble_content = bubble_content.push(text(time_text).size(10).color(theme::TEXT_FADED));
+        bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, false));
 
         let bubble = container(bubble_content)
-            .padding([8, 12])
+            .padding([10, 14])
             .max_width(500)
-            .style(theme::bubble_received_style);
+            .style(move |_theme: &Theme| design::DARK.bubble_received_grouped(position));
 
         let mut bubble_row = row![bubble]
             .spacing(6)
@@ -207,43 +200,56 @@ fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Mess
     let mid = msg_id.to_string();
     let reply_mid = msg_id.to_string();
 
-    // React icon: ✕ when picker is open, + otherwise
-    let icon = if picker_open { "\u{2715}" } else { "+" };
+    // React icon: ✕ when picker is open, smiley-plus otherwise
+    let react_icon = if picker_open {
+        icons::CIRCLE_X
+    } else {
+        icons::SMILE_PLUS
+    };
 
-    let reply_btn = button(text("\u{21A9}").size(13).center())
-        .padding([4, 4])
-        .on_press(Message::SetReplyTarget(reply_mid))
-        .style(|_theme: &Theme, status: button::Status| {
-            let text_color = match status {
-                button::Status::Hovered => theme::TEXT_PRIMARY,
-                _ => theme::TEXT_FADED,
-            };
-            button::Style {
-                background: Some(Background::Color(Color::TRANSPARENT)),
-                text_color,
-                border: border::rounded(4),
-                ..Default::default()
-            }
-        });
+    let reply_btn = button(
+        text(icons::REPLY)
+            .font(icons::LUCIDE_FONT)
+            .size(18)
+            .center(),
+    )
+    .padding([6, 6])
+    .width(32.0)
+    .height(32.0)
+    .on_press(Message::SetReplyTarget(reply_mid))
+    .style(|_theme: &Theme, status: button::Status| {
+        let (bg, text_color) = match status {
+            button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
+            _ => (Color::TRANSPARENT, theme::TEXT_FADED),
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color,
+            border: border::rounded(8),
+            ..Default::default()
+        }
+    });
 
-    let react_btn = button(text(icon).size(14).center())
-        .padding([4, 4])
+    let react_btn = button(text(react_icon).font(icons::LUCIDE_FONT).size(18).center())
+        .padding([6, 6])
+        .width(32.0)
+        .height(32.0)
         .on_press(Message::ToggleEmojiPicker(mid))
         .style(|_theme: &Theme, status: button::Status| {
-            let text_color = match status {
-                button::Status::Hovered => theme::TEXT_PRIMARY,
-                _ => theme::TEXT_FADED,
+            let (bg, text_color) = match status {
+                button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
+                _ => (Color::TRANSPARENT, theme::TEXT_FADED),
             };
             button::Style {
-                background: Some(Background::Color(Color::TRANSPARENT)),
+                background: Some(Background::Color(bg)),
                 text_color,
-                border: border::rounded(4),
+                border: border::rounded(8),
                 ..Default::default()
             }
         });
 
     row![reply_btn, react_btn]
-        .spacing(2)
+        .spacing(4)
         .align_y(iced::Alignment::Center)
         .into()
 }
@@ -324,6 +330,41 @@ fn emoji_picker_bar<'a>(msg_id: &str) -> Element<'a, Message, Theme> {
             ..Default::default()
         })
         .into()
+}
+
+/// Timestamp + delivery state row for a message bubble.
+/// Sent messages get a Lucide checkmark icon; received just show the timestamp.
+fn timestamp_row<'a>(
+    timestamp: String,
+    delivery: &MessageDeliveryState,
+    is_mine: bool,
+) -> Element<'a, Message, Theme> {
+    let text_color = if is_mine {
+        Color::WHITE.scale_alpha(0.6)
+    } else {
+        theme::TEXT_FADED
+    };
+
+    if !is_mine {
+        return text(timestamp).size(11).color(text_color).into();
+    }
+
+    let (icon_cp, icon_color) = match delivery {
+        MessageDeliveryState::Pending => (icons::CLOCK, text_color),
+        MessageDeliveryState::Sent => (icons::CHECK_CHECK, text_color),
+        MessageDeliveryState::Failed { .. } => (icons::X, theme::DANGER),
+    };
+
+    row![
+        text(timestamp).size(11).color(text_color),
+        text(icon_cp)
+            .font(icons::LUCIDE_FONT)
+            .size(11)
+            .color(icon_color),
+    ]
+    .spacing(3)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn reaction_chip_style(

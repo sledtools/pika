@@ -1,7 +1,8 @@
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Element, Fill, Length, Theme};
 use pika_core::FollowListEntry;
 
+use crate::icons;
 use crate::theme;
 use crate::views::avatar::avatar_circle;
 use crate::views::new_chat::refilter_follows;
@@ -136,10 +137,11 @@ impl State {
                 let npub_clone = npub.clone();
                 let mut chip = button(
                     text(format!("{label} \u{00d7}"))
-                        .size(12)
+                        .size(13)
+                        .font(icons::MEDIUM)
                         .color(theme::TEXT_PRIMARY),
                 )
-                .padding([4, 8])
+                .padding([6, 12])
                 .style(theme::secondary_button_style);
                 if !creating_chat {
                     chip = chip.on_press(Message::ToggleGroupMember(npub_clone));
@@ -161,7 +163,7 @@ impl State {
                 .on_submit(Message::AddManualMember);
         }
 
-        let add_btn = button(text("Add").size(14).center())
+        let add_btn = button(text("Add").size(14).font(icons::MEDIUM).center())
             .on_press_maybe(if creating_chat || self.input.trim().is_empty() {
                 None
             } else {
@@ -235,6 +237,7 @@ impl State {
             button(
                 text("Creating\u{2026}")
                     .size(14)
+                    .font(icons::MEDIUM)
                     .color(theme::TEXT_FADED)
                     .width(Fill)
                     .center(),
@@ -243,10 +246,16 @@ impl State {
             .padding([12, 0])
             .style(theme::secondary_button_style)
         } else {
-            let mut btn = button(text("Create Group").size(14).width(Fill).center())
-                .width(Fill)
-                .padding([12, 0])
-                .style(theme::primary_button_style);
+            let mut btn = button(
+                text("Create Group")
+                    .size(14)
+                    .font(icons::MEDIUM)
+                    .width(Fill)
+                    .center(),
+            )
+            .width(Fill)
+            .padding([12, 0])
+            .style(theme::primary_button_style);
             if can_create {
                 btn = btn.on_press(Message::CreateGroup);
             }
@@ -279,7 +288,18 @@ fn follow_row_selectable<'a>(
         name.to_string()
     };
 
-    let check = if is_selected { "\u{2611}" } else { "\u{2610}" };
+    let checkbox: Element<'_, Message, Theme> = container(
+        text(icons::CHECK)
+            .font(icons::LUCIDE_FONT)
+            .size(12)
+            .center(),
+    )
+    .width(Length::Fixed(20.0))
+    .height(Length::Fixed(20.0))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(theme::checkbox_style(is_selected))
+    .into();
 
     let avatar: Element<'_, Message, Theme> = avatar_circle(
         Some(&display_name),
@@ -301,17 +321,9 @@ fn follow_row_selectable<'a>(
         );
     }
 
-    let row_content = row![
-        text(check).size(18).color(if is_selected {
-            theme::ACCENT_BLUE
-        } else {
-            theme::TEXT_FADED
-        }),
-        avatar,
-        info,
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
+    let row_content = row![checkbox, avatar, info,]
+        .spacing(10)
+        .align_y(Alignment::Center);
 
     let npub = entry.npub.clone();
     let mut btn = button(row_content).width(Fill).padding([8, 12]).style(

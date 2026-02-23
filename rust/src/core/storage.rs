@@ -660,7 +660,7 @@ fn process_poll_tallies(msgs: &mut Vec<ChatMessage>, my_pubkey_hex: &str) {
                     voter_names: voters.clone(),
                 })
                 .collect();
-            poll_tally.sort_by(|a, b| b.count.cmp(&a.count));
+            poll_tally.sort_by_key(|b| std::cmp::Reverse(b.count));
             msg.poll_tally = poll_tally;
             msg.my_poll_vote = my_votes.get(&msg.id).cloned();
         }

@@ -246,6 +246,7 @@ struct ReactionChips: View {
         HStack(spacing: 4) {
             ForEach(reactions, id: \.emoji) { reaction in
                 Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onReact?(messageId, reaction.emoji)
                 } label: {
                     HStack(spacing: 2) {

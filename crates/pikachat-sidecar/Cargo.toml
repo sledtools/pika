@@ -9,6 +9,7 @@ hex = "0.4"
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
+nostr-blossom = "0.44.0"
 nostr-sdk = { version = "0.44.1", features = ["nip44", "nip59"] }
 pika-media = { path = "../pika-media", features = ["network"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

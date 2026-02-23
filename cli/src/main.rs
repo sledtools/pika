@@ -87,6 +87,7 @@ impl AgentUiMode {
 
 #[derive(Debug, Parser)]
 #[command(name = "pikachat")]
+#[command(version, propagate_version = true)]
 #[command(about = "Pikachat — encrypted messaging over Nostr + MLS")]
 #[command(after_help = "\x1b[1mQuickstart:\x1b[0m
   1. pikachat init

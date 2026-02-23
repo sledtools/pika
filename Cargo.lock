@@ -5801,6 +5801,7 @@ dependencies = [
  "mdk-core",
  "mdk-sqlite-storage",
  "mdk-storage-traits",
+ "nostr-blossom",
  "nostr-sdk",
  "pika-media",
  "reqwest",

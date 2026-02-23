@@ -6,8 +6,10 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use mdk_core::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
+use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
+use nostr_blossom::client::BlossomClient;
 use nostr_sdk::hashes::{Hash as _, sha256};
 use nostr_sdk::prelude::*;
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
@@ -65,6 +67,20 @@ enum InCmd {
         request_id: Option<String>,
         nostr_group_id: String,
         content: String,
+    },
+    SendMedia {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        file_path: String,
+        #[serde(default)]
+        mime_type: Option<String>,
+        #[serde(default)]
+        filename: Option<String>,
+        #[serde(default)]
+        caption: String,
+        #[serde(default)]
+        blossom_servers: Vec<String>,
     },
     SendTyping {
         #[serde(default)]
@@ -176,6 +192,7 @@ enum OutMsg {
     GroupJoined {
         nostr_group_id: String,
         mls_group_id: String,
+        member_count: u32,
     },
     MessageReceived {
         nostr_group_id: String,
@@ -183,6 +200,8 @@ enum OutMsg {
         content: String,
         created_at: u64,
         message_id: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        media: Vec<MediaAttachmentOut>,
     },
     CallInviteReceived {
         call_id: String,
@@ -219,7 +238,25 @@ enum OutMsg {
         nostr_group_id: String,
         mls_group_id: String,
         peer_pubkey: String,
+        member_count: u32,
     },
+}
+
+#[derive(Debug, Serialize)]
+struct MediaAttachmentOut {
+    url: String,
+    mime_type: String,
+    filename: String,
+    original_hash_hex: String,
+    nonce_hex: String,
+    scheme_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<u32>,
+    /// Local file path to the decrypted media (temp file). Only set on receive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_path: Option<String>,
 }
 
 fn default_channels() -> u16 {
@@ -236,6 +273,110 @@ fn default_end_reason() -> String {
 
 fn default_group_name() -> String {
     "DM".to_string()
+}
+
+const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
+const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
+
+fn is_imeta_tag(tag: &Tag) -> bool {
+    matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
+}
+
+fn mime_from_extension(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "heic" => Some("image/heic"),
+        "svg" => Some("image/svg+xml"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mp3" => Some("audio/mpeg"),
+        "ogg" => Some("audio/ogg"),
+        "wav" => Some("audio/wav"),
+        "pdf" => Some("application/pdf"),
+        "txt" | "md" => Some("text/plain"),
+        _ => None,
+    }
+}
+
+fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
+    let parsed: Vec<String> = values
+        .iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
+        })
+        .collect();
+    if !parsed.is_empty() {
+        return parsed;
+    }
+    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+}
+
+fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
+    let (width, height) = reference
+        .dimensions
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+    MediaAttachmentOut {
+        url: reference.url,
+        mime_type: reference.mime_type,
+        filename: reference.filename,
+        original_hash_hex: hex::encode(reference.original_hash),
+        nonce_hex: hex::encode(reference.nonce),
+        scheme_version: reference.scheme_version,
+        width,
+        height,
+        local_path: None,
+    }
+}
+
+/// Download encrypted media from Blossom, decrypt it, and write to a temp file.
+/// Returns the local file path on success.
+async fn download_and_decrypt_media(
+    mdk: &MDK<MdkSqliteStorage>,
+    mls_group_id: &GroupId,
+    reference: &MediaReference,
+    state_dir: &Path,
+) -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&reference.url)
+        .send()
+        .await
+        .with_context(|| format!("download encrypted media from {}", reference.url))?;
+    if !response.status().is_success() {
+        anyhow::bail!("download failed: HTTP {}", response.status());
+    }
+    let encrypted_data = response.bytes().await.context("read media body")?;
+    let manager = mdk.media_manager(mls_group_id.clone());
+    let decrypted = manager
+        .decrypt_from_download(&encrypted_data, reference)
+        .context("decrypt media")?;
+
+    // Write to a temp directory under the state dir
+    let media_dir = state_dir.join("media-tmp");
+    std::fs::create_dir_all(&media_dir).context("create media-tmp dir")?;
+    let filename = if reference.filename.is_empty() {
+        "download.bin"
+    } else {
+        &reference.filename
+    };
+    let dest = media_dir.join(format!(
+        "{}-{}",
+        hex::encode(&reference.original_hash[..8]),
+        filename,
+    ));
+    std::fs::write(&dest, &decrypted)
+        .with_context(|| format!("write decrypted media to {}", dest.display()))?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -450,6 +591,51 @@ fn out_error(request_id: Option<String>, code: &str, message: impl Into<String>)
 
 fn out_ok(request_id: Option<String>, result: Option<serde_json::Value>) -> OutMsg {
     OutMsg::Ok { request_id, result }
+}
+
+/// Decode a hex nostr_group_id, validate it, and return the matching MLS group ID.
+fn resolve_group(mdk: &MDK<MdkSqliteStorage>, nostr_group_id: &str) -> anyhow::Result<GroupId> {
+    let group_id_bytes =
+        hex::decode(nostr_group_id).map_err(|_| anyhow!("nostr_group_id must be hex"))?;
+    if group_id_bytes.len() != 32 {
+        anyhow::bail!("nostr_group_id must be 32 bytes hex");
+    }
+    let groups = mdk.get_groups().context("get_groups")?;
+    let g = groups
+        .iter()
+        .find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice())
+        .ok_or_else(|| anyhow!("group not found"))?;
+    Ok(g.mls_group_id.clone())
+}
+
+/// Create an MLS message from a rumor, strip protected tags, sign, and publish.
+async fn sign_and_publish(
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    mdk: &MDK<MdkSqliteStorage>,
+    keys: &Keys,
+    mls_group_id: &GroupId,
+    rumor: UnsignedEvent,
+    label: &str,
+) -> anyhow::Result<Event> {
+    let msg_event = mdk
+        .create_message(mls_group_id, rumor)
+        .context("create_message")?;
+    let msg_tags: Tags = msg_event
+        .tags
+        .clone()
+        .into_iter()
+        .filter(|t| !matches!(t.kind(), TagKind::Protected))
+        .collect();
+    let signed = EventBuilder::new(msg_event.kind, msg_event.content)
+        .tags(msg_tags)
+        .sign_with_keys(keys)
+        .context("sign event")?;
+    if relay_urls.is_empty() {
+        anyhow::bail!("no relays configured");
+    }
+    publish_and_confirm_multi(client, relay_urls, &signed, label).await?;
+    Ok(signed)
 }
 
 #[derive(Debug)]
@@ -715,19 +901,7 @@ fn derive_relay_auth_token(
     local_pubkey_hex: &str,
     peer_pubkey_hex: &str,
 ) -> anyhow::Result<String> {
-    let group_id_bytes = hex::decode(nostr_group_id).context("decode nostr_group_id")?;
-    if group_id_bytes.len() != 32 {
-        return Err(anyhow!("nostr_group_id must be 32 bytes hex"));
-    }
-    let groups = mdk.get_groups().context("get_groups")?;
-    let Some(group_entry) = groups
-        .iter()
-        .find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice())
-    else {
-        return Err(anyhow!(
-            "group not found for nostr_group_id={nostr_group_id}"
-        ));
-    };
+    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
 
     let shared_seed = call_shared_seed(call_id, session, local_pubkey_hex, peer_pubkey_hex);
     let auth_hash = context_hash(&[
@@ -737,7 +911,7 @@ fn derive_relay_auth_token(
     ]);
     let auth_key = *derive_encryption_key(
         mdk,
-        &group_entry.mls_group_id,
+        &mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &auth_hash,
         "application/pika-call-auth",
@@ -787,21 +961,9 @@ fn derive_mls_media_crypto_context(
     local_pubkey_hex: &str,
     peer_pubkey_hex: &str,
 ) -> anyhow::Result<CallMediaCryptoContext> {
-    let group_id_bytes = hex::decode(nostr_group_id).context("decode nostr_group_id")?;
-    if group_id_bytes.len() != 32 {
-        return Err(anyhow!("nostr_group_id must be 32 bytes hex"));
-    }
-    let groups = mdk.get_groups().context("get_groups")?;
-    let Some(group_entry) = groups
-        .iter()
-        .find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice())
-    else {
-        return Err(anyhow!(
-            "group not found for nostr_group_id={nostr_group_id}"
-        ));
-    };
+    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
     let group = mdk
-        .get_group(&group_entry.mls_group_id)
+        .get_group(&mls_group_id)
         .map_err(|e| anyhow!("load mls group failed: {e}"))?
         .ok_or_else(|| anyhow!("mls group not found"))?;
 
@@ -836,7 +998,7 @@ fn derive_mls_media_crypto_context(
 
     let tx_base = *derive_encryption_key(
         mdk,
-        &group_entry.mls_group_id,
+        &mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &tx_hash,
         "application/pika-call",
@@ -845,7 +1007,7 @@ fn derive_mls_media_crypto_context(
     .map_err(|e| anyhow!("derive tx media key failed: {e}"))?;
     let rx_base = *derive_encryption_key(
         mdk,
-        &group_entry.mls_group_id,
+        &mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &rx_hash,
         "application/pika-call",
@@ -854,7 +1016,7 @@ fn derive_mls_media_crypto_context(
     .map_err(|e| anyhow!("derive rx media key failed: {e}"))?;
     let group_root = *derive_encryption_key(
         mdk,
-        &group_entry.mls_group_id,
+        &mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &root_hash,
         "application/pika-call",
@@ -934,34 +1096,9 @@ async fn publish_group_event(
     content: String,
     label: &str,
 ) -> anyhow::Result<()> {
-    let group_id_bytes = hex::decode(nostr_group_id).context("decode nostr_group_id")?;
-    if group_id_bytes.len() != 32 {
-        return Err(anyhow!("nostr_group_id must be 32 bytes hex"));
-    }
-    let groups = mdk.get_groups().context("get_groups")?;
-    let found = groups
-        .iter()
-        .find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice());
-    let Some(group) = found else {
-        return Err(anyhow!(
-            "group not found for nostr_group_id={nostr_group_id}"
-        ));
-    };
+    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
     let rumor = EventBuilder::new(kind, content).build(keys.public_key());
-    let msg_event = mdk
-        .create_message(&group.mls_group_id, rumor)
-        .context("create_message")?;
-    let msg_tags: Tags = msg_event
-        .tags
-        .clone()
-        .into_iter()
-        .filter(|t| !matches!(t.kind(), TagKind::Protected))
-        .collect();
-    let msg_event = EventBuilder::new(msg_event.kind, msg_event.content)
-        .tags(msg_tags)
-        .sign_with_keys(keys)
-        .context("sign call signal event")?;
-    publish_and_confirm_multi(client, relay_urls, &msg_event, label).await?;
+    sign_and_publish(client, relay_urls, mdk, keys, &mls_group_id, rumor, label).await?;
     Ok(())
 }
 
@@ -2437,12 +2574,22 @@ pub async fn daemon_main(
                                                         if is_typing_indicator(&msg) {
                                                             continue;
                                                         }
+                                                        // Backfill: parse imeta tags but skip download (too slow for bulk history)
+                                                        let media: Vec<MediaAttachmentOut> = {
+                                                            let mgr = mdk.media_manager(msg.mls_group_id.clone());
+                                                            msg.tags.iter()
+                                                                .filter(|t| is_imeta_tag(t))
+                                                                .filter_map(|t| mgr.parse_imeta_tag(t).ok())
+                                                                .map(media_ref_to_attachment)
+                                                                .collect()
+                                                        };
                                                         out_tx.send(OutMsg::MessageReceived{
                                                             nostr_group_id: event_h_tag_hex(ev).unwrap_or_else(|| nostr_group_id_hex.clone()),
                                                             from_pubkey: msg.pubkey.to_hex().to_lowercase(),
                                                             content: msg.content,
                                                             created_at: msg.created_at.as_secs(),
                                                             message_id: msg.id.to_hex(),
+                                                            media,
                                                         }).ok();
                                                     }
                                                 }
@@ -2453,7 +2600,8 @@ pub async fn daemon_main(
                                             "nostr_group_id": nostr_group_id_hex,
                                             "mls_group_id": mls_group_id_hex,
                                         })))).ok();
-                                        out_tx.send(OutMsg::GroupJoined { nostr_group_id: nostr_group_id_hex, mls_group_id: mls_group_id_hex }).ok();
+                                        let member_count = mdk.get_members(&w.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
+                                        out_tx.send(OutMsg::GroupJoined { nostr_group_id: nostr_group_id_hex, mls_group_id: mls_group_id_hex, member_count }).ok();
                                     }
                                     Err(e) => {
                                         out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
@@ -2469,11 +2617,13 @@ pub async fn daemon_main(
                         match mdk.get_groups() {
                             Ok(gs) => {
                                 let out = gs.iter().map(|g| {
+                                    let member_count = mdk.get_members(&g.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
                                     json!({
                                         "nostr_group_id": hex::encode(g.nostr_group_id),
                                         "mls_group_id": hex::encode(g.mls_group_id.as_slice()),
                                         "name": g.name,
                                         "description": g.description,
+                                        "member_count": member_count,
                                     })
                                 }).collect::<Vec<_>>();
                                 let _ = out_tx.send(out_ok(request_id, Some(json!({"groups": out}))));
@@ -2484,57 +2634,154 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::SendMessage { request_id, nostr_group_id, content } => {
-                        let group_id_bytes = match hex::decode(&nostr_group_id) {
-                            Ok(b) => b,
-                            Err(_) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be hex")).ok();
+                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
-                        if group_id_bytes.len() != 32 {
-                            out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be 32 bytes hex")).ok();
-                            continue;
-                        }
-                        let groups = mdk.get_groups().context("get_groups")?;
-                        let found = groups.iter().find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice());
-                        let Some(g) = found else {
-                            out_tx.send(out_error(request_id, "not_found", "group not found")).ok();
-                            continue;
-                        };
-                        let mls_group_id = g.mls_group_id.clone();
-
                         let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
-                        let msg_event = match mdk.create_message(&mls_group_id, rumor) {
-                            Ok(ev) => ev,
-                            Err(e) => {
-                                out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
-                                continue;
+                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send").await {
+                            Ok(ev) => {
+                                let _ = out_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
                             }
-                        };
-                        let msg_tags: Tags = msg_event
-                            .tags
-                            .clone()
-                            .into_iter()
-                            .filter(|t| !matches!(t.kind(), TagKind::Protected))
-                            .collect();
-                        let msg_event = match EventBuilder::new(msg_event.kind, msg_event.content)
-                            .tags(msg_tags)
-                            .sign_with_keys(&keys)
-                        {
-                            Ok(ev) => ev,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "sign_failed", format!("{e:#}"))).ok();
+                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                            }
+                        }
+                    }
+                    InCmd::SendMedia {
+                        request_id,
+                        nostr_group_id,
+                        file_path,
+                        mime_type,
+                        filename,
+                        caption,
+                        blossom_servers,
+                    } => {
+                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
 
-                        if relay_urls.is_empty() {
-                            out_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
+                        // Read and validate file
+                        let path = std::path::Path::new(&file_path);
+                        let bytes = match std::fs::read(path) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "file_error", format!("read {file_path}: {e}"))).ok();
+                                continue;
+                            }
+                        };
+                        if bytes.is_empty() {
+                            out_tx.send(out_error(request_id, "file_error", "file is empty")).ok();
                             continue;
                         }
-                        match publish_and_confirm_multi(&client, &relay_urls, &msg_event, "daemon_send").await {
-                            Ok(_relay_confirmed) => {
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({"event_id": msg_event.id.to_hex()}))));
+                        if bytes.len() > MAX_CHAT_MEDIA_BYTES {
+                            out_tx.send(out_error(request_id, "file_error", "file too large (max 32 MB)")).ok();
+                            continue;
+                        }
+
+                        // Resolve mime type and filename
+                        let resolved_filename = filename
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(ToOwned::to_owned)
+                            .or_else(|| {
+                                path.file_name()
+                                    .and_then(|f| f.to_str())
+                                    .map(ToOwned::to_owned)
+                            })
+                            .unwrap_or_else(|| "file.bin".to_string());
+                        let resolved_mime = mime_type
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| mime_from_extension(path))
+                            .unwrap_or("application/octet-stream")
+                            .to_string();
+
+                        // Encrypt
+                        let manager = mdk.media_manager(mls_group_id.clone());
+                        let mut upload = match manager.encrypt_for_upload_with_options(
+                            &bytes,
+                            &resolved_mime,
+                            &resolved_filename,
+                            &MediaProcessingOptions::default(),
+                        ) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "encrypt_error", format!("{e:#}"))).ok();
+                                continue;
+                            }
+                        };
+                        let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+                        let expected_hash_hex = hex::encode(upload.encrypted_hash);
+
+                        // Upload to Blossom
+                        let upload_servers = blossom_servers_or_default(&blossom_servers);
+                        let mut uploaded_url: Option<String> = None;
+                        let mut last_error: Option<String> = None;
+                        for server in &upload_servers {
+                            let base_url = match Url::parse(server) {
+                                Ok(url) => url,
+                                Err(e) => {
+                                    last_error = Some(format!("{server}: {e}"));
+                                    continue;
+                                }
+                            };
+                            let blossom = BlossomClient::new(base_url);
+                            let descriptor = match blossom
+                                .upload_blob(
+                                    encrypted_data.clone(),
+                                    Some(upload.mime_type.clone()),
+                                    None,
+                                    Some(&keys),
+                                )
+                                .await
+                            {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    last_error = Some(format!("{server}: {e}"));
+                                    continue;
+                                }
+                            };
+                            let descriptor_hash_hex = descriptor.sha256.to_string();
+                            if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
+                                last_error = Some(format!(
+                                    "{server}: hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
+                                ));
+                                continue;
+                            }
+                            uploaded_url = Some(descriptor.url.to_string());
+                            break;
+                        }
+                        let Some(uploaded_url) = uploaded_url else {
+                            out_tx.send(out_error(
+                                request_id,
+                                "upload_failed",
+                                format!("blossom upload failed: {}", last_error.unwrap_or_else(|| "unknown".into())),
+                            )).ok();
+                            continue;
+                        };
+
+                        // Build imeta tag and message
+                        let imeta_tag = manager.create_imeta_tag(&upload, &uploaded_url);
+                        let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
+                            .tag(imeta_tag)
+                            .build(keys.public_key());
+                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media").await {
+                            Ok(ev) => {
+                                let _ = out_tx.send(out_ok(request_id, Some(json!({
+                                    "event_id": ev.id.to_hex(),
+                                    "uploaded_url": uploaded_url,
+                                    "original_hash_hex": hex::encode(upload.original_hash),
+                                }))));
                             }
                             Err(e) => {
                                 let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
@@ -2542,24 +2789,13 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::SendTyping { request_id, nostr_group_id } => {
-                        let group_id_bytes = match hex::decode(&nostr_group_id) {
-                            Ok(b) => b,
-                            Err(_) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be hex")).ok();
+                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
-                        if group_id_bytes.len() != 32 {
-                            out_tx.send(out_error(request_id, "bad_group_id", "nostr_group_id must be 32 bytes hex")).ok();
-                            continue;
-                        }
-                        let groups = mdk.get_groups().context("get_groups")?;
-                        let found = groups.iter().find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice());
-                        let Some(g) = found else {
-                            out_tx.send(out_error(request_id, "not_found", "group not found")).ok();
-                            continue;
-                        };
-                        let mls_group_id = g.mls_group_id.clone();
 
                         let expires_at = Timestamp::now().as_secs() + 10;
                         let rumor = UnsignedEvent::new(
@@ -3261,10 +3497,12 @@ pub async fn daemon_main(
                             "mls_group_id": mls_group_id_hex,
                             "peer_pubkey": peer_pubkey.to_hex(),
                         })))).ok();
+                        let member_count = mdk.get_members(&group_result.group.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
                         out_tx.send(OutMsg::GroupCreated {
                             nostr_group_id: nostr_group_id_hex,
                             mls_group_id: mls_group_id_hex,
                             peer_pubkey: peer_pubkey.to_hex(),
+                            member_count,
                         }).ok();
                     }
                     InCmd::Shutdown { request_id } => {
@@ -3653,12 +3891,29 @@ pub async fn daemon_main(
                             if is_typing_indicator(&msg) {
                                 continue;
                             }
+                            let mut media: Vec<MediaAttachmentOut> = Vec::new();
+                            {
+                                let mgr = mdk.media_manager(msg.mls_group_id.clone());
+                                let refs: Vec<MediaReference> = msg.tags.iter()
+                                    .filter(|t| is_imeta_tag(t))
+                                    .filter_map(|t| mgr.parse_imeta_tag(t).ok())
+                                    .collect();
+                                for r in refs {
+                                    let mut att = media_ref_to_attachment(r.clone());
+                                    match download_and_decrypt_media(&mdk, &msg.mls_group_id, &r, state_dir).await {
+                                        Ok(path) => att.local_path = Some(path),
+                                        Err(e) => warn!("[pikachat] media download failed url={}: {e:#}", r.url),
+                                    }
+                                    media.push(att);
+                                }
+                            }
                             out_tx.send(OutMsg::MessageReceived {
                                 nostr_group_id,
                                 from_pubkey: sender_hex,
                                 content: msg.content,
                                 created_at: msg.created_at.as_secs(),
                                 message_id: msg.id.to_hex(),
+                                media,
                             }).ok();
                         }
                         Ok(_) => {}
@@ -3884,5 +4139,239 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(echoed_frames, stats.frames_published);
+    }
+
+    // ── Media helper tests ─────────────────────────────────────────────
+
+    #[test]
+    fn is_imeta_tag_matches() {
+        let tag = Tag::parse([
+            "imeta".to_string(),
+            "url https://example.com/file.jpg".to_string(),
+        ])
+        .unwrap();
+        assert!(is_imeta_tag(&tag));
+    }
+
+    #[test]
+    fn is_imeta_tag_rejects_other_tags() {
+        let tag = Tag::parse(["e".to_string(), "deadbeef".to_string()]).unwrap();
+        assert!(!is_imeta_tag(&tag));
+        let tag = Tag::parse(["p".to_string(), "deadbeef".to_string()]).unwrap();
+        assert!(!is_imeta_tag(&tag));
+    }
+
+    #[test]
+    fn mime_from_extension_common_types() {
+        use std::path::Path;
+        assert_eq!(
+            mime_from_extension(Path::new("photo.jpg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("photo.JPEG")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("image.png")),
+            Some("image/png")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("clip.mp4")),
+            Some("video/mp4")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("song.mp3")),
+            Some("audio/mpeg")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("doc.pdf")),
+            Some("application/pdf")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("notes.txt")),
+            Some("text/plain")
+        );
+        assert_eq!(
+            mime_from_extension(Path::new("notes.md")),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn mime_from_extension_unknown() {
+        use std::path::Path;
+        assert_eq!(mime_from_extension(Path::new("archive.xyz")), None);
+        assert_eq!(mime_from_extension(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn blossom_servers_or_default_uses_provided() {
+        let servers = vec!["https://blossom.example.com".to_string()];
+        let result = blossom_servers_or_default(&servers);
+        assert_eq!(result, vec!["https://blossom.example.com"]);
+    }
+
+    #[test]
+    fn blossom_servers_or_default_falls_back() {
+        let result = blossom_servers_or_default(&[]);
+        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+    }
+
+    #[test]
+    fn blossom_servers_or_default_skips_empty_and_invalid() {
+        let servers = vec!["".to_string(), "  ".to_string(), "not a url".to_string()];
+        let result = blossom_servers_or_default(&servers);
+        // All invalid → falls back to default
+        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+    }
+
+    #[test]
+    fn blossom_servers_or_default_filters_invalid_keeps_valid() {
+        let servers = vec![
+            "https://good.example.com".to_string(),
+            "not a url".to_string(),
+        ];
+        let result = blossom_servers_or_default(&servers);
+        assert_eq!(result, vec!["https://good.example.com"]);
+    }
+
+    // ── InCmd serde round-trip tests ───────────────────────────────────
+
+    #[test]
+    fn deserialize_send_media_full() {
+        let json = r#"{
+            "cmd": "send_media",
+            "request_id": "r1",
+            "nostr_group_id": "aa",
+            "file_path": "/tmp/photo.jpg",
+            "mime_type": "image/jpeg",
+            "filename": "photo.jpg",
+            "caption": "Check this out",
+            "blossom_servers": ["https://blossom.example.com"]
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::SendMedia {
+                request_id,
+                nostr_group_id,
+                file_path,
+                mime_type,
+                filename,
+                caption,
+                blossom_servers,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r1"));
+                assert_eq!(nostr_group_id, "aa");
+                assert_eq!(file_path, "/tmp/photo.jpg");
+                assert_eq!(mime_type.as_deref(), Some("image/jpeg"));
+                assert_eq!(filename.as_deref(), Some("photo.jpg"));
+                assert_eq!(caption, "Check this out");
+                assert_eq!(blossom_servers, vec!["https://blossom.example.com"]);
+            }
+            other => panic!("expected SendMedia, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_send_media_minimal() {
+        let json = r#"{
+            "cmd": "send_media",
+            "nostr_group_id": "bb",
+            "file_path": "/tmp/file.bin"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::SendMedia {
+                request_id,
+                mime_type,
+                filename,
+                caption,
+                blossom_servers,
+                ..
+            } => {
+                assert!(request_id.is_none());
+                assert!(mime_type.is_none());
+                assert!(filename.is_none());
+                assert_eq!(caption, "");
+                assert!(blossom_servers.is_empty());
+            }
+            other => panic!("expected SendMedia, got {other:?}"),
+        }
+    }
+
+    // ── OutMsg serialization tests ─────────────────────────────────────
+
+    #[test]
+    fn serialize_message_received_without_media() {
+        let msg = OutMsg::MessageReceived {
+            nostr_group_id: "aabb".into(),
+            from_pubkey: "cc".into(),
+            content: "hello".into(),
+            created_at: 123,
+            message_id: "dd".into(),
+            media: vec![],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "message_received");
+        assert_eq!(json["content"], "hello");
+        // Empty media vec should be omitted
+        assert!(json.get("media").is_none());
+    }
+
+    #[test]
+    fn serialize_message_received_with_media() {
+        let msg = OutMsg::MessageReceived {
+            nostr_group_id: "aabb".into(),
+            from_pubkey: "cc".into(),
+            content: "look at this".into(),
+            created_at: 456,
+            message_id: "dd".into(),
+            media: vec![MediaAttachmentOut {
+                url: "https://blossom.example.com/abc123".into(),
+                mime_type: "image/png".into(),
+                filename: "screenshot.png".into(),
+                original_hash_hex: "deadbeef".into(),
+                nonce_hex: "cafebabe".into(),
+                scheme_version: "v1".into(),
+                width: Some(800),
+                height: Some(600),
+                local_path: Some("/tmp/decrypted.png".into()),
+            }],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        let media = json["media"].as_array().expect("media should be array");
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0]["url"], "https://blossom.example.com/abc123");
+        assert_eq!(media[0]["mime_type"], "image/png");
+        assert_eq!(media[0]["filename"], "screenshot.png");
+        assert_eq!(media[0]["width"], 800);
+        assert_eq!(media[0]["height"], 600);
+    }
+
+    #[test]
+    fn serialize_message_received_media_omits_null_dimensions() {
+        let msg = OutMsg::MessageReceived {
+            nostr_group_id: "aabb".into(),
+            from_pubkey: "cc".into(),
+            content: "".into(),
+            created_at: 0,
+            message_id: "dd".into(),
+            media: vec![MediaAttachmentOut {
+                url: "https://example.com/file".into(),
+                mime_type: "application/pdf".into(),
+                filename: "doc.pdf".into(),
+                original_hash_hex: "aa".into(),
+                nonce_hex: "bb".into(),
+                scheme_version: "v1".into(),
+                width: None,
+                height: None,
+                local_path: None,
+            }],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        let media = &json["media"][0];
+        assert!(media.get("width").is_none());
+        assert!(media.get("height").is_none());
     }
 }

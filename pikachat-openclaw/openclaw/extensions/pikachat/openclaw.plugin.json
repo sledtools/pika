@@ -1,5 +1,5 @@
 {
-  "id": "pikachat",
+  "id": "pikachat-openclaw",
   "channels": ["pikachat"],
   "configSchema": {
     "type": "object",

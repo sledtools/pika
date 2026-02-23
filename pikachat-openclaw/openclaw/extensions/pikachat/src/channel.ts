@@ -96,6 +96,10 @@ const GROUP_HISTORY_LIMIT = 50;
 // Cache group names from welcome events
 const groupNames = new Map<string, string>();
 
+// Cache group member counts from sidecar events (group_joined, group_created, list_groups).
+// Used to auto-detect 1:1 DM groups without relying on the group name.
+const groupMemberCounts = new Map<string, number>();
+
 function recordPendingHistory(historyKey: string, entry: PendingHistoryEntry): void {
   const history = groupHistories.get(historyKey) ?? [];
   history.push(entry);
@@ -302,27 +306,13 @@ function isDmGroup(chatId: string, cfg: any): boolean {
 
 /**
  * Check if a group is a 1:1 conversation (2 or fewer members).
- * Uses the MLS group membership via sqlite, with a fallback to the group name
- * from the welcome event (Pika names DM groups "DM").
- * Returns false on any error (fail-open: treat as multi-person group).
+ * Uses the member count cache populated from sidecar events (group_joined,
+ * group_created, list_groups).
+ * Returns false if unknown (fail-open: treat as multi-person group).
  */
-function isOneOnOneGroup(nostrGroupId: string, stateDir: string): boolean {
-  // Check in-memory cache first
-  const cachedName = groupNames.get(nostrGroupId.toLowerCase());
-  if (cachedName?.toLowerCase() === "dm") return true;
-
-  // Query the MLS groups table for the group name (persists across restarts)
-  try {
-    const { execSync } = require("node:child_process");
-    const dbPath = path.join(stateDir, "mdk.sqlite");
-    const query = `SELECT name FROM groups WHERE nostr_group_id = x'${nostrGroupId}';`;
-    const result = execSync(`sqlite3 "${dbPath}" "${query}"`, { encoding: "utf-8", timeout: 3000 }).trim();
-    if (result.toLowerCase() === "dm") return true;
-  } catch {
-    // fall through
-  }
-
-  return false;
+function isOneOnOneGroup(nostrGroupId: string): boolean {
+  const count = groupMemberCounts.get(nostrGroupId.toLowerCase());
+  return count !== undefined && count <= 2;
 }
 
 /**
@@ -509,6 +499,19 @@ function looksLikeGroupIdHex(input: string): boolean {
   return /^[0-9a-f]{64}$/i.test(input.trim());
 }
 
+function resolveOutboundTarget(to: string, accountId?: string | null): { handle: PikachatSidecarHandle; groupId: string } {
+  const aid = accountId ?? DEFAULT_ACCOUNT_ID;
+  const handle = activeSidecars.get(aid);
+  if (!handle) {
+    throw new Error(`pikachat sidecar not running for account ${aid}`);
+  }
+  const groupId = normalizeGroupId(to);
+  if (!looksLikeGroupIdHex(groupId)) {
+    throw new Error(`invalid pikachat group id: ${to}`);
+  }
+  return { handle, groupId };
+}
+
 function normalizeGroupId(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) return trimmed;
@@ -592,7 +595,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   },
   capabilities: {
     chatTypes: ["dm", "group"],
-    media: false,
+    media: true,
     nativeCommands: false,
   },
   reload: { configPrefixes: ["channels.pikachat", "plugins.entries.pikachat"] },
@@ -653,20 +656,45 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     deliveryMode: "direct",
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
-      const aid = accountId ?? DEFAULT_ACCOUNT_ID;
-      const handle = activeSidecars.get(aid);
-      if (!handle) {
-        throw new Error(`pikachat sidecar not running for account ${aid}`);
-      }
-      const groupId = normalizeGroupId(to);
-      if (!looksLikeGroupIdHex(groupId)) {
-        throw new Error(`invalid pikachat group id: ${to}`);
-      }
+      const { handle, groupId } = resolveOutboundTarget(to, accountId);
       await handle.sidecar.sendMessage(groupId, text ?? "");
       return { channel: "pikachat", to: groupId };
     },
-    sendMedia: async () => {
-      throw new Error("pikachat does not support media");
+    sendMedia: async ({ to, text, mediaUrl, accountId }) => {
+      const { handle, groupId } = resolveOutboundTarget(to, accountId);
+      if (!mediaUrl) {
+        throw new Error("sendMedia requires a mediaUrl");
+      }
+
+      // Download media to a temp file so the sidecar can read it
+      const tempDir = mkdtempSync(path.join(tmpdir(), "pikachat-media-"));
+      const urlObj = new URL(mediaUrl);
+      const basename = path.basename(urlObj.pathname) || "file.bin";
+      const tempFile = path.join(tempDir, basename);
+      try {
+        const resp = await fetch(mediaUrl, { signal: AbortSignal.timeout(60_000) });
+        if (!resp.ok) {
+          throw new Error(`download failed: HTTP ${resp.status}`);
+        }
+        const arrayBuf = await resp.arrayBuffer();
+        writeFileSync(tempFile, Buffer.from(arrayBuf));
+      } catch (err) {
+        rmSync(tempDir, { recursive: true, force: true });
+        throw new Error(`failed to download media from ${mediaUrl}: ${err}`);
+      }
+
+      try {
+        const result = (await handle.sidecar.sendMedia(groupId, tempFile, {
+          caption: text ?? "",
+        })) as any;
+        return { channel: "pikachat" as const, to: groupId, messageId: result?.event_id ?? "" };
+      } finally {
+        // Clean up temp file after a delay to ensure sidecar has read it
+        const timer = setTimeout(() => {
+          rmSync(tempDir, { recursive: true, force: true });
+        }, 30_000);
+        (timer as any).unref?.();
+      }
     },
   },
 
@@ -754,35 +782,39 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       await sidecar.setRelays(relays);
       await sidecar.publishKeypackage(relays);
 
-      // If the bot has no groups yet and an owner is configured, create a DM
-      // group with the owner so the bot can reach them immediately.
+      // Seed member counts from existing groups (so isOneOnOneGroup works
+      // immediately) and create an owner DM if no groups exist yet.
       // Fire-and-forget so it doesn't block startup.
       {
         const ownerCfg = resolved.config.owner;
         const ownerPk: string | undefined = ownerCfg
           ? String(Array.isArray(ownerCfg) ? ownerCfg[0] : ownerCfg).trim().toLowerCase()
           : undefined;
-        if (ownerPk) {
-          void (async () => {
-            try {
-              const groupsResult = (await sidecar.listGroups()) as any;
-              const groups: unknown[] = groupsResult?.groups ?? [];
-              if (groups.length === 0) {
-                ctx.log?.info(
-                  `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
-                );
-                const created = await sidecar.initGroup(ownerPk);
-                ctx.log?.info(
-                  `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
-                );
-              }
-            } catch (err) {
-              ctx.log?.warn(
-                `[${resolved.accountId}] failed to init owner DM group: ${err}`,
+        void (async () => {
+          try {
+            const groupsResult = (await sidecar.listGroups()) as any;
+            const groups: any[] = groupsResult?.groups ?? [];
+            // Seed member count cache for all groups
+            for (const g of groups) {
+              const gid = String(g.nostr_group_id ?? "").toLowerCase();
+              const mc = typeof g.member_count === "number" ? g.member_count : 0;
+              if (gid) groupMemberCounts.set(gid, mc);
+            }
+            if (ownerPk && groups.length === 0) {
+              ctx.log?.info(
+                `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
+              );
+              const created = await sidecar.initGroup(ownerPk);
+              ctx.log?.info(
+                `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
               );
             }
-          })();
-        }
+          } catch (err) {
+            ctx.log?.warn(
+              `[${resolved.accountId}] failed to seed groups / init owner DM: ${err}`,
+            );
+          }
+        })();
       }
 
       const groupPolicy = resolved.config.groupPolicy ?? "allowlist";
@@ -885,14 +917,16 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           return;
         }
         if (ev.type === "group_joined") {
+          groupMemberCounts.set(ev.nostr_group_id.toLowerCase(), ev.member_count);
           ctx.log?.info(
-            `[${resolved.accountId}] group_joined nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id}`,
+            `[${resolved.accountId}] group_joined nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} members=${ev.member_count}`,
           );
           return;
         }
         if (ev.type === "group_created") {
+          groupMemberCounts.set(ev.nostr_group_id.toLowerCase(), ev.member_count);
           ctx.log?.info(
-            `[${resolved.accountId}] group_created nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} peer=${ev.peer_pubkey}`,
+            `[${resolved.accountId}] group_created nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} peer=${ev.peer_pubkey} members=${ev.member_count}`,
           );
           return;
         }
@@ -1147,6 +1181,18 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             ev.content = `[Voted "${pollResponse.selected}"]`;
           }
 
+          // Augment content with media attachment descriptions so the agent can see them
+          let messageText = ev.content;
+          if (ev.media && ev.media.length > 0) {
+            const mediaLines = ev.media.map((m) => {
+              const dims = m.width && m.height ? ` (${m.width}x${m.height})` : "";
+              const localFile = m.local_path ? ` file://${m.local_path}` : "";
+              return `[Attachment: ${m.filename} — ${m.mime_type}${dims}${localFile}]`;
+            });
+            const suffix = "\n" + mediaLines.join("\n");
+            messageText = messageText ? messageText + suffix : mediaLines.join("\n");
+          }
+
           try {
             const senderPk = String(ev.from_pubkey).trim().toLowerCase();
             const senderIsOwner = isOwnerPubkey(senderPk);
@@ -1155,21 +1201,14 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             const historyKey = `pikachat:${resolved.accountId}:${groupId}`;
 
             // Determine if this is a DM group (1:1 with bot)
-            const isDm = isDmGroup(groupId, currentCfg);
+            const isDm = isOneOnOneGroup(groupId);
             // Multi-person groups use group flow (even for owners); DM groups route to main session
             const isGroupChat = !isDm;
 
             if (isGroupChat) {
               // GROUP CHAT FLOW — mention gating + history buffering
-              // Skip mention gating for 1:1 groups (2 members) — they should always trigger
-              const oneOnOne = isOneOnOneGroup(groupId, baseStateDir);
-              if (oneOnOne) {
-                ctx.log?.debug(
-                  `[${resolved.accountId}] 1:1 group detected, skipping mention gating group=${ev.nostr_group_id} from=${senderPk}`,
-                );
-              }
-              const requireMention = oneOnOne ? false : resolveRequireMention(groupId, currentCfg);
-              const wasMentioned = handle ? detectMention(ev.content, handle.pubkey, handle.npub, currentCfg) : false;
+              const requireMention = resolveRequireMention(groupId, currentCfg);
+              const wasMentioned = handle ? detectMention(messageText, handle.pubkey, handle.npub, currentCfg) : false;
 
               if (requireMention && !wasMentioned) {
                 // Not mentioned — buffer for context, don't dispatch.
@@ -1178,7 +1217,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 const senderName = resolveMemberName(senderPk, currentCfg);
                 recordPendingHistory(historyKey, {
                   sender: senderName,
-                  body: ev.content,
+                  body: messageText,
                   timestamp: ev.created_at ? ev.created_at * 1000 : Date.now(),
                 });
                 ctx.log?.debug(
@@ -1202,7 +1241,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 accountId: resolved.accountId,
                 senderId: ev.from_pubkey,
                 chatId: ev.nostr_group_id,
-                text: ev.content,
+                text: messageText,
                 isOwner: senderIsOwner,
                 isGroupChat: true,
                 wasMentioned,
@@ -1232,7 +1271,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 accountId: resolved.accountId,
                 senderId: ev.from_pubkey,
                 chatId: ev.nostr_group_id,
-                text: ev.content,
+                text: messageText,
                 isOwner: senderIsOwner,
                 isGroupChat: false,
                 deliverText: async (responseText: string) => {
@@ -1253,6 +1292,19 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             ctx.log?.error(
               `[${resolved.accountId}] dispatchInboundToAgent failed: ${err}`,
             );
+          } finally {
+            // Clean up decrypted media temp files after the agent has had time to read them
+            if (ev.media && ev.media.length > 0) {
+              const paths = ev.media.map((m) => m.local_path).filter(Boolean) as string[];
+              if (paths.length > 0) {
+                const timer = setTimeout(() => {
+                  for (const p of paths) {
+                    try { rmSync(p, { force: true }); } catch {}
+                  }
+                }, 5 * 60 * 1000); // 5 minutes
+                (timer as any).unref?.();
+              }
+            }
           }
         }
       });

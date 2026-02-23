@@ -24,13 +24,14 @@ pub enum Pane {
 
 pub struct State {
     /// Activity in the main application pane
-    pub pane: Pane,
-    pub conversation: views::conversation::State,
-    pub group_info: Option<views::group_info::State>,
-    pub optimistic_selected_chat_id: Option<String>,
+    pane: Pane,
+    my_npub: String,
+    conversation: views::conversation::State,
+    group_info: Option<views::group_info::State>,
+    optimistic_selected_chat_id: Option<String>,
     pub show_call_screen: bool,
-    pub profile_toast: Option<String>,
-    pub video_pipeline: video::DesktopVideoPipeline,
+    profile_toast: Option<String>,
+    video_pipeline: video::DesktopVideoPipeline,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -87,9 +88,13 @@ fn follow_source<'a>(
 
 impl State {
     pub fn new(state: &AppState) -> Self {
-        let _ = state;
+        let my_npub = match &state.auth {
+            AuthState::LoggedIn { npub, .. } => npub.clone(),
+            AuthState::LoggedOut => String::new(),
+        };
         Self {
             pane: Pane::Empty,
+            my_npub,
             conversation: views::conversation::State::new(),
             group_info: None,
             optimistic_selected_chat_id: None,
@@ -653,13 +658,9 @@ impl State {
 
         // ── Center pane routing ─────────────────────────────────────
         let center_pane: Element<'_, Message> = if let Pane::MyProfile(ref profile) = self.pane {
-            let npub = match &state.auth {
-                AuthState::LoggedIn { npub, .. } => npub.as_str(),
-                _ => "",
-            };
             profile
                 .view(
-                    npub,
+                    &self.my_npub,
                     app_version_display,
                     state.my_profile.picture_url.as_deref(),
                     cache,

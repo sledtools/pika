@@ -3123,6 +3123,7 @@ impl AppCore {
                 let mut app_content: Option<String> = None;
                 let mut is_typing_indicator = false;
                 let mut is_call_signal_kind = false;
+                let mut is_reaction = false;
 
                 let mls_group_id: Option<GroupId> = match &result {
                     MessageProcessingResult::ApplicationMessage(msg) => {
@@ -3143,6 +3144,9 @@ impl AppCore {
                                 app_content = Some(msg.content.clone());
                             }
                             Kind::ChatMessage | Kind::Reaction => {
+                                if msg.kind == Kind::Reaction {
+                                    is_reaction = true;
+                                }
                                 app_sender = Some(msg.pubkey);
                                 app_content = Some(msg.content.clone());
                             }
@@ -3199,7 +3203,6 @@ impl AppCore {
                                 self.update_typing(&chat_id, &sender.to_hex(), 0);
                             }
 
-                            let is_call_signal = is_call_signal_kind;
                             if is_call_signal_kind {
                                 if let (Some(sender), Some(content)) =
                                     (app_sender, app_content.as_deref())
@@ -3214,7 +3217,8 @@ impl AppCore {
 
                             let current =
                                 self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                            if current != Some(chat_id.as_str()) && event.kind == Kind::ChatMessage
+                            let is_call_signal = is_call_signal_kind;
+                            if current != Some(chat_id.as_str()) && !is_call_signal && !is_reaction
                             {
                                 *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
                             } else if is_app_message && !is_call_signal {

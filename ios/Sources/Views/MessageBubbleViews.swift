@@ -246,6 +246,7 @@ struct ReactionChips: View {
         HStack(spacing: 4) {
             ForEach(reactions, id: \.emoji) { reaction in
                 Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onReact?(messageId, reaction.emoji)
                 } label: {
                     HStack(spacing: 2) {
@@ -451,20 +452,19 @@ private struct MessageBubble: View {
                 }
             }
 
-            EmptyView()
-                .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
-                    if hasReactions {
-                        ReactionChips(
-                            reactions: message.reactions,
-                            messageId: message.id,
-                            onReact: onReact
-                        )
-                        .offset(x: message.isMine ? -12 : 12, y: reactionChipOverlap)
-                    }
-                }
-
             if hasReactions {
-                Spacer().frame(height: reactionChipOverlap + 4)
+                HStack {
+                    if message.isMine { Spacer() }
+                    ReactionChips(
+                        reactions: message.reactions,
+                        messageId: message.id,
+                        onReact: onReact
+                    )
+                    .offset(y: -reactionChipOverlap)
+                    .padding(.horizontal, 4)
+                    if !message.isMine { Spacer() }
+                }
+                .padding(.bottom, 4)
             }
         }
         .contentShape(Rectangle())

@@ -163,6 +163,7 @@ struct ChatView: View {
                         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 12) {
                             QuickReactionBar(
                                 onSelect: { emoji in
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                     onReact?(message.id, emoji)
                                     withAnimation(.easeOut(duration: 0.18)) {
                                         contextMenuMessage = nil
@@ -239,6 +240,7 @@ struct ChatView: View {
         .sheet(isPresented: $showContextEmojiPicker) {
             if let message = contextMenuMessage {
                 EmojiPickerSheet { emoji in
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onReact?(message.id, emoji)
                     showContextEmojiPicker = false
                     withAnimation(.easeOut(duration: 0.18)) {

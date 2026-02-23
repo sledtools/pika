@@ -4,13 +4,13 @@ This document covers how to run/test `pika-cli agent new` in RPC parity mode, wh
 
 ## Quick answer
 
-- Yes: keep testing with `just agent`.
-- To test RPC parity UI specifically: `PIKA_AGENT_UI_MODE=rpc just agent`.
+- Yes: keep testing with `just agent-fly-moq`.
+- To test RPC parity UI specifically: `PIKA_AGENT_UI_MODE=rpc just agent-fly-moq`.
 - If you changed `bots/pi-bridge.py` (or anything in `crates/pika-bot/Dockerfile` image contents), you must deploy a new Fly image before remote behavior changes will be visible.
 
-## How `just agent` works
+## How `just agent-fly-moq` works
 
-`just agent` does all of the following:
+`just agent-fly-moq` does all of the following:
 
 1. Builds local `marmotd` for the local UI-side daemon.
 2. Loads `.env` (`FLY_API_TOKEN`, `ANTHROPIC_API_KEY`, etc.).
@@ -22,7 +22,7 @@ Reference: `justfile`.
 ## RPC mode test command
 
 ```bash
-PIKA_AGENT_UI_MODE=rpc just agent
+PIKA_AGENT_UI_MODE=rpc just agent-fly-moq
 ```
 
 Default remains PTY mode unless overridden.
@@ -65,9 +65,9 @@ Suggested deploy flow:
 fly deploy -c fly.pika-bot.toml
 ```
 
-Then verify new machines are using the updated image (or set `FLY_BOT_IMAGE` explicitly in your shell before running `just agent`).
+Then verify new machines are using the updated image (or set `FLY_BOT_IMAGE` explicitly in your shell before running `just agent-fly-moq`).
 
-`just agent` now respects an explicitly set `FLY_BOT_IMAGE` and will not auto-override it.
+`just agent-fly-moq` now respects an explicitly set `FLY_BOT_IMAGE` and will not auto-override it.
 
 If you only changed local CLI/UI code (`cli/src/main.rs`, `tools/agent-rpc-parity-ui/*`), no bot image rebuild is required.
 

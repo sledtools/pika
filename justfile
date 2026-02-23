@@ -718,7 +718,7 @@ cli-smoke-media:
     ./tools/cli-smoke --with-media
 
 # Run `pika-cli agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
-agent RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
+agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
     set -euo pipefail; \
     if [ ! -f .env ]; then \
       echo "error: missing .env in repo root"; \
@@ -746,7 +746,7 @@ agent-fly-rpc RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     export PIKA_AGENT_MARMOTD_STDERR=quiet; \
     if [ -n "${FLY_BOT_APP_NAME_RPC:-}" ]; then export FLY_BOT_APP_NAME="$FLY_BOT_APP_NAME_RPC"; fi; \
     if [ -n "${FLY_BOT_IMAGE_RPC:-}" ]; then export FLY_BOT_IMAGE="$FLY_BOT_IMAGE_RPC"; fi; \
-    just agent {{ RELAY_EU }} {{ RELAY_US }} {{ MOQ_US }} {{ MOQ_EU }}
+    just agent-fly-moq {{ RELAY_EU }} {{ RELAY_US }} {{ MOQ_US }} {{ MOQ_EU }}
 
 # Deterministic PTY replay smoke test over Fly + MoQ (non-interactive).
 agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
@@ -759,4 +759,4 @@ agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east
     export PIKA_AGENT_MAX_SUFFIX_DROP_BYTES=0; \
     export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"; \
     export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"; \
-    just agent "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"
+    just agent-fly-moq "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"

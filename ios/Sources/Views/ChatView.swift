@@ -27,6 +27,7 @@ struct ChatView: View {
     @State private var isUserScrolling = false
     @State private var activeReactionMessageId: String?
     @State private var contextMenuMessage: ChatMessage?
+    @State private var contextMenuAnchorFrame: CGRect = .zero
     @State private var showContextActionCard = false
     @State private var showContextEmojiPicker = false
     @State private var showMentionPicker = false
@@ -234,12 +235,11 @@ struct ChatView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: message.isMine ? .topTrailing : .topLeading)
-                        .padding(.top, max(geo.safeAreaInsets.top + 14, 34))
+                        .padding(.top, contextMenuOffset(geo: geo))
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 24)
                     }
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
+                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .center)))
             }
         }
         .sheet(isPresented: $showContextEmojiPicker) {
@@ -286,8 +286,9 @@ struct ChatView: View {
                                         },
                                         onReact: onReact,
                                         activeReactionMessageId: $activeReactionMessageId,
-                                        onLongPressMessage: { message in
+                                        onLongPressMessage: { message, frame in
                                             isInputFocused = false
+                                            contextMenuAnchorFrame = frame
                                             withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
                                                 activeReactionMessageId = message.id
                                                 contextMenuMessage = message
@@ -538,6 +539,18 @@ struct ChatView: View {
         messageText = ""
         insertedMentions = []
         replyDraftMessage = nil
+    }
+
+    private func contextMenuOffset(geo: GeometryProxy) -> CGFloat {
+        let overlayOriginY = geo.frame(in: .global).minY
+        // Where the message bubble is relative to the overlay
+        let anchorLocalY = contextMenuAnchorFrame.minY - overlayOriginY
+        // Leave room above for the reaction bar (~48 height + 12 spacing)
+        let reactionBarSpace: CGFloat = 60
+        let idealTop = anchorLocalY - reactionBarSpace
+        let minTop = max(geo.safeAreaInsets.top + 8, 20)
+        let maxTop = geo.size.height * 0.5
+        return min(max(idealTop, minTop), maxTop)
     }
 
     private func callFor(_ chat: ChatViewState) -> CallState? {

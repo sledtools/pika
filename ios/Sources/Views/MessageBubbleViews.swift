@@ -104,7 +104,7 @@ struct MessageGroupRow: View {
     var onJumpToMessage: ((String) -> Void)? = nil
     var onReact: ((String, String) -> Void)?
     @Binding var activeReactionMessageId: String?
-    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
+    var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
 
@@ -203,7 +203,7 @@ private struct MessageBubbleStack: View {
     var onReact: ((String, String) -> Void)?
     var onJumpToMessage: ((String) -> Void)? = nil
     @Binding var activeReactionMessageId: String?
-    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
+    var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
 
@@ -389,11 +389,12 @@ private struct MessageBubble: View {
     var onReact: ((String, String) -> Void)?
     var onJumpToMessage: ((String) -> Void)? = nil
     @Binding var activeReactionMessageId: String?
-    var onLongPressMessage: ((ChatMessage) -> Void)? = nil
+    var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
 
     @State private var isBeingPressed = false
+    @State private var bubbleGlobalFrame: CGRect = .zero
 
     private let roundedCornerRadius: CGFloat = 16
     private let groupedCornerRadius: CGFloat = 6
@@ -455,6 +456,13 @@ private struct MessageBubble: View {
             }
         }
         .contentShape(Rectangle())
+        .background(
+            GeometryReader { proxy in
+                Color.clear.onAppear {
+                    bubbleGlobalFrame = proxy.frame(in: .global)
+                }
+            }
+        )
         .scaleEffect(isBeingPressed ? 0.96 : 1.0)
         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isBeingPressed)
         .onLongPressGesture(minimumDuration: 0.3, maximumDistance: 44) {
@@ -593,10 +601,10 @@ private struct MessageBubble: View {
     }
 
     private func handleLongPress() {
-        guard onLongPressMessage != nil else { return }
+        guard let onLongPressMessage else { return }
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
-        onLongPressMessage?(message)
+        onLongPressMessage(message, bubbleGlobalFrame)
     }
 }
 

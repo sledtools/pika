@@ -137,6 +137,32 @@ just ios-ui-test             # iOS UI tests on simulator
 just android-ui-test         # Android instrumentation tests
 ```
 
+## Reliable MoQ experiment (Feb 23, 2026)
+
+We prototyped a "Reliable MoQ" chat path (HTTP persist + MoQ live fanout) and benchmarked it against Nostr relay delivery.
+
+How we measured:
+
+- Matrix benchmark across public and project relays
+- Interleaved paired A/B runs for apples-to-apples comparisons (alternating order per run)
+- Commands:
+  - `just perf-reliable-moq`
+  - `just report-reliable-moq`
+
+Result:
+
+- This did **not** show a meaningful latency improvement for Pika chat/typing delivery.
+- In paired `*.pikachat.org` comparisons, all 95% confidence intervals crossed zero (inconclusive):
+  - us-east: nostr vs moq delta `-8.7ms`, 95% CI `[-18.6, 1.1]`
+  - eu: nostr vs moq delta `8.8ms`, 95% CI `[-18.4, 35.9]`
+- MoQ us-east `logos.surf` vs MoQ us-east `pikachat` was also inconclusive:
+  - delta `-4.4ms`, 95% CI `[-13.3, 4.5]`
+
+Conclusion:
+
+- For this codebase and relay topology, Reliable MoQ chat transport did **not** provide the expected step-function gain (for example `2-3x` faster), so we are **not pursuing it** as a mainline chat delivery path at this time.
+- Nostr remains the primary chat transport path.
+
 ## Architecture
 
 Pika follows a **unidirectional data flow** pattern:

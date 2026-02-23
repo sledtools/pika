@@ -24,6 +24,7 @@ import time
 
 
 EVENT_PREFIX = "__PI_EVT__"
+RPC_MESSAGE_PREFIX = "__PI_RPC__"
 FRAMED_PROTOCOL_VERSION = 1
 RPC_STREAMS = {"rpc_event", "rpc_response", "rpc_request", "control"}
 SEND_LOCK = threading.Lock()
@@ -45,6 +46,7 @@ rpc_call_id: str | None = None
 rpc_proc: subprocess.Popen[bytes] | None = None
 rpc_reader_thread: threading.Thread | None = None
 rpc_session_id: str | None = None
+rpc_message_group_id: str | None = None
 rpc_out_seq: dict[str, int] = {}
 rpc_in_expected_seq: dict[str, int] = {}
 rpc_in_pending: dict[str, dict[int, bytes]] = {}
@@ -55,6 +57,9 @@ legacy_chat_enabled = os.environ.get("PI_BRIDGE_ENABLE_CHAT", "").strip() == "1"
 call_mode = os.environ.get("PI_BRIDGE_CALL_MODE", "pty").strip().lower() or "pty"
 if call_mode not in {"pty", "rpc"}:
     call_mode = "pty"
+rpc_transport = os.environ.get("PI_BRIDGE_RPC_TRANSPORT", "call").strip().lower() or "call"
+if rpc_transport not in {"call", "nostr"}:
+    rpc_transport = "call"
 replay_file = os.environ.get("PI_BRIDGE_REPLAY_FILE", "").strip()
 replay_speed_raw = os.environ.get("PI_BRIDGE_REPLAY_SPEED", "1").strip()
 replay_initial_delay_ms_raw = os.environ.get("PI_BRIDGE_REPLAY_INITIAL_DELAY_MS", "1000").strip()
@@ -558,12 +563,22 @@ def classify_pi_rpc_stream(raw_line: bytes) -> str:
 
 
 def send_rpc_framed_payload(call_id: str, stream: str, payload: bytes) -> None:
+    global rpc_message_group_id
     if stream not in RPC_STREAMS:
         return
     with RPC_LOCK:
-        if call_id != rpc_call_id:
-            return
-        session_id = rpc_session_id or call_id
+        if rpc_transport == "call":
+            if call_id != rpc_call_id:
+                return
+            session_id = rpc_session_id or call_id
+            target_group_id = None
+        else:
+            if rpc_proc is None:
+                return
+            session_id = rpc_session_id
+            target_group_id = rpc_message_group_id
+            if not session_id or not target_group_id:
+                return
         seq = rpc_out_seq.get(stream, 0)
         rpc_out_seq[stream] = seq + 1
 
@@ -581,7 +596,16 @@ def send_rpc_framed_payload(call_id: str, stream: str, payload: bytes) -> None:
             "frag_count": frag_count,
             "payload_b64": base64.b64encode(frag).decode("ascii"),
         }
-        send_call_payload(call_id, envelope)
+        if rpc_transport == "call":
+            send_call_payload(call_id, envelope)
+        else:
+            send_to_marmotd(
+                {
+                    "cmd": "send_message",
+                    "nostr_group_id": target_group_id,
+                    "content": RPC_MESSAGE_PREFIX + json.dumps(envelope, separators=(",", ":")),
+                }
+            )
 
 
 def send_rpc_control(call_id: str, payload_obj: dict) -> None:
@@ -590,13 +614,16 @@ def send_rpc_control(call_id: str, payload_obj: dict) -> None:
 
 
 def rpc_reader_loop(call_id: str, proc: subprocess.Popen[bytes]) -> None:
-    global rpc_call_id, rpc_proc
+    global rpc_call_id, rpc_proc, rpc_message_group_id, rpc_session_id
     exit_code: int | None = None
     try:
         assert proc.stdout is not None
         while True:
             with RPC_LOCK:
-                if rpc_call_id != call_id or rpc_proc is not proc:
+                if rpc_transport == "call":
+                    if rpc_call_id != call_id or rpc_proc is not proc:
+                        break
+                elif rpc_proc is not proc:
                     break
             raw = proc.stdout.readline()
             if not raw:
@@ -624,16 +651,22 @@ def rpc_reader_loop(call_id: str, proc: subprocess.Popen[bytes]) -> None:
                 "code": exit_code,
             },
         )
-        send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "rpc_exit"})
+        if rpc_transport == "call":
+            send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "rpc_exit"})
         with RPC_LOCK:
-            if rpc_call_id == call_id:
+            if rpc_transport == "call" and rpc_call_id == call_id:
                 rpc_call_id = None
             if rpc_proc is proc:
                 rpc_proc = None
+            if rpc_transport == "nostr":
+                rpc_message_group_id = None
+                rpc_session_id = None
 
 
 def start_pi_rpc_call(call_id: str) -> None:
     global rpc_call_id, rpc_proc, rpc_reader_thread
+    if rpc_transport != "call":
+        return
     need_stop = False
     with RPC_LOCK:
         if rpc_call_id and rpc_call_id != call_id:
@@ -664,6 +697,8 @@ def start_pi_rpc_call(call_id: str) -> None:
 
 def stop_pi_rpc_call(reason: str) -> None:
     global rpc_call_id, rpc_proc, rpc_session_id
+    if rpc_transport != "call":
+        return
     with RPC_LOCK:
         call_id = rpc_call_id
         proc = rpc_proc
@@ -677,6 +712,43 @@ def stop_pi_rpc_call(reason: str) -> None:
             pass
     if call_id:
         log(f"stopped rpc call {call_id}: {reason}")
+
+
+def start_pi_rpc_nostr(group_id: str) -> None:
+    global rpc_proc, rpc_reader_thread, rpc_message_group_id
+    if rpc_transport != "nostr":
+        return
+    gid = str(group_id or "").strip()
+    if not gid:
+        return
+    with RPC_LOCK:
+        if rpc_proc is not None and rpc_proc.poll() is None:
+            rpc_message_group_id = gid
+            return
+    proc = spawn_pi_rpc("nostr")
+    with RPC_LOCK:
+        rpc_proc = proc
+        rpc_message_group_id = gid
+        t = threading.Thread(target=rpc_reader_loop, args=("", proc), daemon=True)
+        rpc_reader_thread = t
+        t.start()
+
+
+def stop_pi_rpc_nostr(reason: str) -> None:
+    global rpc_proc, rpc_session_id, rpc_message_group_id
+    if rpc_transport != "nostr":
+        return
+    with RPC_LOCK:
+        proc = rpc_proc
+        rpc_proc = None
+        rpc_session_id = None
+        rpc_message_group_id = None
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    log(f"stopped rpc nostr session: {reason}")
 
 
 def parse_rpc_envelope(payload: dict) -> tuple[str, str, int, int, int, bytes] | None:
@@ -732,7 +804,10 @@ def prune_rpc_seen(session_id: str, stream: str, next_expected_seq: int) -> None
 def handle_complete_rpc_frame(call_id: str, session_id: str, stream: str, payload: bytes) -> None:
     if stream == "rpc_request":
         with RPC_LOCK:
-            proc = rpc_proc if rpc_call_id == call_id else None
+            if rpc_transport == "call":
+                proc = rpc_proc if rpc_call_id == call_id else None
+            else:
+                proc = rpc_proc
         if proc is None or proc.stdin is None:
             return
         data = payload if payload.endswith(b"\n") else payload + b"\n"
@@ -766,18 +841,33 @@ def handle_complete_rpc_frame(call_id: str, session_id: str, stream: str, payloa
             },
         )
     elif ctrl_type == "close":
-        send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "peer_close"})
+        if rpc_transport == "call":
+            send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "peer_close"})
+        else:
+            stop_pi_rpc_nostr("peer_close")
 
 
-def handle_rpc_envelope(call_id: str, envelope: dict) -> None:
+def handle_rpc_envelope(call_id: str, envelope: dict, group_id: str | None = None) -> None:
+    global rpc_message_group_id
     parsed = parse_rpc_envelope(envelope)
     if parsed is None:
         return
     session_id, stream, seq, frag_index, frag_count, frag_payload = parsed
 
     with RPC_LOCK:
-        if call_id != rpc_call_id or rpc_proc is None:
-            return
+        if rpc_transport == "call":
+            if call_id != rpc_call_id or rpc_proc is None:
+                return
+        else:
+            if rpc_proc is None:
+                return
+            if group_id:
+                gid = str(group_id).strip()
+                if not gid:
+                    return
+                if rpc_message_group_id and rpc_message_group_id != gid:
+                    return
+                rpc_message_group_id = gid
 
         if rpc_session_id and session_id != rpc_session_id:
             return
@@ -852,9 +942,29 @@ def handle_rpc_call_data(msg: dict) -> None:
     handle_rpc_envelope(call_id, payload)
 
 
+def handle_rpc_message(msg: dict) -> bool:
+    if rpc_transport != "nostr":
+        return False
+    content = str(msg.get("content", ""))
+    if not content.startswith(RPC_MESSAGE_PREFIX):
+        return False
+    group_id = str(msg.get("nostr_group_id", "")).strip()
+    if not group_id:
+        return True
+    start_pi_rpc_nostr(group_id)
+    raw_payload = content[len(RPC_MESSAGE_PREFIX) :]
+    try:
+        payload = json.loads(raw_payload)
+    except Exception:
+        log("invalid rpc message payload")
+        return True
+    handle_rpc_envelope("", payload, group_id=group_id)
+    return True
+
+
 def main() -> None:
     global my_pubkey, pi_proc
-    log(f"bridge call mode={call_mode} legacy_chat={legacy_chat_enabled}")
+    log(f"bridge call mode={call_mode} rpc_transport={rpc_transport} legacy_chat={legacy_chat_enabled}")
     if legacy_chat_enabled:
         pi_proc = spawn_pi_rpc("legacy_chat")
 
@@ -921,26 +1031,30 @@ def main() -> None:
                     stop_pi_rpc_call("remote_end")
             continue
 
-        if msg_type == "message_received" and legacy_chat_enabled and pi_proc is not None:
+        if msg_type == "message_received":
             if msg.get("from_pubkey") == my_pubkey:
                 continue
-            content = msg.get("content", "")
-            group_id = msg.get("nostr_group_id", "")
-            send_to_pi(pi_proc, {"type": "prompt", "message": content})
-            emit_pi_event(group_id, {"kind": "status", "message": "processing"})
-            response = collect_pi_response(pi_proc, group_id)
-            if response.strip():
-                send_to_marmotd(
-                    {
-                        "cmd": "send_message",
-                        "nostr_group_id": group_id,
-                        "content": response,
-                    }
-                )
-            emit_pi_event(group_id, {"kind": "status", "message": "done"})
+            if handle_rpc_message(msg):
+                continue
+            if legacy_chat_enabled and pi_proc is not None:
+                content = msg.get("content", "")
+                group_id = msg.get("nostr_group_id", "")
+                send_to_pi(pi_proc, {"type": "prompt", "message": content})
+                emit_pi_event(group_id, {"kind": "status", "message": "processing"})
+                response = collect_pi_response(pi_proc, group_id)
+                if response.strip():
+                    send_to_marmotd(
+                        {
+                            "cmd": "send_message",
+                            "nostr_group_id": group_id,
+                            "content": response,
+                        }
+                    )
+                emit_pi_event(group_id, {"kind": "status", "message": "done"})
 
     stop_pi_pty("stdin_closed")
     stop_pi_rpc_call("stdin_closed")
+    stop_pi_rpc_nostr("stdin_closed")
     if pi_proc and pi_proc.poll() is None:
         pi_proc.terminate()
 

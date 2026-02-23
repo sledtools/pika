@@ -97,6 +97,7 @@ const {
 
 const FRAMED_PROTOCOL_VERSION = 1;
 const STREAMS = new Set(["rpc_event", "rpc_response", "rpc_request", "control"]);
+const RPC_MESSAGE_PREFIX = "__PI_RPC__";
 const DEFAULT_MOQ_URLS = [
   "https://us-east.moq.pikachat.org/anon",
   "https://eu.moq.pikachat.org/anon"
@@ -108,6 +109,9 @@ const MAX_REORDER_WINDOW = 4096;
 const parsedRequestTimeout = Number.parseInt(process.env.PIKA_AGENT_RPC_REQUEST_TIMEOUT_MS ?? "30000", 10);
 const RPC_REQUEST_TIMEOUT_MS = Number.isFinite(parsedRequestTimeout) && parsedRequestTimeout > 0 ? parsedRequestTimeout : 30_000;
 const MARMOTD_STDERR_MODE = String(process.env.PIKA_AGENT_MARMOTD_STDERR ?? "quiet").trim().toLowerCase();
+const TRANSPORT_MODE_RAW = String(process.env.PIKA_AGENT_RPC_TRANSPORT ?? "moq").trim().toLowerCase();
+const TRANSPORT_MODE = TRANSPORT_MODE_RAW === "nostr" ? "nostr" : "moq";
+const USE_NOSTR_TRANSPORT = TRANSPORT_MODE === "nostr";
 
 function createAuthStorage() {
   if (AuthStorage && typeof AuthStorage.inMemory === "function") {
@@ -193,6 +197,14 @@ function encodePayloadHex(obj) {
 }
 
 function sendCallPayload(payloadObj) {
+  if (USE_NOSTR_TRANSPORT) {
+    sendCmd({
+      cmd: "send_message",
+      nostr_group_id: GROUP_ID,
+      content: `${RPC_MESSAGE_PREFIX}${JSON.stringify(payloadObj)}`
+    });
+    return;
+  }
   if (!callId) return;
   sendCmd({
     cmd: "send_call_data",
@@ -254,7 +266,8 @@ function pruneProcessedSet(stream, nextExpectedSeq) {
 }
 
 function sendFramed(stream, payload) {
-  if (!callId || !sessionId) return;
+  if (!sessionId) return;
+  if (!USE_NOSTR_TRANSPORT && !callId) return;
   if (!STREAMS.has(stream)) return;
   const seq = nextOutSeq.get(stream) ?? 0;
   nextOutSeq.set(stream, seq + 1);
@@ -1203,6 +1216,21 @@ function spawnDaemon() {
       process.stderr.write(`[daemon] ${String(msg.message ?? "unknown error")}\n`);
       return;
     }
+    if (USE_NOSTR_TRANSPORT && type === "message_received") {
+      if (String(msg.nostr_group_id ?? "") !== GROUP_ID) return;
+      if (String(msg.from_pubkey ?? "").toLowerCase() !== BOT_PUBKEY) return;
+      const content = String(msg.content ?? "");
+      if (!content.startsWith(RPC_MESSAGE_PREFIX)) return;
+      try {
+        ingestEnvelope(JSON.parse(content.slice(RPC_MESSAGE_PREFIX.length)));
+      } catch {
+        // Ignore malformed framed payloads.
+      }
+      return;
+    }
+    if (USE_NOSTR_TRANSPORT) {
+      return;
+    }
     if (type === "call_data" && callId && String(msg.call_id ?? "") === callId) {
       const payload = decodeCallPayload(msg);
       if (payload) {
@@ -1428,37 +1456,51 @@ async function main() {
   if (MACHINE_ID && FLY_APP_NAME) {
     process.stderr.write(`machine: ${MACHINE_ID}  app: ${FLY_APP_NAME}\n`);
   }
-  process.stderr.write("MoQ candidates:\n");
-  for (const url of EFFECTIVE_MOQ_URLS) {
-    process.stderr.write(`  - ${url}\n`);
+  process.stderr.write(`transport: ${TRANSPORT_MODE}\n`);
+  if (!USE_NOSTR_TRANSPORT) {
+    process.stderr.write("MoQ candidates:\n");
+    for (const url of EFFECTIVE_MOQ_URLS) {
+      process.stderr.write(`  - ${url}\n`);
+    }
+  } else {
+    process.stderr.write("relays:\n");
+    for (const relay of RELAYS) {
+      process.stderr.write(`  - ${relay}\n`);
+    }
   }
   process.stderr.write("\n");
 
   spawnDaemon();
   await waitForReady();
 
-  let started = false;
-  for (const moqUrl of EFFECTIVE_MOQ_URLS) {
-    const invitedId = inviteCall(moqUrl);
-    process.stderr.write(`[agent] inviting rpc call via ${moqUrl}...\n`);
-    const ok = await waitForCallStart(invitedId);
-    if (ok) {
-      started = true;
-      callId = invitedId;
-      sessionId = invitedId;
+  if (!USE_NOSTR_TRANSPORT) {
+    let started = false;
+    for (const moqUrl of EFFECTIVE_MOQ_URLS) {
+      const invitedId = inviteCall(moqUrl);
+      process.stderr.write(`[agent] inviting rpc call via ${moqUrl}...\n`);
+      const ok = await waitForCallStart(invitedId);
+      if (ok) {
+        started = true;
+        callId = invitedId;
+        sessionId = invitedId;
+        pendingInviteCallIds.delete(invitedId);
+        staleInviteCallIds.delete(invitedId);
+        resetFramingState();
+        break;
+      }
       pendingInviteCallIds.delete(invitedId);
-      staleInviteCallIds.delete(invitedId);
-      resetFramingState();
-      break;
+      staleInviteCallIds.add(invitedId);
+      sendEndCall(invitedId, "relay_fallback");
+      process.stderr.write(`[agent] call did not start on ${moqUrl}, trying next relay...\n`);
     }
-    pendingInviteCallIds.delete(invitedId);
-    staleInviteCallIds.add(invitedId);
-    sendEndCall(invitedId, "relay_fallback");
-    process.stderr.write(`[agent] call did not start on ${moqUrl}, trying next relay...\n`);
-  }
 
-  if (!started || !callId || !sessionId) {
-    throw new Error("failed to start RPC call on available MoQ relays");
+    if (!started || !callId || !sessionId) {
+      throw new Error("failed to start RPC call on available MoQ relays");
+    }
+  } else {
+    sessionId = randomUUID();
+    callId = null;
+    resetFramingState();
   }
 
   sendControl({

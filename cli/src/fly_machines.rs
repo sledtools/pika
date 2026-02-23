@@ -61,11 +61,11 @@ pub struct Machine {
 
 impl FlyClient {
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_token = std::env::var("FLY_API_TOKEN").context("FLY_API_TOKEN must be set")?;
-        let app_name = std::env::var("FLY_BOT_APP_NAME").unwrap_or_else(|_| "pika-bot".into());
-        let region = std::env::var("FLY_BOT_REGION").unwrap_or_else(|_| "iad".into());
-        let image = std::env::var("FLY_BOT_IMAGE")
-            .unwrap_or_else(|_| "registry.fly.io/pika-bot:latest".into());
+        let api_token = required_non_empty_env("FLY_API_TOKEN")
+            .context("FLY_API_TOKEN must be set (for example in .env)")?;
+        let app_name = optional_non_empty_env("FLY_BOT_APP_NAME", "pika-bot");
+        let region = optional_non_empty_env("FLY_BOT_REGION", "iad");
+        let image = optional_non_empty_env("FLY_BOT_IMAGE", "registry.fly.io/pika-bot:latest");
 
         Ok(Self {
             client: reqwest::Client::new(),
@@ -164,5 +164,21 @@ impl FlyClient {
             anyhow::bail!("failed to get machine: {status} {text}");
         }
         resp.json().await.context("decode get machine response")
+    }
+}
+
+fn required_non_empty_env(key: &str) -> anyhow::Result<String> {
+    let value = std::env::var(key).with_context(|| format!("{key} must be set"))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{key} must be non-empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn optional_non_empty_env(key: &str, default: &str) -> String {
+    match std::env::var(key) {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => default.to_string(),
     }
 }

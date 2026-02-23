@@ -722,12 +722,24 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     set -euo pipefail; \
     if [ ! -f .env ]; then \
       echo "error: missing .env in repo root"; \
+      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"; \
       exit 1; \
     fi; \
-    cargo build -p pikachat >/dev/null; \
     set -a; \
     source .env; \
     set +a; \
+    missing=(); \
+    for key in FLY_API_TOKEN ANTHROPIC_API_KEY; do \
+      if [ -z "${!key:-}" ]; then \
+        missing+=("$key"); \
+      fi; \
+    done; \
+    if [ "${#missing[@]}" -gt 0 ]; then \
+      echo "error: missing required env var(s): ${missing[*]}"; \
+      echo "hint: define them in .env (example: FLY_API_TOKEN=... and ANTHROPIC_API_KEY=...)"; \
+      exit 1; \
+    fi; \
+    cargo build -p pikachat >/dev/null; \
     app_name="${FLY_BOT_APP_NAME:-pika-bot}"; \
     if [ "${PIKA_AGENT_USE_PINNED_IMAGE:-0}" = "1" ] && [ -n "${FLY_BOT_IMAGE:-}" ]; then \
       echo "info: using pinned FLY_BOT_IMAGE=$FLY_BOT_IMAGE"; \

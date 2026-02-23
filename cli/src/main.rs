@@ -1232,8 +1232,12 @@ async fn cmd_download_media(
 async fn cmd_agent_new(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
     let ui_mode = AgentUiMode::from_env()?;
     let fly = fly_machines::FlyClient::from_env()?;
-    let anthropic_key =
-        std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
+    let anthropic_key = std::env::var("ANTHROPIC_API_KEY")
+        .context("ANTHROPIC_API_KEY must be set (for example in .env)")?;
+    let anthropic_key = anthropic_key.trim().to_string();
+    if anthropic_key.is_empty() {
+        anyhow::bail!("ANTHROPIC_API_KEY must be non-empty");
+    }
 
     let (keys, mdk) = open(cli)?;
     eprintln!("Your pubkey: {}", keys.public_key().to_hex());

@@ -50,7 +50,7 @@ Run `pikachat <command> --help` for details and examples.
 
 pikachat uses the same default relays as the Pika app:
 
-- **Message relays**: `relay.damus.io`, `relay.primal.net`, `nos.lol`
+- **Message relays**: `us-east.nostr.pikachat.org`, `eu.nostr.pikachat.org`
 - **Key-package relays**: `nostr-pub.wellorder.net`, `nostr-01.yakihonne.com`, `nostr-02.yakihonne.com`
 
 Override with `--relay` and `--kp-relay` for testing or custom setups.

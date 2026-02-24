@@ -22,9 +22,8 @@ use sha2::{Digest, Sha256};
 
 // Same defaults as the Pika app (rust/src/core/config.rs).
 const DEFAULT_RELAY_URLS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://relay.primal.net",
-    "wss://nos.lol",
+    "wss://us-east.nostr.pikachat.org",
+    "wss://eu.nostr.pikachat.org",
 ];
 
 // Key packages (kind 443) are NIP-70 "protected" — many popular relays reject them.
@@ -70,7 +69,7 @@ struct Cli {
     #[arg(long, global = true, default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
-    /// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol)
+    /// Relay websocket URLs (default: us-east.nostr.pikachat.org, eu.nostr.pikachat.org)
     #[arg(long, global = true)]
     relay: Vec<String>,
 

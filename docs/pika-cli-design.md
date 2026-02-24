@@ -48,13 +48,13 @@ Make `--relay` optional with defaults matching the app. Also add `--kp-relay` fo
 
 | Purpose | Relays |
 |---------|--------|
-| Message relays (`DEFAULT_RELAY_URLS`) | `wss://relay.damus.io`, `wss://relay.primal.net`, `wss://nos.lol` |
+| Message relays (`DEFAULT_RELAY_URLS`) | `wss://us-east.nostr.pikachat.org`, `wss://eu.nostr.pikachat.org` |
 | Key package relays (`DEFAULT_KEY_PACKAGE_RELAY_URLS`) | `wss://nostr-pub.wellorder.net`, `wss://nostr-01.yakihonne.com`, `wss://nostr-02.yakihonne.com` |
 
 **New global options:**
 
 ```rust
-/// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol)
+/// Relay websocket URLs (default: us-east.nostr.pikachat.org, eu.nostr.pikachat.org)
 #[arg(long)]
 relay: Vec<String>,
 
@@ -260,7 +260,7 @@ Quickstart:
 Add a `--verbose` or just always print the relays being used to stderr on connect, so the user can see which defaults are active:
 
 ```
-[pika-cli] relays: relay.damus.io, relay.primal.net, nos.lol
+[pika-cli] relays: us-east.nostr.pikachat.org, eu.nostr.pikachat.org
 [pika-cli] kp-relays: nostr-pub.wellorder.net, nostr-01.yakihonne.com, ...
 ```
 

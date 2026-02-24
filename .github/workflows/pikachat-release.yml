@@ -62,7 +62,7 @@ jobs:
             exit 1
           fi
 
-          pkg_version=$(node -p "require('./pikachat-openclaw/openclaw/extensions/pikachat/package.json').version")
+          pkg_version=$(node -p "require('./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json').version")
           if [ "$pkg_version" != "$version" ]; then
             echo "error: package.json version is $pkg_version but expected $version"
             echo "hint: bump versions first via PR, then run this workflow"
@@ -210,7 +210,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
-        working-directory: pikachat-openclaw/openclaw/extensions/pikachat
+        working-directory: pikachat-openclaw/openclaw/extensions/pikachat-openclaw
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

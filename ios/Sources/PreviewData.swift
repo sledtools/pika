@@ -25,6 +25,8 @@ final class PreviewCore: AppCore, @unchecked Sendable {
 
     func setVideoFrameReceiver(receiver: VideoFrameReceiver) {}
 
+    func setAvatarFrameReceiver(receiver: AvatarFrameReceiver) {}
+
     func sendVideoFrame(payload: Data) {}
 }
 

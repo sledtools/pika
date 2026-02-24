@@ -68,6 +68,7 @@ pub fn load_profiles(conn: &Connection) -> HashMap<String, ProfileCache> {
                 username: name,
                 about: about.filter(|s| !s.is_empty()),
                 picture_url: picture_url.filter(|s| !s.is_empty()),
+                avatar_model_url: None,
                 event_created_at,
                 last_checked_at: 0,
             },

@@ -56,7 +56,7 @@ struct PeerProfileSheet: View {
 
     @ViewBuilder
     private var nameSection: some View {
-        if profile.name != nil || profile.about != nil {
+        if profile.name != nil || profile.about != nil || profile.avatarModelUrl != nil {
             Section("Profile") {
                 if let name = profile.name {
                     HStack {
@@ -70,6 +70,18 @@ struct PeerProfileSheet: View {
                     Text(about)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+                if let avatarUrl = profile.avatarModelUrl {
+                    HStack {
+                        Text("Avatar")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(avatarUrl)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.blue)
+                    }
                 }
             }
         }

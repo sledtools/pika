@@ -56,6 +56,8 @@ pub struct CallState {
     pub started_at: Option<i64>,
     pub is_muted: bool,
     pub is_video_call: bool,
+    pub is_avatar_call: bool,
+    pub peer_avatar_model_url: Option<String>,
     pub is_camera_enabled: bool,
     pub debug: Option<CallDebugStats>,
 }
@@ -96,6 +98,8 @@ impl CallState {
         started_at: Option<i64>,
         is_muted: bool,
         is_video_call: bool,
+        is_avatar_call: bool,
+        peer_avatar_model_url: Option<String>,
         debug: Option<CallDebugStats>,
     ) -> Self {
         let should_enable_proximity_lock = if is_video_call {
@@ -114,7 +118,9 @@ impl CallState {
             started_at,
             is_muted,
             is_video_call,
-            is_camera_enabled: is_video_call,
+            is_avatar_call,
+            peer_avatar_model_url,
+            is_camera_enabled: if is_avatar_call { false } else { is_video_call },
             debug,
         }
     }
@@ -239,6 +245,7 @@ pub struct PeerProfileState {
     pub name: Option<String>,
     pub about: Option<String>,
     pub picture_url: Option<String>,
+    pub avatar_model_url: Option<String>,
     pub is_followed: bool,
 }
 
@@ -447,6 +454,8 @@ mod tests {
             None,
             false,
             false,
+            false,
+            None,
             None,
         );
         assert!(call.is_live);
@@ -481,10 +490,36 @@ mod tests {
             None,
             false,
             true,
+            false,
+            None,
             None,
         );
         assert!(!call.should_enable_proximity_lock);
         assert!(call.is_video_call);
         assert!(call.is_camera_enabled);
+    }
+
+    #[test]
+    fn avatar_call_disables_camera() {
+        let call = CallState::new(
+            "call-1".to_string(),
+            "chat-1".to_string(),
+            "npub1test".to_string(),
+            CallStatus::Active,
+            None,
+            false,
+            true,
+            true,
+            Some("https://example.com/avatar.glb".to_string()),
+            None,
+        );
+        assert!(!call.should_enable_proximity_lock);
+        assert!(call.is_video_call);
+        assert!(call.is_avatar_call);
+        assert!(!call.is_camera_enabled);
+        assert_eq!(
+            call.peer_avatar_model_url.as_deref(),
+            Some("https://example.com/avatar.glb")
+        );
     }
 }

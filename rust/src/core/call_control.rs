@@ -40,6 +40,17 @@ impl CallTrackSpec {
             frame_ms: 33,
         }
     }
+
+    #[allow(dead_code)]
+    pub fn avatar0_default() -> Self {
+        Self {
+            name: "avatar0".to_string(),
+            codec: "viseme-v1".to_string(),
+            sample_rate: 0,
+            channels: 0,
+            frame_ms: 33,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,11 +429,28 @@ impl AppCore {
             (None, None)
         };
 
+        let has_avatar = session.tracks.iter().any(|t| t.name == "avatar0");
+        let avatar_rx_keys = if has_avatar {
+            // Client only receives avatar frames (bot publishes); no tx needed.
+            let (_atx, arx, _) = self.derive_track_keys(
+                chat_id,
+                call_id,
+                session,
+                local_pubkey_hex,
+                peer_pubkey_hex,
+                "avatar0",
+            )?;
+            Some(arx)
+        } else {
+            None
+        };
+
         Ok(super::call_runtime::CallMediaCryptoContext {
             tx_keys,
             rx_keys,
             video_tx_keys,
             video_rx_keys,
+            avatar_rx_keys,
             local_participant_label: opaque_participant_label(
                 &group_root,
                 local_pubkey_hex.as_bytes(),
@@ -662,6 +690,8 @@ impl AppCore {
                 None,
                 false,
                 is_video_call,
+                false,
+                None,
                 None,
             ));
             self.call_session_params = Some(session);
@@ -704,6 +734,8 @@ impl AppCore {
             None,
             false,
             is_video_call,
+            false,
+            None,
             None,
         ));
         self.call_session_params = Some(session.clone());
@@ -972,6 +1004,15 @@ impl AppCore {
                     return;
                 }
                 let is_video_call = session.tracks.iter().any(|t| t.name == "video0");
+                let is_avatar_call = session.tracks.iter().any(|t| t.name == "avatar0");
+                let peer_avatar_model_url = if is_avatar_call {
+                    let peer_hex = sender_pubkey.to_hex();
+                    self.profiles
+                        .get(&peer_hex)
+                        .and_then(|p| p.avatar_model_url.clone())
+                } else {
+                    None
+                };
                 self.call_session_params = Some(session);
                 let previous = self.state.active_call.clone();
                 self.state.active_call = Some(crate::state::CallState::new(
@@ -981,7 +1022,9 @@ impl AppCore {
                     CallStatus::Ringing,
                     None,
                     false,
-                    is_video_call,
+                    is_video_call || is_avatar_call,
+                    is_avatar_call,
+                    peer_avatar_model_url,
                     None,
                 ));
                 self.emit_call_state_with_previous(previous);
@@ -1026,6 +1069,19 @@ impl AppCore {
                     self.toast(format!("Call relay auth verification failed: {err}"));
                     self.end_call_local("auth_failed".to_string());
                     return;
+                }
+                // Detect avatar call from the acceptor's tracks (bot may respond
+                // with avatar0 instead of video0).
+                let is_avatar_call = session.tracks.iter().any(|t| t.name == "avatar0");
+                if is_avatar_call {
+                    if let Some(call) = self.state.active_call.as_mut() {
+                        call.is_avatar_call = true;
+                        call.is_camera_enabled = false;
+                        call.peer_avatar_model_url = self
+                            .profiles
+                            .get(&peer_pubkey_hex)
+                            .and_then(|p| p.avatar_model_url.clone());
+                    }
                 }
                 self.call_session_params = Some(session.clone());
                 let params = session;
@@ -1134,5 +1190,65 @@ mod tests {
         ));
         assert!(!valid_relay_auth_token("capv1_short"));
         assert!(!valid_relay_auth_token("notcap_0123456789abcdef"));
+    }
+
+    #[test]
+    fn parses_invite_with_avatar_track() {
+        let call_id = "550e8400-e29b-41d4-a716-446655440001";
+        let session = CallSessionParams {
+            moq_url: "https://moq.example.com/anon".to_string(),
+            broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: "capv1_test_token".to_string(),
+            tracks: vec![
+                CallTrackSpec::audio0_opus_default(),
+                CallTrackSpec::avatar0_default(),
+            ],
+        };
+        let json = build_call_signal_json(call_id, OutgoingCallSignal::Invite(&session)).unwrap();
+        let parsed = parse_call_signal(&json);
+        match parsed {
+            Some(ParsedCallSignal::Invite {
+                session: got_session,
+                ..
+            }) => {
+                assert_eq!(got_session.tracks.len(), 2);
+                assert_eq!(got_session.tracks[0].name, "audio0");
+                assert_eq!(got_session.tracks[1].name, "avatar0");
+                assert_eq!(got_session.tracks[1].codec, "viseme-v1");
+
+                let has_avatar = got_session.tracks.iter().any(|t| t.name == "avatar0");
+                let has_video = got_session.tracks.iter().any(|t| t.name == "video0");
+                assert!(has_avatar);
+                assert!(!has_video);
+            }
+            _ => panic!("expected invite"),
+        }
+    }
+
+    #[test]
+    fn avatar_accept_roundtrips_through_signaling() {
+        let call_id = "550e8400-e29b-41d4-a716-446655440002";
+        let session = CallSessionParams {
+            moq_url: "https://moq.example.com/anon".to_string(),
+            broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: "capv1_test_token".to_string(),
+            tracks: vec![
+                CallTrackSpec::audio0_opus_default(),
+                CallTrackSpec::avatar0_default(),
+            ],
+        };
+        let json = build_call_signal_json(call_id, OutgoingCallSignal::Accept(&session)).unwrap();
+        let parsed = parse_call_signal(&json);
+        match parsed {
+            Some(ParsedCallSignal::Accept {
+                call_id: got_id,
+                session: got_session,
+            }) => {
+                assert_eq!(got_id, call_id);
+                assert!(got_session.tracks.iter().any(|t| t.name == "avatar0"));
+                assert!(got_session.tracks.iter().any(|t| t.name == "audio0"));
+            }
+            _ => panic!("expected accept"),
+        }
     }
 }

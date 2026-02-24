@@ -6,6 +6,7 @@ protocol AppCore: AnyObject, Sendable {
     func listenForUpdates(reconciler: AppReconciler)
     func state() -> AppState
     func setVideoFrameReceiver(receiver: VideoFrameReceiver)
+    func setAvatarFrameReceiver(receiver: AvatarFrameReceiver)
     func sendVideoFrame(payload: Data)
 }
 

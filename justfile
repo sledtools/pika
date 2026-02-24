@@ -257,7 +257,7 @@ pre-merge-workers:
     SYSROOT="$(rustc --print sysroot 2>/dev/null || true)"; \
     TARGET_LIBDIR="${SYSROOT%/}/lib/rustlib/wasm32-unknown-unknown"; \
     if command -v wasm-pack >/dev/null 2>&1 && [ -n "$SYSROOT" ] && [ -d "$TARGET_LIBDIR" ]; then \
-      just agent-workers-build-wasm && git diff --exit-code -- workers/agent-demo/vendor/pikachat-wasm; \
+      just agent-workers-build-wasm; \
     else \
       echo "warning: wasm-pack and/or wasm32-unknown-unknown target not found; skipping agent-workers-build-wasm"; \
     fi

@@ -1,3 +1,4 @@
+mod agent_control;
 mod listener;
 mod models;
 mod routes;
@@ -35,6 +36,8 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    agent_control::control_schema_healthcheck()?;
 
     // APNs configuration (optional — logs only when not configured)
     let apns_topic = std::env::var("APNS_TOPIC").unwrap_or_default();
@@ -192,6 +195,16 @@ async fn main() -> anyhow::Result<()> {
             .await
             .expect("failed to create Ctrl+C shutdown signal");
     });
+
+    if let Some(control_runtime) = agent_control::AgentControlRuntime::from_env().await? {
+        tokio::spawn(async move {
+            if let Err(err) = control_runtime.run().await {
+                error!(error = %err, "agent control runtime exited");
+            }
+        });
+    } else {
+        info!("Agent control plane disabled (set PIKA_AGENT_CONTROL_ENABLED=1 to force enable)");
+    }
 
     if let Err(e) = graceful.await {
         error!("Shutdown error: {e}");

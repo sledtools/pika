@@ -12,7 +12,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pty
+import select
+import signal
 import shlex
+import struct
 import subprocess
 import sys
 import termios
@@ -76,6 +80,29 @@ def log(msg: str) -> None:
     print(f"[pi-bridge] {msg}", file=sys.stderr, flush=True)
 
 
+def send_to_marmotd(cmd: dict) -> None:
+    line = json.dumps(cmd, separators=(",", ":"))
+    with SEND_LOCK:
+        print(line, flush=True)
+
+
+def send_to_pi(proc: subprocess.Popen[bytes], msg: dict) -> None:
+    line = json.dumps(msg) + "\n"
+    assert proc.stdin is not None
+    proc.stdin.write(line.encode())
+    proc.stdin.flush()
+
+
+def emit_pi_event(group_id: str, payload: dict) -> None:
+    send_to_marmotd(
+        {
+            "cmd": "send_message",
+            "nostr_group_id": group_id,
+            "content": EVENT_PREFIX + json.dumps(payload, separators=(",", ":")),
+        }
+    )
+
+
 def build_publish_keypackage_cmd():
     raw = os.environ.get("PI_RELAYS_JSON", "").strip()
     if not raw:
@@ -93,7 +120,7 @@ def build_publish_keypackage_cmd():
     return {"cmd": "publish_keypackage", "relays": relays}
 
 
-def start_pi():
+def spawn_pi_rpc(label: str) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
     cmd = shlex.split(
         os.environ.get(

@@ -33,7 +33,7 @@ if ! curl -fsS "${SPAWNER_URL%/}/healthz" >/dev/null 2>&1; then
 fi
 
 cmd=(
-  cargo run -q -p pika-cli --
+  cargo run -q -p pikachat --
   --relay "$RELAY_PRIMARY"
 )
 

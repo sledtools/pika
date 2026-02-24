@@ -717,7 +717,7 @@ cli-smoke:
 cli-smoke-media:
     ./tools/cli-smoke --with-media
 
-# Run `pika-cli agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
+# Run `pikachat agent new` (loads FLY_API_TOKEN + ANTHROPIC_API_KEY from .env).
 agent RELAY_PRIMARY="wss://us-east.nostr.pikachat.org" RELAY_FALLBACK="wss://eu.nostr.pikachat.org":
     set -euo pipefail; \
     if [ ! -f .env ]; then \
@@ -732,9 +732,9 @@ agent RELAY_PRIMARY="wss://us-east.nostr.pikachat.org" RELAY_FALLBACK="wss://eu.
     set -a; \
     source .env; \
     set +a; \
-    cargo run -p pika-cli -- $relay_args agent new
+    cargo run -p pikachat -- $relay_args agent new
 
-# Run `pika-cli agent new` against local vm-spawner (loads ANTHROPIC_API_KEY from .env).
+# Run `pikachat agent new` against local vm-spawner (loads ANTHROPIC_API_KEY from .env).
 agent-microvm RELAY_PRIMARY="wss://us-east.nostr.pikachat.org" RELAY_FALLBACK="" SPAWNER_URL="http://127.0.0.1:8080" SPAWN_VARIANT="prebuilt-cow":
     set -euo pipefail; \
     spawner_url="{{ SPAWNER_URL }}"; \
@@ -781,7 +781,7 @@ agent-microvm RELAY_PRIMARY="wss://us-east.nostr.pikachat.org" RELAY_FALLBACK=""
     set -a; \
     source .env; \
     set +a; \
-    cargo run -p pika-cli -- $relay_args agent new \
+    cargo run -p pikachat -- $relay_args agent new \
       --provider microvm \
       --spawner-url {{ SPAWNER_URL }} \
       --spawn-variant {{ SPAWN_VARIANT }}

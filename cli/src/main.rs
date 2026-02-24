@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
@@ -34,6 +34,25 @@ const DEFAULT_KP_RELAY_URLS: &[&str] = &[
     "wss://nostr-01.yakihonne.com",
     "wss://nostr-02.yakihonne.com",
 ];
+
+fn default_state_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("pikachat");
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home = home.trim();
+        if !home.is_empty() {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("pikachat");
+        }
+    }
+    PathBuf::from(".pikachat")
+}
 
 const PI_BRIDGE_PY: &str = include_str!("../../bots/pi-bridge.py");
 const PI_BRIDGE_SH: &str = include_str!("../../bots/pi-bridge.sh");
@@ -256,6 +275,29 @@ If --output is omitted, the original filename from the sender is used.")]
         /// Giftwrap lookback in seconds
         #[arg(long, default_value_t = 86400)]
         lookback: u64,
+    },
+
+    /// Long-running JSONL sidecar daemon intended to be embedded/invoked by OpenClaw
+    Daemon {
+        /// Giftwrap lookback window (NIP-59 backdates timestamps; use hours/days, not seconds)
+        #[arg(long, default_value_t = 60 * 60 * 24 * 3)]
+        giftwrap_lookback_sec: u64,
+
+        /// Only accept welcomes and messages from these pubkeys (hex). Repeatable.
+        /// If empty, all pubkeys are allowed (open mode).
+        #[arg(long)]
+        allow_pubkey: Vec<String>,
+
+        /// Automatically accept incoming MLS welcomes (group invitations).
+        #[arg(long, default_value_t = false)]
+        auto_accept_welcomes: bool,
+
+        /// Spawn a child process and bridge its stdio to the pikachat JSONL protocol.
+        /// pikachat OutMsg lines are written to the child's stdin; the child's stdout
+        /// lines are parsed as pikachat InCmd and executed. This turns pikachat into a
+        /// self-contained bot runtime.
+        #[arg(long)]
+        exec: Option<String>,
     },
 
     /// Manage AI agents
@@ -1466,6 +1508,7 @@ exec "${{PIKA_MARMOTD_BIN}}" daemon {} --state-dir "$STATE_DIR" --auto-accept-we
         "MARMOTD_SKIP_RELAY_READY_CHECK".to_string(),
         "1".to_string(),
     );
+    env.insert("PI_BRIDGE_ENABLE_CHAT".to_string(), "1".to_string());
     if let Some(openai) = &spawn.openai_key {
         env.insert("OPENAI_API_KEY".to_string(), openai.clone());
     }
@@ -1665,14 +1708,13 @@ async fn cmd_agent_new(cli: &Cli, args: &AgentNewArgs) -> anyhow::Result<()> {
                     }
                     if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
                         mdk.process_message(&event)
+                        && msg.pubkey == bot_pubkey
                     {
-                        if msg.pubkey == bot_pubkey {
-                            eprint!("\r");
-                            println!("pi> {}", msg.content);
-                            println!();
-                            eprint!("you> ");
-                            std::io::stderr().flush().ok();
-                        }
+                        eprint!("\r");
+                        println!("pi> {}", msg.content);
+                        println!();
+                        eprint!("you> ");
+                        std::io::stderr().flush().ok();
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {

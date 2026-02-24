@@ -2,6 +2,7 @@ mod agent;
 mod fly_machines;
 mod harness;
 mod mdk_util;
+mod microvm_spawner;
 mod relay_util;
 mod workers_agents;
 
@@ -352,7 +353,7 @@ impl std::fmt::Display for AgentBrain {
 #[derive(Clone, Debug, Args, Default)]
 struct AgentNewMicrovmArgs {
     /// MicroVM spawner base URL
-    #[arg(long)]
+    #[arg(long, env = "PIKA_MICROVM_SPAWNER_URL")]
     spawner_url: Option<String>,
 
     /// Spawn variant for vm-spawner
@@ -1411,13 +1412,137 @@ fn resolve_agent_new_brain(
 }
 
 async fn cmd_agent_new_microvm(
-    _cli: &Cli,
+    cli: &Cli,
     _name: Option<&str>,
-    _microvm: &AgentNewMicrovmArgs,
+    microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
-    anyhow::bail!(
-        "--provider microvm CLI surface is enabled; runtime provisioning will be wired in Phase 3"
-    )
+    let resolved = agent::microvm::resolve_args(microvm);
+    let relay_urls = resolve_relays(cli);
+    let relays = relay_util::parse_relay_urls(&relay_urls)?;
+    let (keys, mdk) = open(cli)?;
+    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+
+    let bot_keys = Keys::generate();
+    let bot_pubkey = bot_keys.public_key();
+    let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
+    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
+
+    let spawner = microvm_spawner::MicrovmSpawnerClient::new(resolved.spawner_url.clone());
+    let create_vm_req = agent::microvm::build_create_vm_request(
+        &resolved,
+        keys.public_key(),
+        &relay_urls,
+        &bot_secret_hex,
+        &bot_pubkey.to_hex(),
+    );
+
+    eprint!("Creating microVM via {}...", spawner.base_url());
+    std::io::stderr().flush().ok();
+    let vm = spawner
+        .create_vm(&create_vm_req)
+        .await
+        .map_err(|err| agent::microvm::spawner_create_error(spawner.base_url(), err))?;
+    eprintln!(" done ({}, ip={})", vm.id, vm.ip);
+
+    let client = client_all(cli, &keys).await?;
+    let session_result = async {
+        let bot_kp = agent::session::wait_for_latest_key_package(
+            &client,
+            bot_pubkey,
+            &relays,
+            agent::provider::KeyPackageWaitPlan {
+                progress_message: "Waiting for microVM bot key package",
+                timeout: Duration::from_secs(120),
+                fetch_timeout: Duration::from_secs(5),
+                retry_delay: Duration::from_secs(2),
+            },
+        )
+        .await?;
+
+        let created_group = agent::session::create_group_and_publish_welcomes(
+            &keys,
+            &mdk,
+            &client,
+            &relays,
+            bot_kp,
+            bot_pubkey,
+            agent::provider::GroupCreatePlan {
+                progress_message: "Creating MLS group and inviting microVM bot...",
+                create_group_context: "create microvm MLS group",
+                build_welcome_context: "build microvm welcome giftwrap",
+                welcome_publish_label: "microvm welcome",
+            },
+        )
+        .await?;
+
+        let bot_npub = bot_pubkey
+            .to_bech32()
+            .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
+        eprintln!();
+        eprintln!("Connected to microVM agent {} ({bot_npub})", vm.id);
+        eprintln!("Type messages below. Ctrl-C to exit.");
+        eprintln!();
+
+        agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
+            keys: &keys,
+            mdk: &mdk,
+            send_client: &client,
+            listen_client: &client,
+            relays: &relays,
+            bot_pubkey,
+            mls_group_id: &created_group.mls_group_id,
+            nostr_group_id_hex: &created_group.nostr_group_id_hex,
+            plan: agent::provider::ChatLoopPlan {
+                outbound_publish_label: "microvm chat user",
+                wait_for_pending_replies_on_eof: false,
+                eof_reply_timeout: Duration::from_secs(0),
+            },
+            seen_mls_event_ids: None,
+        })
+        .await
+    }
+    .await;
+
+    client.unsubscribe_all().await;
+    client.shutdown().await;
+
+    let mut teardown_error: Option<anyhow::Error> = None;
+    match agent::microvm::teardown_policy(resolved.keep) {
+        agent::microvm::MicrovmTeardownPolicy::DeleteOnExit => {
+            eprint!("Deleting microVM {}...", vm.id);
+            std::io::stderr().flush().ok();
+            match spawner.delete_vm(&vm.id).await {
+                Ok(()) => eprintln!(" done"),
+                Err(err) => {
+                    eprintln!(" failed");
+                    teardown_error = Some(err);
+                }
+            }
+        }
+        agent::microvm::MicrovmTeardownPolicy::KeepVm => {
+            let base = spawner.base_url().trim_end_matches('/');
+            eprintln!();
+            eprintln!("Keeping microVM {} alive (--keep).", vm.id);
+            eprintln!("List VMs:   curl {base}/vms");
+            eprintln!("Delete VM:  curl -X DELETE {base}/vms/{}", vm.id);
+        }
+    }
+
+    if let Some(err) = teardown_error {
+        let base = spawner.base_url().trim_end_matches('/');
+        let delete_hint = format!(
+            "failed to delete microvm {} via {}: {err:#}\nmanual cleanup: curl -X DELETE {base}/vms/{}",
+            vm.id,
+            spawner.base_url(),
+            vm.id
+        );
+        if let Err(session_err) = session_result {
+            return Err(anyhow!("{session_err:#}\n{delete_hint}"));
+        }
+        return Err(anyhow!(delete_hint));
+    }
+
+    session_result
 }
 
 async fn cmd_agent_new_fly(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {

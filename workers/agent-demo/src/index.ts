@@ -201,7 +201,10 @@ type RuntimeEngine = {
   };
 };
 
-const DEFAULT_RELAY_URLS = ["wss://relay.damus.io"];
+const DEFAULT_RELAY_URLS = [
+  "wss://us-east.nostr.pikachat.org",
+  "wss://eu.nostr.pikachat.org",
+];
 const BOOT_DELAY_MS = 2000;
 const SESSION_ACTIVE_TTL_MS = 5 * 60 * 1000;
 const RELAY_POLL_INTERVAL_MS = 30 * 1000;

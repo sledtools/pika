@@ -45,9 +45,13 @@ info:
     @echo
     @echo "Agent demos"
     @echo "  Fly demo:"
-    @echo "    just agent"
+    @echo "    just agent-fly"
     @echo "  Cloudflare demo (deployed worker):"
     @echo "    just agent-cf"
+    @echo "  MicroVM demo:"
+    @echo "    just agent-microvm"
+    @echo "  MicroVM tunnel (required unless local spawner is running):"
+    @echo "    just agent-microvm-tunnel"
     @echo "  Local worker dev:"
     @echo "    just agent-workers"
     @echo
@@ -212,9 +216,11 @@ fmt:
 clippy *ARGS:
     cargo clippy -p pika_core {{ ARGS }} -- -D warnings
 
-# Local pre-commit checks (fmt + clippy + justfile formatting).
+# Local pre-commit checks (fmt + clippy + justfile + docs checks).
 pre-commit: fmt
     just --fmt --check --unstable
+    npx --yes @justinmoon/agent-tools check-docs
+    npx --yes @justinmoon/agent-tools check-justfile
     just clippy --lib --tests
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
@@ -246,12 +252,18 @@ pre-merge-pikachat:
     cargo test -p pikachat-sidecar
     @echo "pre-merge-pikachat complete"
 
+# Deterministic provider control-plane contracts (mocked Fly + mocked MicroVM spawner).
+pre-merge-agent-contracts:
+    cargo test -p pikachat fly_machines::tests
+    cargo test -p pikachat microvm_spawner::tests
+    @echo "pre-merge-agent-contracts complete"
+
 # CI-safe pre-merge for the RMP tooling lane.
 pre-merge-rmp:
     just rmp-init-smoke-ci
     @echo "pre-merge-rmp complete"
 
-# CI-safe pre-merge for the Workers agent lane (non-blocking in CI for now).
+# CI-safe deterministic Workers provider contract lane.
 pre-merge-workers:
     set -euo pipefail; \
     SYSROOT="$(rustc --print sysroot 2>/dev/null || true)"; \
@@ -758,6 +770,24 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     source .env; \
     set +a; \
     cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new
+
+# Run the Fly provider demo (`pikachat agent new --provider fly`).
+agent-fly RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" MOQ_US="https://us-east.moq.pikachat.org/anon" MOQ_EU="https://eu.moq.pikachat.org/anon":
+    just agent-fly-moq "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"
+
+# Run the MicroVM provider demo (`pikachat agent new --provider microvm --brain pi`).
+agent-microvm *ARGS="":
+    set -euo pipefail; \
+    if [ -f .env ]; then \
+      set -a; \
+      source .env; \
+      set +a; \
+    fi; \
+    ./scripts/demo-agent-microvm.sh {{ ARGS }}
+
+# Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
+agent-microvm-tunnel:
+    nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel
 
 # Deploy the pika-bot Docker image to Fly.
 deploy-bot:

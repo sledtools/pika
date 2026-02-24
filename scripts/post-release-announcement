@@ -72,10 +72,9 @@ if [ -n "${PIKA_ANNOUNCE_RELAYS:-}" ]; then
   IFS=' ' read -r -a relays <<<"${PIKA_ANNOUNCE_RELAYS}"
 else
   relays=(
-    "wss://relay.primal.net"
-    "wss://relay.damus.io"
+    "wss://us-east.nostr.pikachat.org"
+    "wss://eu.nostr.pikachat.org"
     "wss://relay.zapstore.dev"
-    "wss://nos.lol"
     "wss://relay.nostr.band"
   )
 fi

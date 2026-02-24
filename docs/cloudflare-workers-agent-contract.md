@@ -21,7 +21,7 @@ Request:
   "id": "optional-agent-id",
   "name": "agent-abc123",
   "brain": "pi",
-  "relay_urls": ["wss://relay.damus.io"],
+  "relay_urls": ["wss://us-east.nostr.pikachat.org", "wss://eu.nostr.pikachat.org"],
   "bot_secret_key_hex": "optional 64-char hex"
 }
 ```

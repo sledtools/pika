@@ -610,7 +610,7 @@ build-deploy-microvms:
 
 # Open SSH tunnel to vm-spawner localhost API
 build-vmspawner-tunnel:
-    ssh -L 8080:127.0.0.1:8080 pika-build
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 8080:127.0.0.1:8080 pika-build
 
 # SSH into pika-build
 build-ssh:

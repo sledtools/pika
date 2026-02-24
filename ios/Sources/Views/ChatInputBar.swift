@@ -12,6 +12,8 @@ struct ChatInputBar: View {
     let onSend: () -> Void
     let onStartVoiceRecording: () -> Void
 
+    @State private var showPhotoPicker = false
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if showAttachButton {
@@ -25,10 +27,9 @@ struct ChatInputBar: View {
                         Label("File", systemImage: "doc")
                     }
 
-                    PhotosPicker(
-                        selection: $selectedPhotoItem,
-                        matching: .any(of: [.images, .videos])
-                    ) {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
                         Label("Photos & Videos", systemImage: "photo.on.rectangle")
                     }
                 } label: {
@@ -38,6 +39,11 @@ struct ChatInputBar: View {
                 }
                 .tint(.secondary)
                 .modifier(GlassCircleModifier())
+                .photosPicker(
+                    isPresented: $showPhotoPicker,
+                    selection: $selectedPhotoItem,
+                    matching: .any(of: [.images, .videos])
+                )
             }
 
             HStack(spacing: 10) {

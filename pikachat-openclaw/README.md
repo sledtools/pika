@@ -66,9 +66,8 @@ Add the channel config to `~/.openclaw/openclaw.json`:
 ```json
 {
   "channels": {
-    "pikachat": {
+    "pikachat-openclaw": {
       "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"],
-      "sidecarCmd": "pikachat",
       "stateDir": "~/.openclaw/.pikachat-state",
       "autoAcceptWelcomes": true,
       "groupPolicy": "open",
@@ -80,16 +79,18 @@ Add the channel config to `~/.openclaw/openclaw.json`:
 
 Replace `<hex-pubkey-of-allowed-sender>` with the Nostr public key(s) you want to accept messages from.
 
+> **Note:** The channel ID is `pikachat-openclaw` (matching the npm package name). All config goes under `channels.pikachat-openclaw`.
+
 ### Group Chat Support
 
 The plugin supports multi-participant MLS group chats with mention gating, sender identity resolution, and owner/friend permission tiers. See **[docs/group-chat.md](docs/group-chat.md)** for the full guide.
 
-Quick setup for group chats — add these fields to your `channels.pikachat` config:
+Quick setup for group chats — add these fields to your `channels.pikachat-openclaw` config:
 
 ```json
 {
   "channels": {
-    "pikachat": {
+    "pikachat-openclaw": {
       "groupPolicy": "open",
       "groupAllowFrom": ["<owner-pubkey>", "<friend-pubkey>"],
       "owner": "<owner-pubkey>",
@@ -109,7 +110,7 @@ Quick setup for group chats — add these fields to your `channels.pikachat` con
 - **Per-group sessions** — each group gets isolated conversation history
 - **Sender metadata** — exposes npub and owner/friend tag for verifiable identity
 
-> **Note:** Setting `sidecarCmd` to just `"pikachat"` (no path) tells the plugin to auto-download the correct prebuilt binary. Binaries are cached at `~/.openclaw/tools/pikachat/<tag>/pikachat`.
+> **Note:** Setting `sidecarCmd` to just `"pikachat"` (no path) in your plugin config tells the plugin to auto-download the correct prebuilt binary. Binaries are cached at `~/.openclaw/tools/pikachat/<tag>/pikachat`.
 
 ### 4. Restart OpenClaw gateway
 
@@ -129,6 +130,28 @@ You should see: `Pikachat | ON | OK | configured`
 
 Use [Pika](https://pika.team) (or another compatible client) to create a group and invite the bot's pubkey. With `autoAcceptWelcomes: true`, the bot joins automatically and starts responding.
 
+### Migration from `@justinmoon/marmot`
+
+If you were previously using the `@justinmoon/marmot` plugin:
+
+1. **Back up your config** — save your current `channels.marmot` and `plugins.entries.marmot` settings
+2. **Uninstall the old plugin:**
+   ```bash
+   openclaw plugins uninstall marmot
+   ```
+   > If this fails with a validation error, manually remove the `channels.marmot`, `plugins.entries.marmot`, `plugins.allow` (marmot entry), and `plugins.installs.marmot` sections from `~/.openclaw/openclaw.json`
+3. **Install the new plugin:**
+   ```bash
+   openclaw plugins install pikachat-openclaw
+   ```
+4. **Migrate your config** — move your settings from `channels.marmot` to `channels.pikachat-openclaw`. The config schema is identical; only the key name changes.
+5. **Restart:**
+   ```bash
+   openclaw gateway restart
+   ```
+
+Your existing MLS state directory (e.g. `~/.openclaw/.marmot-state`) can be reused as-is — just point `stateDir` to it in the new config.
+
 ### Gotchas
 
 - **`identity.json` needs both fields** — omitting `public_key_hex` causes a silent sidecar crash with no useful error.
@@ -141,13 +164,13 @@ Use [Pika](https://pika.team) (or another compatible client) to create a group a
 If you prefer to compile `pikachat` yourself (requires the Rust toolchain):
 
 ```bash
-This code lives in the Pika monorepo under `pikachat-openclaw/`.
+# This code lives in the Pika monorepo under `pikachat-openclaw/`.
 cd "$(git rev-parse --show-toplevel)"
 cargo build --release -p pikachat
 # binary at target/release/pikachat
 ```
 
-Then set `sidecarCmd` in your channel config to the absolute path of the binary:
+Then set `sidecarCmd` in your plugin config to the absolute path of the binary:
 
 ```json
 "sidecarCmd": "/path/to/pika/target/release/pikachat"

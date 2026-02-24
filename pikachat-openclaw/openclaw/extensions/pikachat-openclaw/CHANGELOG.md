@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- Fix: align plugin/channel ID with npm package name (`pikachat` → `pikachat-openclaw`).
+  - Fixes `openclaw plugins install pikachat-openclaw` failing with validation error.
+  - Config path changes: `channels.pikachat` → `channels.pikachat-openclaw`.
+  - Extension directory: `extensions/pikachat` → `extensions/pikachat-openclaw`.
+- Fix: bump script path updated for renamed extension directory.
+
 ## 0.4.0
 
 - Fix: publish `i` (KeyPackageRef) tag on key package events for Pika v0.2.8+ compatibility.

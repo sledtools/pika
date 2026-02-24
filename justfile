@@ -1007,12 +1007,12 @@ agent-workers-keypackage-publish-smoke WORKERS_URL="http://127.0.0.1:8787" RELAY
       rm -f "$RELAY_LOG" "$WORKER_LOG" "$STATUS_JSON"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.3; \
     done; \
@@ -1064,17 +1064,17 @@ agent-workers-pi-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://1
       rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG" "$OUT_LOG"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "http://127.0.0.1:3334/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "http://127.0.0.1:3334/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.3; \
     done; \
@@ -1119,17 +1119,17 @@ agent-workers-relay-auto-reply-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER
       rm -rf "$STATE_DIR"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.3; \
     done; \
@@ -1192,17 +1192,17 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
     ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
     ADAPTER_PID=$!; \
     start_worker "$WORKER_LOG1"; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.2; \
     done; \
     curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.3; \
     done; \
@@ -1219,7 +1219,7 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
     wait "$WORKER_PID" 2>/dev/null || true; \
     WORKER_PID=""; \
     start_worker "$WORKER_LOG2"; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
       if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
       sleep 0.3; \
     done; \

@@ -2052,13 +2052,11 @@ impl AppCore {
             }
         };
 
-        if let Err(e) = self.start_bunker_signer_session(bunker_uri, keys) {
-            self.clear_busy();
-            self.toast(format!("Login failed: {e:#}"));
-            return;
-        }
-
+        // Clear busy before session start (same rationale as Login).
         self.clear_busy();
+        if let Err(e) = self.start_bunker_signer_session(bunker_uri, keys) {
+            self.toast(format!("Login failed: {e:#}"));
+        }
     }
 
     fn begin_external_signer_login(&mut self, current_user_hint: Option<String>) {
@@ -3284,11 +3282,14 @@ impl AppCore {
                         return;
                     }
                 };
+                // Clear busy *before* starting the session so the auth
+                // emission snapshot already has `logging_in = false`.
+                // (start_session calls emit_auth which publishes a
+                // snapshot; leaving busy set creates a race where
+                // observers see LoggedIn + logging_in simultaneously.)
+                self.clear_busy();
                 if let Err(e) = self.start_session(keys) {
-                    self.clear_busy();
                     self.toast(format!("Login failed: {e:#}"));
-                } else {
-                    self.clear_busy();
                 }
             }
             AppAction::BeginExternalSignerLogin { current_user_hint } => {
@@ -3322,18 +3323,17 @@ impl AppCore {
                     return;
                 }
 
+                // Clear busy before session start (same rationale as Login).
+                self.clear_busy();
                 if let Err(e) =
                     self.start_external_signer_session(pubkey, signer_package, current_user)
                 {
-                    self.clear_busy();
                     let detail = format!("{e:#}");
                     if let Some(msg) = user_visible_signer_error(&detail) {
                         self.toast(msg);
                     } else {
                         self.toast(format!("Login failed: {detail}"));
                     }
-                } else {
-                    self.clear_busy();
                 }
             }
             AppAction::RestoreSessionBunker {

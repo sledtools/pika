@@ -216,9 +216,11 @@ fmt:
 clippy *ARGS:
     cargo clippy -p pika_core {{ ARGS }} -- -D warnings
 
-# Local pre-commit checks (fmt + clippy + justfile formatting).
+# Local pre-commit checks (fmt + clippy + justfile + docs checks).
 pre-commit: fmt
     just --fmt --check --unstable
+    npx --yes @justinmoon/agent-tools check-docs
+    npx --yes @justinmoon/agent-tools check-justfile
     just clippy --lib --tests
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings

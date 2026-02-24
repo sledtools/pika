@@ -1007,16 +1007,26 @@ agent-workers-keypackage-publish-smoke WORKERS_URL="http://127.0.0.1:8787" RELAY
       rm -f "$RELAY_LOG" "$WORKER_LOG" "$STATUS_JSON"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.3; \
-    done; \
-    curl -fsS "{{ WORKERS_URL }}/health" >/dev/null; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
     curl -fsS -X POST "{{ WORKERS_URL }}/agents" \
       -H "content-type: application/json" \
       --data "{\"id\":\"$AGENT_ID\",\"name\":\"$AGENT_ID\",\"brain\":\"pi\",\"relay_urls\":[\"{{ RELAY_URL }}\"]}" >/dev/null; \
@@ -1064,21 +1074,29 @@ agent-workers-pi-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://1
       rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG" "$OUT_LOG"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "http://127.0.0.1:3334/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "http://127.0.0.1:3334/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.3; \
-    done; \
-    curl -fsS "{{ WORKERS_URL }}/health" >/dev/null; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "http://127.0.0.1:3334/health" 120 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
     printf 'hello from pi-adapter smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --relay ws://127.0.0.1:3334 agent new --provider workers --brain pi --name "$AGENT_NAME" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"
@@ -1119,21 +1137,29 @@ agent-workers-relay-auto-reply-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER
       rm -rf "$STATE_DIR"; \
     }; \
     trap cleanup EXIT; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.3; \
-    done; \
-    curl -fsS "{{ WORKERS_URL }}/health" >/dev/null; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
     printf 'hello relay auto reply smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"; \
@@ -1187,26 +1213,36 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
       rm -rf "$STATE_DIR" "$WRANGLER_STATE_DIR"; \
     }; \
     trap cleanup EXIT; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log #1 (tail) ----"; \
+      tail -n 120 "$WORKER_LOG1" || true; \
+      echo "---- worker log #2 (tail) ----"; \
+      tail -n 120 "$WORKER_LOG2" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
     just run-relay-dev >"$RELAY_LOG" 2>&1 & \
     RELAY_PID=$!; \
     ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
     ADAPTER_PID=$!; \
     start_worker "$WORKER_LOG1"; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ RELAY_HEALTH_URL }}" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.2; \
-    done; \
-    curl -fsS "{{ ADAPTER_URL }}/health" >/dev/null; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.3; \
-    done; \
-    curl -fsS "{{ WORKERS_URL }}/health" >/dev/null; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
     printf '%s\n' "$MSG1" | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"; \
@@ -1219,11 +1255,7 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
     wait "$WORKER_PID" 2>/dev/null || true; \
     WORKER_PID=""; \
     start_worker "$WORKER_LOG2"; \
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
-      if curl -fsS "{{ WORKERS_URL }}/health" >/dev/null 2>&1; then break; fi; \
-      sleep 0.3; \
-    done; \
-    curl -fsS "{{ WORKERS_URL }}/health" >/dev/null; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
     curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
     python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); groups=status.get("runtime_snapshot", {}).get("groups", {}); assert isinstance(groups, dict) and len(groups) >= 1, "expected runtime groups to survive worker restart"' "$STATUS_JSON"; \
     cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" send --group "$GROUP_ID" --content "$MSG2" >/dev/null; \

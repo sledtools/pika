@@ -1,3 +1,11 @@
+---
+summary: Deterministic CI lane policy for pikachat agent providers
+read_when:
+  - changing provider CI/workflow path filters
+  - updating pre-merge or nightly agent contract coverage
+  - debugging provider lane trigger behavior
+---
+
 # Agent Provider CI Lanes
 
 This document defines deterministic CI coverage for `pikachat agent new` providers.

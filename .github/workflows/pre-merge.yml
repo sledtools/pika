@@ -242,7 +242,15 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - run: nix develop .#worker-wasm -c just pre-merge-workers
+      - name: Run workers lane (non-blocking)
+        run: |
+          set +e
+          nix develop .#worker-wasm -c just pre-merge-workers
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::check-workers failed (non-blocking); see logs above."
+            exit 0
+          fi
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))

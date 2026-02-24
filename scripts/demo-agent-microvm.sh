@@ -28,7 +28,7 @@ fi
 if ! curl -fsS "${SPAWNER_URL%/}/healthz" >/dev/null 2>&1; then
   echo "vm-spawner is unreachable at ${SPAWNER_URL}."
   echo "Open the tunnel first:"
-  echo "  nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel"
+  echo "  just agent-microvm-tunnel"
   exit 1
 fi
 

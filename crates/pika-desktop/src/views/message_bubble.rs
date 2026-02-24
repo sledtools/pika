@@ -1,6 +1,6 @@
-use iced::widget::{button, column, container, mouse_area, row, text, Space};
+use iced::widget::{button, column, container, image, mouse_area, row, text, Space};
 use iced::{border, Alignment, Background, Color, Element, Fill, Font, Theme};
-use pika_core::{ChatMessage, MessageDeliveryState};
+use pika_core::{ChatMediaAttachment, ChatMessage, MessageDeliveryState};
 
 use super::conversation::Message;
 use crate::design::{self, BubblePosition};
@@ -10,6 +10,11 @@ use crate::theme;
 /// Font used for emoji rendering. Falls back through system fonts (Noto Color
 /// Emoji on Linux, Apple Color Emoji on macOS, Segoe UI Emoji on Windows).
 const EMOJI_FONT: Font = Font::with_name("Noto Color Emoji");
+
+/// Width of the action icon area (reply + react buttons) so we can reserve
+/// space even when icons are hidden, preventing layout jumps on hover.
+/// 2 × 32px buttons + 4px spacing = 68px.
+const ACTION_ICONS_WIDTH: f32 = 68.0;
 
 /// Common emoji choices for the quick picker.
 const EMOJI_CHOICES: &[&str] = &[
@@ -102,8 +107,14 @@ pub fn message_bubble<'a>(
         if let Some(preview) = make_reply_preview() {
             bubble_content = bubble_content.push(preview);
         }
-        bubble_content =
-            bubble_content.push(text(&msg.display_content).size(15).color(Color::WHITE));
+        // Media attachments
+        for attachment in &msg.media {
+            bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, true));
+        }
+        if !msg.display_content.is_empty() {
+            bubble_content =
+                bubble_content.push(text(&msg.display_content).size(15).color(Color::WHITE));
+        }
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, true));
         let bubble = container(bubble_content)
             .padding([10, 14])
@@ -115,8 +126,11 @@ pub fn message_bubble<'a>(
             .align_y(iced::Alignment::Center)
             .width(Fill);
 
+        // Always reserve space for action icons to prevent layout jumps on hover.
         if show_icons {
             bubble_row = bubble_row.push(message_action_icons(&msg_id, emoji_picker_open));
+        } else {
+            bubble_row = bubble_row.push(Space::new().width(ACTION_ICONS_WIDTH));
         }
         bubble_row = bubble_row.push(bubble);
 
@@ -156,11 +170,17 @@ pub fn message_bubble<'a>(
         if let Some(preview) = make_reply_preview() {
             bubble_content = bubble_content.push(preview);
         }
-        bubble_content = bubble_content.push(
-            text(&msg.display_content)
-                .size(15)
-                .color(theme::TEXT_PRIMARY),
-        );
+        // Media attachments
+        for attachment in &msg.media {
+            bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, false));
+        }
+        if !msg.display_content.is_empty() {
+            bubble_content = bubble_content.push(
+                text(&msg.display_content)
+                    .size(15)
+                    .color(theme::TEXT_PRIMARY),
+            );
+        }
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, false));
 
         let bubble = container(bubble_content)
@@ -173,8 +193,11 @@ pub fn message_bubble<'a>(
             .align_y(iced::Alignment::Center)
             .width(Fill);
 
+        // Always reserve space for action icons to prevent layout jumps on hover.
         if show_icons {
             bubble_row = bubble_row.push(message_action_icons(&msg_id, emoji_picker_open));
+        } else {
+            bubble_row = bubble_row.push(Space::new().width(ACTION_ICONS_WIDTH));
         }
         bubble_row = bubble_row.push(Space::new().width(Fill));
 
@@ -193,6 +216,108 @@ pub fn message_bubble<'a>(
         .on_enter(Message::HoverMessage(msg_id.clone()))
         .on_exit(Message::UnhoverMessage)
         .into()
+}
+
+/// Renders a media attachment inside a message bubble.
+///
+/// Dispatches based on MIME type (matching the iOS `MediaAttachmentView`):
+/// - `image/*` with a local path → inline image
+/// - Any file with a local path → file chip with "open" action
+/// - Any file without a local path → file chip with "download" action
+fn media_attachment_view<'a>(
+    attachment: &'a ChatMediaAttachment,
+    msg_id: &str,
+    is_mine: bool,
+) -> Element<'a, Message, Theme> {
+    let is_image = attachment.mime_type.starts_with("image/");
+    let has_local = attachment
+        .local_path
+        .as_ref()
+        .map(|p| std::path::Path::new(p).exists())
+        .unwrap_or(false);
+
+    // ── Inline image (downloaded) ───────────────────────────────────
+    if is_image && has_local {
+        let local_path = attachment.local_path.as_deref().unwrap();
+        return container(image(local_path).width(iced::Length::Fill))
+            .max_width(300)
+            .style(|_theme: &Theme| container::Style {
+                border: border::rounded(8),
+                ..Default::default()
+            })
+            .into();
+    }
+
+    // ── File chip (all other cases) ─────────────────────────────────
+    let text_color = if is_mine {
+        Color::WHITE
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    let secondary_color = if is_mine {
+        Color::WHITE.scale_alpha(0.7)
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let accent_color = if is_mine {
+        Color::WHITE
+    } else {
+        theme::ACCENT_BLUE
+    };
+
+    // Action icon: show "open/share" if downloaded, "download" if not.
+    let action_icon = if has_local {
+        icons::ARROW_UP // square-and-arrow-up equivalent (open/share)
+    } else {
+        icons::DOWNLOAD
+    };
+
+    let chip_content = row![
+        text(icons::FILE)
+            .font(icons::LUCIDE_FONT)
+            .size(18)
+            .color(secondary_color),
+        column![
+            text(theme::truncate(&attachment.filename, 40))
+                .size(13)
+                .color(text_color),
+            text(&attachment.mime_type).size(11).color(secondary_color),
+        ]
+        .spacing(1)
+        .width(Fill),
+        text(action_icon)
+            .font(icons::LUCIDE_FONT)
+            .size(18)
+            .color(accent_color),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let mid = msg_id.to_string();
+    let hash = attachment.original_hash_hex.clone();
+
+    button(
+        container(chip_content)
+            .padding([8, 12])
+            .style(theme::media_chip_style(is_mine)),
+    )
+    .on_press(Message::DownloadMedia {
+        message_id: mid,
+        original_hash_hex: hash,
+    })
+    .padding(0)
+    .style(|_: &Theme, status: button::Status| {
+        let bg = match status {
+            button::Status::Hovered => theme::HOVER_BG.scale_alpha(0.3),
+            _ => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            border: border::rounded(8),
+            ..Default::default()
+        }
+    })
+    .into()
 }
 
 /// Small action icons beside the bubble (Signal-style).

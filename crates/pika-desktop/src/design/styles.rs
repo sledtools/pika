@@ -360,6 +360,38 @@ impl PikaTheme {
         }
     }
 
+    // ── Drop zone overlay ────────────────────────────────────────────────
+
+    /// Overlay style for the file drop target (shown when dragging files over
+    /// the conversation area). Semi-transparent accent wash with a dashed-look
+    /// border to clearly indicate the drop zone.
+    pub fn drop_zone(&self) -> container::Style {
+        container::Style {
+            text_color: Some(self.accent.on),
+            background: Some(Background::Color(self.accent.base.scale_alpha(0.10))),
+            border: Border {
+                color: self.accent.base.scale_alpha(0.6),
+                width: 2.0,
+                radius: border::radius(self.radii.m),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Style for a media attachment chip (non-image file) inside a bubble.
+    pub fn media_chip(&self, is_mine: bool) -> container::Style {
+        let bg = if is_mine {
+            Color::WHITE.scale_alpha(0.12)
+        } else {
+            self.background.component.hover
+        };
+        container::Style {
+            background: Some(Background::Color(bg)),
+            border: border::rounded(self.radii.s),
+            ..Default::default()
+        }
+    }
+
     // ── Text input style ───────────────────────────────────────────────
 
     pub fn text_input(&self, status: text_input::Status) -> text_input::Style {

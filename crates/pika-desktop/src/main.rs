@@ -74,6 +74,7 @@ pub enum Message {
     Home(screen::home::Message),
     Login(screen::login::Message),
     RelativeTimeTick,
+    WindowEvent(iced::Event),
 }
 
 enum DesktopApp {
@@ -168,6 +169,9 @@ impl DesktopApp {
                     }
                 }
 
+                // Listen for window file-drop events (drag-and-drop).
+                subs.push(iced::event::listen().map(Message::WindowEvent));
+
                 Subscription::batch(subs)
             }
         }
@@ -231,6 +235,59 @@ impl DesktopApp {
                 }
                 Message::RelativeTimeTick => {
                     self.retry_follow_list_if_needed();
+                }
+                Message::WindowEvent(event) => {
+                    if let iced::Event::Window(window_event) = event {
+                        match window_event {
+                            iced::window::Event::FileDropped(path) => {
+                                if let Screen::Home(ref mut home_state) = screen {
+                                    if let Some(event) = home_state.update(
+                                        screen::home::Message::Conversation(
+                                            views::conversation::Message::FilesDropped(vec![path]),
+                                        ),
+                                        state,
+                                        manager,
+                                        cached_profiles,
+                                    ) {
+                                        match event {
+                                            screen::home::Event::Task(task) => {
+                                                return task.map(Message::Home);
+                                            }
+                                            screen::home::Event::AppAction(action) => {
+                                                manager.dispatch(action);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            iced::window::Event::FileHovered(_) => {
+                                if let Screen::Home(ref mut home_state) = screen {
+                                    let _ = home_state.update(
+                                        screen::home::Message::Conversation(
+                                            views::conversation::Message::FileHovered,
+                                        ),
+                                        state,
+                                        manager,
+                                        cached_profiles,
+                                    );
+                                }
+                            }
+                            iced::window::Event::FilesHoveredLeft => {
+                                if let Screen::Home(ref mut home_state) = screen {
+                                    let _ = home_state.update(
+                                        screen::home::Message::Conversation(
+                                            views::conversation::Message::FileHoverLeft,
+                                        ),
+                                        state,
+                                        manager,
+                                        cached_profiles,
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             },
         }

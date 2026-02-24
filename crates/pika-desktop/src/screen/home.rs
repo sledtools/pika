@@ -332,7 +332,9 @@ impl State {
 
             // ── Conversation ──────────────────────────────────────────
             Message::Conversation(msg) => {
-                if let Some(event) = self.conversation.update(msg) {
+                let (event, conv_task) = self.conversation.update(msg);
+
+                if let Some(event) = event {
                     match event {
                         views::conversation::Event::TypingStarted => {
                             if let Some(chat) = &state.current_chat {
@@ -351,6 +353,33 @@ impl State {
                                     content,
                                     kind: None,
                                     reply_to_message_id,
+                                });
+                            }
+                        }
+                        views::conversation::Event::SendMedia {
+                            data_base64,
+                            mime_type,
+                            filename,
+                        } => {
+                            if let Some(chat) = &state.current_chat {
+                                manager.dispatch(AppAction::SendChatMedia {
+                                    chat_id: chat.chat_id.clone(),
+                                    data_base64,
+                                    mime_type,
+                                    filename,
+                                    caption: String::new(),
+                                });
+                            }
+                        }
+                        views::conversation::Event::DownloadMedia {
+                            message_id,
+                            original_hash_hex,
+                        } => {
+                            if let Some(chat) = &state.current_chat {
+                                manager.dispatch(AppAction::DownloadChatMedia {
+                                    chat_id: chat.chat_id.clone(),
+                                    message_id,
+                                    original_hash_hex,
                                 });
                             }
                         }
@@ -408,6 +437,12 @@ impl State {
                             manager.dispatch(AppAction::OpenPeerProfile { pubkey });
                         }
                     }
+                }
+
+                // If the conversation produced an iced Task (e.g. file picker),
+                // bubble it up.
+                if let Some(task) = conv_task {
+                    return Some(Event::Task(task.map(Message::Conversation)));
                 }
             }
 

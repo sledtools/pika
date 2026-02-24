@@ -87,6 +87,16 @@ pub fn checkbox_style(is_checked: bool) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| design::DARK.checkbox_indicator(is_checked)
 }
 
+// ── Media / file upload ─────────────────────────────────────────────────────
+
+pub fn drop_zone_style(_theme: &Theme) -> container::Style {
+    design::DARK.drop_zone()
+}
+
+pub fn media_chip_style(is_mine: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| design::DARK.media_chip(is_mine)
+}
+
 // ── Call screen ─────────────────────────────────────────────────────────────
 
 pub fn incoming_call_banner_style(_theme: &Theme) -> container::Style {

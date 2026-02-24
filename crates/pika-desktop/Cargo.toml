@@ -12,6 +12,8 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 openh264 = "0.6"
 pika_core = { path = "../../rust" }
 pika-media = { path = "../pika-media" }
+rfd = "0.15"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

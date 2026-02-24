@@ -59,6 +59,11 @@ pub const KEY: &str = "\u{e0fd}";
 pub const INFO: &str = "\u{e0f9}";
 #[allow(dead_code)]
 pub const AT_SIGN: &str = "\u{e04e}";
+pub const PAPERCLIP: &str = "\u{e12d}";
+pub const DOWNLOAD: &str = "\u{e0a7}";
+pub const FILE: &str = "\u{e0c4}";
+#[allow(dead_code)]
+pub const IMAGE_ICON: &str = "\u{e0ed}";
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 

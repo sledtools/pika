@@ -12,27 +12,38 @@ use super::*;
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
+/// Map file extension to a MIME type that MDK's encrypted-media allowlist
+/// accepts.  Types not on MDK's `SUPPORTED_MIME_TYPES` list must map to
+/// `application/octet-stream` (MDK's escape-hatch type) so that arbitrary
+/// files can be uploaded without validation errors.
 fn mime_type_for_extension(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
+        // Image types (on MDK allowlist)
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        "heic" | "heif" => "image/heic",
-        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "tiff" | "tif" => "image/tiff",
+        "avif" => "image/avif",
+        // Video types (on MDK allowlist)
         "mp4" => "video/mp4",
         "mov" => "video/quicktime",
-        "m4v" => "video/x-m4v",
+        "mkv" => "video/x-matroska",
         "webm" => "video/webm",
         "avi" => "video/x-msvideo",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
+        // Audio types (on MDK allowlist)
         "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        // Document types (on MDK allowlist)
         "pdf" => "application/pdf",
-        "zip" => "application/zip",
-        "json" => "application/json",
         "txt" => "text/plain",
+        // Everything else → octet-stream (MDK escape hatch, skips validation)
         _ => "application/octet-stream",
     }
 }

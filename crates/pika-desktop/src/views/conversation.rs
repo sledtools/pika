@@ -1,9 +1,11 @@
+use base64::Engine as _;
 use iced::widget::{
-    button, column, container, operation, row, scrollable, text, text_input, Space,
+    button, column, container, operation, row, scrollable, text, text_input, Space, Stack,
 };
 use iced::{Alignment, Element, Fill, Task, Theme};
 use pika_core::{CallState, CallStatus, ChatMessage, ChatViewState};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::design::BubblePosition;
 use crate::icons;
@@ -20,6 +22,8 @@ pub struct State {
     pub reply_to_message_id: Option<String>,
     pub emoji_picker_message_id: Option<String>,
     pub hovered_message_id: Option<String>,
+    /// True while a file is being dragged over the conversation area.
+    pub file_hover: bool,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -31,11 +35,24 @@ pub enum Message {
     SetReplyTarget(String),
     CancelReplyTarget,
     JumpToMessage(String),
-    ReactToMessage { message_id: String, emoji: String },
+    ReactToMessage {
+        message_id: String,
+        emoji: String,
+    },
     ToggleEmojiPicker(String),
     CloseEmojiPicker,
     HoverMessage(String),
     UnhoverMessage,
+    // File upload
+    AttachFileClicked,
+    FilesPicked(Vec<PathBuf>),
+    FilesDropped(Vec<PathBuf>),
+    FileHovered,
+    FileHoverLeft,
+    DownloadMedia {
+        message_id: String,
+        original_hash_hex: String,
+    },
     // These originate from the conversation header but bubble up as events
     ShowGroupInfo,
     StartCall,
@@ -53,6 +70,17 @@ pub enum Event {
     SendMessage {
         content: String,
         reply_to_message_id: Option<String>,
+    },
+    /// Send a media file (already read + encoded by the conversation module)
+    SendMedia {
+        data_base64: String,
+        mime_type: String,
+        filename: String,
+    },
+    /// Download a received media attachment
+    DownloadMedia {
+        message_id: String,
+        original_hash_hex: String,
     },
     /// Scroll to a specific message (returns a Task for the parent)
     JumpToMessage(String),
@@ -79,49 +107,56 @@ impl State {
             reply_to_message_id: None,
             emoji_picker_message_id: None,
             hovered_message_id: None,
+            file_hover: false,
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Event> {
+    /// Returns `(optional_event, optional_iced_task)`.
+    ///
+    /// Most messages produce at most an event; the file-picker dialog is the
+    /// only case that produces an `iced::Task` the caller must execute.
+    pub fn update(&mut self, message: Message) -> (Option<Event>, Option<Task<Message>>) {
         match message {
             Message::MessageChanged(value) => {
                 let was_empty = self.message_input.trim().is_empty();
                 self.message_input = value;
                 let is_empty = self.message_input.trim().is_empty();
                 if was_empty && !is_empty {
-                    return Some(Event::TypingStarted);
+                    return (Some(Event::TypingStarted), None);
                 }
-                // Also fire on continued typing (matches original behaviour)
                 if !is_empty {
-                    return Some(Event::TypingStarted);
+                    return (Some(Event::TypingStarted), None);
                 }
-                None
+                (None, None)
             }
             Message::SendMessage => {
                 let content = self.message_input.trim().to_string();
                 if content.is_empty() {
-                    return None;
+                    return (None, None);
                 }
                 let reply_to = self.reply_to_message_id.take();
                 self.message_input.clear();
                 self.emoji_picker_message_id = None;
-                Some(Event::SendMessage {
-                    content,
-                    reply_to_message_id: reply_to,
-                })
+                (
+                    Some(Event::SendMessage {
+                        content,
+                        reply_to_message_id: reply_to,
+                    }),
+                    None,
+                )
             }
             Message::SetReplyTarget(message_id) => {
                 self.reply_to_message_id = Some(message_id);
-                None
+                (None, None)
             }
             Message::CancelReplyTarget => {
                 self.reply_to_message_id = None;
-                None
+                (None, None)
             }
-            Message::JumpToMessage(message_id) => Some(Event::JumpToMessage(message_id)),
+            Message::JumpToMessage(message_id) => (Some(Event::JumpToMessage(message_id)), None),
             Message::ReactToMessage { message_id, emoji } => {
                 self.emoji_picker_message_id = None;
-                Some(Event::ReactToMessage { message_id, emoji })
+                (Some(Event::ReactToMessage { message_id, emoji }), None)
             }
             Message::ToggleEmojiPicker(message_id) => {
                 if self.emoji_picker_message_id.as_deref() == Some(&message_id) {
@@ -129,25 +164,68 @@ impl State {
                 } else {
                     self.emoji_picker_message_id = Some(message_id);
                 }
-                None
+                (None, None)
             }
             Message::CloseEmojiPicker => {
                 self.emoji_picker_message_id = None;
-                None
+                (None, None)
             }
             Message::HoverMessage(id) => {
                 self.hovered_message_id = Some(id);
-                None
+                (None, None)
             }
             Message::UnhoverMessage => {
                 self.hovered_message_id = None;
-                None
+                (None, None)
             }
-            Message::ShowGroupInfo => Some(Event::ShowGroupInfo),
-            Message::StartCall => Some(Event::StartCall),
-            Message::StartVideoCall => Some(Event::StartVideoCall),
-            Message::OpenCallScreen => Some(Event::OpenCallScreen),
-            Message::OpenPeerProfile(pubkey) => Some(Event::OpenPeerProfile(pubkey)),
+            // ── File upload ─────────────────────────────────────────────
+            Message::AttachFileClicked => {
+                let task = Task::perform(
+                    async {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_title("Attach file")
+                            .pick_files()
+                            .await;
+                        match handle {
+                            Some(handles) => handles
+                                .into_iter()
+                                .map(|h| h.path().to_path_buf())
+                                .collect(),
+                            None => vec![],
+                        }
+                    },
+                    Message::FilesPicked,
+                );
+                (None, Some(task))
+            }
+            Message::FilesPicked(paths) => (read_and_send_first_file(&paths), None),
+            Message::FilesDropped(paths) => {
+                self.file_hover = false;
+                (read_and_send_first_file(&paths), None)
+            }
+            Message::FileHovered => {
+                self.file_hover = true;
+                (None, None)
+            }
+            Message::FileHoverLeft => {
+                self.file_hover = false;
+                (None, None)
+            }
+            Message::DownloadMedia {
+                message_id,
+                original_hash_hex,
+            } => (
+                Some(Event::DownloadMedia {
+                    message_id,
+                    original_hash_hex,
+                }),
+                None,
+            ),
+            Message::ShowGroupInfo => (Some(Event::ShowGroupInfo), None),
+            Message::StartCall => (Some(Event::StartCall), None),
+            Message::StartVideoCall => (Some(Event::StartVideoCall), None),
+            Message::OpenCallScreen => (Some(Event::OpenCallScreen), None),
+            Message::OpenPeerProfile(pubkey) => (Some(Event::OpenPeerProfile(pubkey)), None),
         }
     }
 
@@ -347,6 +425,28 @@ impl State {
         // ── Input bar ───────────────────────────────────────────────────
         let send_enabled = !self.message_input.trim().is_empty();
 
+        let attach_button = button(
+            text(icons::PAPERCLIP)
+                .font(icons::LUCIDE_FONT)
+                .size(20)
+                .center(),
+        )
+        .on_press(Message::AttachFileClicked)
+        .width(36.0)
+        .height(36.0)
+        .style(|_: &Theme, status: button::Status| {
+            let (bg, fg) = match status {
+                button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
+                _ => (iced::Color::TRANSPARENT, theme::TEXT_FADED),
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
+                text_color: fg,
+                border: iced::border::rounded(9999),
+                ..Default::default()
+            }
+        });
+
         let send_button = if send_enabled {
             button(
                 text(icons::ARROW_UP)
@@ -387,6 +487,7 @@ impl State {
         };
 
         let composer = row![
+            attach_button,
             text_input("Message\u{2026}", &self.message_input)
                 .on_input(Message::MessageChanged)
                 .on_submit(Message::SendMessage)
@@ -486,7 +587,42 @@ impl State {
             layout = layout.push(indicator);
         }
 
-        layout.push(input_bar).into()
+        layout = layout.push(input_bar);
+
+        // ── Drop zone overlay ────────────────────────────────────────────
+        if self.file_hover {
+            let drop_overlay = container(
+                container(
+                    column![
+                        text(icons::PAPERCLIP)
+                            .font(icons::LUCIDE_FONT)
+                            .size(32)
+                            .color(theme::ACCENT_BLUE),
+                        text("Drop file to send")
+                            .size(16)
+                            .color(theme::TEXT_PRIMARY),
+                    ]
+                    .spacing(8)
+                    .align_x(Alignment::Center),
+                )
+                .center_x(Fill)
+                .center_y(Fill)
+                .padding(24)
+                .style(theme::drop_zone_style),
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding(16);
+
+            Stack::new()
+                .push(layout)
+                .push(drop_overlay)
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else {
+            layout.into()
+        }
     }
 }
 
@@ -509,6 +645,28 @@ pub fn jump_to_message_task(chat: &ChatViewState, message_id: &str) -> Option<Ta
         CONVERSATION_SCROLL_ID,
         operation::RelativeOffset { x: 0.0, y },
     ))
+}
+
+/// Read the first file from a list of paths, base64-encode it, and return a
+/// [`Event::SendMedia`] event ready for dispatch to the core.
+///
+/// MIME type is sent as empty string so the Rust core can infer it from the
+/// filename extension (matching the iOS app's behaviour).
+fn read_and_send_first_file(paths: &[PathBuf]) -> Option<Event> {
+    let path = paths.first()?;
+    let data = std::fs::read(path).ok()?;
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let data_base64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    Some(Event::SendMedia {
+        data_base64,
+        // Empty string → Rust core infers MIME from filename extension.
+        mime_type: String::new(),
+        filename,
+    })
 }
 
 fn chat_title(chat: &ChatViewState) -> String {

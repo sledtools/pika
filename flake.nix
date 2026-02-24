@@ -451,25 +451,11 @@
 EOF
             '' else ""}
 
-            # PostgreSQL for pika-server
-            export PGDATA="$PWD/crates/pika-server/.pgdata"
-            export PGHOST="$PGDATA"
-            export DATABASE_URL="postgresql:///pika_server?host=$PGDATA"
-
-            if [ ! -d "$PGDATA" ]; then
-              echo "Initializing PostgreSQL database..."
-              initdb --no-locale --encoding=UTF8 -D "$PGDATA" > /dev/null
-              cat >> "$PGDATA/postgresql.conf" <<PGEOF
-listen_addresses = '''
-unix_socket_directories = '$PGDATA'
-PGEOF
-            fi
-
-            pg_ctl status -D "$PGDATA" > /dev/null 2>&1 || pg_ctl start -D "$PGDATA" -l "$PGDATA/postgres.log" -o "-k $PGDATA"
-
-            if ! psql -lqt 2>/dev/null | grep -qw pika_server; then
-              createdb pika_server
-            fi
+            # PostgreSQL defaults for pika-server.
+            # Database startup is explicit via `just postgres-ensure`.
+            export PGDATA="''${PGDATA:-$PWD/crates/pika-server/.pgdata}"
+            export PGHOST="''${PGHOST:-$PGDATA}"
+            export DATABASE_URL="''${DATABASE_URL:-postgresql:///pika_server?host=$PGDATA}"
 
             # Point git at the repo's shared hooks directory.
             git config --local core.hooksPath .githooks 2>/dev/null || true
@@ -482,6 +468,7 @@ PGEOF
             echo "  NDK:          $ANDROID_NDK_HOME"
             '' else ""}
             echo "  DATABASE_URL: $DATABASE_URL"
+            echo "  Postgres:     run 'just postgres-ensure' when needed"
             if [ "$(uname -s)" = "Darwin" ]; then
               echo "  Xcode:        ''${DEVELOPER_DIR:-not found}"
             fi

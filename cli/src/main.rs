@@ -17,6 +17,13 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
+use pikachat::provider_control_plane::{
+    AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
+    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
+    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, MicrovmProvisionParams,
+    ProcessWelcomeCommand, ProtocolKind, ProviderKind, ProvisionCommand, RuntimeLifecyclePhase,
+    TeardownCommand,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -322,6 +329,9 @@ enum AgentCommand {
         brain: Option<AgentBrain>,
 
         #[command(flatten)]
+        control: AgentControlArgs,
+
+        #[command(flatten)]
         microvm: AgentNewMicrovmArgs,
     },
 }
@@ -337,6 +347,24 @@ enum AgentProvider {
 enum AgentBrain {
     Stub,
     Pi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentControlMode {
+    Auto,
+    Remote,
+    Local,
+}
+
+#[derive(Clone, Debug, Args)]
+struct AgentControlArgs {
+    /// Provider control-plane mode (`auto` = remote first, then local fallback)
+    #[arg(long, value_enum, default_value_t = AgentControlMode::Auto, env = "PIKA_AGENT_CONTROL_MODE")]
+    control_mode: AgentControlMode,
+
+    /// Nostr pubkey (hex or npub) for the `pika-server` control-plane identity
+    #[arg(long, env = "PIKA_AGENT_CONTROL_SERVER_PUBKEY")]
+    control_server_pubkey: Option<String>,
 }
 
 impl std::fmt::Display for AgentBrain {
@@ -538,8 +566,9 @@ async fn main() -> anyhow::Result<()> {
                 name,
                 provider,
                 brain,
+                control,
                 microvm,
-            } => cmd_agent_new(&cli, name.as_deref(), *provider, *brain, microvm).await,
+            } => cmd_agent_new(&cli, name.as_deref(), *provider, *brain, control, microvm).await,
         },
     }
 }
@@ -1374,9 +1403,32 @@ async fn cmd_agent_new(
     name: Option<&str>,
     provider: AgentProvider,
     brain: Option<AgentBrain>,
+    control: &AgentControlArgs,
     microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
     let resolved_brain = resolve_agent_new_brain(provider, brain, microvm)?;
+    let should_try_remote = match control.control_mode {
+        AgentControlMode::Local => false,
+        AgentControlMode::Remote => true,
+        AgentControlMode::Auto => control
+            .control_server_pubkey
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty()),
+    };
+    if should_try_remote {
+        let remote_attempt =
+            cmd_agent_new_remote(cli, name, provider, resolved_brain, control, microvm).await;
+        match remote_attempt {
+            Ok(()) => return Ok(()),
+            Err(err) if control.control_mode == AgentControlMode::Auto => {
+                eprintln!();
+                eprintln!("Remote provider control failed, falling back to local path: {err:#}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
     match (provider, resolved_brain) {
         (AgentProvider::Fly, AgentBrain::Stub) => cmd_agent_new_fly(cli, name).await,
         (AgentProvider::Workers, AgentBrain::Pi) => cmd_agent_new_workers(cli, name).await,
@@ -1408,6 +1460,414 @@ fn resolve_agent_new_brain(
         }
         _ => Ok(resolved),
     }
+}
+
+struct RemoteControlClient {
+    client: Client,
+    keys: Keys,
+    relays: Vec<RelayUrl>,
+    server_pubkey: PublicKey,
+}
+
+impl RemoteControlClient {
+    async fn connect(
+        keys: &Keys,
+        relay_urls: &[String],
+        server_pubkey: PublicKey,
+    ) -> anyhow::Result<Self> {
+        let relays = relay_util::parse_relay_urls(relay_urls)?;
+        let client = relay_util::connect_client(keys, relay_urls).await?;
+        Ok(Self {
+            client,
+            keys: keys.clone(),
+            relays,
+            server_pubkey,
+        })
+    }
+
+    async fn send_command(
+        &self,
+        command: AgentControlCommand,
+    ) -> anyhow::Result<AgentControlResultEnvelope> {
+        let request_id = new_control_request_id("agent-ctl");
+        let idempotency_key = new_control_request_id("idem");
+        let envelope = AgentControlCmdEnvelope::v1(
+            request_id.clone(),
+            idempotency_key,
+            command,
+            AuthContext {
+                acting_as_pubkey: Some(self.keys.public_key().to_hex()),
+            },
+        );
+
+        let status_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_STATUS_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        let result_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_RESULT_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        let error_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_ERROR_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+
+        let content = serde_json::to_string(&envelope).context("encode control command")?;
+        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), content)
+            .tags([Tag::public_key(self.server_pubkey)])
+            .sign_with_keys(&self.keys)
+            .context("sign control command")?;
+        relay_util::publish_and_confirm(
+            &self.client,
+            &self.relays,
+            &cmd_event,
+            "agent control cmd",
+        )
+        .await?;
+
+        let mut rx = self.client.notifications();
+        let timeout = Duration::from_secs(180);
+        let started = tokio::time::Instant::now();
+        let mut seen = HashSet::<EventId>::new();
+        loop {
+            if started.elapsed() > timeout {
+                self.client.unsubscribe_all().await;
+                anyhow::bail!("timed out waiting for remote control reply ({request_id})");
+            }
+
+            let notification = match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                Ok(Ok(notification)) => notification,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => {
+                    self.client.unsubscribe_all().await;
+                    anyhow::bail!("remote control notification channel closed");
+                }
+                Err(_) => continue,
+            };
+
+            let RelayPoolNotification::Event {
+                subscription_id,
+                event,
+                ..
+            } = notification
+            else {
+                continue;
+            };
+            if subscription_id != status_sub.val
+                && subscription_id != result_sub.val
+                && subscription_id != error_sub.val
+            {
+                continue;
+            }
+
+            let event = *event;
+            if !seen.insert(event.id) {
+                continue;
+            }
+
+            if event.kind == Kind::Custom(CONTROL_STATUS_KIND) {
+                if let Ok(status) =
+                    serde_json::from_str::<AgentControlStatusEnvelope>(&event.content)
+                    && status.request_id == request_id
+                {
+                    render_control_status(&status);
+                }
+                continue;
+            }
+
+            if event.kind == Kind::Custom(CONTROL_RESULT_KIND) {
+                if let Ok(result) =
+                    serde_json::from_str::<AgentControlResultEnvelope>(&event.content)
+                    && result.request_id == request_id
+                {
+                    self.client.unsubscribe_all().await;
+                    return Ok(result);
+                }
+                continue;
+            }
+
+            if event.kind == Kind::Custom(CONTROL_ERROR_KIND)
+                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&event.content)
+                && err.request_id == request_id
+            {
+                self.client.unsubscribe_all().await;
+                let hint = err.hint.unwrap_or_default();
+                let detail = err.detail.unwrap_or_default();
+                anyhow::bail!("remote control error {}: {} {}", err.code, hint, detail);
+            }
+        }
+    }
+}
+
+fn render_control_status(status: &AgentControlStatusEnvelope) {
+    let phase = match status.phase {
+        RuntimeLifecyclePhase::Queued => "queued",
+        RuntimeLifecyclePhase::Provisioning => "provisioning",
+        RuntimeLifecyclePhase::Ready => "ready",
+        RuntimeLifecyclePhase::Failed => "failed",
+        RuntimeLifecyclePhase::Teardown => "teardown",
+    };
+    if let Some(msg) = &status.message {
+        eprintln!("[control] {phase}: {msg}");
+    } else {
+        eprintln!("[control] {phase}");
+    }
+}
+
+fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<PublicKey> {
+    let raw = control
+        .control_server_pubkey
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "missing control server pubkey (use --control-server-pubkey or PIKA_AGENT_CONTROL_SERVER_PUBKEY)"
+            )
+        })?;
+    PublicKey::parse(raw).context("parse control server pubkey")
+}
+
+fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
+    match provider {
+        AgentProvider::Fly => ProviderKind::Fly,
+        AgentProvider::Workers => ProviderKind::Workers,
+        AgentProvider::Microvm => ProviderKind::Microvm,
+    }
+}
+
+fn map_protocol_kind(brain: AgentBrain) -> ProtocolKind {
+    match brain {
+        AgentBrain::Stub | AgentBrain::Pi => ProtocolKind::Pi,
+    }
+}
+
+fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
+    let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
+        MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
+        MicrovmSpawnVariant::PrebuiltCow => "prebuilt-cow".to_string(),
+    });
+    let params = MicrovmProvisionParams {
+        spawner_url: microvm.spawner_url.clone(),
+        spawn_variant,
+        flake_ref: microvm.flake_ref.clone(),
+        dev_shell: microvm.dev_shell.clone(),
+        cpu: microvm.cpu,
+        memory_mb: microvm.memory_mb,
+        ttl_seconds: microvm.ttl_seconds,
+    };
+    if params.spawner_url.is_some()
+        || params.spawn_variant.is_some()
+        || params.flake_ref.is_some()
+        || params.dev_shell.is_some()
+        || params.cpu.is_some()
+        || params.memory_mb.is_some()
+        || params.ttl_seconds.is_some()
+    {
+        Some(params)
+    } else {
+        None
+    }
+}
+
+fn new_control_request_id(prefix: &str) -> String {
+    format!(
+        "{prefix}-{:08x}{:08x}",
+        rand::random::<u32>(),
+        rand::random::<u32>()
+    )
+}
+
+async fn cmd_agent_new_remote(
+    cli: &Cli,
+    name: Option<&str>,
+    provider: AgentProvider,
+    resolved_brain: AgentBrain,
+    control: &AgentControlArgs,
+    microvm: &AgentNewMicrovmArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let relays = relay_util::parse_relay_urls(&relay_urls)?;
+    let (keys, mdk) = open(cli)?;
+    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let provision_result = control_client
+        .send_command(AgentControlCommand::Provision(ProvisionCommand {
+            provider: map_provider_kind(provider),
+            protocol: map_protocol_kind(resolved_brain),
+            name: name.map(str::to_string),
+            relay_urls: relay_urls.clone(),
+            keep: microvm.keep,
+            bot_secret_key_hex: None,
+            microvm: if provider == AgentProvider::Microvm {
+                map_microvm_control_params(microvm)
+            } else {
+                None
+            },
+        }))
+        .await?;
+    let runtime = provision_result.runtime;
+    let bot_pubkey_hex = runtime
+        .bot_pubkey
+        .clone()
+        .ok_or_else(|| anyhow!("remote control result missing bot_pubkey"))?;
+    let bot_pubkey = PublicKey::parse(&bot_pubkey_hex).context("parse bot pubkey")?;
+    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
+
+    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
+    let send_client = client_all(cli, &keys).await?;
+    let listen_client = if provider == AgentProvider::Workers {
+        Some(client_all(cli, &keys).await?)
+    } else {
+        None
+    };
+
+    let bot_kp = agent::session::wait_for_latest_key_package(
+        &send_client,
+        bot_pubkey,
+        &relays,
+        agent::provider::KeyPackageWaitPlan {
+            progress_message: "Waiting for remote runtime key package",
+            timeout: Duration::from_secs(120),
+            fetch_timeout: Duration::from_secs(5),
+            retry_delay: Duration::from_secs(2),
+        },
+    )
+    .await?;
+
+    let created_group = agent::session::create_group_and_publish_welcomes(
+        &keys,
+        &mdk,
+        &send_client,
+        &relays,
+        bot_kp,
+        bot_pubkey,
+        agent::provider::GroupCreatePlan {
+            progress_message: "Creating MLS group and inviting runtime...",
+            create_group_context: "create remote runtime MLS group",
+            build_welcome_context: "build remote runtime welcome giftwrap",
+            welcome_publish_label: "remote runtime welcome",
+        },
+    )
+    .await?;
+
+    for welcome in &created_group.published_welcomes {
+        let _ = control_client
+            .send_command(AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
+                runtime_id: runtime.runtime_id.clone(),
+                group_id: created_group.nostr_group_id_hex.clone(),
+                wrapper_event_id_hex: Some(welcome.wrapper_event_id_hex.clone()),
+                welcome_event_json: Some(welcome.rumor_json.clone()),
+            }))
+            .await?;
+    }
+
+    let bot_npub = bot_pubkey
+        .to_bech32()
+        .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
+    eprintln!();
+    eprintln!(
+        "Connected to remote {} runtime {} ({bot_npub})",
+        match provider {
+            AgentProvider::Fly => "fly",
+            AgentProvider::Workers => "workers",
+            AgentProvider::Microvm => "microvm",
+        },
+        runtime.runtime_id
+    );
+    eprintln!("Type messages below. Ctrl-C to exit.");
+    eprintln!();
+
+    let session_result =
+        agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
+            keys: &keys,
+            mdk: &mdk,
+            send_client: &send_client,
+            listen_client: listen_client.as_ref().unwrap_or(&send_client),
+            relays: &relays,
+            bot_pubkey,
+            mls_group_id: &created_group.mls_group_id,
+            nostr_group_id_hex: &created_group.nostr_group_id_hex,
+            plan: agent::provider::ChatLoopPlan {
+                outbound_publish_label: "remote chat user",
+                wait_for_pending_replies_on_eof: provider == AgentProvider::Workers,
+                eof_reply_timeout: Duration::from_secs(20),
+            },
+            seen_mls_event_ids: if provider == AgentProvider::Workers {
+                Some(&mut seen_mls_event_ids)
+            } else {
+                None
+            },
+        })
+        .await;
+
+    if let Some(listener_client) = &listen_client {
+        listener_client.unsubscribe_all().await;
+        listener_client.shutdown().await;
+    }
+    send_client.unsubscribe_all().await;
+    send_client.shutdown().await;
+
+    if provider == AgentProvider::Workers {
+        persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+    }
+
+    let mut teardown_error = None;
+    if provider == AgentProvider::Microvm && !microvm.keep {
+        match control_client
+            .send_command(AgentControlCommand::Teardown(TeardownCommand {
+                runtime_id: runtime.runtime_id.clone(),
+            }))
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => teardown_error = Some(err),
+        }
+    }
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+
+    if let Some(err) = teardown_error {
+        if let Err(session_err) = session_result {
+            return Err(anyhow!("{session_err:#}\n{err:#}"));
+        }
+        return Err(err);
+    }
+
+    session_result
 }
 
 async fn cmd_agent_new_microvm(

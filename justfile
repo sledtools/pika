@@ -224,6 +224,42 @@ pre-commit: fmt
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
     cargo clippy -p pika-server --tests -- -D warnings
 
+# Ensure local PostgreSQL is initialized and running for `pika-server` lanes.
+postgres-ensure PGDATA="$PWD/crates/pika-server/.pgdata" DB_NAME="pika_server":
+    set -euo pipefail; \
+    export PGDATA="{{ PGDATA }}"; \
+    export PGHOST="$PGDATA"; \
+    export DATABASE_URL="postgresql:///{{ DB_NAME }}?host=$PGDATA"; \
+    mkdir -p "$PGDATA"; \
+    if [ ! -f "$PGDATA/PG_VERSION" ]; then \
+      echo "Initializing PostgreSQL data dir at $PGDATA"; \
+      initdb --no-locale --encoding=UTF8 -D "$PGDATA" >/dev/null; \
+    fi; \
+    if ! grep -Eq "^listen_addresses *= *''" "$PGDATA/postgresql.conf"; then \
+      echo "listen_addresses = ''" >> "$PGDATA/postgresql.conf"; \
+    fi; \
+    if ! grep -Eq "^unix_socket_directories *= *'$PGDATA'" "$PGDATA/postgresql.conf"; then \
+      echo "unix_socket_directories = '$PGDATA'" >> "$PGDATA/postgresql.conf"; \
+    fi; \
+    if pg_ctl status -D "$PGDATA" >/dev/null 2>&1; then \
+      echo "PostgreSQL already running ($PGDATA)"; \
+    else \
+      echo "Starting PostgreSQL ($PGDATA)"; \
+      pg_ctl start -D "$PGDATA" -l "$PGDATA/postgres.log" -o "-k $PGDATA"; \
+    fi; \
+    for _ in $(seq 1 40); do \
+      if pg_isready -h "$PGDATA" >/dev/null 2>&1; then \
+        break; \
+      fi; \
+      sleep 0.25; \
+    done; \
+    pg_isready -h "$PGDATA" >/dev/null; \
+    if [ "$(psql -h "$PGDATA" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='{{ DB_NAME }}' LIMIT 1;" || true)" != "1" ]; then \
+      createdb -h "$PGDATA" "{{ DB_NAME }}"; \
+      echo "Created database {{ DB_NAME }}"; \
+    fi; \
+    echo "PostgreSQL ready (DATABASE_URL=$DATABASE_URL)"
+
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt
     just clippy --lib --tests
@@ -238,7 +274,12 @@ pre-merge-pika: fmt
 
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
-    cargo clippy -p pika-server -- -D warnings
+    set -euo pipefail; \
+    just postgres-ensure; \
+    export PGDATA="$PWD/crates/pika-server/.pgdata"; \
+    export PGHOST="$PGDATA"; \
+    export DATABASE_URL="postgresql:///pika_server?host=$PGDATA"; \
+    cargo clippy -p pika-server -- -D warnings; \
     cargo test -p pika-server -- --test-threads=1
     @echo "pre-merge-notifications complete"
 

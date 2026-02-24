@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Minimal local pi-adapter shim for workers brain=pi flows.
+
+Implements:
+  GET  /health
+  POST /reply
+  POST /rpc
+
+It shells out to `pi -p` (or `PI_ADAPTER_PI_CMD`) per request.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
+
+ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+class AdapterServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler: type[BaseHTTPRequestHandler],
+        *,
+        pi_cmd: list[str],
+        timeout_ms: int,
+    ) -> None:
+        super().__init__(server_address, request_handler)
+        self.pi_cmd = pi_cmd
+        self.timeout_ms = timeout_ms
+        self.turns_by_agent: dict[str, int] = {}
+        self.turns_lock = threading.Lock()
+
+    def next_turn(self, agent_id: str) -> int:
+        with self.turns_lock:
+            current = self.turns_by_agent.get(agent_id, 0) + 1
+            self.turns_by_agent[agent_id] = current
+            return current
+
+
+class Handler(BaseHTTPRequestHandler):
+    server: AdapterServer
+    server_version = "pi-adapter-local/0.1"
+
+    def _json(self, status: int, body: dict[str, Any]) -> None:
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("content-type", "application/json; charset=utf-8")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("content-length") or "0")
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        parsed = json.loads(raw.decode("utf-8"))
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _prompt_from_body(self, body: dict[str, Any]) -> str:
+        message = str(body.get("message") or body.get("prompt") or "").strip()
+        rpc = body.get("rpc")
+        if not message and isinstance(rpc, dict):
+            message = str(rpc.get("message") or rpc.get("prompt") or "").strip()
+
+        history = body.get("history")
+        if not isinstance(history, list) or not history:
+            return message
+
+        turns: list[str] = []
+        for item in history[-8:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip() or "user"
+            content = str(item.get("content") or "").strip()
+            if content:
+                turns.append(f"{role}: {content}")
+
+        if not turns:
+            return message
+        if message:
+            turns.append(f"user: {message}")
+        turns.append("assistant:")
+        return "Conversation context:\n" + "\n".join(turns)
+
+    def _run_pi(self, prompt: str) -> str:
+        if not prompt.strip():
+            raise ValueError("empty prompt")
+        timeout_s = max(self.server.timeout_ms, 1000) / 1000.0
+        proc = subprocess.run(
+            self.server.pi_cmd,
+            input=prompt + "\n",
+            text=True,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        stdout = strip_ansi(proc.stdout or "").strip()
+        stderr = strip_ansi(proc.stderr or "").strip()
+        if proc.returncode != 0:
+            detail = stderr or stdout or f"pi exited with code {proc.returncode}"
+            raise RuntimeError(detail)
+        if not stdout:
+            raise RuntimeError("pi returned empty output")
+        return stdout
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/health":
+            self._json(200, {"ok": True, "service": "pi-adapter-local"})
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path not in ("/reply", "/rpc"):
+            self._json(404, {"error": "not found"})
+            return
+        try:
+            body = self._read_json()
+            agent_id = str(body.get("agent_id") or "unknown-agent").strip() or "unknown-agent"
+            turn = self.server.next_turn(agent_id)
+            prompt = self._prompt_from_body(body)
+            reply = self._run_pi(prompt)
+            tagged_reply = f"pi({turn})[{agent_id}]: {reply}"
+            if self.path == "/rpc":
+                self._json(
+                    200,
+                    {
+                        "reply": tagged_reply,
+                        "events": [
+                            {"type": "assistant_message", "text": tagged_reply},
+                            {"type": "agent_end"},
+                        ],
+                    },
+                )
+            else:
+                self._json(200, {"reply": tagged_reply})
+        except subprocess.TimeoutExpired:
+            self._json(504, {"error": f"pi command timed out after {self.server.timeout_ms}ms"})
+        except json.JSONDecodeError:
+            self._json(400, {"error": "invalid JSON body"})
+        except Exception as exc:  # noqa: BLE001
+            self._json(500, {"error": str(exc)})
+
+    def log_message(self, *_args: Any) -> None:
+        return
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a local pi-adapter shim")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8788)
+    parser.add_argument(
+        "--pi-cmd",
+        default=os.environ.get("PI_ADAPTER_PI_CMD", "pi -p"),
+        help="Command used to generate replies (default: env PI_ADAPTER_PI_CMD or 'pi -p')",
+    )
+    parser.add_argument(
+        "--timeout-ms",
+        type=int,
+        default=int(os.environ.get("PI_ADAPTER_PI_TIMEOUT_MS", "120000")),
+    )
+    args = parser.parse_args()
+
+    pi_cmd = shlex.split(args.pi_cmd.strip())
+    if not pi_cmd:
+        raise SystemExit("empty --pi-cmd")
+
+    server = AdapterServer(
+        (args.host, args.port),
+        Handler,
+        pi_cmd=pi_cmd,
+        timeout_ms=args.timeout_ms,
+    )
+    print(
+        f"pi-adapter-local listening on http://{args.host}:{args.port} "
+        f"(pi_cmd={' '.join(pi_cmd)}, timeout_ms={args.timeout_ms})",
+        flush=True,
+    )
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

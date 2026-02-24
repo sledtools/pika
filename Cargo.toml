@@ -9,6 +9,7 @@ members = [
   "crates/pika-media",
   "crates/pika-nse",
   "crates/pika-tls",
+  "crates/pikachat-wasm",
   "crates/rmp-cli",
   "crates/pika-server",
   "crates/vm-spawner",

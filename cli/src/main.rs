@@ -1,17 +1,16 @@
 mod fly_machines;
 mod harness;
 mod mdk_util;
-mod microvm_spawner;
 mod relay_util;
+mod workers_agents;
 
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
@@ -34,6 +33,8 @@ const DEFAULT_KP_RELAY_URLS: &[&str] = &[
     "wss://nostr-01.yakihonne.com",
     "wss://nostr-02.yakihonne.com",
 ];
+const PROCESSED_MLS_EVENT_IDS_FILE: &str = "processed_mls_event_ids_v1.txt";
+const PROCESSED_MLS_EVENT_IDS_MAX: usize = 8192;
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -53,9 +54,6 @@ fn default_state_dir() -> PathBuf {
     }
     PathBuf::from(".pikachat")
 }
-
-const PI_BRIDGE_PY: &str = include_str!("../../bots/pi-bridge.py");
-const PI_BRIDGE_SH: &str = include_str!("../../bots/pi-bridge.sh");
 
 #[derive(Debug, Parser)]
 #[command(name = "pikachat")]
@@ -300,84 +298,51 @@ If --output is omitted, the original filename from the sender is used.")]
         exec: Option<String>,
     },
 
-    /// Manage AI agents
+    /// Manage AI agents (`fly` or `workers`)
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum AgentProviderArg {
-    Fly,
-    Microvm,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum SpawnVariantArg {
-    Prebuilt,
-    #[value(name = "prebuilt-cow")]
-    PrebuiltCow,
-    Legacy,
-}
-
-impl SpawnVariantArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Prebuilt => "prebuilt",
-            Self::PrebuiltCow => "prebuilt-cow",
-            Self::Legacy => "legacy",
-        }
-    }
-}
-
-#[derive(Debug, Args)]
-struct AgentNewArgs {
-    /// Runtime provider
-    #[arg(long, value_enum, default_value_t = AgentProviderArg::Fly)]
-    provider: AgentProviderArg,
-
-    /// Machine name hint (Fly only; default: agent-<random>)
-    #[arg(long)]
-    name: Option<String>,
-
-    /// vm-spawner base URL (microvm only)
-    #[arg(long, default_value = "http://127.0.0.1:8080")]
-    spawner_url: String,
-
-    /// vm-spawner variant (microvm only)
-    #[arg(long, value_enum, default_value_t = SpawnVariantArg::PrebuiltCow)]
-    spawn_variant: SpawnVariantArg,
-
-    /// Flake ref used in the guest (microvm only)
-    #[arg(long, default_value = "github:sledtools/pika")]
-    flake_ref: String,
-
-    /// Dev shell used in the guest (microvm only)
-    #[arg(long, default_value = "default")]
-    dev_shell: String,
-
-    /// vCPU count (microvm only)
-    #[arg(long, default_value_t = 1)]
-    cpu: u32,
-
-    /// Memory in MiB (microvm only)
-    #[arg(long, default_value_t = 1024)]
-    memory_mb: u32,
-
-    /// VM TTL in seconds (microvm only)
-    #[arg(long, default_value_t = 7200)]
-    ttl_seconds: u64,
-
-    /// Keep VM running on exit (microvm only)
-    #[arg(long, default_value_t = false)]
-    keep: bool,
-}
-
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Create a new pi agent and start chatting
-    New(AgentNewArgs),
+    New {
+        /// Agent name (default: agent-<random>)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Runtime provider (`fly` keeps existing behavior)
+        #[arg(long, value_enum, default_value_t = AgentProvider::Fly, env = "PIKA_AGENT_PROVIDER")]
+        provider: AgentProvider,
+
+        /// Brain mode for provider backends that support multiple brains
+        #[arg(long, value_enum, env = "PIKA_AGENT_BRAIN")]
+        brain: Option<AgentBrain>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentProvider {
+    Fly,
+    Workers,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentBrain {
+    Stub,
+    Pi,
+}
+
+impl std::fmt::Display for AgentBrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Stub => "stub",
+            Self::Pi => "pi",
+        };
+        f.write_str(value)
+    }
 }
 
 #[tokio::main]
@@ -478,7 +443,11 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Agent { cmd } => match cmd {
-            AgentCommand::New(args) => cmd_agent_new(&cli, args).await,
+            AgentCommand::New {
+                name,
+                provider,
+                brain,
+            } => cmd_agent_new(&cli, name.as_deref(), *provider, *brain).await,
         },
     }
 }
@@ -554,6 +523,38 @@ fn print(v: serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(&v).expect("json encode"));
 }
 
+fn processed_mls_event_ids_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(PROCESSED_MLS_EVENT_IDS_FILE)
+}
+
+fn load_processed_mls_event_ids(state_dir: &Path) -> HashSet<EventId> {
+    let path = processed_mls_event_ids_path(state_dir);
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    raw.lines()
+        .filter_map(|line| EventId::from_hex(line.trim()).ok())
+        .collect()
+}
+
+fn persist_processed_mls_event_ids(
+    state_dir: &Path,
+    event_ids: &HashSet<EventId>,
+) -> anyhow::Result<()> {
+    let mut ids: Vec<String> = event_ids.iter().map(|id| id.to_hex()).collect();
+    ids.sort_unstable();
+    if ids.len() > PROCESSED_MLS_EVENT_IDS_MAX {
+        ids = ids.split_off(ids.len() - PROCESSED_MLS_EVENT_IDS_MAX);
+    }
+    let mut body = ids.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    let path = processed_mls_event_ids_path(state_dir);
+    std::fs::write(&path, body)
+        .with_context(|| format!("persist processed MLS event ids to {}", path.display()))
+}
+
 /// Fetch recent group messages from the relay and feed them through
 /// `mdk.process_message` so the local MLS epoch is up-to-date before we
 /// attempt to create a new message.
@@ -562,6 +563,7 @@ async fn ingest_group_backlog(
     client: &Client,
     relay_urls: &[RelayUrl],
     nostr_group_id_hex: &str,
+    seen_mls_event_ids: &mut HashSet<EventId>,
 ) -> anyhow::Result<()> {
     let filter = Filter::new()
         .kind(Kind::MlsGroupMessage)
@@ -574,6 +576,9 @@ async fn ingest_group_backlog(
         .context("fetch group backlog")?;
 
     for ev in events.iter() {
+        if !seen_mls_event_ids.insert(ev.id) {
+            continue;
+        }
         // Errors are expected (own messages bouncing back, already-processed
         // events, etc.) — the important thing is that commits get applied.
         let _ = mdk.process_message(ev);
@@ -1047,6 +1052,7 @@ async fn cmd_send(
     }
 
     let (keys, mdk) = open(cli)?;
+    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
 
     // ── Resolve target group ────────────────────────────────────────────
     struct ResolvedTarget {
@@ -1143,7 +1149,7 @@ async fn cmd_send(
     // Without this, sending twice without running `listen` in between can
     // leave the local MLS epoch stale, producing ciphertext that peers
     // (who are on a newer epoch) cannot decrypt.
-    ingest_group_backlog(&mdk, &client, &relays, &ngid).await?;
+    ingest_group_backlog(&mdk, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
 
     // ── Upload media (if any) ───────────────────────────────────────────
     let mut tags: Vec<Tag> = Vec::new();
@@ -1173,6 +1179,7 @@ async fn cmd_send(
         .context("create message")?;
     relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message").await?;
     client.shutdown().await;
+    persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     let mut out = json!({
         "event_id": msg_event.id.to_hex(),
@@ -1270,271 +1277,35 @@ async fn cmd_download_media(
     Ok(())
 }
 
-#[derive(Debug)]
-enum AgentRuntimeHandle {
-    Fly {
-        machine_id: String,
-        app_name: String,
-    },
-    Microvm {
-        spawner_url: String,
-        vm_id: String,
-        ip: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct AgentSpawnConfig {
-    bot_secret_hex: String,
-    anthropic_key: String,
-    openai_key: Option<String>,
-    pi_model: Option<String>,
-    relays: Vec<String>,
-}
-
-struct FlyProvider {
-    client: fly_machines::FlyClient,
-}
-
-struct MicrovmProvider {
-    client: microvm_spawner::MicrovmSpawnerClient,
-}
-
-enum AgentProvider {
-    Fly(FlyProvider),
-    Microvm(MicrovmProvider),
-}
-
-impl AgentProvider {
-    async fn spawn(
-        &self,
-        args: &AgentNewArgs,
-        spawn: &AgentSpawnConfig,
-    ) -> anyhow::Result<AgentRuntimeHandle> {
-        match self {
-            AgentProvider::Fly(provider) => provider.spawn(args.name.as_deref(), spawn).await,
-            AgentProvider::Microvm(provider) => provider.spawn(args, spawn).await,
-        }
-    }
-
-    async fn teardown(&self, runtime: &AgentRuntimeHandle) -> anyhow::Result<()> {
-        match (self, runtime) {
-            (AgentProvider::Fly(_), AgentRuntimeHandle::Fly { .. }) => Ok(()),
-            (AgentProvider::Microvm(provider), AgentRuntimeHandle::Microvm { vm_id, .. }) => {
-                provider.client.delete_vm(vm_id).await
+async fn cmd_agent_new(
+    cli: &Cli,
+    name: Option<&str>,
+    provider: AgentProvider,
+    brain: Option<AgentBrain>,
+) -> anyhow::Result<()> {
+    match provider {
+        AgentProvider::Fly => {
+            let brain = brain.unwrap_or(AgentBrain::Stub);
+            if brain != AgentBrain::Stub {
+                anyhow::bail!(
+                    "--brain {} is not supported with --provider fly (current Fly path is already pi-backed)",
+                    brain
+                );
             }
-            _ => Ok(()),
+            cmd_agent_new_fly(cli, name).await
         }
-    }
-
-    fn keypackage_timeout(&self) -> Duration {
-        match self {
-            AgentProvider::Fly(_) => Duration::from_secs(120),
-            AgentProvider::Microvm(_) => Duration::from_secs(180),
-        }
-    }
-
-    fn keypackage_fetch_timeout(&self) -> Duration {
-        match self {
-            AgentProvider::Fly(_) => Duration::from_secs(5),
-            AgentProvider::Microvm(_) => Duration::from_secs(2),
-        }
-    }
-
-    fn keypackage_retry_interval(&self) -> Duration {
-        match self {
-            AgentProvider::Fly(_) => Duration::from_secs(3),
-            AgentProvider::Microvm(_) => Duration::from_millis(250),
-        }
-    }
-
-    fn keypackage_primary_only_window(&self) -> Option<Duration> {
-        match self {
-            AgentProvider::Fly(_) => None,
-            AgentProvider::Microvm(_) => Some(Duration::from_secs(20)),
+        AgentProvider::Workers => {
+            let brain = brain.unwrap_or(AgentBrain::Pi);
+            if brain != AgentBrain::Pi {
+                anyhow::bail!("--provider workers only supports --brain pi");
+            }
+            cmd_agent_new_workers(cli, name).await
         }
     }
 }
 
-impl FlyProvider {
-    async fn spawn(
-        &self,
-        name_hint: Option<&str>,
-        spawn: &AgentSpawnConfig,
-    ) -> anyhow::Result<AgentRuntimeHandle> {
-        let suffix = format!("{:08x}", rand::random::<u32>());
-        let volume_name = format!("agent_{suffix}");
-        let machine_name = name_hint
-            .map(std::string::ToString::to_string)
-            .unwrap_or_else(|| format!("agent-{suffix}"));
-
-        eprint!("Creating Fly volume...");
-        std::io::stderr().flush().ok();
-        let volume = self.client.create_volume(&volume_name).await?;
-        eprintln!(" done ({})", volume.id);
-
-        let mut env = HashMap::new();
-        env.insert("STATE_DIR".to_string(), "/app/state".to_string());
-        env.insert("NOSTR_SECRET_KEY".to_string(), spawn.bot_secret_hex.clone());
-        env.insert("ANTHROPIC_API_KEY".to_string(), spawn.anthropic_key.clone());
-        if let Some(openai) = &spawn.openai_key {
-            env.insert("OPENAI_API_KEY".to_string(), openai.clone());
-        }
-        if let Some(model) = &spawn.pi_model {
-            env.insert("PI_MODEL".to_string(), model.clone());
-        }
-
-        eprint!("Creating Fly machine...");
-        std::io::stderr().flush().ok();
-        let machine = self
-            .client
-            .create_machine(&machine_name, &volume.id, env)
-            .await?;
-        eprintln!(" done ({})", machine.id);
-
-        Ok(AgentRuntimeHandle::Fly {
-            machine_id: machine.id,
-            app_name: self.client.app_name().to_string(),
-        })
-    }
-}
-
-impl MicrovmProvider {
-    async fn spawn(
-        &self,
-        args: &AgentNewArgs,
-        spawn: &AgentSpawnConfig,
-    ) -> anyhow::Result<AgentRuntimeHandle> {
-        let request = microvm_spawner::CreateVmRequest {
-            flake_ref: Some(args.flake_ref.clone()),
-            dev_shell: Some(args.dev_shell.clone()),
-            cpu: Some(args.cpu),
-            memory_mb: Some(args.memory_mb),
-            ttl_seconds: Some(args.ttl_seconds),
-            spawn_variant: Some(args.spawn_variant.as_str().to_string()),
-            guest_autostart: Some(build_microvm_guest_autostart(spawn)),
-        };
-
-        eprint!("Spawning microVM...");
-        std::io::stderr().flush().ok();
-        let vm = self
-            .client
-            .create_vm(&request)
-            .await
-            .with_context(|| {
-                format!(
-                    "spawn microvm via {} (if this is a 5xx, check vm-spawner/dnsmasq on pika-build and verify SSH tunnel: just -f infra/justfile build-vmspawner-tunnel)",
-                    self.client.base_url()
-                )
-            })?;
-        eprintln!(" done ({} @ {})", vm.id, vm.ip);
-
-        Ok(AgentRuntimeHandle::Microvm {
-            spawner_url: self.client.base_url().to_string(),
-            vm_id: vm.id,
-            ip: vm.ip,
-        })
-    }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn build_microvm_guest_autostart(
-    spawn: &AgentSpawnConfig,
-) -> microvm_spawner::GuestAutostartRequest {
-    let relay_flags = spawn
-        .relays
-        .iter()
-        .map(|relay| format!("--relay {}", shell_quote(relay)))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let run_script = format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-if [ -f /run/agent-meta/env ]; then
-  set -a
-  . /run/agent-meta/env
-  set +a
-fi
-if [ -f /run/agent-meta/autostart.env ]; then
-  set -a
-  . /run/agent-meta/autostart.env
-  set +a
-fi
-STATE_DIR=/workspace/pika-agent/state
-mkdir -p "$STATE_DIR"
-
-PI_RUNTIME_DIR="${{PIKA_RUNTIME_ARTIFACTS_GUEST:-/opt/runtime-artifacts}}"
-PI_RUNTIME_BIN="$PI_RUNTIME_DIR/pi/bin/pi"
-if [ -x "$PI_RUNTIME_BIN" ]; then
-  export PATH="$PI_RUNTIME_DIR/pi/bin:$PATH"
-elif [ -z "${{PI_CMD:-}}" ]; then
-  echo "[agent-autostart] missing pi runtime at $PI_RUNTIME_BIN" >&2
-  exit 1
-fi
-if [ -z "${{PI_CMD:-}}" ]; then
-  export PI_CMD="pi --mode rpc --no-session --provider anthropic"
-fi
-
-BRIDGE_CMD="bash /workspace/pika-agent/pi-bridge.sh"
-if command -v python3 >/dev/null 2>&1; then
-  BRIDGE_CMD="python3 /workspace/pika-agent/pi-bridge.py"
-fi
-
-if [ -z "${{PIKA_MARMOTD_BIN:-}}" ] || [ ! -x "${{PIKA_MARMOTD_BIN}}" ]; then
-  echo "[agent-autostart] missing packaged marmotd at ${{PIKA_MARMOTD_BIN:-<unset>}}" >&2
-  exit 1
-fi
-
-"${{PIKA_MARMOTD_BIN}}" init --nsec "${{NOSTR_SECRET_KEY}}" --state-dir "$STATE_DIR" >/dev/null
-exec "${{PIKA_MARMOTD_BIN}}" daemon {} --state-dir "$STATE_DIR" --auto-accept-welcomes --exec "$BRIDGE_CMD"
-    "#,
-        relay_flags
-    );
-    let relays_json = serde_json::to_string(&spawn.relays).unwrap_or_else(|_| "[]".to_string());
-
-    let mut env = std::collections::BTreeMap::new();
-    env.insert("NOSTR_SECRET_KEY".to_string(), spawn.bot_secret_hex.clone());
-    env.insert("ANTHROPIC_API_KEY".to_string(), spawn.anthropic_key.clone());
-    env.insert(
-        "CARGO_TARGET_DIR".to_string(),
-        "/workspace/pika-agent/target".to_string(),
-    );
-    env.insert("PI_RELAYS_JSON".to_string(), relays_json);
-    env.insert(
-        "MARMOTD_SKIP_RELAY_READY_CHECK".to_string(),
-        "1".to_string(),
-    );
-    env.insert("PI_BRIDGE_ENABLE_CHAT".to_string(), "1".to_string());
-    if let Some(openai) = &spawn.openai_key {
-        env.insert("OPENAI_API_KEY".to_string(), openai.clone());
-    }
-    if let Some(model) = &spawn.pi_model {
-        env.insert("PI_MODEL".to_string(), model.clone());
-    }
-
-    let mut files = std::collections::BTreeMap::new();
-    files.insert(
-        "workspace/pika-agent/pi-bridge.py".to_string(),
-        PI_BRIDGE_PY.to_string(),
-    );
-    files.insert(
-        "workspace/pika-agent/pi-bridge.sh".to_string(),
-        PI_BRIDGE_SH.to_string(),
-    );
-    files.insert("workspace/pika-agent/run-agent.sh".to_string(), run_script);
-
-    microvm_spawner::GuestAutostartRequest {
-        command: "bash /workspace/pika-agent/run-agent.sh".to_string(),
-        env,
-        files,
-    }
-}
-
-async fn cmd_agent_new(cli: &Cli, args: &AgentNewArgs) -> anyhow::Result<()> {
+async fn cmd_agent_new_fly(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
+    let fly = fly_machines::FlyClient::from_env()?;
     let anthropic_key =
         std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
     let openai_key = std::env::var("OPENAI_API_KEY").ok();
@@ -1543,273 +1314,429 @@ async fn cmd_agent_new(cli: &Cli, args: &AgentNewArgs) -> anyhow::Result<()> {
         .filter(|v| !v.trim().is_empty());
     let relays = resolve_relays(cli);
 
-    let provider = match args.provider {
-        AgentProviderArg::Fly => AgentProvider::Fly(FlyProvider {
-            client: fly_machines::FlyClient::from_env()?,
-        }),
-        AgentProviderArg::Microvm => AgentProvider::Microvm(MicrovmProvider {
-            client: microvm_spawner::MicrovmSpawnerClient::new(args.spawner_url.clone()),
-        }),
-    };
-
-    if matches!(args.provider, AgentProviderArg::Fly) && args.keep {
-        eprintln!("--keep has no effect for --provider fly.");
-    }
-
     let (keys, mdk) = open(cli)?;
     eprintln!("Your pubkey: {}", keys.public_key().to_hex());
 
-    let bot_keys = if matches!(args.provider, AgentProviderArg::Microvm)
-        && microvm_reuse_bot_identity_enabled()
-    {
-        load_or_create_microvm_bot_keys(&cli.state_dir)?
-    } else {
-        Keys::generate()
-    };
+    let bot_keys = Keys::generate();
     let bot_pubkey = bot_keys.public_key();
     let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
     eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
 
-    let spawn = AgentSpawnConfig {
-        bot_secret_hex,
-        anthropic_key,
-        openai_key,
-        pi_model,
-        relays: relays.clone(),
-    };
+    let suffix = format!("{:08x}", rand::random::<u32>());
+    let volume_name = format!("agent_{suffix}");
+    let machine_name = name
+        .map(std::string::ToString::to_string)
+        .unwrap_or_else(|| format!("agent-{suffix}"));
 
-    let runtime = provider.spawn(args, &spawn).await?;
-    let should_teardown = matches!(runtime, AgentRuntimeHandle::Microvm { .. }) && !args.keep;
-    let keypackage_timeout = provider.keypackage_timeout();
-    let keypackage_fetch_timeout = provider.keypackage_fetch_timeout();
-    let keypackage_retry_interval = provider.keypackage_retry_interval();
-    let keypackage_primary_only_window = provider.keypackage_primary_only_window();
+    eprint!("Creating Fly volume...");
+    std::io::stderr().flush().ok();
+    let volume = fly.create_volume(&volume_name).await?;
+    eprintln!(" done ({})", volume.id);
 
-    let session_result = async {
-        let client = client_all(cli, &keys).await?;
-        let relays = relay_util::parse_relay_urls(&relays)?;
-        let mut primary_relay_only = Vec::new();
-        if let Some(primary) = relays.first() {
-            primary_relay_only.push(primary.clone());
-        }
+    let mut env = HashMap::new();
+    env.insert("STATE_DIR".to_string(), "/app/state".to_string());
+    env.insert("NOSTR_SECRET_KEY".to_string(), bot_secret_hex);
+    env.insert("ANTHROPIC_API_KEY".to_string(), anthropic_key);
+    if let Some(openai) = openai_key {
+        env.insert("OPENAI_API_KEY".to_string(), openai);
+    }
+    if let Some(model) = pi_model {
+        env.insert("PI_MODEL".to_string(), model);
+    }
 
-        eprint!("Waiting for bot to publish key package");
-        std::io::stderr().flush().ok();
-        let start = tokio::time::Instant::now();
-        let bot_kp = loop {
-            let fetch_relays: &[RelayUrl] = if let Some(window) = keypackage_primary_only_window {
-                if start.elapsed() < window && !primary_relay_only.is_empty() {
-                    &primary_relay_only
-                } else {
-                    &relays
+    eprint!("Creating Fly machine...");
+    std::io::stderr().flush().ok();
+    let machine = fly.create_machine(&machine_name, &volume.id, env).await?;
+    eprintln!(" done ({})", machine.id);
+
+    let client = client_all(cli, &keys).await?;
+    let relays = relay_util::parse_relay_urls(&relays)?;
+
+    eprint!("Waiting for bot to publish key package");
+    std::io::stderr().flush().ok();
+    let start = tokio::time::Instant::now();
+    let keypackage_timeout = Duration::from_secs(120);
+    let bot_kp = loop {
+        match relay_util::fetch_latest_key_package(
+            &client,
+            &bot_pubkey,
+            &relays,
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(kp) => break kp,
+            Err(err) => {
+                if start.elapsed() >= keypackage_timeout {
+                    client.shutdown().await;
+                    anyhow::bail!(
+                        "timed out waiting for bot key package after {}s: {err}",
+                        keypackage_timeout.as_secs()
+                    );
                 }
-            } else {
-                &relays
-            };
-            match relay_util::fetch_latest_key_package(
-                &client,
-                &bot_pubkey,
-                fetch_relays,
-                keypackage_fetch_timeout,
-            )
-            .await
-            {
-                Ok(kp) => break kp,
-                Err(err) => {
-                    if start.elapsed() >= keypackage_timeout {
-                        client.shutdown().await;
-                        anyhow::bail!(
-                            "timed out waiting for bot key package after {}s: {err}",
-                            keypackage_timeout.as_secs()
-                        );
-                    }
-                    eprint!(".");
-                    std::io::stderr().flush().ok();
-                    tokio::time::sleep(keypackage_retry_interval).await;
-                }
+                eprint!(".");
+                std::io::stderr().flush().ok();
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
-        };
-        eprintln!(" done");
-
-        eprint!("Creating MLS group and inviting bot...");
-        std::io::stderr().flush().ok();
-        let config = NostrGroupConfigData::new(
-            "Agent Chat".to_string(),
-            String::new(),
-            None,
-            None,
-            None,
-            relays.clone(),
-            vec![keys.public_key(), bot_pubkey],
-        );
-        let result = mdk
-            .create_group(&keys.public_key(), vec![bot_kp], config)
-            .context("create group for bot")?;
-        let mls_group_id = result.group.mls_group_id.clone();
-        let nostr_group_id_hex = hex::encode(result.group.nostr_group_id);
-
-        for rumor in result.welcome_rumors {
-            let giftwrap = EventBuilder::gift_wrap(&keys, &bot_pubkey, rumor, [])
-                .await
-                .context("build welcome giftwrap")?;
-            relay_util::publish_and_confirm(&client, &relays, &giftwrap, "welcome").await?;
         }
-        eprintln!(" done");
+    };
+    eprintln!(" done");
 
-        let group_filter = Filter::new()
-            .kind(Kind::MlsGroupMessage)
-            .custom_tag(SingleLetterTag::lowercase(Alphabet::H), &nostr_group_id_hex)
-            .since(Timestamp::now());
-        let sub = client.subscribe(group_filter, None).await?;
-        let mut rx = client.notifications();
+    eprint!("Creating MLS group and inviting bot...");
+    std::io::stderr().flush().ok();
+    let config = NostrGroupConfigData::new(
+        "Agent Chat".to_string(),
+        String::new(),
+        None,
+        None,
+        None,
+        relays.clone(),
+        vec![keys.public_key(), bot_pubkey],
+    );
+    let result = mdk
+        .create_group(&keys.public_key(), vec![bot_kp], config)
+        .context("create group for bot")?;
+    let mls_group_id = result.group.mls_group_id.clone();
+    let nostr_group_id_hex = hex::encode(result.group.nostr_group_id);
 
-        let bot_npub = bot_pubkey
-            .to_bech32()
-            .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-        eprintln!();
-        eprintln!("Connected to pi agent ({bot_npub})");
-        eprintln!("Type messages below. Ctrl-C to exit.");
-        eprintln!();
+    for rumor in result.welcome_rumors {
+        let giftwrap = EventBuilder::gift_wrap(&keys, &bot_pubkey, rumor, [])
+            .await
+            .context("build welcome giftwrap")?;
+        relay_util::publish_and_confirm(&client, &relays, &giftwrap, "welcome").await?;
+    }
+    eprintln!(" done");
 
-        let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        eprint!("you> ");
-        std::io::stderr().flush().ok();
+    let group_filter = Filter::new()
+        .kind(Kind::MlsGroupMessage)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), &nostr_group_id_hex)
+        .since(Timestamp::now());
+    let sub = client.subscribe(group_filter, None).await?;
+    let mut rx = client.notifications();
 
-        loop {
-            tokio::select! {
-                line = stdin.next_line() => {
-                    let Some(line) = line? else { break };
-                    let line = line.trim().to_string();
-                    if line.is_empty() {
-                        eprint!("you> ");
-                        std::io::stderr().flush().ok();
-                        continue;
-                    }
+    let bot_npub = bot_pubkey
+        .to_bech32()
+        .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
+    eprintln!();
+    eprintln!("Connected to pi agent ({bot_npub})");
+    eprintln!("Type messages below. Ctrl-C to exit.");
+    eprintln!();
 
-                    let rumor = EventBuilder::new(Kind::ChatMessage, &line).build(keys.public_key());
-                    let msg_event = mdk.create_message(&mls_group_id, rumor).context("create chat message")?;
-                    relay_util::publish_and_confirm(&client, &relays, &msg_event, "chat").await?;
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    eprint!("you> ");
+    std::io::stderr().flush().ok();
+
+    loop {
+        tokio::select! {
+            line = stdin.next_line() => {
+                let Some(line) = line? else { break };
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    eprint!("you> ");
+                    std::io::stderr().flush().ok();
+                    continue;
+                }
+
+                let rumor = EventBuilder::new(Kind::ChatMessage, &line).build(keys.public_key());
+                let msg_event = mdk.create_message(&mls_group_id, rumor).context("create chat message")?;
+                relay_util::publish_and_confirm(&client, &relays, &msg_event, "chat").await?;
+                eprint!("you> ");
+                std::io::stderr().flush().ok();
+            }
+            notification = rx.recv() => {
+                let notification = match notification {
+                    Ok(n) => n,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                };
+                let RelayPoolNotification::Event { subscription_id, event, .. } = notification else { continue };
+                if subscription_id != sub.val {
+                    continue;
+                }
+                let event = *event;
+                if event.kind != Kind::MlsGroupMessage {
+                    continue;
+                }
+                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
+                    mdk.process_message(&event)
+                    && msg.pubkey == bot_pubkey
+                {
+                    eprint!("\r");
+                    println!("pi> {}", msg.content);
+                    println!();
                     eprint!("you> ");
                     std::io::stderr().flush().ok();
                 }
-                notification = rx.recv() => {
-                    let notification = match notification {
-                        Ok(n) => n,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(_) => break,
-                    };
-                    let RelayPoolNotification::Event { subscription_id, event, .. } = notification else { continue };
-                    if subscription_id != sub.val {
-                        continue;
-                    }
-                    let event = *event;
-                    if event.kind != Kind::MlsGroupMessage {
-                        continue;
-                    }
-                    if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-                        mdk.process_message(&event)
-                        && msg.pubkey == bot_pubkey
-                    {
-                        eprint!("\r");
-                        println!("pi> {}", msg.content);
-                        println!();
-                        eprint!("you> ");
-                        std::io::stderr().flush().ok();
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    break;
-                }
             }
-        }
-
-        client.unsubscribe_all().await;
-        client.shutdown().await;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    let mut teardown_error: Option<anyhow::Error> = None;
-    if should_teardown {
-        eprint!("Deleting microVM...");
-        std::io::stderr().flush().ok();
-        match provider.teardown(&runtime).await {
-            Ok(()) => eprintln!(" done"),
-            Err(err) => {
-                eprintln!(" failed");
-                eprintln!("Teardown error: {err}");
-                teardown_error = Some(err);
+            _ = tokio::signal::ctrl_c() => {
+                break;
             }
         }
     }
 
+    client.unsubscribe_all().await;
+    client.shutdown().await;
     eprintln!();
-    match &runtime {
-        AgentRuntimeHandle::Fly {
-            machine_id,
-            app_name,
-        } => {
-            eprintln!("Machine {machine_id} is still running.");
-            eprintln!("Stop with: fly machine stop {machine_id} -a {app_name}");
-        }
-        AgentRuntimeHandle::Microvm {
-            spawner_url,
-            vm_id,
-            ip,
-        } => {
-            if args.keep {
-                eprintln!("microVM {vm_id} is still running at {ip}.");
-                eprintln!("Inspect: curl {spawner_url}/vms/{vm_id}");
-                eprintln!("Delete:  curl -X DELETE {spawner_url}/vms/{vm_id}");
-            } else {
-                eprintln!("microVM {vm_id} has been deleted.");
-            }
-        }
-    }
-
-    session_result?;
-    if let Some(err) = teardown_error {
-        return Err(err);
-    }
+    eprintln!("Machine {} is still running.", machine.id);
+    eprintln!(
+        "Stop with: fly machine stop {} -a {}",
+        machine.id,
+        fly.app_name()
+    );
     Ok(())
 }
 
-fn load_or_create_microvm_bot_keys(state_dir: &Path) -> anyhow::Result<Keys> {
-    let path = state_dir.join("agent-microvm-bot-secret.hex");
-    if let Ok(raw) = fs::read_to_string(&path) {
-        let secret = raw.trim();
-        if !secret.is_empty() {
-            return Keys::parse(secret)
-                .with_context(|| format!("parse bot key from {}", path.display()));
+async fn cmd_agent_new_workers(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
+    let workers = workers_agents::WorkersClient::from_env()?;
+    let relay_urls = resolve_relays(cli);
+    let relays = relay_util::parse_relay_urls(&relay_urls)?;
+    let (keys, mdk) = open(cli)?;
+    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
+    let client = client_all(cli, &keys).await?;
+    let listener_client = client_all(cli, &keys).await?;
+    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+
+    let agent_name = name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("agent-{:08x}", rand::random::<u32>()));
+    let bot_keys = Keys::generate();
+    let bot_pubkey = bot_keys.public_key();
+
+    eprint!("Creating Workers agent...");
+    std::io::stderr().flush().ok();
+    let mut status = workers
+        .create_agent(&workers_agents::CreateAgentRequest {
+            name: Some(agent_name.clone()),
+            brain: "pi".to_string(),
+            relay_urls: relay_urls.clone(),
+            bot_secret_key_hex: Some(bot_keys.secret_key().to_secret_hex()),
+        })
+        .await?;
+    let expected_bot_pubkey_hex = bot_pubkey.to_hex();
+    if status.bot_pubkey.trim().to_lowercase() != expected_bot_pubkey_hex {
+        anyhow::bail!(
+            "workers bot pubkey mismatch: expected {}, got {}",
+            expected_bot_pubkey_hex,
+            status.bot_pubkey
+        );
+    }
+    eprintln!(" done ({})", status.id);
+    eprintln!("Bot pubkey: {}", status.bot_pubkey);
+
+    if let Some(probe) = &status.relay_probe {
+        if probe.ok {
+            eprintln!(
+                "Relay probe ok: {}{}",
+                probe.relay,
+                probe
+                    .status_code
+                    .map(|code| format!(" (HTTP {code})"))
+                    .unwrap_or_default()
+            );
+        } else {
+            eprintln!(
+                "Relay probe failed: {}{}",
+                probe.relay,
+                probe
+                    .error
+                    .as_deref()
+                    .map(|err| format!(" ({err})"))
+                    .unwrap_or_default()
+            );
         }
     }
 
-    fs::create_dir_all(state_dir)
-        .with_context(|| format!("create state dir {}", state_dir.display()))?;
-    let keys = Keys::generate();
-    fs::write(&path, format!("{}\n", keys.secret_key().to_secret_hex()))
-        .with_context(|| format!("write bot key to {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)
-            .with_context(|| format!("stat bot key {}", path.display()))?
-            .permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)
-            .with_context(|| format!("chmod 600 {}", path.display()))?;
+    eprint!("Waiting for bot to publish key package");
+    std::io::stderr().flush().ok();
+    let start = tokio::time::Instant::now();
+    let timeout = Duration::from_secs(120);
+    while status.key_package_published_at_ms.is_none() {
+        if start.elapsed() >= timeout {
+            anyhow::bail!(
+                "timed out waiting for workers bot key package after {}s",
+                timeout.as_secs()
+            );
+        }
+        eprint!(".");
+        std::io::stderr().flush().ok();
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        status = workers.get_agent(&status.id).await?;
     }
-    Ok(keys)
-}
+    eprintln!(" done");
+    if let Some(ts) = status.key_package_published_at_ms {
+        eprintln!("Bot key package published at {} ms", ts);
+    }
 
-fn microvm_reuse_bot_identity_enabled() -> bool {
-    match std::env::var("PIKA_MICROVM_REUSE_BOT_IDENTITY") {
-        Ok(raw) => matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
+    eprint!("Fetching bot key package from relay");
+    std::io::stderr().flush().ok();
+    let keypackage_fetch_started = tokio::time::Instant::now();
+    let keypackage_fetch_timeout = Duration::from_secs(120);
+    let bot_kp = loop {
+        if keypackage_fetch_started.elapsed() >= keypackage_fetch_timeout {
+            anyhow::bail!(
+                "timed out fetching workers bot key package from relay after {}s",
+                keypackage_fetch_timeout.as_secs()
+            );
+        }
+        match relay_util::fetch_latest_key_package(
+            &client,
+            &bot_pubkey,
+            &relays,
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(kp) => break kp,
+            Err(_) => {
+                eprint!(".");
+                std::io::stderr().flush().ok();
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
+        }
+    };
+    eprintln!(" done");
+
+    eprint!("Creating MLS group and inviting workers bot...");
+    std::io::stderr().flush().ok();
+    let config = NostrGroupConfigData::new(
+        "Agent Chat".to_string(),
+        String::new(),
+        None,
+        None,
+        None,
+        relays.clone(),
+        vec![keys.public_key(), bot_pubkey],
+    );
+    let result = mdk
+        .create_group(&keys.public_key(), vec![bot_kp], config)
+        .context("create workers MLS group")?;
+    let mls_group_id = result.group.mls_group_id.clone();
+    let nostr_group_id_hex = hex::encode(result.group.nostr_group_id);
+    for rumor in result.welcome_rumors {
+        let rumor_json = rumor.as_json();
+        let giftwrap = EventBuilder::gift_wrap(&keys, &bot_pubkey, rumor, [])
+            .await
+            .context("build workers welcome giftwrap")?;
+        relay_util::publish_and_confirm(&client, &relays, &giftwrap, "workers welcome").await?;
+        let wrapper_event_id_hex = giftwrap.id.to_hex();
+        workers
+            .runtime_process_welcome_event_json(
+                &status.id,
+                &nostr_group_id_hex,
+                Some(&wrapper_event_id_hex),
+                Some(&rumor_json),
+            )
+            .await
+            .context("process workers runtime welcome")?;
     }
+    let group_filter = Filter::new()
+        .kind(Kind::MlsGroupMessage)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), &nostr_group_id_hex)
+        .since(Timestamp::now());
+    let sub = listener_client.subscribe(group_filter, None).await?;
+    let mut rx = listener_client.notifications();
+    eprintln!(" done");
+
+    eprintln!();
+    eprintln!("Connected to workers agent {} ({})", status.id, status.name);
+    eprintln!("Type messages below. Ctrl-C to exit.");
+    eprintln!();
+
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_closed = false;
+    let mut pending_replies: usize = 0;
+    let mut eof_wait_started: Option<tokio::time::Instant> = None;
+    eprint!("you> ");
+    std::io::stderr().flush().ok();
+
+    loop {
+        tokio::select! {
+            line = stdin.next_line(), if !stdin_closed => {
+                let Some(line) = line? else {
+                    stdin_closed = true;
+                    eof_wait_started = Some(tokio::time::Instant::now());
+                    if pending_replies == 0 {
+                        break;
+                    }
+                    continue;
+                };
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    eprint!("you> ");
+                    std::io::stderr().flush().ok();
+                    continue;
+                }
+
+                let rumor = EventBuilder::new(Kind::ChatMessage, &line).build(keys.public_key());
+                let msg_event = mdk
+                    .create_message(&mls_group_id, rumor)
+                    .context("create workers user chat message")?;
+                relay_util::publish_and_confirm(&client, &relays, &msg_event, "workers chat user")
+                    .await?;
+                pending_replies = pending_replies.saturating_add(1);
+                eprint!("you> ");
+                std::io::stderr().flush().ok();
+            }
+            notification = rx.recv() => {
+                let notification = match notification {
+                    Ok(n) => n,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                };
+                let RelayPoolNotification::Event { subscription_id, event, .. } = notification else { continue };
+                if subscription_id != sub.val {
+                    continue;
+                }
+                let event = *event;
+                if event.kind != Kind::MlsGroupMessage {
+                    continue;
+                }
+                if !seen_mls_event_ids.insert(event.id) {
+                    continue;
+                }
+                let mut printed = false;
+                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
+                    mdk.process_message(&event)
+                    && msg.pubkey == bot_pubkey
+                {
+                    printed = true;
+                    pending_replies = pending_replies.saturating_sub(1);
+                    eprint!("\r");
+                    println!("pi> {}", msg.content);
+                    println!();
+                }
+                if printed {
+                    if !stdin_closed {
+                        eprint!("you> ");
+                        std::io::stderr().flush().ok();
+                    } else if pending_replies == 0 {
+                        break;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)), if stdin_closed && pending_replies > 0 => {
+                if let Some(started) = eof_wait_started
+                    && started.elapsed() > Duration::from_secs(20)
+                {
+                    anyhow::bail!("timed out waiting for workers relay reply");
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+        }
+    }
+
+    listener_client.unsubscribe_all().await;
+    listener_client.shutdown().await;
+    client.unsubscribe_all().await;
+    client.shutdown().await;
+    persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+
+    eprintln!();
+    eprintln!("Workers agent {} is still active.", status.id);
+    eprintln!("Inspect with: {}/agents/{}", workers.base_url(), status.id);
+    Ok(())
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {

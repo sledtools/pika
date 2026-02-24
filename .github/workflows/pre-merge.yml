@@ -68,12 +68,15 @@ jobs:
             agent_contracts:
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'cli/Cargo.toml'
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/**'
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
-              - 'cli/**'
+              - 'cli/src/fly_machines.rs'
+              - 'cli/src/microvm_spawner.rs'
+              - 'cli/src/agent/microvm.rs'
               - 'docs/agent-ci.md'
             rmp:
               - 'Cargo.toml'

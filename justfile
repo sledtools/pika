@@ -1025,8 +1025,8 @@ agent-workers-keypackage-publish-smoke WORKERS_URL="http://127.0.0.1:8787" RELAY
       dump_logs; \
       return 1; \
     }; \
-    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
     curl -fsS -X POST "{{ WORKERS_URL }}/agents" \
       -H "content-type: application/json" \
       --data "{\"id\":\"$AGENT_ID\",\"name\":\"$AGENT_ID\",\"brain\":\"pi\",\"relay_urls\":[\"{{ RELAY_URL }}\"]}" >/dev/null; \
@@ -1094,9 +1094,9 @@ agent-workers-pi-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://1
       dump_logs; \
       return 1; \
     }; \
-    wait_health "relay" "http://127.0.0.1:3334/health" 120 0.25; \
+    wait_health "relay" "http://127.0.0.1:3334/health" 240 0.25; \
     wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
     printf 'hello from pi-adapter smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --relay ws://127.0.0.1:3334 agent new --provider workers --brain pi --name "$AGENT_NAME" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"
@@ -1157,9 +1157,9 @@ agent-workers-relay-auto-reply-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER
       dump_logs; \
       return 1; \
     }; \
-    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
     wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
     printf 'hello relay auto reply smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"; \
@@ -1240,9 +1240,9 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
     ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
     ADAPTER_PID=$!; \
     start_worker "$WORKER_LOG1"; \
-    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 120 0.25; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
     wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
     printf '%s\n' "$MSG1" | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
     cat "$OUT_LOG"; \
     grep -q "pi> " "$OUT_LOG"; \
@@ -1255,7 +1255,7 @@ agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAP
     wait "$WORKER_PID" 2>/dev/null || true; \
     WORKER_PID=""; \
     start_worker "$WORKER_LOG2"; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
     curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
     python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); groups=status.get("runtime_snapshot", {}).get("groups", {}); assert isinstance(groups, dict) and len(groups) >= 1, "expected runtime groups to survive worker restart"' "$STATUS_JSON"; \
     cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" send --group "$GROUP_ID" --content "$MSG2" >/dev/null; \

@@ -167,6 +167,11 @@
           ];
         };
 
+        rustToolchainWorkerWasm = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
         hasAndroidSdk = builtins.hasAttr system android-nixpkgs.sdk;
         hasMoqRelay = builtins.hasAttr system moq.packages;
 
@@ -307,6 +312,7 @@
             pkgs.nodejs_22
             pkgs.python3
             pkgs.curl
+            pkgs.cloudflared
             pkgs.git
             pkgs.gh
             pkgs.actionlint
@@ -503,6 +509,29 @@ PGEOF
             echo ""
             echo "RMP dev environment ready"
             echo "  Rust: $(rustc --version)"
+            echo ""
+          '';
+        };
+
+        devShells.worker-wasm = pkgs.mkShell {
+          packages = [
+            rustToolchainWorkerWasm
+            pkgs.nodejs_22
+            pkgs.wasm-pack
+            pkgs.binaryen
+            pkgs.just
+            pkgs.curl
+            pkgs.git
+          ];
+
+          shellHook = ''
+            export IN_NIX_SHELL=1
+            export PATH=$PWD/tools:$PATH
+            echo ""
+            echo "Worker+Wasm dev environment ready"
+            echo "  Rust: $(rustc --version)"
+            echo "  Node: $(node --version)"
+            echo "  Run wrangler via: npx wrangler ..."
             echo ""
           '';
         };

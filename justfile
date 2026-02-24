@@ -43,6 +43,14 @@ info:
     @echo "  Build-check desktop app:"
     @echo "    just desktop-check"
     @echo
+    @echo "Agent demos"
+    @echo "  Fly demo:"
+    @echo "    just agent"
+    @echo "  Cloudflare demo (deployed worker):"
+    @echo "    just agent-cf"
+    @echo "  Local worker dev:"
+    @echo "    just agent-workers"
+    @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
     @echo "    just rmp run ios"
@@ -242,6 +250,27 @@ pre-merge-pikachat:
 pre-merge-rmp:
     just rmp-init-smoke-ci
     @echo "pre-merge-rmp complete"
+
+# CI-safe pre-merge for the Workers agent lane (non-blocking in CI for now).
+pre-merge-workers:
+    set -euo pipefail; \
+    SYSROOT="$(rustc --print sysroot 2>/dev/null || true)"; \
+    TARGET_LIBDIR="${SYSROOT%/}/lib/rustlib/wasm32-unknown-unknown"; \
+    if command -v wasm-pack >/dev/null 2>&1 && [ -n "$SYSROOT" ] && [ -d "$TARGET_LIBDIR" ]; then \
+      just agent-workers-build-wasm; \
+    else \
+      echo "warning: wasm-pack and/or wasm32-unknown-unknown target not found; skipping agent-workers-build-wasm"; \
+    fi
+    set -euo pipefail; \
+    cd workers/agent-demo; \
+    npm ci; \
+    npm run check
+    cargo check -p pikachat-wasm
+    cargo test -p pikachat-wasm
+    just agent-workers-keypackage-publish-smoke
+    just agent-workers-relay-auto-reply-smoke
+    just agent-workers-restart-persistence-smoke
+    @echo "pre-merge-workers complete"
 
 # Single CI entrypoint for the whole repo.
 pre-merge:
@@ -728,45 +757,7 @@ agent-fly-moq RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nos
     set -a; \
     source .env; \
     set +a; \
-    missing=(); \
-    for key in FLY_API_TOKEN ANTHROPIC_API_KEY; do \
-      if [ -z "${!key:-}" ]; then \
-        missing+=("$key"); \
-      fi; \
-    done; \
-    if [ "${#missing[@]}" -gt 0 ]; then \
-      echo "error: missing required env var(s): ${missing[*]}"; \
-      echo "hint: define them in .env (example: FLY_API_TOKEN=... and ANTHROPIC_API_KEY=...)"; \
-      exit 1; \
-    fi; \
-    cargo build -p pikachat >/dev/null; \
-    app_name="${FLY_BOT_APP_NAME:-pika-bot}"; \
-    if [ "${PIKA_AGENT_USE_PINNED_IMAGE:-0}" = "1" ] && [ -n "${FLY_BOT_IMAGE:-}" ]; then \
-      echo "info: using pinned FLY_BOT_IMAGE=$FLY_BOT_IMAGE"; \
-    else \
-      if [ -n "${FLY_BOT_IMAGE:-}" ]; then \
-        echo "info: ignoring pinned FLY_BOT_IMAGE=$FLY_BOT_IMAGE (set PIKA_AGENT_USE_PINNED_IMAGE=1 to use it)"; \
-      fi; \
-      resolved_image="$(fly machines list -a "$app_name" --json 2>/dev/null | python3 -c 'import json,sys; m=json.load(sys.stdin); n=[x for x in m if not (x.get("name") or "").startswith("agent-")]; c=sorted(n or m, key=lambda x:x.get("updated_at","")); cfg=(c[-1].get("config") if c else {}) or {}; sys.stdout.write(cfg.get("image") or "")')"; \
-      if [ -n "$resolved_image" ]; then \
-        export FLY_BOT_IMAGE="$resolved_image"; \
-        echo "info: resolved FLY_BOT_IMAGE=$FLY_BOT_IMAGE"; \
-      else \
-        echo "error: could not resolve FLY_BOT_IMAGE from app '$app_name'"; \
-        exit 1; \
-      fi; \
-    fi; \
-    export PIKA_AGENT_MARMOTD_BIN="$PWD/target/debug/pikachat"; \
-    export PIKA_AGENT_MOQ_URLS="{{ MOQ_US }},{{ MOQ_EU }}"; \
     cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new
-
-# Run `pikachat agent new` over standard Marmot/Nostr transport (no MoQ call transport).
-agent-fly-rpc:
-    set -euo pipefail; \
-    export PIKA_AGENT_UI_MODE=nostr; \
-    if [ -n "${FLY_BOT_APP_NAME_RPC:-}" ]; then export FLY_BOT_APP_NAME="$FLY_BOT_APP_NAME_RPC"; fi; \
-    if [ -n "${FLY_BOT_IMAGE_RPC:-}" ]; then export FLY_BOT_IMAGE="$FLY_BOT_IMAGE_RPC"; export PIKA_AGENT_USE_PINNED_IMAGE=1; fi; \
-    just agent-fly-moq wss://eu.nostr.pikachat.org wss://us-east.nostr.pikachat.org
 
 # Deploy the pika-bot Docker image to Fly.
 deploy-bot:
@@ -785,58 +776,496 @@ agent-replay-test RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east
     export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"; \
     just agent-fly-moq "{{ RELAY_EU }}" "{{ RELAY_US }}" "{{ MOQ_US }}" "{{ MOQ_EU }}"
 
-# Backward-compatible alias for Fly+MoQ agent flow.
-agent:
-    just agent-fly-moq
+# Deploy/update the Cloudflare Worker and run `pikachat agent new --provider workers`.
 
-# Run `pikachat agent new` against local vm-spawner (loads ANTHROPIC_API_KEY from .env).
-agent-microvm RELAY_PRIMARY="wss://us-east.nostr.pikachat.org" RELAY_FALLBACK="" SPAWNER_URL="http://127.0.0.1:8080" SPAWN_VARIANT="prebuilt-cow":
+# Uses existing vendored wasm by default; pass `FORCE_WASM_BUILD=1` to rebuild.
+agent-cf RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" WORKERS_URL="" FORCE_WASM_BUILD="0":
     set -euo pipefail; \
-    spawner_url="{{ SPAWNER_URL }}"; \
-    spawn_variant="{{ SPAWN_VARIANT }}"; \
-    tunnel_socket="${TMPDIR:-/tmp}/pika-build-vmspawner.sock"; \
-    relay_args="--relay {{ RELAY_PRIMARY }}"; \
-    if [ -n "{{ RELAY_FALLBACK }}" ]; then \
-      relay_args="$relay_args --relay {{ RELAY_FALLBACK }}"; \
+    if [ -f .env ]; then \
+      set -a; \
+      source .env; \
+      set +a; \
     fi; \
-    if [ "$spawn_variant" != "prebuilt" ] && [ "$spawn_variant" != "prebuilt-cow" ]; then \
-      echo "error: SPAWN_VARIANT must be prebuilt or prebuilt-cow for MVP demo"; \
-      exit 1; \
-    fi; \
-    is_local_spawner=0; \
-    if [[ "$spawner_url" == "http://127.0.0.1:8080" || "$spawner_url" == "http://localhost:8080" ]]; then \
-      is_local_spawner=1; \
-    fi; \
-    health_ok=0; \
-    if curl -fsS "$spawner_url/healthz" >/dev/null; then \
-      health_ok=1; \
-    fi; \
-    if [ "$health_ok" -eq 0 ] && [ "$is_local_spawner" -eq 1 ]; then \
-      echo "vm-spawner tunnel not ready; starting SSH tunnel to pika-build..."; \
-      ssh -f -N -M -S "$tunnel_socket" -o ExitOnForwardFailure=yes -L 8080:127.0.0.1:8080 pika-build || true; \
-      for _ in $(seq 1 20); do \
-        if curl -fsS "$spawner_url/healthz" >/dev/null; then \
-          health_ok=1; \
+    AUTO_ADAPTER_PID=""; \
+    AUTO_TUNNEL_PID=""; \
+    AUTO_ADAPTER_LOG=""; \
+    AUTO_TUNNEL_LOG=""; \
+    cleanup() { \
+      if [ -n "$AUTO_TUNNEL_PID" ]; then kill "$AUTO_TUNNEL_PID" >/dev/null 2>&1 || true; fi; \
+      if [ -n "$AUTO_ADAPTER_PID" ]; then kill "$AUTO_ADAPTER_PID" >/dev/null 2>&1 || true; fi; \
+      if [ -n "$AUTO_TUNNEL_LOG" ]; then rm -f "$AUTO_TUNNEL_LOG"; fi; \
+      if [ -n "$AUTO_ADAPTER_LOG" ]; then rm -f "$AUTO_ADAPTER_LOG"; fi; \
+    }; \
+    trap cleanup EXIT; \
+    if [ -z "${PI_ADAPTER_BASE_URL:-}" ] && [ "${PI_ADAPTER_AUTO:-1}" = "1" ]; then \
+      ADAPTER_PORT="${PI_ADAPTER_AUTO_PORT:-8788}"; \
+      AUTO_ADAPTER_LOG="$(mktemp -t pi-adapter-local.XXXXXX.log)"; \
+      AUTO_TUNNEL_LOG="$(mktemp -t pi-adapter-tunnel.XXXXXX.log)"; \
+      ./tools/pi-adapter-local --host 127.0.0.1 --port "$ADAPTER_PORT" >"$AUTO_ADAPTER_LOG" 2>&1 & \
+      AUTO_ADAPTER_PID=$!; \
+      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+        if curl -fsS "http://127.0.0.1:$ADAPTER_PORT/health" >/dev/null 2>&1; then break; fi; \
+        sleep 0.2; \
+      done; \
+      if ! curl -fsS "http://127.0.0.1:$ADAPTER_PORT/health" >/dev/null 2>&1; then \
+        echo "error: failed to start local pi adapter shim"; \
+        sed -n '1,120p' "$AUTO_ADAPTER_LOG"; \
+        exit 1; \
+      fi; \
+      if ! command -v cloudflared >/dev/null 2>&1; then \
+        echo "error: cloudflared is required for adapter auto mode"; \
+        echo "install cloudflared or set PI_ADAPTER_BASE_URL explicitly"; \
+        exit 1; \
+      fi; \
+      PI_ADAPTER_BASE_URL=""; \
+      for TUNNEL_ATTEMPT in 1 2 3 4; do \
+        TUNNEL_OK=0; \
+        : >"$AUTO_TUNNEL_LOG"; \
+        cloudflared tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:$ADAPTER_PORT" >"$AUTO_TUNNEL_LOG" 2>&1 & \
+        AUTO_TUNNEL_PID=$!; \
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+                 21 22 23 24 25 26 27 28 29 30 \
+                 31 32 33 34 35 36 37 38 39 40 \
+                 41 42 43 44 45 46 47 48 49 50 \
+                 51 52 53 54 55 56 57 58 59 60; do \
+          if ! kill -0 "$AUTO_TUNNEL_PID" >/dev/null 2>&1; then break; fi; \
+          PI_ADAPTER_BASE_URL="$(grep -Eo 'https://[-a-z0-9]+[.]trycloudflare[.]com' "$AUTO_TUNNEL_LOG" | head -n 1 || true)"; \
+          if [ -n "$PI_ADAPTER_BASE_URL" ] && grep -q 'Registered tunnel connection' "$AUTO_TUNNEL_LOG"; then \
+            TUNNEL_OK=1; \
+            break; \
+          fi; \
+          sleep 0.5; \
+        done; \
+        if [ "$TUNNEL_OK" = "1" ]; then \
           break; \
         fi; \
-        sleep 0.25; \
+        if [ -n "$AUTO_TUNNEL_PID" ]; then \
+          kill "$AUTO_TUNNEL_PID" >/dev/null 2>&1 || true; \
+          wait "$AUTO_TUNNEL_PID" 2>/dev/null || true; \
+          AUTO_TUNNEL_PID=""; \
+        fi; \
+        PI_ADAPTER_BASE_URL=""; \
+        sleep 1; \
+      done; \
+      if [ -z "${PI_ADAPTER_BASE_URL:-}" ]; then \
+        echo "error: could not auto-provision PI_ADAPTER_BASE_URL"; \
+        echo "cloudflared quick tunnel did not become reachable after retries"; \
+        echo "set PI_ADAPTER_BASE_URL explicitly to continue"; \
+        if [ -n "$AUTO_TUNNEL_LOG" ]; then sed -n '1,200p' "$AUTO_TUNNEL_LOG"; fi; \
+        exit 1; \
+      fi; \
+      echo "Using auto PI_ADAPTER_BASE_URL: $PI_ADAPTER_BASE_URL"; \
+    fi; \
+    if [ -z "${PI_ADAPTER_BASE_URL:-}" ]; then \
+      echo "error: PI_ADAPTER_BASE_URL is required"; \
+      echo "set PI_ADAPTER_BASE_URL in .env (or env), or leave PI_ADAPTER_AUTO=1 to auto-start local adapter+tunnel"; \
+      exit 1; \
+    fi; \
+    if ! command -v cargo >/dev/null 2>&1; then \
+      echo "error: cargo is required on PATH"; \
+      exit 1; \
+    fi; \
+    if ! command -v npm >/dev/null 2>&1; then \
+      echo "error: npm is required on PATH"; \
+      exit 1; \
+    fi; \
+    if ! (cd workers/agent-demo && npx wrangler whoami >/dev/null 2>&1); then \
+      echo "error: wrangler is not authenticated (run: cd workers/agent-demo && npx wrangler login)"; \
+      exit 1; \
+    fi; \
+    if [ "{{ FORCE_WASM_BUILD }}" = "1" ] || [ ! -f workers/agent-demo/vendor/pikachat-wasm/package.json ]; then \
+      if ! command -v wasm-pack >/dev/null 2>&1; then \
+        echo "error: wasm-pack is required to build workers wasm (install wasm-pack or omit FORCE_WASM_BUILD)"; \
+        exit 1; \
+      fi; \
+      just agent-workers-build-wasm; \
+    fi; \
+    if [ ! -d workers/agent-demo/node_modules ]; then \
+      (cd workers/agent-demo && npm ci); \
+    fi; \
+    TOKEN="${PIKA_CF_WORKERS_API_TOKEN:-${PIKA_WORKERS_API_TOKEN:-}}"; \
+    if [ -z "$TOKEN" ]; then \
+      if command -v openssl >/dev/null 2>&1; then \
+        TOKEN="$(openssl rand -hex 32)"; \
+      else \
+        TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"; \
+      fi; \
+    fi; \
+    printf '%s' "$TOKEN" | (cd workers/agent-demo && npx wrangler secret put AGENT_API_TOKEN >/dev/null); \
+    if [ -n "${PI_ADAPTER_TOKEN:-}" ]; then \
+      printf '%s' "${PI_ADAPTER_TOKEN}" | (cd workers/agent-demo && npx wrangler secret put PI_ADAPTER_TOKEN >/dev/null); \
+    fi; \
+    DEPLOY_LOG="$(mktemp -t pika-agent-cf-deploy.XXXXXX.log)"; \
+    DEPLOY_CMD=(npx wrangler deploy); \
+    if [ -n "${PI_ADAPTER_BASE_URL:-}" ]; then \
+      DEPLOY_CMD+=(--var "PI_ADAPTER_BASE_URL:${PI_ADAPTER_BASE_URL}"); \
+    fi; \
+    if ! (cd workers/agent-demo && "${DEPLOY_CMD[@]}" >"$DEPLOY_LOG" 2>&1); then \
+      cat "$DEPLOY_LOG"; \
+      rm -f "$DEPLOY_LOG"; \
+      exit 1; \
+    fi; \
+    cat "$DEPLOY_LOG"; \
+    URL="$(strings "$DEPLOY_LOG" | grep -Eo 'https://[A-Za-z0-9._-]+[.]workers[.]dev' | head -n 1 || true)"; \
+    rm -f "$DEPLOY_LOG"; \
+    if [ -z "$URL" ]; then \
+      URL="{{ WORKERS_URL }}"; \
+    fi; \
+    if [ -z "$URL" ]; then \
+      URL="${PIKA_CF_WORKERS_URL:-${PIKA_WORKERS_BASE_URL:-}}"; \
+    fi; \
+    if [ -z "$URL" ]; then \
+      echo "error: could not determine Cloudflare worker URL from deploy output"; \
+      echo "retry with WORKERS_URL=https://<your-worker>.workers.dev"; \
+      exit 1; \
+    fi; \
+    export PIKA_WORKERS_BASE_URL="$URL"; \
+    export PIKA_WORKERS_API_TOKEN="$TOKEN"; \
+    for _ in 1 2 3 4 5 6 7 8 9 10; do \
+      if curl -fsS -H "Authorization: Bearer $PIKA_WORKERS_API_TOKEN" "$PIKA_WORKERS_BASE_URL/health" >/dev/null 2>&1; then \
+        break; \
+      fi; \
+      sleep 0.5; \
+    done; \
+    curl -fsS -H "Authorization: Bearer $PIKA_WORKERS_API_TOKEN" "$PIKA_WORKERS_BASE_URL/health" >/dev/null; \
+    PROBE_AGENT_ID="agent-cf-probe-$(date +%s)-$RANDOM"; \
+    curl -fsS -H "Authorization: Bearer $PIKA_WORKERS_API_TOKEN" -H "content-type: application/json" \
+      -X POST "$PIKA_WORKERS_BASE_URL/agents" \
+      --data "{\"id\":\"$PROBE_AGENT_ID\",\"name\":\"$PROBE_AGENT_ID\",\"brain\":\"pi\",\"relay_urls\":[\"{{ RELAY_EU }}\"]}" >/dev/null; \
+    PROBE_STATUS=""; \
+    PROBE_JSON=""; \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
+      PROBE_JSON="$(curl -fsS -H "Authorization: Bearer $PIKA_WORKERS_API_TOKEN" "$PIKA_WORKERS_BASE_URL/agents/$PROBE_AGENT_ID" || true)"; \
+      PROBE_STATUS="$(printf '%s' "$PROBE_JSON" | python3 -c 'import json,sys; print(str(json.loads(sys.stdin.read() or "{}").get("status","")))' 2>/dev/null || true)"; \
+      if [ "$PROBE_STATUS" = "ready" ]; then break; fi; \
+      sleep 0.5; \
+    done; \
+    if [ "${PROBE_STATUS:-}" != "ready" ]; then \
+      echo "probe agent id: $PROBE_AGENT_ID"; \
+      if [ -n "${PROBE_JSON:-}" ]; then echo "$PROBE_JSON"; fi; \
+      echo "error: worker probe agent did not become ready"; \
+      exit 1; \
+    fi; \
+    echo "Using worker: $PIKA_WORKERS_BASE_URL"; \
+    cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new --provider workers --brain pi
+
+# Run `pikachat agent new --provider workers` against a Worker endpoint.
+agent-workers RELAY_EU="wss://eu.nostr.pikachat.org" RELAY_US="wss://us-east.nostr.pikachat.org" WORKERS_URL="http://127.0.0.1:8787":
+    set -euo pipefail; \
+    if [ -f .env ]; then \
+      set -a; \
+      source .env; \
+      set +a; \
+    fi; \
+    export PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}"; \
+    cargo run -p pikachat -- --relay {{ RELAY_EU }} --relay {{ RELAY_US }} agent new --provider workers --brain pi
+
+# Run a local mock `pi` adapter service for workers brain=pi testing.
+pi-adapter-mock HOST="127.0.0.1" PORT="8788":
+    ./tools/pi-adapter-mock --host {{ HOST }} --port {{ PORT }}
+
+# Run a local real-`pi` adapter shim (`/rpc` + `/reply`) for workers brain=pi testing.
+pi-adapter-local HOST="127.0.0.1" PORT="8788":
+    ./tools/pi-adapter-local --host {{ HOST }} --port {{ PORT }}
+
+# Build wasm bindings for `crates/pikachat-wasm` into worker-local vendor output.
+agent-workers-build-wasm:
+    set -euo pipefail; \
+    BUILD_DIR="$(mktemp -d -t pikachat-wasm-build.XXXXXX)"; \
+    cleanup() { rm -rf "$BUILD_DIR"; }; \
+    trap cleanup EXIT; \
+    wasm-pack build crates/pikachat-wasm --target web --out-dir "$BUILD_DIR/out" --release; \
+    rm -rf workers/agent-demo/vendor/pikachat-wasm; \
+    mkdir -p workers/agent-demo/vendor; \
+    mv "$BUILD_DIR/out" workers/agent-demo/vendor/pikachat-wasm
+
+# Smoke startup keypackage publish + relay ack for workers agents (deterministic local relay).
+agent-workers-keypackage-publish-smoke WORKERS_URL="http://127.0.0.1:8787" RELAY_URL="ws://127.0.0.1:3334" RELAY_HEALTH_URL="http://127.0.0.1:3334/health":
+    set -euo pipefail; \
+    AGENT_ID="kp-publish-smoke-$(date +%s)"; \
+    RELAY_LOG="$(mktemp -t pika-relay.XXXXXX.log)"; \
+    WORKER_LOG="$(mktemp -t workers-agent-demo.XXXXXX.log)"; \
+    STATUS_JSON="$(mktemp -t workers-kp-status.XXXXXX.json)"; \
+    if command -v lsof >/dev/null 2>&1; then \
+      for PORT in 3334 8787; do \
+        PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"; \
+        if [ -n "$PIDS" ]; then \
+          kill $PIDS >/dev/null 2>&1 || true; \
+          sleep 0.2; \
+        fi; \
       done; \
     fi; \
-    if [ ! -f .env ]; then \
-      echo "error: missing .env in repo root"; \
-      exit 1; \
-    fi; \
-    if [ "$health_ok" -eq 0 ]; then \
-      echo "error: vm-spawner is not reachable at $spawner_url"; \
-      if [ "$is_local_spawner" -eq 1 ]; then \
-        echo "hint: verify SSH access to pika-build and rerun"; \
+    just run-relay-dev >"$RELAY_LOG" 2>&1 & \
+    RELAY_PID=$!; \
+    (cd workers/agent-demo && npm run dev -- --port 8787 >"$WORKER_LOG" 2>&1) & \
+    WORKER_PID=$!; \
+    cleanup() { \
+      kill "$RELAY_PID" >/dev/null 2>&1 || true; \
+      kill "$WORKER_PID" >/dev/null 2>&1 || true; \
+      wait "$RELAY_PID" 2>/dev/null || true; \
+      wait "$WORKER_PID" 2>/dev/null || true; \
+      rm -f "$RELAY_LOG" "$WORKER_LOG" "$STATUS_JSON"; \
+    }; \
+    trap cleanup EXIT; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
+    curl -fsS -X POST "{{ WORKERS_URL }}/agents" \
+      -H "content-type: application/json" \
+      --data "{\"id\":\"$AGENT_ID\",\"name\":\"$AGENT_ID\",\"brain\":\"pi\",\"relay_urls\":[\"{{ RELAY_URL }}\"]}" >/dev/null; \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+      curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
+      if python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; published=int(session.get("published_events") or 0); acked=int(session.get("acked_events") or 0); kp=status.get("key_package_published_at_ms"); ready=status.get("status"); bot=str(status.get("bot_pubkey") or "").strip(); relay=str(status.get("relay_pubkey") or "").strip(); raise SystemExit(0 if ready == "ready" and kp is not None and published >= 1 and acked >= 1 and len(bot)==64 and bot==relay else 1)' "$STATUS_JSON"; then \
+        break; \
       fi; \
-      exit 1; \
+      sleep 0.3; \
+    done; \
+    cat "$STATUS_JSON"; \
+    echo; \
+    python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; published=int(session.get("published_events") or 0); acked=int(session.get("acked_events") or 0); kp=status.get("key_package_published_at_ms"); ready=status.get("status"); bot=str(status.get("bot_pubkey") or "").strip(); relay=str(status.get("relay_pubkey") or "").strip(); assert ready == "ready", f"expected ready status, got {ready!r}"; assert kp is not None, "expected key_package_published_at_ms to be set"; assert published >= 1 and acked >= 1, f"expected keypackage publish+ack >= 1, got published={published}, acked={acked}"; assert len(bot) == 64, f"expected bot_pubkey hex length 64, got {len(bot)}"; assert bot == relay, "expected bot_pubkey to match relay_pubkey"; print("workers keypackage publish smoke passed")' "$STATUS_JSON"
+
+# Smoke workers `--brain pi` using local wrangler dev + pi-adapter-mock.
+agent-workers-pi-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://127.0.0.1:8788":
+    set -euo pipefail; \
+    AGENT_NAME="pi-smoke-$(date +%s)"; \
+    RELAY_LOG="$(mktemp -t pika-relay.XXXXXX.log)"; \
+    ADAPTER_LOG="$(mktemp -t pi-adapter-mock.XXXXXX.log)"; \
+    WORKER_LOG="$(mktemp -t workers-agent-demo.XXXXXX.log)"; \
+    OUT_LOG="$(mktemp -t workers-pi-smoke.XXXXXX.log)"; \
+    if command -v lsof >/dev/null 2>&1; then \
+      for PORT in 3334 8787 8788; do \
+        PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"; \
+        if [ -n "$PIDS" ]; then \
+          kill $PIDS >/dev/null 2>&1 || true; \
+          sleep 0.2; \
+        fi; \
+      done; \
     fi; \
-    set -a; \
-    source .env; \
-    set +a; \
-    cargo run -p pikachat -- $relay_args agent new \
-      --provider microvm \
-      --spawner-url {{ SPAWNER_URL }} \
-      --spawn-variant {{ SPAWN_VARIANT }}
+    just run-relay-dev >"$RELAY_LOG" 2>&1 & \
+    RELAY_PID=$!; \
+    ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
+    ADAPTER_PID=$!; \
+    (cd workers/agent-demo && npm run dev -- --port 8787 --var "PI_ADAPTER_BASE_URL:{{ ADAPTER_URL }}" >"$WORKER_LOG" 2>&1) & \
+    WORKER_PID=$!; \
+    cleanup() { \
+      kill "$RELAY_PID" >/dev/null 2>&1 || true; \
+      kill "$WORKER_PID" >/dev/null 2>&1 || true; \
+      kill "$ADAPTER_PID" >/dev/null 2>&1 || true; \
+      wait "$RELAY_PID" 2>/dev/null || true; \
+      wait "$WORKER_PID" 2>/dev/null || true; \
+      wait "$ADAPTER_PID" 2>/dev/null || true; \
+      rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG" "$OUT_LOG"; \
+    }; \
+    trap cleanup EXIT; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "http://127.0.0.1:3334/health" 240 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
+    printf 'hello from pi-adapter smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --relay ws://127.0.0.1:3334 agent new --provider workers --brain pi --name "$AGENT_NAME" >"$OUT_LOG" 2>&1; \
+    cat "$OUT_LOG"; \
+    grep -q "pi> " "$OUT_LOG"
+
+# Smoke inbound relay apply + auto-reply through the relay-only CLI flow (local relay).
+agent-workers-relay-auto-reply-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://127.0.0.1:8788" RELAY_URL="ws://127.0.0.1:3334" RELAY_HEALTH_URL="http://127.0.0.1:3334/health":
+    set -euo pipefail; \
+    AGENT_ID="relay-auto-smoke-$(date +%s)"; \
+    RELAY_LOG="$(mktemp -t pika-relay.XXXXXX.log)"; \
+    ADAPTER_LOG="$(mktemp -t pi-adapter-mock.XXXXXX.log)"; \
+    WORKER_LOG="$(mktemp -t workers-agent-demo.XXXXXX.log)"; \
+    OUT_LOG="$(mktemp -t workers-relay-auto.XXXXXX.log)"; \
+    STATUS_JSON="$(mktemp -t workers-relay-auto.XXXXXX.json)"; \
+    STATE_DIR="$(mktemp -d -t pika-workers-relay-auto.XXXXXX)"; \
+    if command -v lsof >/dev/null 2>&1; then \
+      for PORT in 3334 8787 8788; do \
+        PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"; \
+        if [ -n "$PIDS" ]; then \
+          kill $PIDS >/dev/null 2>&1 || true; \
+          sleep 0.2; \
+        fi; \
+      done; \
+    fi; \
+    just run-relay-dev >"$RELAY_LOG" 2>&1 & \
+    RELAY_PID=$!; \
+    ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
+    ADAPTER_PID=$!; \
+    (cd workers/agent-demo && npm run dev -- --port 8787 --var "PI_ADAPTER_BASE_URL:{{ ADAPTER_URL }}" >"$WORKER_LOG" 2>&1) & \
+    WORKER_PID=$!; \
+    cleanup() { \
+      kill "$RELAY_PID" >/dev/null 2>&1 || true; \
+      kill "$WORKER_PID" >/dev/null 2>&1 || true; \
+      kill "$ADAPTER_PID" >/dev/null 2>&1 || true; \
+      wait "$RELAY_PID" 2>/dev/null || true; \
+      wait "$WORKER_PID" 2>/dev/null || true; \
+      wait "$ADAPTER_PID" 2>/dev/null || true; \
+      rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG" "$OUT_LOG" "$STATUS_JSON"; \
+      rm -rf "$STATE_DIR"; \
+    }; \
+    trap cleanup EXIT; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log (tail) ----"; \
+      tail -n 120 "$WORKER_LOG" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
+    printf 'hello relay auto reply smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
+    cat "$OUT_LOG"; \
+    grep -q "pi> " "$OUT_LOG"; \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do \
+      curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
+      if python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; applied=int(session.get("inbound_applied_messages") or 0); auto=int(session.get("auto_replies") or 0); raise SystemExit(0 if applied >= 1 and auto >= 1 else 1)' "$STATUS_JSON"; then \
+        break; \
+      fi; \
+      sleep 0.5; \
+    done; \
+    cat "$STATUS_JSON"; \
+    echo; \
+    python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; applied=int(session.get("inbound_applied_messages") or 0); auto=int(session.get("auto_replies") or 0); assert applied >= 1 and auto >= 1, f"expected inbound_applied_messages>=1 and auto_replies>=1, got applied={applied}, auto={auto}"; print("relay auto-reply smoke passed")' "$STATUS_JSON"
+
+# Smoke restart continuity: worker restart between turns preserves runtime + relay state.
+agent-workers-restart-persistence-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://127.0.0.1:8788" RELAY_URL="ws://127.0.0.1:3334" RELAY_HEALTH_URL="http://127.0.0.1:3334/health":
+    set -euo pipefail; \
+    AGENT_ID="restart-persistence-smoke-$(date +%s)"; \
+    MSG1="hello restart persistence smoke turn1"; \
+    MSG2="hello restart persistence smoke turn2 $(date +%s)"; \
+    RELAY_LOG="$(mktemp -t pika-relay.XXXXXX.log)"; \
+    ADAPTER_LOG="$(mktemp -t pi-adapter-mock.XXXXXX.log)"; \
+    WORKER_LOG1="$(mktemp -t workers-agent-restart1.XXXXXX.log)"; \
+    WORKER_LOG2="$(mktemp -t workers-agent-restart2.XXXXXX.log)"; \
+    OUT_LOG="$(mktemp -t workers-restart-persistence.XXXXXX.log)"; \
+    STATUS_JSON="$(mktemp -t workers-restart-status.XXXXXX.json)"; \
+    GROUPS_JSON="$(mktemp -t workers-restart-groups.XXXXXX.json)"; \
+    STATE_DIR="$(mktemp -d -t pika-workers-restart-state.XXXXXX)"; \
+    WRANGLER_STATE_DIR="$(mktemp -d -t pika-workers-wrangler-state.XXXXXX)"; \
+    if command -v lsof >/dev/null 2>&1; then \
+      for PORT in 3334 8787 8788; do \
+        PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"; \
+        if [ -n "$PIDS" ]; then \
+          kill $PIDS >/dev/null 2>&1 || true; \
+          sleep 0.2; \
+        fi; \
+      done; \
+    fi; \
+    RELAY_PID=""; \
+    ADAPTER_PID=""; \
+    WORKER_PID=""; \
+    start_worker() { \
+      (cd workers/agent-demo && npm run dev -- --port 8787 --persist-to "$WRANGLER_STATE_DIR" --var "PI_ADAPTER_BASE_URL:{{ ADAPTER_URL }}" >"$1" 2>&1) & \
+      WORKER_PID=$!; \
+    }; \
+    cleanup() { \
+      if [ -n "$RELAY_PID" ]; then kill "$RELAY_PID" >/dev/null 2>&1 || true; wait "$RELAY_PID" 2>/dev/null || true; fi; \
+      if [ -n "$WORKER_PID" ]; then kill "$WORKER_PID" >/dev/null 2>&1 || true; wait "$WORKER_PID" 2>/dev/null || true; fi; \
+      if [ -n "$ADAPTER_PID" ]; then kill "$ADAPTER_PID" >/dev/null 2>&1 || true; wait "$ADAPTER_PID" 2>/dev/null || true; fi; \
+      rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG1" "$WORKER_LOG2" "$OUT_LOG" "$STATUS_JSON" "$GROUPS_JSON"; \
+      rm -rf "$STATE_DIR" "$WRANGLER_STATE_DIR"; \
+    }; \
+    trap cleanup EXIT; \
+    dump_logs() { \
+      echo "---- relay log (tail) ----"; \
+      tail -n 120 "$RELAY_LOG" || true; \
+      echo "---- adapter log (tail) ----"; \
+      tail -n 120 "$ADAPTER_LOG" || true; \
+      echo "---- worker log #1 (tail) ----"; \
+      tail -n 120 "$WORKER_LOG1" || true; \
+      echo "---- worker log #2 (tail) ----"; \
+      tail -n 120 "$WORKER_LOG2" || true; \
+    }; \
+    wait_health() { \
+      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
+      i=0; \
+      while [ "$i" -lt "$ATTEMPTS" ]; do \
+        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
+        i=$((i + 1)); \
+        sleep "$SLEEP_SECS"; \
+      done; \
+      echo "error: timed out waiting for $NAME health at $URL"; \
+      dump_logs; \
+      return 1; \
+    }; \
+    just run-relay-dev >"$RELAY_LOG" 2>&1 & \
+    RELAY_PID=$!; \
+    ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
+    ADAPTER_PID=$!; \
+    start_worker "$WORKER_LOG1"; \
+    wait_health "relay" "{{ RELAY_HEALTH_URL }}" 240 0.25; \
+    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
+    printf '%s\n' "$MSG1" | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" agent new --provider workers --brain pi --name "$AGENT_ID" >"$OUT_LOG" 2>&1; \
+    cat "$OUT_LOG"; \
+    grep -q "pi> " "$OUT_LOG"; \
+    curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
+    read -r BASE_APPLIED BASE_AUTO BASE_PUBLISHED BASE_ACKED <<<"$(python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; applied=int(session.get("inbound_applied_messages") or 0); auto=int(session.get("auto_replies") or 0); published=int(session.get("published_events") or 0); acked=int(session.get("acked_events") or 0); groups=status.get("runtime_snapshot", {}).get("groups", {}); assert applied >= 1 and auto >= 1, f"expected inbound_applied_messages>=1 and auto_replies>=1 before restart, got applied={applied}, auto={auto}"; assert isinstance(groups, dict) and len(groups) >= 1, "expected at least one runtime group before restart"; print(applied, auto, published, acked)' "$STATUS_JSON")"; \
+    cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" groups >"$GROUPS_JSON"; \
+    GROUP_ID="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1], "r", encoding="utf-8")); groups=data.get("groups") or []; assert len(groups) >= 1, "expected at least one local group"; print(str(groups[0].get("nostr_group_id") or "").strip())' "$GROUPS_JSON")"; \
+    if [ -z "$GROUP_ID" ]; then echo "error: missing group id from local state"; exit 1; fi; \
+    kill "$WORKER_PID" >/dev/null 2>&1 || true; \
+    wait "$WORKER_PID" 2>/dev/null || true; \
+    WORKER_PID=""; \
+    start_worker "$WORKER_LOG2"; \
+    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
+    curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
+    python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); groups=status.get("runtime_snapshot", {}).get("groups", {}); assert isinstance(groups, dict) and len(groups) >= 1, "expected runtime groups to survive worker restart"' "$STATUS_JSON"; \
+    cargo run -q -p pikachat -- --state-dir "$STATE_DIR" --relay "{{ RELAY_URL }}" send --group "$GROUP_ID" --content "$MSG2" >/dev/null; \
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do \
+      curl -fsS "{{ WORKERS_URL }}/agents/$AGENT_ID" >"$STATUS_JSON"; \
+      if python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); session=status.get("relay_session") or {}; applied=int(session.get("inbound_applied_messages") or 0); auto=int(session.get("auto_replies") or 0); published=int(session.get("published_events") or 0); acked=int(session.get("acked_events") or 0); base_applied=int(sys.argv[2]); base_auto=int(sys.argv[3]); base_published=int(sys.argv[4]); base_acked=int(sys.argv[5]); ok=applied >= base_applied + 1 and auto >= base_auto + 1 and published >= base_published + 1 and acked >= base_acked + 1; raise SystemExit(0 if ok else 1)' "$STATUS_JSON" "$BASE_APPLIED" "$BASE_AUTO" "$BASE_PUBLISHED" "$BASE_ACKED"; then \
+        break; \
+      fi; \
+      sleep 0.4; \
+    done; \
+    cat "$STATUS_JSON"; \
+    echo; \
+    python3 -c 'import json,sys; status=json.load(open(sys.argv[1], "r", encoding="utf-8")); needle=str(sys.argv[2]); base_applied=int(sys.argv[3]); base_auto=int(sys.argv[4]); base_published=int(sys.argv[5]); base_acked=int(sys.argv[6]); session=status.get("relay_session") or {}; applied=int(session.get("inbound_applied_messages") or 0); auto=int(session.get("auto_replies") or 0); published=int(session.get("published_events") or 0); acked=int(session.get("acked_events") or 0); groups=status.get("runtime_snapshot", {}).get("groups", {}); history=status.get("history") or []; assert isinstance(groups, dict) and len(groups) >= 1, "expected runtime groups after restart"; assert applied >= base_applied + 1 and auto >= base_auto + 1, f"expected counters to advance after restart; base=({base_applied},{base_auto}) now=({applied},{auto})"; assert published >= base_published + 1 and acked >= base_acked + 1, f"expected publish/ack counters to advance after restart; base=({base_published},{base_acked}) now=({published},{acked})"; assert any(str(turn.get("role") or "").strip() == "assistant" and needle in str(turn.get("content") or "") for turn in history), "expected post-restart assistant history to include second-turn marker"; print("workers restart persistence smoke passed")' "$STATUS_JSON" "$MSG2" "$BASE_APPLIED" "$BASE_AUTO" "$BASE_PUBLISHED" "$BASE_ACKED"

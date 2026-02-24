@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context};
 use chrono::{Duration as ChronoDuration, Utc};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -31,6 +32,7 @@ struct ManagerState {
     vms: HashMap<String, PersistedVm>,
     runner_cache: HashMap<String, PathBuf>,
     warmed_devshells: HashSet<String>,
+    warming_devshells: HashMap<String, Arc<Notify>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -97,6 +99,7 @@ impl VmManager {
                 vms: HashMap::new(),
                 runner_cache: HashMap::new(),
                 warmed_devshells: HashSet::new(),
+                warming_devshells: HashMap::new(),
             })),
         };
 
@@ -511,14 +514,31 @@ impl VmManager {
         dev_shell: &str,
     ) -> anyhow::Result<bool> {
         let key = format!("{flake_ref}#{dev_shell}");
-        {
-            let guard = self.inner.lock().await;
-            if guard.warmed_devshells.contains(&key) {
-                return Ok(false);
+        let mut owner = false;
+
+        loop {
+            let waiter = {
+                let mut guard = self.inner.lock().await;
+                if guard.warmed_devshells.contains(&key) {
+                    return Ok(false);
+                }
+                if let Some(waiter) = guard.warming_devshells.get(&key) {
+                    Some(waiter.clone())
+                } else {
+                    let waiter = Arc::new(Notify::new());
+                    guard.warming_devshells.insert(key.clone(), waiter);
+                    owner = true;
+                    None
+                }
+            };
+
+            match waiter {
+                Some(waiter) => waiter.notified().await,
+                None => break,
             }
         }
 
-        run_command(
+        let build_result = run_command(
             Command::new(&self.cfg.nix_cmd)
                 .arg("build")
                 .arg(format!("{flake_ref}#devShells.x86_64-linux.{dev_shell}"))
@@ -526,11 +546,24 @@ impl VmManager {
                 .arg("--accept-flake-config"),
             "nix build devShell",
         )
-        .await?;
+        .await;
 
-        let mut guard = self.inner.lock().await;
-        guard.warmed_devshells.insert(key);
-        Ok(true)
+        let waiter = {
+            let mut guard = self.inner.lock().await;
+            let waiter = guard.warming_devshells.remove(&key);
+            if build_result.is_ok() {
+                guard.warmed_devshells.insert(key);
+            }
+            waiter
+        };
+        if let Some(waiter) = waiter {
+            waiter.notify_waiters();
+        }
+
+        match build_result {
+            Ok(()) => Ok(owner),
+            Err(err) => Err(err),
+        }
     }
 
     async fn ensure_runtime_artifacts(&self) -> anyhow::Result<()> {
@@ -546,12 +579,20 @@ impl VmManager {
         })?;
 
         for artifact in &self.cfg.runtime_artifacts {
+            let resolved = self.resolve_artifact_path(artifact).await?;
             let link = self.cfg.runtime_artifacts_host_dir.join(&artifact.name);
-            if link.exists() {
+            let should_refresh = match fs::symlink_metadata(&link) {
+                Ok(_) => !symlink_matches_target(&link, &resolved),
+                Err(err) if err.kind() == ErrorKind::NotFound => true,
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("stat runtime artifact link {}", link.display()));
+                }
+            };
+            if !should_refresh {
                 continue;
             }
 
-            let resolved = self.resolve_artifact_path(artifact).await?;
             symlink_force(&resolved, &link)?;
             info!(
                 artifact_name = %artifact.name,
@@ -1080,6 +1121,13 @@ fn symlink_force(target: &Path, link: &Path) -> anyhow::Result<()> {
     symlink(target, link)
         .with_context(|| format!("symlink {} -> {}", link.display(), target.display()))?;
     Ok(())
+}
+
+fn symlink_matches_target(link: &Path, target: &Path) -> bool {
+    match (fs::canonicalize(link), fs::canonicalize(target)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn nix_escape(value: &str) -> String {

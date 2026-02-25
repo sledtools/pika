@@ -21,14 +21,15 @@ DEFAULT_SPAWNER_URL="http://127.0.0.1:8080"
 TUNNEL_PID=""
 TUNNEL_LOG=""
 STARTED_TUNNEL=0
+CONTROL_SERVER_PUBKEY="${PIKA_AGENT_CONTROL_SERVER_PUBKEY:-${CONTROL_SERVER_PUBKEY:-}}"
 
 if [[ "$SPAWN_VARIANT" != "prebuilt" && "$SPAWN_VARIANT" != "prebuilt-cow" ]]; then
   echo "SPAWN_VARIANT must be prebuilt or prebuilt-cow for MVP demo."
   exit 1
 fi
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "ANTHROPIC_API_KEY is required."
+if [[ -z "$CONTROL_SERVER_PUBKEY" ]]; then
+  echo "PIKA_AGENT_CONTROL_SERVER_PUBKEY (or CONTROL_SERVER_PUBKEY) is required."
   exit 1
 fi
 
@@ -106,10 +107,7 @@ if ! spawner_reachable; then
   fi
 fi
 
-cmd=(
-  cargo run -q -p pikachat --
-  --relay "$RELAY_PRIMARY"
-)
+cmd=(just cli --relay "$RELAY_PRIMARY")
 
 if [[ -n "$RELAY_FALLBACK" ]]; then
   cmd+=(--relay "$RELAY_FALLBACK")
@@ -119,6 +117,8 @@ cmd+=(
   agent new
   --provider microvm
   --brain pi
+  --control-mode remote
+  --control-server-pubkey "$CONTROL_SERVER_PUBKEY"
   --spawner-url "$SPAWNER_URL"
   --spawn-variant "$SPAWN_VARIANT"
   --flake-ref "$FLAKE_REF"

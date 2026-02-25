@@ -1,13 +1,9 @@
 mod agent;
-mod fly_machines;
 mod harness;
 mod mdk_util;
-mod microvm_spawner;
 mod relay_util;
-mod workers_agents;
 
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -351,15 +347,13 @@ enum AgentBrain {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum AgentControlMode {
-    Auto,
     Remote,
-    Local,
 }
 
 #[derive(Clone, Debug, Args)]
 struct AgentControlArgs {
-    /// Provider control-plane mode (`auto` = remote first, then local fallback)
-    #[arg(long, value_enum, default_value_t = AgentControlMode::Auto, env = "PIKA_AGENT_CONTROL_MODE")]
+    /// Provider control-plane mode (`remote` only; local provisioning is removed)
+    #[arg(long, value_enum, default_value_t = AgentControlMode::Remote, env = "PIKA_AGENT_CONTROL_MODE")]
     control_mode: AgentControlMode,
 
     /// Nostr pubkey (hex or npub) for the `pika-server` control-plane identity
@@ -1407,34 +1401,10 @@ async fn cmd_agent_new(
     microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
     let resolved_brain = resolve_agent_new_brain(provider, brain, microvm)?;
-    let should_try_remote = match control.control_mode {
-        AgentControlMode::Local => false,
-        AgentControlMode::Remote => true,
-        AgentControlMode::Auto => control
-            .control_server_pubkey
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty()),
-    };
-    if should_try_remote {
-        let remote_attempt =
-            cmd_agent_new_remote(cli, name, provider, resolved_brain, control, microvm).await;
-        match remote_attempt {
-            Ok(()) => return Ok(()),
-            Err(err) if control.control_mode == AgentControlMode::Auto => {
-                eprintln!();
-                eprintln!("Remote provider control failed, falling back to local path: {err:#}");
-            }
-            Err(err) => return Err(err),
-        }
+    if control.control_mode != AgentControlMode::Remote {
+        anyhow::bail!("--control-mode remote is required; local provisioning has been removed");
     }
-
-    match (provider, resolved_brain) {
-        (AgentProvider::Fly, AgentBrain::Stub) => cmd_agent_new_fly(cli, name).await,
-        (AgentProvider::Workers, AgentBrain::Pi) => cmd_agent_new_workers(cli, name).await,
-        (AgentProvider::Microvm, AgentBrain::Pi) => cmd_agent_new_microvm(cli, name, microvm).await,
-        _ => unreachable!("provider/brain validation must run before dispatch"),
-    }
+    cmd_agent_new_remote(cli, name, provider, resolved_brain, control, microvm).await
 }
 
 fn resolve_agent_new_brain(
@@ -1870,416 +1840,6 @@ async fn cmd_agent_new_remote(
     session_result
 }
 
-async fn cmd_agent_new_microvm(
-    cli: &Cli,
-    _name: Option<&str>,
-    microvm: &AgentNewMicrovmArgs,
-) -> anyhow::Result<()> {
-    let resolved = agent::microvm::resolve_args(microvm);
-    let relay_urls = resolve_relays(cli);
-    let relays = relay_util::parse_relay_urls(&relay_urls)?;
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-    let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
-    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
-
-    let spawner = microvm_spawner::MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    let create_vm_req = agent::microvm::build_create_vm_request(
-        &resolved,
-        keys.public_key(),
-        &relay_urls,
-        &bot_secret_hex,
-        &bot_pubkey.to_hex(),
-    );
-
-    eprint!("Creating microVM via {}...", spawner.base_url());
-    std::io::stderr().flush().ok();
-    let vm = spawner
-        .create_vm(&create_vm_req)
-        .await
-        .map_err(|err| agent::microvm::spawner_create_error(spawner.base_url(), err))?;
-    eprintln!(" done ({}, ip={})", vm.id, vm.ip);
-
-    let session_result = async {
-        let client = client_all(cli, &keys).await?;
-        let run_result = async {
-            let bot_kp = agent::session::wait_for_latest_key_package(
-                &client,
-                bot_pubkey,
-                &relays,
-                agent::provider::KeyPackageWaitPlan {
-                    progress_message: "Waiting for microVM bot key package",
-                    timeout: Duration::from_secs(120),
-                    fetch_timeout: Duration::from_secs(5),
-                    retry_delay: Duration::from_secs(2),
-                },
-            )
-            .await?;
-
-            let created_group = agent::session::create_group_and_publish_welcomes(
-                &keys,
-                &mdk,
-                &client,
-                &relays,
-                bot_kp,
-                bot_pubkey,
-                agent::provider::GroupCreatePlan {
-                    progress_message: "Creating MLS group and inviting microVM bot...",
-                    create_group_context: "create microvm MLS group",
-                    build_welcome_context: "build microvm welcome giftwrap",
-                    welcome_publish_label: "microvm welcome",
-                },
-            )
-            .await?;
-
-            let bot_npub = bot_pubkey
-                .to_bech32()
-                .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-            eprintln!();
-            eprintln!("Connected to microVM agent {} ({bot_npub})", vm.id);
-            eprintln!("Type messages below. Ctrl-C to exit.");
-            eprintln!();
-
-            agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-                keys: &keys,
-                mdk: &mdk,
-                send_client: &client,
-                listen_client: &client,
-                relays: &relays,
-                bot_pubkey,
-                mls_group_id: &created_group.mls_group_id,
-                nostr_group_id_hex: &created_group.nostr_group_id_hex,
-                plan: agent::provider::ChatLoopPlan {
-                    outbound_publish_label: "microvm chat user",
-                    wait_for_pending_replies_on_eof: false,
-                    eof_reply_timeout: Duration::from_secs(0),
-                },
-                seen_mls_event_ids: None,
-            })
-            .await
-        }
-        .await;
-
-        client.unsubscribe_all().await;
-        client.shutdown().await;
-        run_result
-    }
-    .await;
-
-    let mut teardown_error: Option<anyhow::Error> = None;
-    match agent::microvm::teardown_policy(resolved.keep) {
-        agent::microvm::MicrovmTeardownPolicy::DeleteOnExit => {
-            eprint!("Deleting microVM {}...", vm.id);
-            std::io::stderr().flush().ok();
-            match spawner.delete_vm(&vm.id).await {
-                Ok(()) => eprintln!(" done"),
-                Err(err) => {
-                    eprintln!(" failed");
-                    teardown_error = Some(err);
-                }
-            }
-        }
-        agent::microvm::MicrovmTeardownPolicy::KeepVm => {
-            let base = spawner.base_url().trim_end_matches('/');
-            eprintln!();
-            eprintln!("Keeping microVM {} alive (--keep).", vm.id);
-            eprintln!("List VMs:   curl {base}/vms");
-            eprintln!("Delete VM:  curl -X DELETE {base}/vms/{}", vm.id);
-        }
-    }
-
-    if let Some(err) = teardown_error {
-        let base = spawner.base_url().trim_end_matches('/');
-        let delete_hint = format!(
-            "failed to delete microvm {} via {}: {err:#}\nmanual cleanup: curl -X DELETE {base}/vms/{}",
-            vm.id,
-            spawner.base_url(),
-            vm.id
-        );
-        if let Err(session_err) = session_result {
-            return Err(anyhow!("{session_err:#}\n{delete_hint}"));
-        }
-        return Err(anyhow!(delete_hint));
-    }
-
-    session_result
-}
-
-async fn cmd_agent_new_fly(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
-    let fly = fly_machines::FlyClient::from_env()?;
-    let anthropic_key =
-        std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
-    let openai_key = std::env::var("OPENAI_API_KEY").ok();
-    let pi_model = std::env::var("PI_MODEL")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let relays = resolve_relays(cli);
-
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-    let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
-    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
-
-    let suffix = format!("{:08x}", rand::random::<u32>());
-    let volume_name = format!("agent_{suffix}");
-    let machine_name = name
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| format!("agent-{suffix}"));
-
-    eprint!("Creating Fly volume...");
-    std::io::stderr().flush().ok();
-    let volume = fly.create_volume(&volume_name).await?;
-    eprintln!(" done ({})", volume.id);
-
-    let mut env = HashMap::new();
-    env.insert("STATE_DIR".to_string(), "/app/state".to_string());
-    env.insert("NOSTR_SECRET_KEY".to_string(), bot_secret_hex);
-    env.insert("ANTHROPIC_API_KEY".to_string(), anthropic_key);
-    if let Some(openai) = openai_key {
-        env.insert("OPENAI_API_KEY".to_string(), openai);
-    }
-    if let Some(model) = pi_model {
-        env.insert("PI_MODEL".to_string(), model);
-    }
-
-    eprint!("Creating Fly machine...");
-    std::io::stderr().flush().ok();
-    let machine = fly.create_machine(&machine_name, &volume.id, env).await?;
-    eprintln!(" done ({})", machine.id);
-
-    let client = client_all(cli, &keys).await?;
-    let relays = relay_util::parse_relay_urls(&relays)?;
-
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &client,
-        bot_pubkey,
-        &relays,
-        agent::provider::KeyPackageWaitPlan {
-            progress_message: "Waiting for bot to publish key package",
-            timeout: Duration::from_secs(120),
-            fetch_timeout: Duration::from_secs(5),
-            retry_delay: Duration::from_secs(3),
-        },
-    )
-    .await?;
-
-    let created_group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
-        &client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        agent::provider::GroupCreatePlan {
-            progress_message: "Creating MLS group and inviting bot...",
-            create_group_context: "create group for bot",
-            build_welcome_context: "build welcome giftwrap",
-            welcome_publish_label: "welcome",
-        },
-    )
-    .await?;
-
-    let bot_npub = bot_pubkey
-        .to_bech32()
-        .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-    eprintln!();
-    eprintln!("Connected to pi agent ({bot_npub})");
-    eprintln!("Type messages below. Ctrl-C to exit.");
-    eprintln!();
-
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys: &keys,
-        mdk: &mdk,
-        send_client: &client,
-        listen_client: &client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &created_group.mls_group_id,
-        nostr_group_id_hex: &created_group.nostr_group_id_hex,
-        plan: agent::provider::ChatLoopPlan {
-            outbound_publish_label: "chat",
-            wait_for_pending_replies_on_eof: false,
-            eof_reply_timeout: Duration::from_secs(0),
-        },
-        seen_mls_event_ids: None,
-    })
-    .await?;
-
-    client.unsubscribe_all().await;
-    client.shutdown().await;
-    eprintln!();
-    eprintln!("Machine {} is still running.", machine.id);
-    eprintln!(
-        "Stop with: fly machine stop {} -a {}",
-        machine.id,
-        fly.app_name()
-    );
-    Ok(())
-}
-
-async fn cmd_agent_new_workers(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
-    let workers = workers_agents::WorkersClient::from_env()?;
-    let relay_urls = resolve_relays(cli);
-    let relays = relay_util::parse_relay_urls(&relay_urls)?;
-    let (keys, mdk) = open(cli)?;
-    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
-    let client = client_all(cli, &keys).await?;
-    let listener_client = client_all(cli, &keys).await?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let agent_name = name
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("agent-{:08x}", rand::random::<u32>()));
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-
-    eprint!("Creating Workers agent...");
-    std::io::stderr().flush().ok();
-    let mut status = workers
-        .create_agent(&workers_agents::CreateAgentRequest {
-            name: Some(agent_name.clone()),
-            brain: "pi".to_string(),
-            relay_urls: relay_urls.clone(),
-            bot_secret_key_hex: Some(bot_keys.secret_key().to_secret_hex()),
-        })
-        .await?;
-    let expected_bot_pubkey_hex = bot_pubkey.to_hex();
-    if status.bot_pubkey.trim().to_lowercase() != expected_bot_pubkey_hex {
-        anyhow::bail!(
-            "workers bot pubkey mismatch: expected {}, got {}",
-            expected_bot_pubkey_hex,
-            status.bot_pubkey
-        );
-    }
-    eprintln!(" done ({})", status.id);
-    eprintln!("Bot pubkey: {}", status.bot_pubkey);
-
-    if let Some(probe) = &status.relay_probe {
-        if probe.ok {
-            eprintln!(
-                "Relay probe ok: {}{}",
-                probe.relay,
-                probe
-                    .status_code
-                    .map(|code| format!(" (HTTP {code})"))
-                    .unwrap_or_default()
-            );
-        } else {
-            eprintln!(
-                "Relay probe failed: {}{}",
-                probe.relay,
-                probe
-                    .error
-                    .as_deref()
-                    .map(|err| format!(" ({err})"))
-                    .unwrap_or_default()
-            );
-        }
-    }
-
-    eprint!("Waiting for bot to publish key package");
-    std::io::stderr().flush().ok();
-    let start = tokio::time::Instant::now();
-    let timeout = Duration::from_secs(120);
-    while status.key_package_published_at_ms.is_none() {
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for workers bot key package after {}s",
-                timeout.as_secs()
-            );
-        }
-        eprint!(".");
-        std::io::stderr().flush().ok();
-        tokio::time::sleep(Duration::from_millis(900)).await;
-        status = workers.get_agent(&status.id).await?;
-    }
-    eprintln!(" done");
-    if let Some(ts) = status.key_package_published_at_ms {
-        eprintln!("Bot key package published at {} ms", ts);
-    }
-
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &client,
-        bot_pubkey,
-        &relays,
-        agent::provider::KeyPackageWaitPlan {
-            progress_message: "Fetching bot key package from relay",
-            timeout: Duration::from_secs(120),
-            fetch_timeout: Duration::from_secs(5),
-            retry_delay: Duration::from_millis(700),
-        },
-    )
-    .await?;
-
-    let created_group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
-        &client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        agent::provider::GroupCreatePlan {
-            progress_message: "Creating MLS group and inviting workers bot...",
-            create_group_context: "create workers MLS group",
-            build_welcome_context: "build workers welcome giftwrap",
-            welcome_publish_label: "workers welcome",
-        },
-    )
-    .await?;
-
-    for welcome in &created_group.published_welcomes {
-        workers
-            .runtime_process_welcome_event_json(
-                &status.id,
-                &created_group.nostr_group_id_hex,
-                Some(&welcome.wrapper_event_id_hex),
-                Some(&welcome.rumor_json),
-            )
-            .await
-            .context("process workers runtime welcome")?;
-    }
-
-    eprintln!();
-    eprintln!("Connected to workers agent {} ({})", status.id, status.name);
-    eprintln!("Type messages below. Ctrl-C to exit.");
-    eprintln!();
-
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys: &keys,
-        mdk: &mdk,
-        send_client: &client,
-        listen_client: &listener_client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &created_group.mls_group_id,
-        nostr_group_id_hex: &created_group.nostr_group_id_hex,
-        plan: agent::provider::ChatLoopPlan {
-            outbound_publish_label: "workers chat user",
-            wait_for_pending_replies_on_eof: true,
-            eof_reply_timeout: Duration::from_secs(20),
-        },
-        seen_mls_event_ids: Some(&mut seen_mls_event_ids),
-    })
-    .await?;
-
-    listener_client.unsubscribe_all().await;
-    listener_client.shutdown().await;
-    client.unsubscribe_all().await;
-    client.shutdown().await;
-    persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
-
-    eprintln!();
-    eprintln!("Workers agent {} is still active.", status.id);
-    eprintln!("Inspect with: {}/agents/{}", workers.base_url(), status.id);
-    Ok(())
-}
-
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
     let group = find_group(&mdk, nostr_group_id_hex)?;
@@ -2601,6 +2161,16 @@ mod tests {
         }
     }
 
+    fn parse_agent_new_control_mode(args: &[&str]) -> AgentControlMode {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { control, .. },
+            } => control.control_mode,
+            _ => panic!("expected agent new command"),
+        }
+    }
+
     #[test]
     fn agent_new_microvm_flags_parse() {
         let (provider, brain, microvm) = parse_agent_new(&[
@@ -2680,5 +2250,18 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("--spawner-url"));
         assert!(msg.contains("--provider microvm"));
+    }
+
+    #[test]
+    fn agent_new_control_mode_is_strict_remote_only() {
+        let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
+        assert_eq!(mode, AgentControlMode::Remote);
+
+        for invalid in ["auto", "local"] {
+            let err = Cli::try_parse_from(["pikachat", "agent", "new", "--control-mode", invalid])
+                .expect_err("legacy control mode should fail");
+            let msg = err.to_string();
+            assert!(msg.contains("invalid value"));
+        }
     }
 }

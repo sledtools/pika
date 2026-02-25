@@ -146,6 +146,7 @@ struct ProfileCache {
     username: Option<String>, // your handle eg @jack
     about: Option<String>,
     picture_url: Option<String>,
+    avatar_model_url: Option<String>,
     event_created_at: i64,
     // In-memory only (not persisted) — prevents re-fetching within a session.
     // Starts at 0 on load from DB so profiles are always re-checked on app launch.
@@ -177,6 +178,11 @@ impl ProfileCache {
             .as_ref()
             .and_then(|m| m.picture.clone())
             .filter(|s| !s.is_empty());
+        let avatar_model_url = metadata_json
+            .as_ref()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|v| v.get("avatar_model_url")?.as_str().map(String::from))
+            .filter(|s| !s.is_empty());
 
         Self {
             metadata_json,
@@ -184,6 +190,7 @@ impl ProfileCache {
             username,
             about,
             picture_url,
+            avatar_model_url,
             event_created_at,
             last_checked_at,
         }
@@ -506,6 +513,15 @@ impl AppCore {
         >,
     ) {
         self.call_runtime.set_video_frame_receiver(receiver);
+    }
+
+    pub fn set_avatar_frame_receiver(
+        &mut self,
+        receiver: std::sync::Arc<
+            std::sync::RwLock<Option<std::sync::Arc<dyn crate::AvatarFrameReceiver>>>,
+        >,
+    ) {
+        self.call_runtime.set_avatar_frame_receiver(receiver);
     }
 
     fn archived_chats_path(&self) -> std::path::PathBuf {
@@ -3527,6 +3543,7 @@ impl AppCore {
                     about: cached.and_then(|p| p.about.clone()),
                     picture_url: cached
                         .and_then(|p| p.display_picture_url(&self.data_dir, &pubkey)),
+                    avatar_model_url: cached.and_then(|p| p.avatar_model_url.clone()),
                     is_followed,
                 });
                 self.emit_state();

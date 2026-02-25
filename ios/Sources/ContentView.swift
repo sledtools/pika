@@ -77,7 +77,10 @@ struct ContentView: View {
             if let call = manager.state.activeCall, call.shouldAutoPresentCallScreen {
                 isCallScreenPresented = true
             }
-            videoPipeline.syncWithCallState(manager.state.activeCall)
+            videoPipeline.syncWithCallState(
+                manager.state.activeCall,
+                peerAvatarModelUrl: manager.state.activeCall?.peerAvatarModelUrl
+            )
         }
         .onChange(of: manager.state.toast) { _, new in
             guard let message = new else { return }
@@ -98,7 +101,7 @@ struct ContentView: View {
             AppDelegate.activeChatId = newChatId
         }
         .onChange(of: manager.state.activeCall) { old, new in
-            videoPipeline.syncWithCallState(new)
+            videoPipeline.syncWithCallState(new, peerAvatarModelUrl: new?.peerAvatarModelUrl)
 
             guard let new else {
                 isCallScreenPresented = false
@@ -185,7 +188,11 @@ struct ContentView: View {
                     isCallScreenPresented = false
                 },
                 remotePixelBuffer: videoPipeline.remotePixelBuffer,
-                localCaptureSession: videoPipeline.localCaptureSession
+                localCaptureSession: videoPipeline.localCaptureSession,
+                avatarEntity: videoPipeline.avatarEntity,
+                avatarRenderer: videoPipeline.avatarRenderer,
+                avatarLoadProgress: videoPipeline.avatarLoadProgress,
+                avatarStatus: videoPipeline.avatarStatus
             )
         }
     }

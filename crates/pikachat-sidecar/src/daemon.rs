@@ -434,6 +434,7 @@ struct ActiveCall {
 struct CallMediaCryptoContext {
     tx_keys: FrameKeyMaterial,
     rx_keys: FrameKeyMaterial,
+    avatar_tx_keys: Option<FrameKeyMaterial>,
     local_participant_label: String,
     peer_participant_label: String,
 }
@@ -1024,6 +1025,50 @@ fn derive_mls_media_crypto_context(
     )
     .map_err(|e| anyhow!("derive media group root failed: {e}"))?;
 
+    // Derive avatar track keys if an avatar0 track is present.
+    let avatar_tx_keys = if session.tracks.iter().any(|t| t.name == "avatar0") {
+        let avatar_track = "avatar0";
+        let avatar_tx_hash = context_hash(&[
+            b"pika.call.media.base.v1",
+            shared_seed.as_bytes(),
+            local_pubkey_hex.as_bytes(),
+            avatar_track.as_bytes(),
+        ]);
+        let avatar_root_hash = context_hash(&[
+            b"pika.call.media.root.v1",
+            shared_seed.as_bytes(),
+            avatar_track.as_bytes(),
+        ]);
+        let avatar_tx_base = *derive_encryption_key(
+            mdk,
+            &mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &avatar_tx_hash,
+            "application/pika-call",
+            &format!("call/{call_id}/{avatar_track}/{local_pubkey_hex}"),
+        )
+        .map_err(|e| anyhow!("derive avatar tx media key failed: {e}"))?;
+        let avatar_group_root = *derive_encryption_key(
+            mdk,
+            &mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &avatar_root_hash,
+            "application/pika-call",
+            &format!("call/{call_id}/{avatar_track}/group-root"),
+        )
+        .map_err(|e| anyhow!("derive avatar media group root failed: {e}"))?;
+        Some(FrameKeyMaterial::from_base_key(
+            avatar_tx_base,
+            key_id_for_sender(local_pubkey_hex.as_bytes()),
+            group.epoch,
+            generation,
+            avatar_track,
+            avatar_group_root,
+        ))
+    } else {
+        None
+    };
+
     Ok(CallMediaCryptoContext {
         tx_keys: FrameKeyMaterial::from_base_key(
             tx_base,
@@ -1041,6 +1086,7 @@ fn derive_mls_media_crypto_context(
             track,
             group_root,
         ),
+        avatar_tx_keys,
         local_participant_label: opaque_participant_label(&group_root, local_pubkey_hex.as_bytes()),
         peer_participant_label: opaque_participant_label(&group_root, peer_pubkey_hex.as_bytes()),
     })
@@ -1316,6 +1362,40 @@ fn publish_pcm_audio_response_with_relay(
         media
             .publish(&publish_track, frame)
             .context("publish tts frame")?;
+
+        // Publish avatar viseme frame for this audio chunk (if avatar track present).
+        if let Some(ref avatar_keys) = media_crypto.avatar_tx_keys {
+            let viseme_weight = pcm_energy_to_viseme_weight(chunk);
+            let timestamp_us = seq.saturating_mul((track.frame_ms as u64) * 1_000);
+            let avatar_payload = build_viseme_frame(viseme_weight, timestamp_us);
+            let avatar_publish_track = TrackAddress {
+                broadcast_path: broadcast_path(
+                    &session.broadcast_base,
+                    &media_crypto.local_participant_label,
+                )
+                .map_err(|e| anyhow!("invalid local broadcast path for avatar: {e}"))?,
+                track_name: "avatar0".to_string(),
+            };
+            if let Ok(encrypted) = encrypt_frame(
+                &avatar_payload,
+                avatar_keys,
+                FrameInfo {
+                    counter: frame_counter,
+                    group_seq: seq,
+                    frame_idx: 0,
+                    keyframe: true,
+                },
+            ) {
+                let avatar_frame = MediaFrame {
+                    seq,
+                    timestamp_us,
+                    keyframe: true,
+                    payload: encrypted,
+                };
+                let _ = media.publish(&avatar_publish_track, avatar_frame);
+            }
+        }
+
         seq = seq.saturating_add(1);
         frames = frames.saturating_add(1);
     }
@@ -1405,6 +1485,40 @@ fn publish_pcm_audio_response_with_transport(
         transport
             .publish(&publish_track, frame)
             .context("publish tts frame")?;
+
+        // Publish avatar viseme frame for this audio chunk (if avatar track present).
+        if let Some(ref avatar_keys) = media_crypto.avatar_tx_keys {
+            let viseme_weight = pcm_energy_to_viseme_weight(chunk);
+            let timestamp_us = seq.saturating_mul((track.frame_ms as u64) * 1_000);
+            let avatar_payload = build_viseme_frame(viseme_weight, timestamp_us);
+            let avatar_publish_track = TrackAddress {
+                broadcast_path: broadcast_path(
+                    &session.broadcast_base,
+                    &media_crypto.local_participant_label,
+                )
+                .map_err(|e| anyhow!("invalid local broadcast path for avatar: {e}"))?,
+                track_name: "avatar0".to_string(),
+            };
+            if let Ok(encrypted) = encrypt_frame(
+                &avatar_payload,
+                avatar_keys,
+                FrameInfo {
+                    counter: frame_counter,
+                    group_seq: seq,
+                    frame_idx: 0,
+                    keyframe: true,
+                },
+            ) {
+                let avatar_frame = MediaFrame {
+                    seq,
+                    timestamp_us,
+                    keyframe: true,
+                    payload: encrypted,
+                };
+                let _ = transport.publish(&avatar_publish_track, avatar_frame);
+            }
+        }
+
         seq = seq.saturating_add(1);
         frames = frames.saturating_add(1);
         // Pace frame delivery at ~real-time so the receiver doesn't get a
@@ -1433,6 +1547,31 @@ fn publish_tts_audio_response_with_transport(
         .map_err(|_| anyhow!("tts synthesis thread panicked"))?
         .context("synthesize call tts")?;
     publish_pcm_audio_response_with_transport(session, transport, media_crypto, start_seq, tts_pcm)
+}
+
+/// Build a viseme-v1 binary frame (19 bytes) from a mouth-open weight.
+fn build_viseme_frame(viseme_weight: f32, timestamp_us: u64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(19);
+    buf.push(0x01); // version
+    buf.push(if viseme_weight > 0.01 { 0 } else { 0xFF }); // viseme_id: 0 = speaking, 0xFF = idle
+    buf.extend_from_slice(&viseme_weight.to_le_bytes()); // viseme_weight
+    buf.push(0); // expression_id (neutral)
+    buf.extend_from_slice(&0.0f32.to_le_bytes()); // expression_weight
+    buf.extend_from_slice(&timestamp_us.to_le_bytes()); // timestamp_us
+    buf
+}
+
+/// Compute RMS energy of a PCM i16 slice and map to a 0.0-1.0 viseme weight.
+fn pcm_energy_to_viseme_weight(pcm: &[i16]) -> f32 {
+    if pcm.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f64 = pcm.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    let rms = (sum_sq / pcm.len() as f64).sqrt();
+    // Normalize: typical speech RMS is ~2000-8000 out of 32768 max.
+    let normalized = (rms / 6000.0).min(1.0) as f32;
+    // Apply a slight curve for more natural-looking mouth movement.
+    normalized.powf(0.7)
 }
 
 fn publish_pcm_audio_response(
@@ -3721,22 +3860,18 @@ pub async fn daemon_main(
                             }
                             if let Some(signal) = parse_call_signal(&msg.content) {
                                 match signal {
-                                    ParsedCallSignal::Invite { call_id, session } => {
-                                        // Reject video calls — pikachat only supports audio.
-                                        if session.tracks.iter().any(|t| t.name == "video0") {
-                                            tracing::info!(call_id = %call_id, "rejecting video call (unsupported)");
-                                            let _ = send_call_signal(
-                                                &client,
-                                                &relay_urls,
-                                                &mdk,
-                                                &keys,
-                                                &nostr_group_id,
-                                                &call_id,
-                                                OutgoingCallSignal::Reject { reason: "unsupported_video" },
-                                                "call_video_reject",
-                                            )
-                                            .await;
-                                            continue;
+                                    ParsedCallSignal::Invite { call_id, mut session } => {
+                                        // Accept video calls as avatar calls: replace video0
+                                        // with avatar0 so the client renders a 3D avatar.
+                                        if let Some(idx) = session.tracks.iter().position(|t| t.name == "video0") {
+                                            session.tracks[idx] = CallTrackSpec {
+                                                name: "avatar0".to_string(),
+                                                codec: "viseme-v1".to_string(),
+                                                sample_rate: 0,
+                                                channels: 0,
+                                                frame_ms: 33,
+                                            };
+                                            tracing::info!(call_id = %call_id, "video call → avatar call (replaced video0 with avatar0)");
                                         }
                                         if active_call.is_some() {
                                             let _ = send_call_signal(
@@ -4113,6 +4248,7 @@ mod tests {
                 &group_root,
                 bot_pubkey_hex.as_bytes(),
             ),
+            avatar_tx_keys: None,
             peer_participant_label: opaque_participant_label(
                 &group_root,
                 peer_pubkey_hex.as_bytes(),
@@ -4170,6 +4306,298 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(echoed_frames, stats.frames_published);
+    }
+
+    // ── Avatar / viseme tests ────────────────────────────────────────────
+
+    #[test]
+    fn viseme_frame_roundtrip() {
+        let weight: f32 = 0.73;
+        let ts: u64 = 123_456_789;
+        let buf = build_viseme_frame(weight, ts);
+        assert_eq!(buf.len(), 19);
+        assert_eq!(buf[0], 0x01); // version
+
+        // Parse it back
+        let parsed_weight = f32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+        let parsed_ts = u64::from_le_bytes([
+            buf[11], buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18],
+        ]);
+        assert!((parsed_weight - weight).abs() < 1e-6);
+        assert_eq!(parsed_ts, ts);
+    }
+
+    #[test]
+    fn viseme_frame_idle_has_0xff_id() {
+        let buf = build_viseme_frame(0.0, 0);
+        assert_eq!(buf[1], 0xFF); // idle
+    }
+
+    #[test]
+    fn viseme_frame_speaking_has_0_id() {
+        let buf = build_viseme_frame(0.5, 0);
+        assert_eq!(buf[1], 0x00); // speaking
+    }
+
+    #[test]
+    fn pcm_energy_silence_maps_to_zero() {
+        let silence = vec![0i16; 960];
+        let weight = pcm_energy_to_viseme_weight(&silence);
+        assert!(weight < 0.001, "silence should map to ~0, got {weight}");
+    }
+
+    #[test]
+    fn pcm_energy_loud_maps_near_one() {
+        // Full-scale sine-ish samples
+        let loud: Vec<i16> = (0..960)
+            .map(|i| if i % 2 == 0 { 20000 } else { -20000 })
+            .collect();
+        let weight = pcm_energy_to_viseme_weight(&loud);
+        assert!(weight > 0.8, "loud audio should map near 1.0, got {weight}");
+    }
+
+    #[test]
+    fn pcm_energy_moderate_maps_mid_range() {
+        let moderate: Vec<i16> = (0..960).map(|i| ((i % 100) as i16 * 30) - 1500).collect();
+        let weight = pcm_energy_to_viseme_weight(&moderate);
+        assert!(
+            weight > 0.05 && weight < 0.8,
+            "moderate audio should map to mid range, got {weight}"
+        );
+    }
+
+    #[test]
+    fn pcm_energy_empty_slice_returns_zero() {
+        assert_eq!(pcm_energy_to_viseme_weight(&[]), 0.0);
+    }
+
+    #[test]
+    fn video_call_invite_gets_avatar0_replacement() {
+        // Simulate the sidecar receiving a video call invite and replacing video0 with avatar0
+        let mut session = CallSessionParams {
+            moq_url: "https://moq.example.com/anon".to_string(),
+            broadcast_base: "pika/calls/test-call".to_string(),
+            relay_auth: "capv1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            tracks: vec![
+                CallTrackSpec {
+                    name: "audio0".to_string(),
+                    codec: "opus".to_string(),
+                    sample_rate: 48_000,
+                    channels: 1,
+                    frame_ms: 20,
+                },
+                CallTrackSpec {
+                    name: "video0".to_string(),
+                    codec: "h264".to_string(),
+                    sample_rate: 90_000,
+                    channels: 0,
+                    frame_ms: 33,
+                },
+            ],
+        };
+
+        // Apply the same replacement logic the daemon uses
+        if let Some(idx) = session.tracks.iter().position(|t| t.name == "video0") {
+            session.tracks[idx] = CallTrackSpec {
+                name: "avatar0".to_string(),
+                codec: "viseme-v1".to_string(),
+                sample_rate: 0,
+                channels: 0,
+                frame_ms: 33,
+            };
+        }
+
+        assert_eq!(session.tracks.len(), 2);
+        assert_eq!(session.tracks[0].name, "audio0");
+        assert_eq!(session.tracks[1].name, "avatar0");
+        assert_eq!(session.tracks[1].codec, "viseme-v1");
+        assert!(!session.tracks.iter().any(|t| t.name == "video0"));
+    }
+
+    #[test]
+    fn tts_publish_with_avatar_keys_emits_both_audio_and_avatar_frames() {
+        let call_id = "550e8400-e29b-41d4-a716-446655440456";
+        let session = CallSessionParams {
+            moq_url: "https://us-east.moq.logos.surf/anon".to_string(),
+            broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: "capv1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            tracks: vec![
+                CallTrackSpec {
+                    name: "audio0".to_string(),
+                    codec: "opus".to_string(),
+                    sample_rate: 48_000,
+                    channels: 1,
+                    frame_ms: 20,
+                },
+                CallTrackSpec {
+                    name: "avatar0".to_string(),
+                    codec: "viseme-v1".to_string(),
+                    sample_rate: 0,
+                    channels: 0,
+                    frame_ms: 33,
+                },
+            ],
+        };
+        let relay = InMemoryRelay::new();
+        let bot_pubkey_hex = "2284fc7b932b5dbbdaa2185c76a4e17a2ef928d4a82e29b812986b454b957f8f";
+        let peer_pubkey_hex = "11b9a894813efe60d39f8621ae9dc4c6d26de4732411c1cdf4bb15e88898a19c";
+        let group_root = [7u8; 32];
+        let avatar_group_root = [8u8; 32];
+        let media_crypto = CallMediaCryptoContext {
+            tx_keys: FrameKeyMaterial::from_base_key(
+                [9u8; 32],
+                key_id_for_sender(bot_pubkey_hex.as_bytes()),
+                1,
+                0,
+                "audio0",
+                group_root,
+            ),
+            rx_keys: FrameKeyMaterial::from_base_key(
+                [5u8; 32],
+                key_id_for_sender(peer_pubkey_hex.as_bytes()),
+                1,
+                0,
+                "audio0",
+                group_root,
+            ),
+            avatar_tx_keys: Some(FrameKeyMaterial::from_base_key(
+                [11u8; 32],
+                key_id_for_sender(bot_pubkey_hex.as_bytes()),
+                1,
+                0,
+                "avatar0",
+                avatar_group_root,
+            )),
+            local_participant_label: opaque_participant_label(
+                &group_root,
+                bot_pubkey_hex.as_bytes(),
+            ),
+            peer_participant_label: opaque_participant_label(
+                &group_root,
+                peer_pubkey_hex.as_bytes(),
+            ),
+        };
+
+        // Subscribe to both audio0 and avatar0 tracks from the bot
+        let mut observer = MediaSession::with_relay(
+            SessionConfig {
+                moq_url: session.moq_url.clone(),
+                relay_auth: session.relay_auth.clone(),
+            },
+            relay.clone(),
+        );
+        observer.connect().expect("observer connect");
+
+        let bot_audio_track = TrackAddress {
+            broadcast_path: broadcast_path(
+                &session.broadcast_base,
+                &media_crypto.local_participant_label,
+            )
+            .expect("bot broadcast path"),
+            track_name: "audio0".to_string(),
+        };
+        let bot_avatar_track = TrackAddress {
+            broadcast_path: broadcast_path(
+                &session.broadcast_base,
+                &media_crypto.local_participant_label,
+            )
+            .expect("bot broadcast path"),
+            track_name: "avatar0".to_string(),
+        };
+        let audio_rx = observer
+            .subscribe(&bot_audio_track)
+            .expect("subscribe audio");
+        let avatar_rx = observer
+            .subscribe(&bot_avatar_track)
+            .expect("subscribe avatar");
+
+        // Generate test PCM: alternating loud/silence chunks to test viseme variation
+        let frame_samples = 960usize; // 20ms @ 48kHz
+        let total_frames = 4usize;
+        let mut pcm = Vec::with_capacity(frame_samples * total_frames);
+        for frame_idx in 0..total_frames {
+            for sample_idx in 0..frame_samples {
+                let sample = if frame_idx % 2 == 0 {
+                    // Loud frame
+                    ((sample_idx as f32 * 0.1).sin() * 15000.0) as i16
+                } else {
+                    // Silent frame
+                    0i16
+                };
+                pcm.push(sample);
+            }
+        }
+
+        // Publish TTS audio (which should also emit avatar frames)
+        let stats = publish_pcm_audio_response_with_relay(
+            &session,
+            relay,
+            &media_crypto,
+            0,
+            crate::call_tts::TtsPcm {
+                sample_rate_hz: 48_000,
+                channels: 1,
+                pcm_i16: pcm,
+            },
+        )
+        .expect("publish tts pcm with avatar");
+        assert_eq!(stats.frames_published, total_frames as u64);
+
+        // Collect audio frames
+        let mut audio_frames = 0u64;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while audio_frames < stats.frames_published && std::time::Instant::now() < deadline {
+            while let Ok(frame) = audio_rx.try_recv() {
+                decrypt_frame(&frame.payload, &media_crypto.tx_keys).expect("decrypt audio");
+                audio_frames += 1;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            audio_frames, total_frames as u64,
+            "audio frame count mismatch"
+        );
+
+        // Collect avatar frames and verify viseme data
+        let mut avatar_frames = 0u64;
+        let mut saw_nonzero_weight = false;
+        let mut saw_zero_weight = false;
+        let avatar_tx_keys = media_crypto.avatar_tx_keys.as_ref().unwrap();
+        while avatar_frames < stats.frames_published && std::time::Instant::now() < deadline {
+            while let Ok(frame) = avatar_rx.try_recv() {
+                let decrypted =
+                    decrypt_frame(&frame.payload, avatar_tx_keys).expect("decrypt avatar");
+                let payload = decrypted.payload;
+                assert_eq!(payload.len(), 19, "viseme frame must be 19 bytes");
+                assert_eq!(payload[0], 0x01, "version byte");
+                let weight = f32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+                assert!(
+                    (0.0..=1.0).contains(&weight),
+                    "weight out of range: {weight}"
+                );
+                if weight > 0.01 {
+                    saw_nonzero_weight = true;
+                } else {
+                    saw_zero_weight = true;
+                }
+                avatar_frames += 1;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            avatar_frames, total_frames as u64,
+            "avatar frame count mismatch"
+        );
+        assert!(
+            saw_nonzero_weight,
+            "should have non-zero weight for loud PCM chunks"
+        );
+        assert!(
+            saw_zero_weight,
+            "should have ~zero weight for silent PCM chunks"
+        );
     }
 
     // ── Media helper tests ─────────────────────────────────────────────

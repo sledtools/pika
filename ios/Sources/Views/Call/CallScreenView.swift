@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import os
+import RealityKit
 import SwiftUI
 import UIKit
 
@@ -21,6 +22,11 @@ struct CallScreenView: View {
     var remotePixelBuffer: CVPixelBuffer?
     /// Local camera preview session (zero-copy preview layer).
     var localCaptureSession: AVCaptureSession?
+    /// Avatar entity for avatar calls (bot with 3D model).
+    var avatarEntity: Entity?
+    var avatarRenderer: AvatarCallRenderer?
+    var avatarLoadProgress: Double = 0
+    var avatarStatus: String = ""
 
     @State private var showMicDeniedAlert = false
     @State private var isSpeakerOn = false
@@ -134,7 +140,9 @@ struct CallScreenView: View {
             // Remote video fullscreen
             Color.black.ignoresSafeArea()
 
-            if remotePixelBuffer != nil {
+            if call.isAvatarCall, call.isLive {
+                avatarCallContent
+            } else if remotePixelBuffer != nil {
                 RemoteVideoView(pixelBuffer: remotePixelBuffer)
                     .ignoresSafeArea()
             } else {
@@ -149,24 +157,26 @@ struct CallScreenView: View {
                 }
             }
 
-            // Local camera preview (PiP corner)
-            VStack {
-                HStack {
-                    Spacer()
-                    if let session = localCaptureSession, call.isCameraEnabled {
-                        CameraPreviewView(session: session)
-                            .frame(width: 120, height: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                            )
-                            .shadow(radius: 4)
-                            .padding(.top, 60)
-                            .padding(.trailing, 16)
+            // Local camera preview (PiP corner) — not shown for avatar calls
+            if !call.isAvatarCall {
+                VStack {
+                    HStack {
+                        Spacer()
+                        if let session = localCaptureSession, call.isCameraEnabled {
+                            CameraPreviewView(session: session)
+                                .frame(width: 120, height: 160)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                )
+                                .shadow(radius: 4)
+                                .padding(.top, 60)
+                                .padding(.trailing, 16)
+                        }
                     }
+                    Spacer()
                 }
-                Spacer()
             }
 
             // Controls overlay at bottom
@@ -230,6 +240,52 @@ struct CallScreenView: View {
     }
 
     @ViewBuilder
+    private var avatarCallContent: some View {
+        if let entity = avatarEntity, let renderer = avatarRenderer {
+            ZStack(alignment: .top) {
+                AvatarSceneView(entity: entity, renderer: renderer)
+                    .ignoresSafeArea()
+                if !avatarStatus.isEmpty {
+                    Text(avatarStatus)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.5), in: Capsule())
+                        .padding(.top, 50)
+                }
+            }
+        } else if call.peerAvatarModelUrl != nil {
+            // Loading state while avatar model downloads
+            VStack(spacing: 20) {
+                Text(peerName)
+                    .font(.system(.title2, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.white)
+                VStack(spacing: 8) {
+                    ProgressView(value: avatarLoadProgress)
+                        .tint(.white)
+                        .frame(width: 200)
+                    Text(avatarStatus.isEmpty
+                        ? "Loading avatar\(avatarLoadProgress > 0 ? " \(Int(avatarLoadProgress * 100))%" : "...")"
+                        : avatarStatus)
+                        .font(.headline)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+        } else {
+            // No avatar model URL — show name like an audio call
+            VStack(spacing: 16) {
+                Text(peerName)
+                    .font(.system(.title2, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(call.status.titleText)
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    @ViewBuilder
     private var videoControlRow: some View {
         switch call.status {
         case .ringing:
@@ -265,20 +321,22 @@ struct CallScreenView: View {
                 }
                 .accessibilityIdentifier(TestIds.chatCallMute)
 
-                CallControlButton(
-                    title: call.isCameraEnabled ? "Cam Off" : "Cam On",
-                    systemImage: call.isCameraEnabled ? "video.fill" : "video.slash.fill",
-                    tint: call.isCameraEnabled ? .white.opacity(0.25) : .orange
-                ) {
-                    onToggleCamera()
-                }
+                if !call.isAvatarCall {
+                    CallControlButton(
+                        title: call.isCameraEnabled ? "Cam Off" : "Cam On",
+                        systemImage: call.isCameraEnabled ? "video.fill" : "video.slash.fill",
+                        tint: call.isCameraEnabled ? .white.opacity(0.25) : .orange
+                    ) {
+                        onToggleCamera()
+                    }
 
-                CallControlButton(
-                    title: "Flip",
-                    systemImage: "camera.rotate",
-                    tint: .white.opacity(0.25)
-                ) {
-                    onFlipCamera()
+                    CallControlButton(
+                        title: "Flip",
+                        systemImage: "camera.rotate",
+                        tint: .white.opacity(0.25)
+                    ) {
+                        onFlipCamera()
+                    }
                 }
 
                 CallControlButton(
@@ -504,6 +562,8 @@ private struct CallControlButton: View {
             startedAt: Int64(Date().timeIntervalSince1970) - 95,
             isMuted: false,
             isVideoCall: false,
+            isAvatarCall: false,
+            peerAvatarModelUrl: nil,
             isCameraEnabled: false,
             debug: CallDebugStats(
                 txFrames: 1023,
@@ -541,6 +601,8 @@ private struct CallControlButton: View {
             startedAt: Int64(Date().timeIntervalSince1970) - 30,
             isMuted: false,
             isVideoCall: true,
+            isAvatarCall: false,
+            peerAvatarModelUrl: nil,
             isCameraEnabled: true,
             debug: nil
         ),

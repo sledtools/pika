@@ -71,6 +71,13 @@ pub trait VideoFrameReceiver: Send + Sync + 'static {
     fn on_video_frame(&self, call_id: String, payload: Vec<u8>);
 }
 
+/// Platform-side callback for receiving avatar animation frames from remote peers.
+/// Called from the avatar worker thread at ~30fps during avatar calls.
+#[uniffi::export(callback_interface)]
+pub trait AvatarFrameReceiver: Send + Sync + 'static {
+    fn on_avatar_frame(&self, call_id: String, payload: Vec<u8>);
+}
+
 #[derive(uniffi::Object)]
 pub struct FfiApp {
     core_tx: Sender<CoreMsg>,
@@ -80,6 +87,7 @@ pub struct FfiApp {
     external_signer_bridge: SharedExternalSignerBridgeType,
     bunker_signer_connector: SharedBunkerSignerConnectorType,
     video_frame_receiver: Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>>,
+    avatar_frame_receiver: Arc<RwLock<Option<Arc<dyn AvatarFrameReceiver>>>>,
 }
 
 #[uniffi::export]
@@ -100,6 +108,8 @@ impl FfiApp {
         ));
         let video_frame_receiver: Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>> =
             Arc::new(RwLock::new(None));
+        let avatar_frame_receiver: Arc<RwLock<Option<Arc<dyn AvatarFrameReceiver>>>> =
+            Arc::new(RwLock::new(None));
 
         // Actor loop thread (single threaded "app actor").
         let core_tx_for_core = core_tx.clone();
@@ -107,6 +117,7 @@ impl FfiApp {
         let signer_bridge_for_core = external_signer_bridge.clone();
         let bunker_connector_for_core = bunker_signer_connector.clone();
         let video_receiver_for_core = video_frame_receiver.clone();
+        let avatar_receiver_for_core = avatar_frame_receiver.clone();
         thread::spawn(move || {
             let mut core = crate::core::AppCore::new(
                 update_tx,
@@ -118,6 +129,7 @@ impl FfiApp {
                 bunker_connector_for_core,
             );
             core.set_video_frame_receiver(video_receiver_for_core);
+            core.set_avatar_frame_receiver(avatar_receiver_for_core);
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
             }
@@ -131,6 +143,7 @@ impl FfiApp {
             external_signer_bridge,
             bunker_signer_connector,
             video_frame_receiver,
+            avatar_frame_receiver,
         })
     }
 
@@ -167,6 +180,18 @@ impl FfiApp {
     pub fn set_video_frame_receiver(&self, receiver: Box<dyn VideoFrameReceiver>) {
         let receiver: Arc<dyn VideoFrameReceiver> = Arc::from(receiver);
         match self.video_frame_receiver.write() {
+            Ok(mut slot) => {
+                *slot = Some(receiver);
+            }
+            Err(poison) => {
+                *poison.into_inner() = Some(receiver);
+            }
+        }
+    }
+
+    pub fn set_avatar_frame_receiver(&self, receiver: Box<dyn AvatarFrameReceiver>) {
+        let receiver: Arc<dyn AvatarFrameReceiver> = Arc::from(receiver);
+        match self.avatar_frame_receiver.write() {
             Ok(mut slot) => {
                 *slot = Some(receiver);
             }

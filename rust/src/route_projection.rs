@@ -244,6 +244,7 @@ mod tests {
             name: None,
             about: None,
             picture_url: None,
+            avatar_model_url: None,
             is_followed: false,
         });
         let route = project_desktop(&state);
@@ -284,6 +285,8 @@ mod tests {
             None,
             false,
             false,
+            false,
+            None,
             None,
         ));
         let route = project_desktop(&state);

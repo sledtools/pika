@@ -17,7 +17,7 @@ use pika_media::subscription::MediaFrameSubscription;
 use pika_media::tracks::{broadcast_path, TrackAddress};
 
 use crate::updates::{CoreMsg, InternalEvent};
-use crate::VideoFrameReceiver;
+use crate::{AvatarFrameReceiver, VideoFrameReceiver};
 
 use super::call_control::CallSessionParams;
 
@@ -49,15 +49,18 @@ struct CallWorker {
     muted: Arc<AtomicBool>,
     camera_enabled: Arc<AtomicBool>,
     video_stop: Option<Arc<AtomicBool>>,
+    avatar_stop: Option<Arc<AtomicBool>>,
     video_frame_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 type SharedVideoFrameReceiver = Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>>;
+type SharedAvatarFrameReceiver = Arc<RwLock<Option<Arc<dyn AvatarFrameReceiver>>>>;
 
 #[derive(Default)]
 pub(super) struct CallRuntime {
     workers: HashMap<String, CallWorker>, // call_id -> worker
     video_frame_receiver: Option<SharedVideoFrameReceiver>,
+    avatar_frame_receiver: Option<SharedAvatarFrameReceiver>,
 }
 
 impl std::fmt::Debug for CallRuntime {
@@ -158,6 +161,10 @@ impl CallRuntime {
         self.video_frame_receiver = Some(receiver);
     }
 
+    pub(super) fn set_avatar_frame_receiver(&mut self, receiver: SharedAvatarFrameReceiver) {
+        self.avatar_frame_receiver = Some(receiver);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn on_call_connecting(
         &mut self,
@@ -213,7 +220,7 @@ impl CallRuntime {
                 track_name: "video0".to_string(),
             };
             let video_subscribe_track = TrackAddress {
-                broadcast_path: peer_path,
+                broadcast_path: peer_path.clone(),
                 track_name: "video0".to_string(),
             };
 
@@ -325,6 +332,67 @@ impl CallRuntime {
             });
 
             Some((vtx, stop_for_video, camera_enabled_for_video))
+        } else {
+            None
+        };
+
+        // Avatar track setup: RX-only subscription for receiving bot avatar state.
+        let avatar_stop = if let Some(avatar_rx_keys) = media_ctx.avatar_rx_keys {
+            let avatar_subscribe_track = TrackAddress {
+                broadcast_path: peer_path.clone(),
+                track_name: "avatar0".to_string(),
+            };
+            let avatar_rx = transport
+                .subscribe(&avatar_subscribe_track)
+                .map_err(to_string_error)?;
+
+            let stop_for_avatar = Arc::new(AtomicBool::new(false));
+            let stop_for_avatar_thread = stop_for_avatar.clone();
+            let avatar_receiver = self.avatar_frame_receiver.clone();
+            let call_id_for_avatar = call_id.to_string();
+
+            thread::spawn(move || {
+                let mut replay_window = ReplayWindow::default();
+                let mut next_tick = Instant::now();
+
+                while !stop_for_avatar_thread.load(Ordering::Relaxed) {
+                    for _ in 0..4 {
+                        match avatar_rx.try_recv() {
+                            Ok(inbound) => {
+                                if let Ok(decrypted) =
+                                    decrypt_frame(&inbound.payload, &avatar_rx_keys)
+                                {
+                                    if !replay_window.allow(decrypted.info.group_seq) {
+                                        continue;
+                                    }
+                                    if let Some(ref receiver_lock) = avatar_receiver {
+                                        if let Ok(guard) = receiver_lock.read() {
+                                            if let Some(ref receiver) = *guard {
+                                                receiver.on_avatar_frame(
+                                                    call_id_for_avatar.clone(),
+                                                    decrypted.payload,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => break,
+                        }
+                    }
+
+                    next_tick += VIDEO_FRAME_DURATION;
+                    let now = Instant::now();
+                    if next_tick > now {
+                        thread::sleep(next_tick.saturating_duration_since(now));
+                    } else {
+                        next_tick = now;
+                    }
+                }
+            });
+
+            Some(stop_for_avatar)
         } else {
             None
         };
@@ -526,6 +594,7 @@ impl CallRuntime {
                 muted,
                 camera_enabled,
                 video_stop,
+                avatar_stop,
                 video_frame_tx: video_sender,
             },
         );
@@ -560,6 +629,9 @@ impl CallRuntime {
             if let Some(vstop) = &worker.video_stop {
                 vstop.store(true, Ordering::Relaxed);
             }
+            if let Some(astop) = &worker.avatar_stop {
+                astop.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -581,6 +653,7 @@ pub(super) struct CallMediaCryptoContext {
     pub(super) rx_keys: FrameKeyMaterial,
     pub(super) video_tx_keys: Option<FrameKeyMaterial>,
     pub(super) video_rx_keys: Option<FrameKeyMaterial>,
+    pub(super) avatar_rx_keys: Option<FrameKeyMaterial>,
     pub(super) local_participant_label: String,
     pub(super) peer_participant_label: String,
 }

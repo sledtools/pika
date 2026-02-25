@@ -12,9 +12,16 @@ Branch context: `worktrees/marmot-refactor`.
 ## Current Direction (Locked)
 - Internal protocol is ACP-only.
 - Pi protocol track is removed (no dual-protocol migration work).
+- Pi remains only as a remote runtime backend for Fly/MicroVM execution.
 - Cloudflare Workers path is being fully removed (not frozen).
 - `pikachat-wasm` is being fully removed with the Cloudflare path.
 - Delivery focus is Fly + MicroVM + shared core extraction.
+
+## Pi Runtime Boundary (Hard Rule)
+- Pi is allowed only inside the remote runtime process running on Fly or MicroVM.
+- Pi is not allowed in CLI control-plane protocol, server control-plane schema, Workers/Cloudflare paths, local adapter shims, or recipe UX surface.
+- Runtime lifecycle control is ACP control-plane over Nostr.
+- Operator chat traffic is Marmot/MLS over Nostr only (no Fly SSH/attach, no provider-side shell attach flow).
 
 ## Implemented Baseline
 - Control-plane schema extracted to shared crate (`pika-agent-control-plane`).
@@ -47,6 +54,38 @@ Branch context: `worktrees/marmot-refactor`.
 Acceptance:
 - Deterministic contract suite fails on schema/behavior drift.
 - `pre-merge-agent-contracts` covers the critical control-plane invariants.
+
+## P0.5. Operator Demo Vertical Slice (Do Early, Not At End)
+Goal:
+- `just agent-fly` and `just agent-microvm` should provision remotely, open the interactive terminal chat loop, communicate only via Marmot/MLS, and teardown on Ctrl-C by default.
+
+Tasks:
+1. Wire interactive remote flow in `cmd_agent_new_remote`:
+- Provision (ACP control plane)
+- Wait for bot key package
+- Create group + publish welcomes
+- Enter existing interactive chat loop (`you>` / `pi>`)
+- On exit/Ctrl-C, send Teardown command unless `--keep`
+
+2. Keep scriptability:
+- Add `--json` mode on `agent new` to preserve print-and-exit behavior for scripts/automation.
+
+3. Simplify operator recipes:
+- `just agent-fly` and `just agent-microvm` should invoke the integrated CLI flow directly.
+- Remove recipe-level UX assumptions that require manual attach/tunnel workflows beyond what the command itself handles.
+
+4. Teardown safety:
+- Best-effort teardown guard on Ctrl-C/exit.
+- If teardown fails, print runtime id and explicit manual cleanup command.
+
+5. Demo prerequisites:
+- No extra local setup beyond normal CLI env (`PIKA_AGENT_CONTROL_SERVER_PUBKEY` + relays; provider API keys remain server-side).
+
+Acceptance:
+- Both `just agent-fly` and `just agent-microvm` open interactive chat without secondary attach steps.
+- Chat path is relay/Marmot only.
+- Ctrl-C destroys runtime by default; `--keep` preserves runtime.
+- `--json` retains non-interactive automation behavior.
 
 ## P1. Shared Core Extraction (Remove Duplication)
 5. ACP projection policy and storage model
@@ -94,6 +133,7 @@ Acceptance:
 - No Cloudflare/Workers provider surface remains in CLI/server/just/docs/CI.
 - No `pikachat-wasm` crate or dependency edges remain in the workspace.
 - Provider matrix is explicit: Fly + MicroVM only.
+- No local Pi adapter tooling remains in active demos/recipes.
 
 ## P4. Optional Later Work
 12. Dead code/tools cleanup tranche
@@ -108,6 +148,7 @@ Acceptance:
 - Protocol-suffixed recipe surface (`*-pi`, `*-acp`).
 - Attach command requirements tied to dual-protocol migration assumptions.
 - Any re-enable path for Cloudflare/Workers in this refactor branch.
+- Any Pi execution/integration outside remote Fly/MicroVM runtimes.
 
 ## Guardrails
 - No `AgentProtocol::Pi` reintroduction in Rust protocol core.
@@ -115,6 +156,8 @@ Acceptance:
 - No hidden protocol switching in control-plane provisioning UX.
 - Avoid shipping new duplicated runtime/provider logic; extract shared core first.
 - Do not leave partial Cloudflare/Workers/wasm remnants that still appear active.
+- Do not route operator chat through anything except Marmot/MLS relay flow.
+- Do not introduce provider instance attach/exec UX for this demo.
 
 ## Validation Matrix (Per Follow-Up PR)
 - `cargo test -p pika-agent-control-plane`
@@ -130,5 +173,6 @@ When touched:
 ## Done Criteria
 - ACP-only architecture is enforced by code and tests.
 - Shared runtime/provider core is extracted and reused by CLI/server/sidecar.
+- Operator demo UX works directly from `just agent-fly`/`just agent-microvm` with remote provision -> chat -> teardown.
 - Fly + MicroVM are stable with deterministic contract coverage.
 - Cloudflare/Workers and `pikachat-wasm` are fully removed.

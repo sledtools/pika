@@ -21,6 +21,7 @@ nostr = "0.44"
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 pika-agent-control-plane = { path = "../pika-agent-control-plane" }
 pika-agent-microvm = { path = "../pika-agent-microvm" }
+pika-relay-profiles = { path = "../pika-relay-profiles" }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 tracing = "0.1"

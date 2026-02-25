@@ -5897,6 +5897,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-relay-profiles"
+version = "0.1.0"
+
+[[package]]
 name = "pika-server"
 version = "0.1.0"
 dependencies = [
@@ -5916,6 +5920,7 @@ dependencies = [
  "nostr-sdk",
  "pika-agent-control-plane",
  "pika-agent-microvm",
+ "pika-relay-profiles",
  "rand 0.8.5",
  "reqwest",
  "serde",
@@ -5993,6 +5998,7 @@ dependencies = [
  "pika-agent-microvm",
  "pika-agent-protocol",
  "pika-marmot-runtime",
+ "pika-relay-profiles",
  "pikachat-sidecar",
  "rand 0.8.5",
  "reqwest",
@@ -6019,6 +6025,7 @@ dependencies = [
  "nostr-sdk",
  "pika-marmot-runtime",
  "pika-media",
+ "pika-relay-profiles",
  "reqwest",
  "rustls 0.23.36",
  "serde",

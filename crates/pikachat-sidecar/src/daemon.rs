@@ -21,6 +21,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
+use pika_relay_profiles::default_primary_blossom_server;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -275,7 +276,6 @@ fn default_group_name() -> String {
     "DM".to_string()
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
 fn is_imeta_tag(tag: &Tag) -> bool {
@@ -317,7 +317,7 @@ fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+    vec![default_primary_blossom_server().to_string()]
 }
 
 fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
@@ -4222,7 +4222,7 @@ mod tests {
     #[test]
     fn blossom_servers_or_default_falls_back() {
         let result = blossom_servers_or_default(&[]);
-        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+        assert_eq!(result, vec![default_primary_blossom_server()]);
     }
 
     #[test]
@@ -4230,7 +4230,7 @@ mod tests {
         let servers = vec!["".to_string(), "  ".to_string(), "not a url".to_string()];
         let result = blossom_servers_or_default(&servers);
         // All invalid → falls back to default
-        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+        assert_eq!(result, vec![default_primary_blossom_server()]);
     }
 
     #[test]

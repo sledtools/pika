@@ -21,24 +21,13 @@ use pika_agent_control_plane::{
     RuntimeLifecyclePhase,
 };
 use pika_agent_microvm::microvm_params_provided;
+use pika_relay_profiles::{
+    default_key_package_relays, default_message_relays, default_primary_blossom_server,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::agent::harness::AgentProtocol;
-
-// Same defaults as the Pika app (rust/src/core/config.rs).
-const DEFAULT_RELAY_URLS: &[&str] = &[
-    "wss://us-east.nostr.pikachat.org",
-    "wss://eu.nostr.pikachat.org",
-];
-
-// Key packages (kind 443) are NIP-70 "protected" — many popular relays reject them.
-// These relays are known to accept protected kind 443 publishes.
-const DEFAULT_KP_RELAY_URLS: &[&str] = &[
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-01.yakihonne.com",
-    "wss://nostr-02.yakihonne.com",
-];
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -209,7 +198,7 @@ server, and --content becomes the caption (optional).")]
         #[arg(long, requires = "media")]
         filename: Option<String>,
 
-        /// Blossom server URL (repeatable; defaults to blossom.yakihonne.com)
+        /// Blossom server URL (repeatable; defaults to https://us-east.nostr.pikachat.org)
         #[arg(long = "blossom", requires = "media")]
         blossom_servers: Vec<String>,
     },
@@ -645,7 +634,7 @@ fn open(cli: &Cli) -> anyhow::Result<(Keys, mdk_util::PikaMdk)> {
 /// Resolve message relay URLs: use --relay if provided, otherwise defaults.
 fn resolve_relays(cli: &Cli) -> Vec<String> {
     if cli.relay.is_empty() {
-        DEFAULT_RELAY_URLS.iter().map(|s| s.to_string()).collect()
+        default_message_relays()
     } else {
         cli.relay.clone()
     }
@@ -654,10 +643,7 @@ fn resolve_relays(cli: &Cli) -> Vec<String> {
 /// Resolve key-package relay URLs: use --kp-relay if provided, otherwise defaults.
 fn resolve_kp_relays(cli: &Cli) -> Vec<String> {
     if cli.kp_relay.is_empty() {
-        DEFAULT_KP_RELAY_URLS
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        default_key_package_relays()
     } else {
         cli.kp_relay.clone()
     }
@@ -778,7 +764,7 @@ fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+    vec![default_primary_blossom_server().to_string()]
 }
 
 fn message_media_refs(
@@ -1896,7 +1882,6 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     Ok(())
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn cmd_profile(cli: &Cli) -> anyhow::Result<()> {
@@ -1978,8 +1963,8 @@ async fn cmd_update_profile(
             _ => "image/jpeg", // default fallback
         };
 
-        let base_url =
-            nostr_sdk::Url::parse(DEFAULT_BLOSSOM_SERVER).context("parse blossom server URL")?;
+        let base_url = nostr_sdk::Url::parse(default_primary_blossom_server())
+            .context("parse blossom server URL")?;
         let blossom = nostr_blossom::client::BlossomClient::new(base_url);
         let descriptor = blossom
             .upload_blob(image_bytes, Some(mime_type.to_string()), None, Some(&keys))

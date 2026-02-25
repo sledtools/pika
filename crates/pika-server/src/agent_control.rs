@@ -15,6 +15,7 @@ use pika_agent_control_plane::{
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
 };
+use pika_relay_profiles::default_message_relays;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1911,10 +1912,7 @@ impl ProviderAdapter for MicrovmAdapter {
 }
 
 fn default_relay_urls() -> Vec<String> {
-    vec![
-        "wss://us-east.nostr.pikachat.org".to_string(),
-        "wss://eu.nostr.pikachat.org".to_string(),
-    ]
+    default_message_relays()
 }
 
 fn default_list_summary_descriptor() -> RuntimeDescriptor {

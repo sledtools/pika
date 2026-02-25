@@ -2792,4 +2792,303 @@ mod tests {
         let result = env_json_for_provider(ProviderKind::Fly, &unique);
         assert_eq!(result, Value::Null);
     }
+
+    #[tokio::test]
+    async fn different_idempotency_key_triggers_new_provision() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(MockAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let first = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-a",
+                    "idem-a",
+                    AgentControlCommand::Provision(ProvisionCommand {
+                        provider: ProviderKind::Fly,
+                        protocol: ProtocolKind::Acp,
+                        name: None,
+                        runtime_class: None,
+                        relay_urls: vec![],
+                        keep: false,
+                        bot_secret_key_hex: None,
+                        microvm: None,
+                    }),
+                ),
+            )
+            .await;
+        assert!(first.result.is_some());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let second = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-b",
+                    "idem-b",
+                    AgentControlCommand::Provision(ProvisionCommand {
+                        provider: ProviderKind::Fly,
+                        protocol: ProtocolKind::Acp,
+                        name: None,
+                        runtime_class: None,
+                        relay_urls: vec![],
+                        keep: false,
+                        bot_secret_key_hex: None,
+                        microvm: None,
+                    }),
+                ),
+            )
+            .await;
+        assert!(second.result.is_some());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn provision_failure_normalizes_error_code() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(CountingFailingAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request(AgentControlCommand::Provision(ProvisionCommand {
+                    provider: ProviderKind::Fly,
+                    protocol: ProtocolKind::Acp,
+                    name: None,
+                    runtime_class: None,
+                    relay_urls: vec![],
+                    keep: false,
+                    bot_secret_key_hex: None,
+                    microvm: None,
+                })),
+            )
+            .await;
+        assert!(out.result.is_none());
+        let err = out.error.expect("expected provision_failed error");
+        assert_eq!(err.code, "provision_failed");
+        assert!(err.hint.is_some());
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap()
+                .contains("simulated provision failure"),
+            "raw error should be wrapped in detail field"
+        );
+        assert!(out
+            .statuses
+            .iter()
+            .any(|s| s.phase == RuntimeLifecyclePhase::Failed));
+    }
+
+    #[tokio::test]
+    async fn all_error_codes_are_consistent_strings() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(MockAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let not_found = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-nf",
+                    "idem-nf",
+                    AgentControlCommand::GetRuntime(GetRuntimeCommand {
+                        runtime_id: "nonexistent".to_string(),
+                    }),
+                ),
+            )
+            .await;
+        let teardown_nf = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-td",
+                    "idem-td",
+                    AgentControlCommand::Teardown(TeardownCommand {
+                        runtime_id: "nonexistent".to_string(),
+                    }),
+                ),
+            )
+            .await;
+
+        let nf_err = not_found.error.expect("get should fail");
+        let td_err = teardown_nf.error.expect("teardown should fail");
+        assert_eq!(nf_err.code, "runtime_not_found");
+        assert_eq!(td_err.code, "runtime_not_found");
+    }
+
+    #[tokio::test]
+    async fn descriptor_fields_flow_through_provision_result() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(MockAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request(AgentControlCommand::Provision(ProvisionCommand {
+                    provider: ProviderKind::Fly,
+                    protocol: ProtocolKind::Acp,
+                    name: None,
+                    runtime_class: None,
+                    relay_urls: vec![],
+                    keep: false,
+                    bot_secret_key_hex: None,
+                    microvm: None,
+                })),
+            )
+            .await;
+
+        let result = out.result.expect("provision should succeed");
+        let rt = &result.runtime;
+        assert_eq!(rt.provider, ProviderKind::Fly);
+        assert_eq!(rt.lifecycle_phase, RuntimeLifecyclePhase::Ready);
+        assert_eq!(rt.runtime_class, Some("mock".to_string()));
+        assert_eq!(rt.region, Some("local".to_string()));
+        assert_eq!(rt.capacity, json!({"slots": 1}));
+        assert_eq!(rt.policy_constraints, json!({"allow_keep": true}));
+        assert_eq!(rt.protocol_compatibility, vec![ProtocolKind::Acp]);
+        assert_eq!(rt.bot_pubkey, Some("ab".repeat(32)));
+        assert!(!rt.metadata.is_null());
+    }
+
+    #[tokio::test]
+    async fn get_runtime_returns_full_descriptor_after_provision() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(MockAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let provision_out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request(AgentControlCommand::Provision(ProvisionCommand {
+                    provider: ProviderKind::Fly,
+                    protocol: ProtocolKind::Acp,
+                    name: None,
+                    runtime_class: None,
+                    relay_urls: vec![],
+                    keep: false,
+                    bot_secret_key_hex: None,
+                    microvm: None,
+                })),
+            )
+            .await;
+        let provisioned_rt = provision_out
+            .result
+            .expect("provision should succeed")
+            .runtime;
+        let runtime_id = provisioned_rt.runtime_id.clone();
+
+        let get_out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-get",
+                    "idem-get",
+                    AgentControlCommand::GetRuntime(GetRuntimeCommand {
+                        runtime_id: runtime_id.clone(),
+                    }),
+                ),
+            )
+            .await;
+        let get_rt = get_out.result.expect("get should succeed").runtime;
+        assert_eq!(get_rt.runtime_id, runtime_id);
+        assert_eq!(get_rt.provider, provisioned_rt.provider);
+        assert_eq!(get_rt.runtime_class, provisioned_rt.runtime_class);
+        assert_eq!(get_rt.region, provisioned_rt.region);
+        assert_eq!(get_rt.bot_pubkey, provisioned_rt.bot_pubkey);
+        assert_eq!(
+            get_rt.protocol_compatibility,
+            provisioned_rt.protocol_compatibility
+        );
+    }
+
+    #[tokio::test]
+    async fn teardown_transitions_lifecycle_phase() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = std::sync::Arc::new(MockAdapter {
+            calls: calls.clone(),
+        });
+        let service = AgentControlService::with_adapters(adapter.clone(), adapter);
+        let requester = Keys::generate().public_key();
+
+        let provision_out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request(AgentControlCommand::Provision(ProvisionCommand {
+                    provider: ProviderKind::Fly,
+                    protocol: ProtocolKind::Acp,
+                    name: None,
+                    runtime_class: None,
+                    relay_urls: vec![],
+                    keep: false,
+                    bot_secret_key_hex: None,
+                    microvm: None,
+                })),
+            )
+            .await;
+        let runtime_id = provision_out.result.expect("provision").runtime.runtime_id;
+
+        let teardown_out = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-td",
+                    "idem-td",
+                    AgentControlCommand::Teardown(TeardownCommand {
+                        runtime_id: runtime_id.clone(),
+                    }),
+                ),
+            )
+            .await;
+        let td_rt = teardown_out
+            .result
+            .expect("teardown should succeed")
+            .runtime;
+        assert_eq!(td_rt.runtime_id, runtime_id);
+        assert_eq!(td_rt.lifecycle_phase, RuntimeLifecyclePhase::Teardown);
+
+        let get_after = service
+            .handle_command(
+                &requester.to_hex(),
+                requester,
+                request_with(
+                    "req-get2",
+                    "idem-get2",
+                    AgentControlCommand::GetRuntime(GetRuntimeCommand {
+                        runtime_id: runtime_id.clone(),
+                    }),
+                ),
+            )
+            .await;
+        let get_rt = get_after.result.expect("get after teardown").runtime;
+        assert_eq!(get_rt.lifecycle_phase, RuntimeLifecyclePhase::Teardown);
+    }
 }

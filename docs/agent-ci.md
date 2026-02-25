@@ -15,6 +15,7 @@ These lanes are required in `.github/workflows/pre-merge.yml`:
 
 - `check-agent-contracts`:
   - Runs mocked control-plane contracts for Fly + MicroVM (no real cloud credentials/hosts).
+  - Covers: `pikachat` Fly client tests, `pika-agent-microvm` tests, `pika-agent-control-plane` schema tests, `pika-agent-protocol` envelope tests, `pika-server` agent_control service tests.
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
 
 ## Advisory Integration Lanes
@@ -42,5 +43,9 @@ Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:
 
 - Touch `cli/src/fly_machines.rs`:
   - expected: `check-agent-contracts` and `check-pikachat` run.
+- Touch `crates/pika-agent-microvm/src/lib.rs`:
+  - expected: `check-agent-contracts` runs.
+- Touch `crates/pika-server/src/agent_control.rs`:
+  - expected: `check-agent-contracts` runs.
 - Touch `cli/src/main.rs` only:
   - expected: `check-pikachat` runs; `check-agent-contracts` is skipped.

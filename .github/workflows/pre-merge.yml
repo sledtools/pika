@@ -76,6 +76,11 @@ jobs:
               - 'cli/src/fly_machines.rs'
               - 'cli/src/microvm_spawner.rs'
               - 'cli/src/agent/microvm.rs'
+              - 'crates/pika-agent-microvm/**'
+              - 'crates/pika-agent-control-plane/**'
+              - 'crates/pika-agent-protocol/**'
+              - 'crates/pika-server/src/agent_clients/**'
+              - 'crates/pika-server/src/agent_control.rs'
               - 'docs/agent-ci.md'
             rmp:
               - 'Cargo.toml'

@@ -296,7 +296,10 @@ pre-merge-pikachat:
 # Deterministic provider control-plane contracts (mocked Fly + mocked MicroVM spawner).
 pre-merge-agent-contracts:
     cargo test -p pikachat fly_machines::tests
-    cargo test -p pikachat microvm_spawner::tests
+    cargo test -p pika-agent-microvm
+    cargo test -p pika-agent-control-plane
+    cargo test -p pika-agent-protocol
+    cargo test -p pika-server -- agent_control::tests
     @echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.

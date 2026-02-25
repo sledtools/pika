@@ -91,11 +91,6 @@ apply_common_agent_env() {
   set_default "PIKA_AGENT_CONTROL_MODE" "remote"
 }
 
-apply_workers_env() {
-  set_default "PIKA_WORKERS_BASE_URL" "${WORKERS_URL:-http://127.0.0.1:8787}"
-  set_default "PI_ADAPTER_BASE_URL" "http://127.0.0.1:8788"
-}
-
 apply_microvm_env() {
   set_default "PIKA_MICROVM_SPAWNER_URL" "${SPAWNER_URL:-http://127.0.0.1:8080}"
   set_default "PI_ADAPTER_BASE_URL" "http://127.0.0.1:8788"
@@ -104,9 +99,6 @@ apply_microvm_env() {
 apply_provider_env() {
   local provider="$1"
   case "$provider" in
-    workers)
-      apply_workers_env
-      ;;
     microvm)
       apply_microvm_env
       ;;

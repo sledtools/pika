@@ -71,11 +71,4 @@ AGENTS.private.md
 # pika-relay local dev data
 .pika-relay/
 
-# Cloudflare workers local artifacts
-workers/**/node_modules/
-workers/**/.wrangler/
-workers/**/vendor/
-!workers/agent-demo/vendor/
-workers/agent-demo/vendor/*
-!workers/agent-demo/vendor/pikachat-wasm/
-!workers/agent-demo/vendor/pikachat-wasm/**
+

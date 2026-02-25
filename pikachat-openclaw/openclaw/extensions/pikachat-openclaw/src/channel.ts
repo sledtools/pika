@@ -327,18 +327,28 @@ async function getGroupMembers(
 ): Promise<Array<{ pubkey: string; npub: string; name: string }>> {
   try {
     const dbPath = path.join(stateDir, "mdk.sqlite");
-    // Use the groups table to find the mls_group_id for this nostr_group_id
-    const { execSync } = await import("node:child_process");
-    const query = `SELECT DISTINCT hex(m.pubkey) as pk FROM messages m JOIN groups g ON m.mls_group_id = g.mls_group_id WHERE g.nostr_group_id = x'${nostrGroupId}' ORDER BY pk;`;
-    const result = execSync(`sqlite3 "${dbPath}" "${query}"`, { encoding: "utf-8", timeout: 3000 }).trim();
-    if (!result) return [];
-    const members = result.split("\n").map((hexPk) => {
-      const pk = hexPk.trim().toLowerCase();
-      const npub = hexToNpub(pk);
-      const name = resolveMemberName(pk, cfg);
-      return { pubkey: pk, npub, name };
-    });
-    return members;
+    const safeGroupId = nostrGroupId.replace(/[^0-9a-fA-F]/g, "");
+    if (!safeGroupId) return [];
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+    try {
+      const stmt = db.prepare(
+        `SELECT DISTINCT hex(m.pubkey) as pk
+         FROM messages m
+         JOIN groups g ON m.mls_group_id = g.mls_group_id
+         WHERE g.nostr_group_id = x'${safeGroupId}'
+         ORDER BY pk`,
+      );
+      const rows = stmt.all() as Array<{ pk: string }>;
+      return rows.map((row) => {
+        const pk = row.pk.trim().toLowerCase();
+        const npub = hexToNpub(pk);
+        const name = resolveMemberName(pk, cfg);
+        return { pubkey: pk, npub, name };
+      });
+    } finally {
+      db.close();
+    }
   } catch {
     return [];
   }

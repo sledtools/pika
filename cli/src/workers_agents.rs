@@ -76,16 +76,31 @@ impl WorkersClient {
     pub fn from_env() -> anyhow::Result<Self> {
         let base_url = std::env::var("PIKA_WORKERS_BASE_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
-        let base_url = base_url.trim_end_matches('/').to_string();
-        if base_url.is_empty() {
-            anyhow::bail!("PIKA_WORKERS_BASE_URL cannot be empty");
-        }
-
         let api_token = std::env::var("PIKA_WORKERS_API_TOKEN")
             .ok()
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty());
 
+        Self::with_api_token(base_url, api_token)
+    }
+
+    pub fn from_base_url(base_url: impl Into<String>) -> anyhow::Result<Self> {
+        let api_token = std::env::var("PIKA_WORKERS_API_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty());
+        Self::with_api_token(base_url, api_token)
+    }
+
+    fn with_api_token(
+        base_url: impl Into<String>,
+        api_token: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let base_url = base_url.into();
+        let base_url = base_url.trim_end_matches('/').to_string();
+        if base_url.is_empty() {
+            anyhow::bail!("workers base URL cannot be empty");
+        }
         Ok(Self {
             client: reqwest::Client::new(),
             base_url,

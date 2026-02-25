@@ -69,6 +69,8 @@ echo "Preparing control-plane identity..."
 cargo run -q -p pikachat -- --state-dir "$CONTROL_STATE_DIR" identity >/dev/null
 CONTROL_SECRET="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1], "r", encoding="utf-8"))["secret_key_hex"])' "$CONTROL_STATE_DIR/identity.json")"
 CONTROL_PUBKEY="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1], "r", encoding="utf-8"))["public_key_hex"])' "$CONTROL_STATE_DIR/identity.json")"
+cargo run -q -p pikachat -- --state-dir "$CLI_STATE_DIR" identity >/dev/null
+CLI_PUBKEY="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1], "r", encoding="utf-8"))["public_key_hex"])' "$CLI_STATE_DIR/identity.json")"
 
 echo "Starting local relay..."
 start_bg "relay" "$LOG_DIR/relay.log" just run-relay
@@ -87,6 +89,7 @@ start_bg "pika-server" "$LOG_DIR/pika-server.log" env \
   PIKA_AGENT_CONTROL_ENABLED=1 \
   PIKA_AGENT_CONTROL_NOSTR_SECRET="$CONTROL_SECRET" \
   PIKA_AGENT_CONTROL_RELAYS="$RELAY_WS" \
+  PIKA_AGENT_CONTROL_PROVISION_ALLOWLIST="$CLI_PUBKEY" \
   PIKA_WORKERS_BASE_URL="$WORKERS_URL" \
   cargo run -q -p pika-server
 

@@ -1631,17 +1631,50 @@ impl RemoteControlClient {
             .await?;
 
         let content = serde_json::to_string(&envelope).context("encode control command")?;
-        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), content)
+        let encrypted = nostr_sdk::nostr::nips::nip44::encrypt(
+            self.keys.secret_key(),
+            &self.server_pubkey,
+            content,
+            nostr_sdk::nostr::nips::nip44::Version::V2,
+        )
+        .context("encrypt control command payload")?;
+        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), encrypted)
             .tags([Tag::public_key(self.server_pubkey)])
             .sign_with_keys(&self.keys)
             .context("sign control command")?;
-        relay_util::publish_and_confirm(
-            &self.client,
-            &self.relays,
-            &cmd_event,
-            "agent control cmd",
-        )
-        .await?;
+        let mut publish_error = None;
+        for attempt in 1..=12 {
+            match relay_util::publish_and_confirm(
+                &self.client,
+                &self.relays,
+                &cmd_event,
+                "agent control cmd",
+            )
+            .await
+            {
+                Ok(()) => {
+                    publish_error = None;
+                    break;
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if attempt < 12
+                        && (message.contains("relay not connected")
+                            || message.contains("timeout")
+                            || message.contains("Connection refused")
+                            || message.contains("no one was listening"))
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    publish_error = Some(err);
+                    break;
+                }
+            }
+        }
+        if let Some(err) = publish_error {
+            return Err(err);
+        }
 
         let mut rx = self.client.notifications();
         let timeout = Duration::from_secs(180);
@@ -1682,10 +1715,17 @@ impl RemoteControlClient {
             if !seen.insert(event.id) {
                 continue;
             }
+            let decrypted = match nostr_sdk::nostr::nips::nip44::decrypt(
+                self.keys.secret_key(),
+                &self.server_pubkey,
+                event.content.as_str(),
+            ) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
 
             if event.kind == Kind::Custom(CONTROL_STATUS_KIND) {
-                if let Ok(status) =
-                    serde_json::from_str::<AgentControlStatusEnvelope>(&event.content)
+                if let Ok(status) = serde_json::from_str::<AgentControlStatusEnvelope>(&decrypted)
                     && status.request_id == request_id
                 {
                     render_control_status(&status);
@@ -1694,8 +1734,7 @@ impl RemoteControlClient {
             }
 
             if event.kind == Kind::Custom(CONTROL_RESULT_KIND) {
-                if let Ok(result) =
-                    serde_json::from_str::<AgentControlResultEnvelope>(&event.content)
+                if let Ok(result) = serde_json::from_str::<AgentControlResultEnvelope>(&decrypted)
                     && result.request_id == request_id
                 {
                     self.client.unsubscribe_all().await;
@@ -1705,7 +1744,7 @@ impl RemoteControlClient {
             }
 
             if event.kind == Kind::Custom(CONTROL_ERROR_KIND)
-                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&event.content)
+                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&decrypted)
                 && err.request_id == request_id
             {
                 self.client.unsubscribe_all().await;
@@ -1850,134 +1889,142 @@ async fn cmd_agent_new_remote(
         }));
         return Ok(());
     }
-    let bot_pubkey_hex = runtime
-        .bot_pubkey
-        .clone()
-        .ok_or_else(|| anyhow!("remote control result missing bot_pubkey"))?;
-    let bot_pubkey = PublicKey::parse(&bot_pubkey_hex).context("parse bot pubkey")?;
-    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
+    let runtime_id_for_teardown =
+        (provider == AgentProvider::Microvm && !microvm.keep).then(|| runtime.runtime_id.clone());
 
-    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
-    let send_client = client_all(cli, &keys).await?;
-    let listen_client = if provider == AgentProvider::Workers {
-        Some(client_all(cli, &keys).await?)
-    } else {
-        None
-    };
+    let workflow_result: anyhow::Result<()> = async {
+        let bot_pubkey_hex = runtime
+            .bot_pubkey
+            .clone()
+            .ok_or_else(|| anyhow!("remote control result missing bot_pubkey"))?;
+        let bot_pubkey = PublicKey::parse(&bot_pubkey_hex).context("parse bot pubkey")?;
+        eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
 
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &send_client,
-        bot_pubkey,
-        &relays,
-        agent::provider::KeyPackageWaitPlan {
-            progress_message: "Waiting for remote runtime key package",
-            timeout: Duration::from_secs(120),
-            fetch_timeout: Duration::from_secs(5),
-            retry_delay: Duration::from_secs(2),
-        },
-    )
-    .await?;
+        let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
+        let send_client = client_all(cli, &keys).await?;
+        let listen_client = if provider == AgentProvider::Workers {
+            Some(client_all(cli, &keys).await?)
+        } else {
+            None
+        };
 
-    let created_group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
-        &send_client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        agent::provider::GroupCreatePlan {
-            progress_message: "Creating MLS group and inviting runtime...",
-            create_group_context: "create remote runtime MLS group",
-            build_welcome_context: "build remote runtime welcome giftwrap",
-            welcome_publish_label: "remote runtime welcome",
-        },
-    )
-    .await?;
-
-    for welcome in &created_group.published_welcomes {
-        let _ = control_client
-            .send_command(AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
-                runtime_id: runtime.runtime_id.clone(),
-                group_id: created_group.nostr_group_id_hex.clone(),
-                wrapper_event_id_hex: Some(welcome.wrapper_event_id_hex.clone()),
-                welcome_event_json: Some(welcome.rumor_json.clone()),
-            }))
+        let session_result: anyhow::Result<()> = async {
+            let bot_kp = agent::session::wait_for_latest_key_package(
+                &send_client,
+                bot_pubkey,
+                &relays,
+                agent::provider::KeyPackageWaitPlan {
+                    progress_message: "Waiting for remote runtime key package",
+                    timeout: Duration::from_secs(120),
+                    fetch_timeout: Duration::from_secs(5),
+                    retry_delay: Duration::from_secs(2),
+                },
+            )
             .await?;
-    }
 
-    let bot_npub = bot_pubkey
-        .to_bech32()
-        .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-    eprintln!();
-    eprintln!(
-        "Connected to remote {} runtime {} ({bot_npub})",
-        match provider {
-            AgentProvider::Fly => "fly",
-            AgentProvider::Workers => "workers",
-            AgentProvider::Microvm => "microvm",
-        },
-        runtime.runtime_id
-    );
-    eprintln!("Type messages below. Ctrl-C to exit.");
-    eprintln!();
+            let created_group = agent::session::create_group_and_publish_welcomes(
+                &keys,
+                &mdk,
+                &send_client,
+                &relays,
+                bot_kp,
+                bot_pubkey,
+                agent::provider::GroupCreatePlan {
+                    progress_message: "Creating MLS group and inviting runtime...",
+                    create_group_context: "create remote runtime MLS group",
+                    build_welcome_context: "build remote runtime welcome giftwrap",
+                    welcome_publish_label: "remote runtime welcome",
+                },
+            )
+            .await?;
 
-    let session_result =
-        agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-            keys: &keys,
-            mdk: &mdk,
-            send_client: &send_client,
-            listen_client: listen_client.as_ref().unwrap_or(&send_client),
-            relays: &relays,
-            bot_pubkey,
-            mls_group_id: &created_group.mls_group_id,
-            nostr_group_id_hex: &created_group.nostr_group_id_hex,
-            plan: agent::provider::ChatLoopPlan {
-                outbound_publish_label: "remote chat user",
-                wait_for_pending_replies_on_eof: provider == AgentProvider::Workers,
-                eof_reply_timeout: Duration::from_secs(20),
-            },
-            seen_mls_event_ids: if provider == AgentProvider::Workers {
-                Some(&mut seen_mls_event_ids)
-            } else {
-                None
-            },
-        })
+            for welcome in &created_group.published_welcomes {
+                let _ = control_client
+                    .send_command(AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
+                        runtime_id: runtime.runtime_id.clone(),
+                        group_id: created_group.nostr_group_id_hex.clone(),
+                        wrapper_event_id_hex: Some(welcome.wrapper_event_id_hex.clone()),
+                        welcome_event_json: Some(welcome.rumor_json.clone()),
+                    }))
+                    .await?;
+            }
+
+            let bot_npub = bot_pubkey
+                .to_bech32()
+                .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
+            eprintln!();
+            eprintln!(
+                "Connected to remote {} runtime {} ({bot_npub})",
+                match provider {
+                    AgentProvider::Fly => "fly",
+                    AgentProvider::Workers => "workers",
+                    AgentProvider::Microvm => "microvm",
+                },
+                runtime.runtime_id
+            );
+            eprintln!("Type messages below. Ctrl-C to exit.");
+            eprintln!();
+
+            agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
+                keys: &keys,
+                mdk: &mdk,
+                send_client: &send_client,
+                listen_client: listen_client.as_ref().unwrap_or(&send_client),
+                relays: &relays,
+                bot_pubkey,
+                mls_group_id: &created_group.mls_group_id,
+                nostr_group_id_hex: &created_group.nostr_group_id_hex,
+                plan: agent::provider::ChatLoopPlan {
+                    outbound_publish_label: "remote chat user",
+                    wait_for_pending_replies_on_eof: provider == AgentProvider::Workers,
+                    eof_reply_timeout: Duration::from_secs(20),
+                },
+                seen_mls_event_ids: if provider == AgentProvider::Workers {
+                    Some(&mut seen_mls_event_ids)
+                } else {
+                    None
+                },
+            })
+            .await
+        }
         .await;
 
-    if let Some(listener_client) = &listen_client {
-        listener_client.unsubscribe_all().await;
-        listener_client.shutdown().await;
-    }
-    send_client.unsubscribe_all().await;
-    send_client.shutdown().await;
+        if let Some(listener_client) = &listen_client {
+            listener_client.unsubscribe_all().await;
+            listener_client.shutdown().await;
+        }
+        send_client.unsubscribe_all().await;
+        send_client.shutdown().await;
 
-    if provider == AgentProvider::Workers {
-        persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
-    }
+        if provider == AgentProvider::Workers {
+            persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+        }
 
-    let mut teardown_error = None;
-    if provider == AgentProvider::Microvm && !microvm.keep {
-        match control_client
+        session_result
+    }
+    .await;
+
+    let teardown_result = if let Some(runtime_id) = runtime_id_for_teardown {
+        control_client
             .send_command(AgentControlCommand::Teardown(TeardownCommand {
-                runtime_id: runtime.runtime_id.clone(),
+                runtime_id,
             }))
             .await
-        {
-            Ok(_) => {}
-            Err(err) => teardown_error = Some(err),
-        }
-    }
+            .map(|_| ())
+    } else {
+        Ok(())
+    };
     control_client.client.unsubscribe_all().await;
     control_client.client.shutdown().await;
 
-    if let Some(err) = teardown_error {
-        if let Err(session_err) = session_result {
-            return Err(anyhow!("{session_err:#}\n{err:#}"));
+    if let Err(teardown_err) = teardown_result {
+        if let Err(workflow_err) = workflow_result {
+            return Err(anyhow!("{workflow_err:#}\n{teardown_err:#}"));
         }
-        return Err(err);
+        return Err(teardown_err);
     }
 
-    session_result
+    workflow_result
 }
 
 fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {

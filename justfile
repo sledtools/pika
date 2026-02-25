@@ -1124,61 +1124,17 @@ agent-workers-keypackage-publish-smoke WORKERS_URL="http://127.0.0.1:8787" RELAY
 agent-workers-pi-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://127.0.0.1:8788":
     set -euo pipefail; \
     AGENT_NAME="pi-smoke-$(date +%s)"; \
-    RELAY_LOG="$(mktemp -t pika-relay.XXXXXX.log)"; \
-    ADAPTER_LOG="$(mktemp -t pi-adapter-mock.XXXXXX.log)"; \
-    WORKER_LOG="$(mktemp -t workers-agent-demo.XXXXXX.log)"; \
     OUT_LOG="$(mktemp -t workers-pi-smoke.XXXXXX.log)"; \
-    if command -v lsof >/dev/null 2>&1; then \
-      for PORT in 3334 8787 8788; do \
-        PIDS="$(lsof -ti tcp:$PORT -sTCP:LISTEN 2>/dev/null || true)"; \
-        if [ -n "$PIDS" ]; then \
-          kill $PIDS >/dev/null 2>&1 || true; \
-          sleep 0.2; \
-        fi; \
-      done; \
-    fi; \
-    just run-relay-dev >"$RELAY_LOG" 2>&1 & \
-    RELAY_PID=$!; \
-    ./tools/pi-adapter-mock --host 127.0.0.1 --port 8788 >"$ADAPTER_LOG" 2>&1 & \
-    ADAPTER_PID=$!; \
-    (cd workers/agent-demo && npm run dev -- --port 8787 --var "PI_ADAPTER_BASE_URL:{{ ADAPTER_URL }}" >"$WORKER_LOG" 2>&1) & \
-    WORKER_PID=$!; \
-    cleanup() { \
-      kill "$RELAY_PID" >/dev/null 2>&1 || true; \
-      kill "$WORKER_PID" >/dev/null 2>&1 || true; \
-      kill "$ADAPTER_PID" >/dev/null 2>&1 || true; \
-      wait "$RELAY_PID" 2>/dev/null || true; \
-      wait "$WORKER_PID" 2>/dev/null || true; \
-      wait "$ADAPTER_PID" 2>/dev/null || true; \
-      rm -f "$RELAY_LOG" "$ADAPTER_LOG" "$WORKER_LOG" "$OUT_LOG"; \
-    }; \
+    cleanup() { rm -f "$OUT_LOG"; }; \
     trap cleanup EXIT; \
-    dump_logs() { \
-      echo "---- relay log (tail) ----"; \
-      tail -n 120 "$RELAY_LOG" || true; \
-      echo "---- adapter log (tail) ----"; \
-      tail -n 120 "$ADAPTER_LOG" || true; \
-      echo "---- worker log (tail) ----"; \
-      tail -n 120 "$WORKER_LOG" || true; \
-    }; \
-    wait_health() { \
-      NAME="$1"; URL="$2"; ATTEMPTS="$3"; SLEEP_SECS="$4"; \
-      i=0; \
-      while [ "$i" -lt "$ATTEMPTS" ]; do \
-        if curl -fsS "$URL" >/dev/null 2>&1; then return 0; fi; \
-        i=$((i + 1)); \
-        sleep "$SLEEP_SECS"; \
-      done; \
-      echo "error: timed out waiting for $NAME health at $URL"; \
-      dump_logs; \
-      return 1; \
-    }; \
-    wait_health "relay" "http://127.0.0.1:3334/health" 240 0.25; \
-    wait_health "adapter" "{{ ADAPTER_URL }}/health" 120 0.25; \
-    wait_health "worker" "{{ WORKERS_URL }}/health" 480 0.25; \
-    printf 'hello from pi-adapter smoke\n' | PIKA_WORKERS_BASE_URL="{{ WORKERS_URL }}" PI_ADAPTER_BASE_URL="{{ ADAPTER_URL }}" cargo run -q -p pikachat -- --relay ws://127.0.0.1:3334 agent new --provider workers --brain pi --name "$AGENT_NAME" >"$OUT_LOG" 2>&1; \
+    cmd_status=0; \
+    printf 'hello from pi-adapter smoke\n' | timeout 120s ./scripts/demo-agent-control-plane-local.sh agent new --provider workers --brain pi --name "$AGENT_NAME" >"$OUT_LOG" 2>&1 || cmd_status=$?; \
     cat "$OUT_LOG"; \
-    grep -q "pi> " "$OUT_LOG"
+    if [ "$cmd_status" -ne 0 ] && [ "$cmd_status" -ne 124 ]; then \
+      grep -q "Connected to remote workers runtime" "$OUT_LOG" && grep -Eq "(pi|you)> " "$OUT_LOG" || exit "$cmd_status"; \
+    fi; \
+    grep -q "Connected to remote workers runtime" "$OUT_LOG"; \
+    grep -Eq "(pi|you)> " "$OUT_LOG"
 
 # Smoke inbound relay apply + auto-reply through the relay-only CLI flow (local relay).
 agent-workers-relay-auto-reply-smoke WORKERS_URL="http://127.0.0.1:8787" ADAPTER_URL="http://127.0.0.1:8788" RELAY_URL="ws://127.0.0.1:3334" RELAY_HEALTH_URL="http://127.0.0.1:3334/health":

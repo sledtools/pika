@@ -5798,6 +5798,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "pika-agent-control-plane"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pika-agent-microvm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nostr-sdk",
+ "pika-agent-control-plane",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "pika-agent-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pika-desktop"
 version = "0.1.0"
 dependencies = [
@@ -5811,6 +5843,20 @@ dependencies = [
  "pika_core",
  "rfd",
  "tempfile",
+]
+
+[[package]]
+name = "pika-marmot-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "mdk-core 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
+ "mdk-sqlite-storage",
+ "mdk-storage-traits 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
+ "nostr-sdk",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5851,11 +5897,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-relay-profiles"
+version = "0.1.0"
+
+[[package]]
 name = "pika-server"
 version = "0.1.0"
 dependencies = [
  "a2",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -5864,8 +5915,14 @@ dependencies = [
  "dotenv",
  "fcm-rs",
  "futures",
+ "hex",
  "nostr",
  "nostr-sdk",
+ "pika-agent-control-plane",
+ "pika-agent-microvm",
+ "pika-relay-profiles",
+ "rand 0.8.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -5906,6 +5963,7 @@ dependencies = [
  "nostr-sdk",
  "paranoid-android",
  "pika-media",
+ "pika-relay-profiles",
  "pika-tls",
  "rand 0.8.5",
  "reqwest",
@@ -5937,6 +5995,11 @@ dependencies = [
  "mdk-storage-traits 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
  "nostr-blossom",
  "nostr-sdk",
+ "pika-agent-control-plane",
+ "pika-agent-microvm",
+ "pika-agent-protocol",
+ "pika-marmot-runtime",
+ "pika-relay-profiles",
  "pikachat-sidecar",
  "rand 0.8.5",
  "reqwest",
@@ -5961,7 +6024,9 @@ dependencies = [
  "mdk-storage-traits 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
  "nostr-blossom",
  "nostr-sdk",
+ "pika-marmot-runtime",
  "pika-media",
+ "pika-relay-profiles",
  "reqwest",
  "rustls 0.23.36",
  "serde",
@@ -6811,6 +6876,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "pika-relay-profiles",
  "serde",
  "serde_json",
  "tempfile",

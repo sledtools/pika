@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use clap::Subcommand;
 use mdk_core::prelude::*;
-use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
+use pika_marmot_runtime::{PikaMdk, load_or_create_keys, new_mdk};
 use rand::RngCore;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -68,12 +68,6 @@ pub enum ScenarioCommand {
         #[arg(long, default_value_t = 50)]
         frames: u64,
     },
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct IdentityFile {
-    secret_key_hex: String,
-    public_key_hex: String,
 }
 
 pub async fn cmd_scenario(cli: &Cli, scenario: &ScenarioCommand) -> anyhow::Result<()> {
@@ -1184,15 +1178,6 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
-fn new_mdk(state_dir: &Path, label: &str) -> anyhow::Result<MDK<MdkSqliteStorage>> {
-    let db_path = state_dir.join("mdk.sqlite");
-    // Phase 1 uses unencrypted SQLite so all state stays inspectable under `.state/`.
-    // (This is dev/test harness code, not production.)
-    let _ = label; // keep the call-sites explicit; label helps when we switch to encrypted DBs.
-    let storage = MdkSqliteStorage::new_unencrypted(db_path).context("open mdk sqlite storage")?;
-    Ok(MDK::new(storage))
-}
-
 async fn connect_client(keys: &Keys, relay: &str) -> anyhow::Result<Client> {
     let client = Client::new(keys.clone());
     client.add_relay(relay).await.context("add relay")?;
@@ -1202,7 +1187,7 @@ async fn connect_client(keys: &Keys, relay: &str) -> anyhow::Result<Client> {
 
 async fn publish_key_package(
     client: &Client,
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     keys: &Keys,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
@@ -1468,7 +1453,7 @@ async fn subscribe_group_msgs(
 }
 
 async fn ingest_group_backlog(
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     client: &Client,
     relay_url: RelayUrl,
     nostr_group_id_hex: &str,
@@ -1503,7 +1488,7 @@ async fn ingest_group_backlog(
 
 async fn wait_for_exact_application(
     label: &str,
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     rx: &mut tokio::sync::broadcast::Receiver<RelayPoolNotification>,
     subscription_id: &SubscriptionId,
     expected_peer: &PublicKey,
@@ -1627,28 +1612,6 @@ async fn check_relay_ready(relay_url: &str, timeout: Duration) -> anyhow::Result
         client.shutdown().await;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-}
-
-fn load_or_create_keys(identity_path: &Path) -> anyhow::Result<Keys> {
-    if let Ok(raw) = std::fs::read_to_string(identity_path) {
-        let f: IdentityFile = serde_json::from_str(&raw).context("parse identity json")?;
-        let keys = Keys::parse(&f.secret_key_hex).context("parse secret key hex")?;
-        return Ok(keys);
-    }
-
-    let keys = Keys::generate();
-    let secret = keys.secret_key().to_secret_hex();
-    let pubkey = keys.public_key().to_hex().to_lowercase();
-    let f = IdentityFile {
-        secret_key_hex: secret,
-        public_key_hex: pubkey,
-    };
-    std::fs::write(
-        identity_path,
-        format!("{}\n", serde_json::to_string_pretty(&f)?),
-    )
-    .context("write identity json")?;
-    Ok(keys)
 }
 
 fn ensure_dir(dir: &Path) -> anyhow::Result<()> {

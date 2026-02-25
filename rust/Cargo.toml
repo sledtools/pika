@@ -25,6 +25,7 @@ keyring-core = "0.7"
 nostr-sdk = { version = "0.44.1", features = ["nip59"] }
 nostr-connect = "0.44.0"
 nostr-blossom = "0.44.0"
+pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
 pika-tls = { path = "../crates/pika-tls" }
 rand = "0.8"

@@ -9,14 +9,21 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 axum = "0.6.16"
 chrono = { version = "0.4.26", features = ["serde"] }
 diesel = { version = "2.1", features = ["postgres", "r2d2", "chrono", "numeric"] }
 diesel_migrations = "2.1.0"
 dotenv = "0.15.0"
 futures = "0.3.28"
+hex = "0.4"
 nostr = "0.44"
 nostr-sdk = { version = "0.44", features = ["nip59"] }
+pika-agent-control-plane = { path = "../pika-agent-control-plane" }
+pika-agent-microvm = { path = "../pika-agent-microvm" }
+pika-relay-profiles = { path = "../pika-relay-profiles" }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = "1.0"

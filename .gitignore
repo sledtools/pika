@@ -56,8 +56,11 @@ secrets/zapstore-signing.env
 secrets/.age-key*.tmp
 secrets/.zapstore-sign-with.*
 .pikachat/
+.pika-agent-control-state.json
 .pgdata/
 .pika-cli/
+.tmp/
+cmd/pika-relay/data/
 bots/__pycache__/
 tools/agent-pty/__pycache__/
 

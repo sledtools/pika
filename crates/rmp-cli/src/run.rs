@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
+
 use crate::bindings;
 use crate::bindings::BuildProfile;
 use crate::cli::{human_log, json_print, CliError, JsonOk};
@@ -22,6 +24,47 @@ pub fn run(
         }
         crate::cli::RunPlatform::Iced => run_iced(root, json, verbose, args.release),
     }
+}
+
+fn default_app_relay_csv() -> String {
+    app_default_message_relays().join(",")
+}
+
+fn default_app_kp_relay_csv() -> String {
+    app_default_key_package_relays().join(",")
+}
+
+fn csv_override_from_env_with<F>(
+    get: F,
+    primary_key: &str,
+    secondary_key: &str,
+    default_csv: fn() -> String,
+) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    get(primary_key)
+        .or_else(|| get(secondary_key))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(default_csv)
+}
+
+fn relay_csv_from_env() -> String {
+    csv_override_from_env_with(
+        |key| std::env::var(key).ok(),
+        "PIKA_RELAY_URLS",
+        "PIKA_RELAY_URL",
+        default_app_relay_csv,
+    )
+}
+
+fn kp_relay_csv_from_env() -> String {
+    csv_override_from_env_with(
+        |key| std::env::var(key).ok(),
+        "PIKA_KEY_PACKAGE_RELAY_URLS",
+        "PIKA_KP_RELAY_URLS",
+        default_app_kp_relay_csv,
+    )
 }
 
 fn run_ios(
@@ -402,16 +445,8 @@ fn maybe_write_ios_relay_config(
         return Ok(());
     }
 
-    let relays = std::env::var("PIKA_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_RELAY_URL").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io".into());
-    let kp_relays = std::env::var("PIKA_KEY_PACKAGE_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com".into());
+    let relays = relay_csv_from_env();
+    let kp_relays = kp_relay_csv_from_env();
 
     let relay_items: Vec<String> = relays
         .split(',')
@@ -985,16 +1020,8 @@ fn maybe_write_android_relay_config(
         return Ok(());
     }
 
-    let relays = std::env::var("PIKA_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_RELAY_URL").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io".into());
-    let kp_relays = std::env::var("PIKA_KEY_PACKAGE_RELAY_URLS")
-        .ok()
-        .or_else(|| std::env::var("PIKA_KP_RELAY_URLS").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com".into());
+    let relays = relay_csv_from_env();
+    let kp_relays = kp_relay_csv_from_env();
 
     let relay_items: Vec<String> = relays
         .split(',')
@@ -1209,4 +1236,63 @@ fn read_xcode_project_name(root: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_default_csv_helpers_match_profile_defaults() {
+        assert_eq!(
+            default_app_relay_csv(),
+            app_default_message_relays().join(",")
+        );
+        assert_eq!(
+            default_app_kp_relay_csv(),
+            app_default_key_package_relays().join(",")
+        );
+    }
+
+    #[test]
+    fn csv_override_prefers_primary_then_secondary_then_default() {
+        let from_primary = csv_override_from_env_with(
+            |key| match key {
+                "A" => Some("wss://primary.example".to_string()),
+                _ => None,
+            },
+            "A",
+            "B",
+            default_app_relay_csv,
+        );
+        assert_eq!(from_primary, "wss://primary.example");
+
+        let from_secondary = csv_override_from_env_with(
+            |key| match key {
+                "B" => Some("wss://secondary.example".to_string()),
+                _ => None,
+            },
+            "A",
+            "B",
+            default_app_relay_csv,
+        );
+        assert_eq!(from_secondary, "wss://secondary.example");
+
+        let from_default = csv_override_from_env_with(|_| None, "A", "B", default_app_relay_csv);
+        assert_eq!(from_default, default_app_relay_csv());
+    }
+
+    #[test]
+    fn csv_override_ignores_empty_values_and_uses_default() {
+        let from_empty_primary = csv_override_from_env_with(
+            |key| match key {
+                "A" => Some("   ".to_string()),
+                _ => None,
+            },
+            "A",
+            "B",
+            default_app_kp_relay_csv,
+        );
+        assert_eq!(from_empty_primary, default_app_kp_relay_csv());
+    }
 }

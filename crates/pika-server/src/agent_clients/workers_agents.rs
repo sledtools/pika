@@ -19,6 +19,7 @@ pub struct CreateAgentRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct RelayProbe {
     pub relay: String,
     pub ok: bool,
@@ -27,6 +28,7 @@ pub struct RelayProbe {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct AgentStatus {
     pub id: String,
     pub name: String,

@@ -994,7 +994,8 @@ fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
         current_user_hint: Some("hint-user".into()),
     });
     wait_until("external signer logged in", Duration::from_secs(2), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
+        let s = app.state();
+        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
     });
 
     let s = app.state();
@@ -1118,7 +1119,8 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
     });
 
     wait_until("bunker logged in", Duration::from_secs(2), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
+        let s = app.state();
+        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
     });
 
     let s = app.state();

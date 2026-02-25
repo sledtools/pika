@@ -1,9 +1,8 @@
 ---
-summary: Deterministic CI lane policy for pikachat agent providers
+summary: Deterministic CI lanes for `pikachat agent` providers and how to reproduce them
 read_when:
-  - changing provider CI/workflow path filters
-  - updating pre-merge or nightly agent contract coverage
-  - debugging provider lane trigger behavior
+  - changing provider CI gating in `.github/workflows/pre-merge.yml`
+  - debugging `check-agent-contracts` or `check-workers` failures
 ---
 
 # Agent Provider CI Lanes
@@ -17,11 +16,11 @@ These lanes are required in `.github/workflows/pre-merge.yml`:
 - `check-agent-contracts`:
   - Runs mocked control-plane contracts for Fly + MicroVM (no real cloud credentials/hosts).
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
-- `check-workers`:
-  - Runs deterministic local Workers contract smokes.
+- `check-workers` (paused during Workers freeze):
+  - Currently runs a no-op skip lane so Workers is not an active execution target.
   - Command: `nix develop .#worker-wasm -c just pre-merge-workers`
 
-The pre-merge summary treats both of these as blocking checks.
+The pre-merge summary treats both as required jobs; while frozen, `check-workers` should remain skipped/no-op.
 
 ## Advisory Integration Lanes
 
@@ -38,7 +37,7 @@ Run these commands locally to reproduce provider contract failures:
 # Fly + MicroVM mocked contracts
 just pre-merge-agent-contracts
 
-# Workers deterministic contracts
+# Workers lane (currently paused/no-op)
 just pre-merge-workers
 
 # Full pre-merge lane for pikachat crate

@@ -1,8 +1,10 @@
 # Workers Agent Demo
 
+Status: frozen. `pikachat agent new --provider workers` is temporarily disabled in this branch.
+
 Minimal Cloudflare Workers + Durable Object demo for:
 
-- `pikachat agent new --provider workers --brain pi`
+- `pikachat agent new --provider workers`
 - relay-based Marmot chat loop
 - pi replies via `PI_ADAPTER_BASE_URL`
 

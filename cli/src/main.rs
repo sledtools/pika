@@ -1,13 +1,9 @@
 mod agent;
-mod fly_machines;
 mod harness;
 mod mdk_util;
-mod microvm_spawner;
 mod relay_util;
-mod workers_agents;
 
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,24 +13,21 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
+use pika_agent_control_plane::{
+    AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
+    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
+    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
+    ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
+    RuntimeLifecyclePhase,
+};
+use pika_agent_microvm::microvm_params_provided;
+use pika_relay_profiles::{
+    default_key_package_relays, default_message_relays, default_primary_blossom_server,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-// Same defaults as the Pika app (rust/src/core/config.rs).
-const DEFAULT_RELAY_URLS: &[&str] = &[
-    "wss://us-east.nostr.pikachat.org",
-    "wss://eu.nostr.pikachat.org",
-];
-
-// Key packages (kind 443) are NIP-70 "protected" — many popular relays reject them.
-// These relays are known to accept protected kind 443 publishes.
-const DEFAULT_KP_RELAY_URLS: &[&str] = &[
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-01.yakihonne.com",
-    "wss://nostr-02.yakihonne.com",
-];
-const PROCESSED_MLS_EVENT_IDS_FILE: &str = "processed_mls_event_ids_v1.txt";
-const PROCESSED_MLS_EVENT_IDS_MAX: usize = 8192;
+use crate::agent::harness::AgentProtocol;
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -205,7 +198,7 @@ server, and --content becomes the caption (optional).")]
         #[arg(long, requires = "media")]
         filename: Option<String>,
 
-        /// Blossom server URL (repeatable; defaults to blossom.yakihonne.com)
+        /// Blossom server URL (repeatable; defaults to https://us-east.nostr.pikachat.org)
         #[arg(long = "blossom", requires = "media")]
         blossom_servers: Vec<String>,
     },
@@ -307,7 +300,7 @@ If --output is omitted, the original filename from the sender is used.")]
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Create a new pi agent and start chatting
+    /// Create a new ACP agent runtime
     New {
         /// Agent name (default: agent-<random>)
         #[arg(long)]
@@ -317,12 +310,55 @@ enum AgentCommand {
         #[arg(long, value_enum, default_value_t = AgentProvider::Fly, env = "PIKA_AGENT_PROVIDER")]
         provider: AgentProvider,
 
-        /// Brain mode for provider backends that support multiple brains
-        #[arg(long, value_enum, env = "PIKA_AGENT_BRAIN")]
-        brain: Option<AgentBrain>,
+        /// Target runtime class advertised by the server (optional routing hint)
+        #[arg(long, env = "PIKA_AGENT_RUNTIME_CLASS")]
+        runtime_class: Option<String>,
+
+        /// Deprecated: provisioning is ACP-only; `--brain` no longer changes behavior.
+        #[arg(long, hide = true)]
+        brain: Option<String>,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
 
         #[command(flatten)]
         microvm: AgentNewMicrovmArgs,
+    },
+
+    /// List runtimes known to the control-plane server (filterable)
+    ListRuntimes {
+        /// Filter by provider
+        #[arg(long, value_enum)]
+        provider: Option<AgentProvider>,
+
+        /// Filter by protocol compatibility
+        #[arg(long, value_enum)]
+        protocol: Option<AgentProtocol>,
+
+        /// Filter by runtime lifecycle phase
+        #[arg(long, value_enum)]
+        phase: Option<AgentRuntimePhase>,
+
+        /// Filter by runtime class
+        #[arg(long)]
+        runtime_class: Option<String>,
+
+        /// Maximum number of runtimes to return
+        #[arg(long)]
+        limit: Option<usize>,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
+
+    /// Fetch one runtime descriptor by id
+    GetRuntime {
+        /// Runtime id from provision/list results
+        #[arg(long)]
+        runtime_id: String,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
     },
 }
 
@@ -334,19 +370,28 @@ enum AgentProvider {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentBrain {
-    Stub,
-    Pi,
+enum AgentRuntimePhase {
+    Queued,
+    Provisioning,
+    Ready,
+    Failed,
+    Teardown,
 }
 
-impl std::fmt::Display for AgentBrain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Stub => "stub",
-            Self::Pi => "pi",
-        };
-        f.write_str(value)
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentControlMode {
+    Remote,
+}
+
+#[derive(Clone, Debug, Args)]
+struct AgentControlArgs {
+    /// Provider control-plane mode (`remote` only; local provisioning is removed)
+    #[arg(long, value_enum, default_value_t = AgentControlMode::Remote, env = "PIKA_AGENT_CONTROL_MODE")]
+    control_mode: AgentControlMode,
+
+    /// Nostr pubkey (hex or npub) for the `pika-server` control-plane identity
+    #[arg(long, env = "PIKA_AGENT_CONTROL_SERVER_PUBKEY")]
+    control_server_pubkey: Option<String>,
 }
 
 #[derive(Clone, Debug, Args, Default)]
@@ -537,9 +582,43 @@ async fn main() -> anyhow::Result<()> {
             AgentCommand::New {
                 name,
                 provider,
+                runtime_class,
                 brain,
+                control,
                 microvm,
-            } => cmd_agent_new(&cli, name.as_deref(), *provider, *brain, microvm).await,
+            } => {
+                let request = AgentNewRequest {
+                    name: name.as_deref(),
+                    provider: *provider,
+                    runtime_class: runtime_class.as_deref(),
+                    brain: brain.as_deref(),
+                    microvm,
+                };
+                cmd_agent_new(&cli, control, request).await
+            }
+            AgentCommand::ListRuntimes {
+                provider,
+                protocol,
+                phase,
+                runtime_class,
+                limit,
+                control,
+            } => {
+                cmd_agent_list_runtimes(
+                    &cli,
+                    *provider,
+                    *protocol,
+                    *phase,
+                    runtime_class.as_deref(),
+                    *limit,
+                    control,
+                )
+                .await
+            }
+            AgentCommand::GetRuntime {
+                runtime_id,
+                control,
+            } => cmd_agent_get_runtime(&cli, runtime_id, control).await,
         },
     }
 }
@@ -555,7 +634,7 @@ fn open(cli: &Cli) -> anyhow::Result<(Keys, mdk_util::PikaMdk)> {
 /// Resolve message relay URLs: use --relay if provided, otherwise defaults.
 fn resolve_relays(cli: &Cli) -> Vec<String> {
     if cli.relay.is_empty() {
-        DEFAULT_RELAY_URLS.iter().map(|s| s.to_string()).collect()
+        default_message_relays()
     } else {
         cli.relay.clone()
     }
@@ -564,10 +643,7 @@ fn resolve_relays(cli: &Cli) -> Vec<String> {
 /// Resolve key-package relay URLs: use --kp-relay if provided, otherwise defaults.
 fn resolve_kp_relays(cli: &Cli) -> Vec<String> {
     if cli.kp_relay.is_empty() {
-        DEFAULT_KP_RELAY_URLS
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        default_key_package_relays()
     } else {
         cli.kp_relay.clone()
     }
@@ -613,38 +689,6 @@ fn find_group(
 
 fn print(v: serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(&v).expect("json encode"));
-}
-
-fn processed_mls_event_ids_path(state_dir: &Path) -> PathBuf {
-    state_dir.join(PROCESSED_MLS_EVENT_IDS_FILE)
-}
-
-fn load_processed_mls_event_ids(state_dir: &Path) -> HashSet<EventId> {
-    let path = processed_mls_event_ids_path(state_dir);
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return HashSet::new();
-    };
-    raw.lines()
-        .filter_map(|line| EventId::from_hex(line.trim()).ok())
-        .collect()
-}
-
-fn persist_processed_mls_event_ids(
-    state_dir: &Path,
-    event_ids: &HashSet<EventId>,
-) -> anyhow::Result<()> {
-    let mut ids: Vec<String> = event_ids.iter().map(|id| id.to_hex()).collect();
-    ids.sort_unstable();
-    if ids.len() > PROCESSED_MLS_EVENT_IDS_MAX {
-        ids = ids.split_off(ids.len() - PROCESSED_MLS_EVENT_IDS_MAX);
-    }
-    let mut body = ids.join("\n");
-    if !body.is_empty() {
-        body.push('\n');
-    }
-    let path = processed_mls_event_ids_path(state_dir);
-    std::fs::write(&path, body)
-        .with_context(|| format!("persist processed MLS event ids to {}", path.display()))
 }
 
 /// Fetch recent group messages from the relay and feed them through
@@ -720,7 +764,7 @@ fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+    vec![default_primary_blossom_server().to_string()]
 }
 
 fn message_media_refs(
@@ -1144,7 +1188,7 @@ async fn cmd_send(
     }
 
     let (keys, mdk) = open(cli)?;
-    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
+    let mut seen_mls_event_ids = mdk_util::load_processed_mls_event_ids(&cli.state_dir);
 
     // ── Resolve target group ────────────────────────────────────────────
     struct ResolvedTarget {
@@ -1271,7 +1315,7 @@ async fn cmd_send(
         .context("create message")?;
     relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message").await?;
     client.shutdown().await;
-    persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+    mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     let mut out = json!({
         "event_id": msg_event.id.to_hex(),
@@ -1371,452 +1415,445 @@ async fn cmd_download_media(
 
 async fn cmd_agent_new(
     cli: &Cli,
-    name: Option<&str>,
-    provider: AgentProvider,
-    brain: Option<AgentBrain>,
-    microvm: &AgentNewMicrovmArgs,
+    control: &AgentControlArgs,
+    request: AgentNewRequest<'_>,
 ) -> anyhow::Result<()> {
-    let resolved_brain = resolve_agent_new_brain(provider, brain, microvm)?;
-    match (provider, resolved_brain) {
-        (AgentProvider::Fly, AgentBrain::Stub) => cmd_agent_new_fly(cli, name).await,
-        (AgentProvider::Workers, AgentBrain::Pi) => cmd_agent_new_workers(cli, name).await,
-        (AgentProvider::Microvm, AgentBrain::Pi) => cmd_agent_new_microvm(cli, name, microvm).await,
-        _ => unreachable!("provider/brain validation must run before dispatch"),
+    validate_agent_new_request(request.provider, request.brain, request.microvm)?;
+    if control.control_mode != AgentControlMode::Remote {
+        anyhow::bail!("--control-mode remote is required; local provisioning has been removed");
     }
+    cmd_agent_new_remote(
+        cli,
+        request.name,
+        request.provider,
+        request.runtime_class,
+        control,
+        request.microvm,
+    )
+    .await
 }
 
-fn resolve_agent_new_brain(
+struct AgentNewRequest<'a> {
+    name: Option<&'a str>,
     provider: AgentProvider,
-    brain: Option<AgentBrain>,
-    microvm: &AgentNewMicrovmArgs,
-) -> anyhow::Result<AgentBrain> {
-    microvm.ensure_provider_compatible(provider)?;
-    let resolved = match provider {
-        AgentProvider::Fly => brain.unwrap_or(AgentBrain::Stub),
-        AgentProvider::Workers | AgentProvider::Microvm => brain.unwrap_or(AgentBrain::Pi),
-    };
-    match provider {
-        AgentProvider::Fly if resolved != AgentBrain::Stub => anyhow::bail!(
-            "--brain {} is not supported with --provider fly (current Fly path is already pi-backed)",
-            resolved
-        ),
-        AgentProvider::Workers if resolved != AgentBrain::Pi => {
-            anyhow::bail!("--provider workers only supports --brain pi")
-        }
-        AgentProvider::Microvm if resolved != AgentBrain::Pi => {
-            anyhow::bail!("--provider microvm only supports --brain pi")
-        }
-        _ => Ok(resolved),
-    }
+    runtime_class: Option<&'a str>,
+    brain: Option<&'a str>,
+    microvm: &'a AgentNewMicrovmArgs,
 }
 
-async fn cmd_agent_new_microvm(
-    cli: &Cli,
-    _name: Option<&str>,
+fn validate_agent_new_request(
+    provider: AgentProvider,
+    brain: Option<&str>,
     microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
-    let resolved = agent::microvm::resolve_args(microvm);
-    let relay_urls = resolve_relays(cli);
-    let relays = relay_util::parse_relay_urls(&relay_urls)?;
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-    let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
-    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
-
-    let spawner = microvm_spawner::MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    let create_vm_req = agent::microvm::build_create_vm_request(
-        &resolved,
-        keys.public_key(),
-        &relay_urls,
-        &bot_secret_hex,
-        &bot_pubkey.to_hex(),
-    );
-
-    eprint!("Creating microVM via {}...", spawner.base_url());
-    std::io::stderr().flush().ok();
-    let vm = spawner
-        .create_vm(&create_vm_req)
-        .await
-        .map_err(|err| agent::microvm::spawner_create_error(spawner.base_url(), err))?;
-    eprintln!(" done ({}, ip={})", vm.id, vm.ip);
-
-    let session_result = async {
-        let client = client_all(cli, &keys).await?;
-        let run_result = async {
-            let bot_kp = agent::session::wait_for_latest_key_package(
-                &client,
-                bot_pubkey,
-                &relays,
-                agent::provider::KeyPackageWaitPlan {
-                    progress_message: "Waiting for microVM bot key package",
-                    timeout: Duration::from_secs(120),
-                    fetch_timeout: Duration::from_secs(5),
-                    retry_delay: Duration::from_secs(2),
-                },
-            )
-            .await?;
-
-            let created_group = agent::session::create_group_and_publish_welcomes(
-                &keys,
-                &mdk,
-                &client,
-                &relays,
-                bot_kp,
-                bot_pubkey,
-                agent::provider::GroupCreatePlan {
-                    progress_message: "Creating MLS group and inviting microVM bot...",
-                    create_group_context: "create microvm MLS group",
-                    build_welcome_context: "build microvm welcome giftwrap",
-                    welcome_publish_label: "microvm welcome",
-                },
-            )
-            .await?;
-
-            let bot_npub = bot_pubkey
-                .to_bech32()
-                .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-            eprintln!();
-            eprintln!("Connected to microVM agent {} ({bot_npub})", vm.id);
-            eprintln!("Type messages below. Ctrl-C to exit.");
-            eprintln!();
-
-            agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-                keys: &keys,
-                mdk: &mdk,
-                send_client: &client,
-                listen_client: &client,
-                relays: &relays,
-                bot_pubkey,
-                mls_group_id: &created_group.mls_group_id,
-                nostr_group_id_hex: &created_group.nostr_group_id_hex,
-                plan: agent::provider::ChatLoopPlan {
-                    outbound_publish_label: "microvm chat user",
-                    wait_for_pending_replies_on_eof: false,
-                    eof_reply_timeout: Duration::from_secs(0),
-                },
-                seen_mls_event_ids: None,
-            })
-            .await
-        }
-        .await;
-
-        client.unsubscribe_all().await;
-        client.shutdown().await;
-        run_result
-    }
-    .await;
-
-    let mut teardown_error: Option<anyhow::Error> = None;
-    match agent::microvm::teardown_policy(resolved.keep) {
-        agent::microvm::MicrovmTeardownPolicy::DeleteOnExit => {
-            eprint!("Deleting microVM {}...", vm.id);
-            std::io::stderr().flush().ok();
-            match spawner.delete_vm(&vm.id).await {
-                Ok(()) => eprintln!(" done"),
-                Err(err) => {
-                    eprintln!(" failed");
-                    teardown_error = Some(err);
-                }
-            }
-        }
-        agent::microvm::MicrovmTeardownPolicy::KeepVm => {
-            let base = spawner.base_url().trim_end_matches('/');
-            eprintln!();
-            eprintln!("Keeping microVM {} alive (--keep).", vm.id);
-            eprintln!("List VMs:   curl {base}/vms");
-            eprintln!("Delete VM:  curl -X DELETE {base}/vms/{}", vm.id);
-        }
-    }
-
-    if let Some(err) = teardown_error {
-        let base = spawner.base_url().trim_end_matches('/');
-        let delete_hint = format!(
-            "failed to delete microvm {} via {}: {err:#}\nmanual cleanup: curl -X DELETE {base}/vms/{}",
-            vm.id,
-            spawner.base_url(),
-            vm.id
+    if provider == AgentProvider::Workers {
+        anyhow::bail!(
+            "provider 'workers' is temporarily disabled during the marmot refactor; use --provider fly or --provider microvm"
         );
-        if let Err(session_err) = session_result {
-            return Err(anyhow!("{session_err:#}\n{delete_hint}"));
-        }
-        return Err(anyhow!(delete_hint));
     }
-
-    session_result
-}
-
-async fn cmd_agent_new_fly(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
-    let fly = fly_machines::FlyClient::from_env()?;
-    let anthropic_key =
-        std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
-    let openai_key = std::env::var("OPENAI_API_KEY").ok();
-    let pi_model = std::env::var("PI_MODEL")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let relays = resolve_relays(cli);
-
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-    let bot_secret_hex = bot_keys.secret_key().to_secret_hex();
-    eprintln!("Bot pubkey: {}", bot_pubkey.to_hex());
-
-    let suffix = format!("{:08x}", rand::random::<u32>());
-    let volume_name = format!("agent_{suffix}");
-    let machine_name = name
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| format!("agent-{suffix}"));
-
-    eprint!("Creating Fly volume...");
-    std::io::stderr().flush().ok();
-    let volume = fly.create_volume(&volume_name).await?;
-    eprintln!(" done ({})", volume.id);
-
-    let mut env = HashMap::new();
-    env.insert("STATE_DIR".to_string(), "/app/state".to_string());
-    env.insert("NOSTR_SECRET_KEY".to_string(), bot_secret_hex);
-    env.insert("ANTHROPIC_API_KEY".to_string(), anthropic_key);
-    if let Some(openai) = openai_key {
-        env.insert("OPENAI_API_KEY".to_string(), openai);
+    if let Some(value) = brain.map(str::trim).filter(|v| !v.is_empty()) {
+        anyhow::bail!(
+            "--brain is no longer supported: provisioning is ACP-only. Remove --brain (received: {value})"
+        );
     }
-    if let Some(model) = pi_model {
-        env.insert("PI_MODEL".to_string(), model);
-    }
-
-    eprint!("Creating Fly machine...");
-    std::io::stderr().flush().ok();
-    let machine = fly.create_machine(&machine_name, &volume.id, env).await?;
-    eprintln!(" done ({})", machine.id);
-
-    let client = client_all(cli, &keys).await?;
-    let relays = relay_util::parse_relay_urls(&relays)?;
-
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &client,
-        bot_pubkey,
-        &relays,
-        agent::provider::KeyPackageWaitPlan {
-            progress_message: "Waiting for bot to publish key package",
-            timeout: Duration::from_secs(120),
-            fetch_timeout: Duration::from_secs(5),
-            retry_delay: Duration::from_secs(3),
-        },
-    )
-    .await?;
-
-    let created_group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
-        &client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        agent::provider::GroupCreatePlan {
-            progress_message: "Creating MLS group and inviting bot...",
-            create_group_context: "create group for bot",
-            build_welcome_context: "build welcome giftwrap",
-            welcome_publish_label: "welcome",
-        },
-    )
-    .await?;
-
-    let bot_npub = bot_pubkey
-        .to_bech32()
-        .unwrap_or_else(|_| bot_pubkey.to_hex().to_string());
-    eprintln!();
-    eprintln!("Connected to pi agent ({bot_npub})");
-    eprintln!("Type messages below. Ctrl-C to exit.");
-    eprintln!();
-
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys: &keys,
-        mdk: &mdk,
-        send_client: &client,
-        listen_client: &client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &created_group.mls_group_id,
-        nostr_group_id_hex: &created_group.nostr_group_id_hex,
-        plan: agent::provider::ChatLoopPlan {
-            outbound_publish_label: "chat",
-            wait_for_pending_replies_on_eof: false,
-            eof_reply_timeout: Duration::from_secs(0),
-        },
-        seen_mls_event_ids: None,
-    })
-    .await?;
-
-    client.unsubscribe_all().await;
-    client.shutdown().await;
-    eprintln!();
-    eprintln!("Machine {} is still running.", machine.id);
-    eprintln!(
-        "Stop with: fly machine stop {} -a {}",
-        machine.id,
-        fly.app_name()
-    );
+    microvm.ensure_provider_compatible(provider)?;
     Ok(())
 }
 
-async fn cmd_agent_new_workers(cli: &Cli, name: Option<&str>) -> anyhow::Result<()> {
-    let workers = workers_agents::WorkersClient::from_env()?;
-    let relay_urls = resolve_relays(cli);
-    let relays = relay_util::parse_relay_urls(&relay_urls)?;
-    let (keys, mdk) = open(cli)?;
-    let mut seen_mls_event_ids = load_processed_mls_event_ids(&cli.state_dir);
-    let client = client_all(cli, &keys).await?;
-    let listener_client = client_all(cli, &keys).await?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+struct RemoteControlClient {
+    client: Client,
+    keys: Keys,
+    relays: Vec<RelayUrl>,
+    server_pubkey: PublicKey,
+}
 
-    let agent_name = name
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("agent-{:08x}", rand::random::<u32>()));
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key();
-
-    eprint!("Creating Workers agent...");
-    std::io::stderr().flush().ok();
-    let mut status = workers
-        .create_agent(&workers_agents::CreateAgentRequest {
-            name: Some(agent_name.clone()),
-            brain: "pi".to_string(),
-            relay_urls: relay_urls.clone(),
-            bot_secret_key_hex: Some(bot_keys.secret_key().to_secret_hex()),
+impl RemoteControlClient {
+    async fn connect(
+        keys: &Keys,
+        relay_urls: &[String],
+        server_pubkey: PublicKey,
+    ) -> anyhow::Result<Self> {
+        let relays = relay_util::parse_relay_urls(relay_urls)?;
+        let client = relay_util::connect_client(keys, relay_urls).await?;
+        Ok(Self {
+            client,
+            keys: keys.clone(),
+            relays,
+            server_pubkey,
         })
-        .await?;
-    let expected_bot_pubkey_hex = bot_pubkey.to_hex();
-    if status.bot_pubkey.trim().to_lowercase() != expected_bot_pubkey_hex {
-        anyhow::bail!(
-            "workers bot pubkey mismatch: expected {}, got {}",
-            expected_bot_pubkey_hex,
-            status.bot_pubkey
+    }
+
+    async fn send_command(
+        &self,
+        command: AgentControlCommand,
+    ) -> anyhow::Result<AgentControlResultEnvelope> {
+        let request_id = new_control_request_id("agent-ctl");
+        let idempotency_key = new_control_request_id("idem");
+        let envelope = AgentControlCmdEnvelope::v1(
+            request_id.clone(),
+            idempotency_key,
+            command,
+            AuthContext {
+                acting_as_pubkey: Some(self.keys.public_key().to_hex()),
+            },
         );
-    }
-    eprintln!(" done ({})", status.id);
-    eprintln!("Bot pubkey: {}", status.bot_pubkey);
 
-    if let Some(probe) = &status.relay_probe {
-        if probe.ok {
-            eprintln!(
-                "Relay probe ok: {}{}",
-                probe.relay,
-                probe
-                    .status_code
-                    .map(|code| format!(" (HTTP {code})"))
-                    .unwrap_or_default()
-            );
-        } else {
-            eprintln!(
-                "Relay probe failed: {}{}",
-                probe.relay,
-                probe
-                    .error
-                    .as_deref()
-                    .map(|err| format!(" ({err})"))
-                    .unwrap_or_default()
-            );
-        }
-    }
+        let status_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_STATUS_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        let result_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_RESULT_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        let error_sub = self
+            .client
+            .subscribe(
+                Filter::new()
+                    .author(self.server_pubkey)
+                    .kind(Kind::Custom(CONTROL_ERROR_KIND))
+                    .custom_tag(
+                        SingleLetterTag::lowercase(Alphabet::P),
+                        self.keys.public_key().to_hex(),
+                    )
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
 
-    eprint!("Waiting for bot to publish key package");
-    std::io::stderr().flush().ok();
-    let start = tokio::time::Instant::now();
-    let timeout = Duration::from_secs(120);
-    while status.key_package_published_at_ms.is_none() {
-        if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "timed out waiting for workers bot key package after {}s",
-                timeout.as_secs()
-            );
-        }
-        eprint!(".");
-        std::io::stderr().flush().ok();
-        tokio::time::sleep(Duration::from_millis(900)).await;
-        status = workers.get_agent(&status.id).await?;
-    }
-    eprintln!(" done");
-    if let Some(ts) = status.key_package_published_at_ms {
-        eprintln!("Bot key package published at {} ms", ts);
-    }
-
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &client,
-        bot_pubkey,
-        &relays,
-        agent::provider::KeyPackageWaitPlan {
-            progress_message: "Fetching bot key package from relay",
-            timeout: Duration::from_secs(120),
-            fetch_timeout: Duration::from_secs(5),
-            retry_delay: Duration::from_millis(700),
-        },
-    )
-    .await?;
-
-    let created_group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
-        &client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        agent::provider::GroupCreatePlan {
-            progress_message: "Creating MLS group and inviting workers bot...",
-            create_group_context: "create workers MLS group",
-            build_welcome_context: "build workers welcome giftwrap",
-            welcome_publish_label: "workers welcome",
-        },
-    )
-    .await?;
-
-    for welcome in &created_group.published_welcomes {
-        workers
-            .runtime_process_welcome_event_json(
-                &status.id,
-                &created_group.nostr_group_id_hex,
-                Some(&welcome.wrapper_event_id_hex),
-                Some(&welcome.rumor_json),
+        let content = serde_json::to_string(&envelope).context("encode control command")?;
+        let encrypted = nostr_sdk::nostr::nips::nip44::encrypt(
+            self.keys.secret_key(),
+            &self.server_pubkey,
+            content,
+            nostr_sdk::nostr::nips::nip44::Version::V2,
+        )
+        .context("encrypt control command payload")?;
+        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), encrypted)
+            .tags([Tag::public_key(self.server_pubkey)])
+            .sign_with_keys(&self.keys)
+            .context("sign control command")?;
+        let mut publish_error = None;
+        for attempt in 1..=12 {
+            match relay_util::publish_and_confirm(
+                &self.client,
+                &self.relays,
+                &cmd_event,
+                "agent control cmd",
             )
             .await
-            .context("process workers runtime welcome")?;
+            {
+                Ok(()) => {
+                    publish_error = None;
+                    break;
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if attempt < 12
+                        && (message.contains("relay not connected")
+                            || message.contains("timeout")
+                            || message.contains("Connection refused")
+                            || message.contains("no one was listening"))
+                    {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    publish_error = Some(err);
+                    break;
+                }
+            }
+        }
+        if let Some(err) = publish_error {
+            return Err(err);
+        }
+
+        let mut rx = self.client.notifications();
+        let timeout = Duration::from_secs(180);
+        let started = tokio::time::Instant::now();
+        let mut seen = HashSet::<EventId>::new();
+        loop {
+            if started.elapsed() > timeout {
+                self.client.unsubscribe_all().await;
+                anyhow::bail!("timed out waiting for remote control reply ({request_id})");
+            }
+
+            let notification = match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                Ok(Ok(notification)) => notification,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(_)) => {
+                    self.client.unsubscribe_all().await;
+                    anyhow::bail!("remote control notification channel closed");
+                }
+                Err(_) => continue,
+            };
+
+            let RelayPoolNotification::Event {
+                subscription_id,
+                event,
+                ..
+            } = notification
+            else {
+                continue;
+            };
+            if subscription_id != status_sub.val
+                && subscription_id != result_sub.val
+                && subscription_id != error_sub.val
+            {
+                continue;
+            }
+
+            let event = *event;
+            if !seen.insert(event.id) {
+                continue;
+            }
+            let decrypted = match nostr_sdk::nostr::nips::nip44::decrypt(
+                self.keys.secret_key(),
+                &self.server_pubkey,
+                event.content.as_str(),
+            ) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+
+            if event.kind == Kind::Custom(CONTROL_STATUS_KIND) {
+                if let Ok(status) = serde_json::from_str::<AgentControlStatusEnvelope>(&decrypted)
+                    && status.request_id == request_id
+                {
+                    render_control_status(&status);
+                }
+                continue;
+            }
+
+            if event.kind == Kind::Custom(CONTROL_RESULT_KIND) {
+                if let Ok(result) = serde_json::from_str::<AgentControlResultEnvelope>(&decrypted)
+                    && result.request_id == request_id
+                {
+                    self.client.unsubscribe_all().await;
+                    return Ok(result);
+                }
+                continue;
+            }
+
+            if event.kind == Kind::Custom(CONTROL_ERROR_KIND)
+                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&decrypted)
+                && err.request_id == request_id
+            {
+                self.client.unsubscribe_all().await;
+                let hint = err.hint.unwrap_or_default();
+                let detail = err.detail.unwrap_or_default();
+                anyhow::bail!("remote control error {}: {} {}", err.code, hint, detail);
+            }
+        }
     }
+}
 
-    eprintln!();
-    eprintln!("Connected to workers agent {} ({})", status.id, status.name);
-    eprintln!("Type messages below. Ctrl-C to exit.");
-    eprintln!();
+fn render_control_status(status: &AgentControlStatusEnvelope) {
+    let phase = match status.phase {
+        RuntimeLifecyclePhase::Queued => "queued",
+        RuntimeLifecyclePhase::Provisioning => "provisioning",
+        RuntimeLifecyclePhase::Ready => "ready",
+        RuntimeLifecyclePhase::Failed => "failed",
+        RuntimeLifecyclePhase::Teardown => "teardown",
+    };
+    if let Some(msg) = &status.message {
+        eprintln!("[control] {phase}: {msg}");
+    } else {
+        eprintln!("[control] {phase}");
+    }
+}
 
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys: &keys,
-        mdk: &mdk,
-        send_client: &client,
-        listen_client: &listener_client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &created_group.mls_group_id,
-        nostr_group_id_hex: &created_group.nostr_group_id_hex,
-        plan: agent::provider::ChatLoopPlan {
-            outbound_publish_label: "workers chat user",
-            wait_for_pending_replies_on_eof: true,
-            eof_reply_timeout: Duration::from_secs(20),
+fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<PublicKey> {
+    let raw = control
+        .control_server_pubkey
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "missing control server pubkey (use --control-server-pubkey or PIKA_AGENT_CONTROL_SERVER_PUBKEY)"
+            )
+        })?;
+    PublicKey::parse(raw).context("parse control server pubkey")
+}
+
+fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
+    match provider {
+        AgentProvider::Fly => ProviderKind::Fly,
+        AgentProvider::Workers => ProviderKind::Workers,
+        AgentProvider::Microvm => ProviderKind::Microvm,
+    }
+}
+
+fn map_protocol_kind(_protocol: AgentProtocol) -> ProtocolKind {
+    ProtocolKind::Acp
+}
+
+fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
+    let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
+        MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
+        MicrovmSpawnVariant::PrebuiltCow => "prebuilt-cow".to_string(),
+    });
+    let params = MicrovmProvisionParams {
+        spawner_url: microvm.spawner_url.clone(),
+        spawn_variant,
+        flake_ref: microvm.flake_ref.clone(),
+        dev_shell: microvm.dev_shell.clone(),
+        cpu: microvm.cpu,
+        memory_mb: microvm.memory_mb,
+        ttl_seconds: microvm.ttl_seconds,
+    };
+    if microvm_params_provided(&params) {
+        Some(params)
+    } else {
+        None
+    }
+}
+
+fn new_control_request_id(prefix: &str) -> String {
+    format!(
+        "{prefix}-{:08x}{:08x}",
+        rand::random::<u32>(),
+        rand::random::<u32>()
+    )
+}
+
+async fn cmd_agent_new_remote(
+    cli: &Cli,
+    name: Option<&str>,
+    provider: AgentProvider,
+    runtime_class: Option<&str>,
+    control: &AgentControlArgs,
+    microvm: &AgentNewMicrovmArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let provision_result = control_client
+        .send_command(AgentControlCommand::Provision(ProvisionCommand {
+            provider: map_provider_kind(provider),
+            protocol: map_protocol_kind(AgentProtocol::Acp),
+            name: name.map(str::to_string),
+            runtime_class: runtime_class
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            relay_urls: relay_urls.clone(),
+            keep: microvm.keep,
+            bot_secret_key_hex: None,
+            microvm: if provider == AgentProvider::Microvm {
+                map_microvm_control_params(microvm)
+            } else {
+                None
+            },
+        }))
+        .await?;
+    let runtime = provision_result.runtime;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "provider": match provider {
+            AgentProvider::Fly => "fly",
+            AgentProvider::Workers => "workers",
+            AgentProvider::Microvm => "microvm",
         },
-        seen_mls_event_ids: Some(&mut seen_mls_event_ids),
-    })
-    .await?;
+        "protocol": "acp",
+        "runtime_id": runtime.runtime_id,
+        "runtime_class": runtime.runtime_class,
+        "runtime": runtime,
+        "payload": provision_result.payload,
+    }));
+    Ok(())
+}
 
-    listener_client.unsubscribe_all().await;
-    listener_client.shutdown().await;
-    client.unsubscribe_all().await;
-    client.shutdown().await;
-    persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
+    match phase {
+        AgentRuntimePhase::Queued => RuntimeLifecyclePhase::Queued,
+        AgentRuntimePhase::Provisioning => RuntimeLifecyclePhase::Provisioning,
+        AgentRuntimePhase::Ready => RuntimeLifecyclePhase::Ready,
+        AgentRuntimePhase::Failed => RuntimeLifecyclePhase::Failed,
+        AgentRuntimePhase::Teardown => RuntimeLifecyclePhase::Teardown,
+    }
+}
 
-    eprintln!();
-    eprintln!("Workers agent {} is still active.", status.id);
-    eprintln!("Inspect with: {}/agents/{}", workers.base_url(), status.id);
+async fn cmd_agent_list_runtimes(
+    cli: &Cli,
+    provider: Option<AgentProvider>,
+    protocol: Option<AgentProtocol>,
+    phase: Option<AgentRuntimePhase>,
+    runtime_class: Option<&str>,
+    limit: Option<usize>,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::ListRuntimes(ListRuntimesCommand {
+            provider: provider.map(map_provider_kind),
+            protocol: protocol.map(map_protocol_kind),
+            lifecycle_phase: phase.map(map_agent_runtime_phase),
+            runtime_class: runtime_class
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+            limit,
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "list_runtimes",
+        "count": result.payload.get("count").cloned().unwrap_or_else(|| json!(0)),
+        "runtimes": result.payload.get("runtimes").cloned().unwrap_or_else(|| json!([])),
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_get_runtime(
+    cli: &Cli,
+    runtime_id: &str,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::GetRuntime(GetRuntimeCommand {
+            runtime_id: runtime_id.to_string(),
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "get_runtime",
+        "runtime": result.runtime,
+        "payload": result.payload,
+    }));
     Ok(())
 }
 
@@ -1845,7 +1882,6 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     Ok(())
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn cmd_profile(cli: &Cli) -> anyhow::Result<()> {
@@ -1927,8 +1963,8 @@ async fn cmd_update_profile(
             _ => "image/jpeg", // default fallback
         };
 
-        let base_url =
-            nostr_sdk::Url::parse(DEFAULT_BLOSSOM_SERVER).context("parse blossom server URL")?;
+        let base_url = nostr_sdk::Url::parse(default_primary_blossom_server())
+            .context("parse blossom server URL")?;
         let blossom = nostr_blossom::client::BlossomClient::new(base_url);
         let descriptor = blossom
             .upload_blob(image_bytes, Some(mime_type.to_string()), None, Some(&keys))
@@ -2043,32 +2079,19 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
 
         // Welcome.
         if subscription_id == gift_sub.val && event.kind == Kind::GiftWrap {
-            let unwrapped = match nostr_sdk::nostr::nips::nip59::extract_rumor(&keys, &event).await
-            {
-                Ok(u) => u,
-                Err(_) => continue,
-            };
-            if unwrapped.rumor.kind != Kind::MlsWelcome {
+            let Some(welcome) =
+                mdk_util::ingest_welcome_from_giftwrap(&mdk, &keys, &event, |_| true)
+                    .await
+                    .unwrap_or_default()
+            else {
                 continue;
-            }
-            let rumor = unwrapped.rumor;
-            if mdk.process_welcome(&event.id, &rumor).is_err() {
-                continue;
-            }
-            let (ngid, group_name) = match mdk.get_pending_welcomes(None) {
-                Ok(list) => list
-                    .into_iter()
-                    .find(|w| w.wrapper_event_id == event.id)
-                    .map(|w| (hex::encode(w.nostr_group_id), w.group_name))
-                    .unwrap_or_default(),
-                Err(_) => (String::new(), String::new()),
             };
             let line = json!({
                 "type": "welcome",
-                "wrapper_event_id": event.id.to_hex(),
-                "from_pubkey": unwrapped.sender.to_hex(),
-                "nostr_group_id": ngid,
-                "group_name": group_name,
+                "wrapper_event_id": welcome.wrapper_event_id.to_hex(),
+                "from_pubkey": welcome.sender.to_hex(),
+                "nostr_group_id": welcome.nostr_group_id_hex,
+                "group_name": welcome.group_name,
             });
             println!("{}", serde_json::to_string(&line).unwrap());
             continue;
@@ -2077,8 +2100,7 @@ async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::R
         // Group message.
         if event.kind == Kind::MlsGroupMessage
             && group_subs.contains_key(&subscription_id)
-            && let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-                mdk.process_message(&event)
+            && let Ok(Some(msg)) = mdk_util::ingest_application_message(&mdk, &event)
         {
             let Some((ngid, mls_group_id)) = group_subs.get(&subscription_id).cloned() else {
                 continue;
@@ -2125,7 +2147,31 @@ async fn cmd_daemon(
 mod tests {
     use super::*;
 
-    fn parse_agent_new(args: &[&str]) -> (AgentProvider, Option<AgentBrain>, AgentNewMicrovmArgs) {
+    struct AgentListRuntimesParse {
+        provider: Option<AgentProvider>,
+        protocol: Option<AgentProtocol>,
+        phase: Option<AgentRuntimePhase>,
+        runtime_class: Option<String>,
+        limit: Option<usize>,
+    }
+
+    fn parse_agent_new(args: &[&str]) -> (AgentProvider, Option<String>, AgentNewMicrovmArgs) {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd:
+                    AgentCommand::New {
+                        provider,
+                        runtime_class,
+                        microvm,
+                        ..
+                    },
+            } => (provider, runtime_class, microvm),
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    fn validate_agent_new_args(args: &[&str]) -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
@@ -2136,14 +2182,58 @@ mod tests {
                         microvm,
                         ..
                     },
-            } => (provider, brain, microvm),
+            } => validate_agent_new_request(provider, brain.as_deref(), &microvm),
             _ => panic!("expected agent new command"),
+        }
+    }
+
+    fn parse_agent_new_control_mode(args: &[&str]) -> AgentControlMode {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { control, .. },
+            } => control.control_mode,
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    fn parse_agent_list_runtimes(args: &[&str]) -> AgentListRuntimesParse {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd:
+                    AgentCommand::ListRuntimes {
+                        provider,
+                        protocol,
+                        phase,
+                        runtime_class,
+                        limit,
+                        ..
+                    },
+            } => AgentListRuntimesParse {
+                provider,
+                protocol,
+                phase,
+                runtime_class,
+                limit,
+            },
+            _ => panic!("expected agent list-runtimes command"),
+        }
+    }
+
+    fn parse_agent_get_runtime(args: &[&str]) -> String {
+        let cli = Cli::try_parse_from(args).expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::GetRuntime { runtime_id, .. },
+            } => runtime_id,
+            _ => panic!("expected agent get-runtime command"),
         }
     }
 
     #[test]
     fn agent_new_microvm_flags_parse() {
-        let (provider, brain, microvm) = parse_agent_new(&[
+        let (provider, runtime_class, microvm) = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
@@ -2166,7 +2256,7 @@ mod tests {
             "--keep",
         ]);
         assert_eq!(provider, AgentProvider::Microvm);
-        assert_eq!(brain, None);
+        assert_eq!(runtime_class, None);
         assert_eq!(
             microvm.spawner_url.as_deref(),
             Some("http://127.0.0.1:8080")
@@ -2185,29 +2275,22 @@ mod tests {
 
     #[test]
     fn agent_new_existing_fly_and_workers_parse_unchanged() {
-        let (fly_provider, fly_brain, fly_microvm) =
+        let (fly_provider, fly_runtime_class, fly_microvm) =
             parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
         assert_eq!(fly_provider, AgentProvider::Fly);
-        assert_eq!(fly_brain, None);
+        assert_eq!(fly_runtime_class, None);
         assert!(fly_microvm.provided_flag_names().is_empty());
 
-        let (workers_provider, workers_brain, workers_microvm) = parse_agent_new(&[
-            "pikachat",
-            "agent",
-            "new",
-            "--provider",
-            "workers",
-            "--brain",
-            "pi",
-        ]);
+        let (workers_provider, workers_runtime_class, workers_microvm) =
+            parse_agent_new(&["pikachat", "agent", "new", "--provider", "workers"]);
         assert_eq!(workers_provider, AgentProvider::Workers);
-        assert_eq!(workers_brain, Some(AgentBrain::Pi));
+        assert_eq!(workers_runtime_class, None);
         assert!(workers_microvm.provided_flag_names().is_empty());
     }
 
     #[test]
     fn microvm_flags_rejected_for_non_microvm_provider() {
-        let (provider, brain, microvm) = parse_agent_new(&[
+        let (provider, _runtime_class, microvm) = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
@@ -2216,9 +2299,93 @@ mod tests {
             "--spawner-url",
             "http://127.0.0.1:8080",
         ]);
-        let err = resolve_agent_new_brain(provider, brain, &microvm).expect_err("should fail");
+        let err = validate_agent_new_request(provider, None, &microvm).expect_err("should fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("--spawner-url"));
         assert!(msg.contains("--provider microvm"));
+    }
+
+    #[test]
+    fn agent_new_brain_flag_is_explicitly_rejected() {
+        for value in ["pi", "acp"] {
+            let err = validate_agent_new_args(&["pikachat", "agent", "new", "--brain", value])
+                .expect_err("brain flag should be rejected");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("--brain"));
+            assert!(msg.contains("ACP-only"));
+        }
+    }
+
+    #[test]
+    fn agent_new_workers_provider_is_temporarily_disabled() {
+        let err = validate_agent_new_args(&["pikachat", "agent", "new", "--provider", "workers"])
+            .expect_err("workers provider should be rejected");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("temporarily disabled"));
+        assert!(msg.contains("--provider fly"));
+        assert!(msg.contains("--provider microvm"));
+    }
+
+    #[test]
+    fn agent_new_control_mode_is_strict_remote_only() {
+        let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
+        assert_eq!(mode, AgentControlMode::Remote);
+
+        for invalid in ["auto", "local"] {
+            let err = Cli::try_parse_from(["pikachat", "agent", "new", "--control-mode", invalid])
+                .expect_err("legacy control mode should fail");
+            let msg = err.to_string();
+            assert!(msg.contains("invalid value"));
+        }
+    }
+
+    #[test]
+    fn agent_new_runtime_class_parse() {
+        let (_provider, runtime_class, _microvm) = parse_agent_new(&[
+            "pikachat",
+            "agent",
+            "new",
+            "--provider",
+            "workers",
+            "--runtime-class",
+            "workers-us-east",
+        ]);
+        assert_eq!(runtime_class.as_deref(), Some("workers-us-east"));
+    }
+
+    #[test]
+    fn agent_list_runtimes_parse() {
+        let parsed = parse_agent_list_runtimes(&[
+            "pikachat",
+            "agent",
+            "list-runtimes",
+            "--provider",
+            "workers",
+            "--protocol",
+            "acp",
+            "--phase",
+            "ready",
+            "--runtime-class",
+            "workers-us-east",
+            "--limit",
+            "5",
+        ]);
+        assert_eq!(parsed.provider, Some(AgentProvider::Workers));
+        assert_eq!(parsed.protocol, Some(AgentProtocol::Acp));
+        assert_eq!(parsed.phase, Some(AgentRuntimePhase::Ready));
+        assert_eq!(parsed.runtime_class.as_deref(), Some("workers-us-east"));
+        assert_eq!(parsed.limit, Some(5));
+    }
+
+    #[test]
+    fn agent_get_runtime_parse() {
+        let runtime_id = parse_agent_get_runtime(&[
+            "pikachat",
+            "agent",
+            "get-runtime",
+            "--runtime-id",
+            "runtime-123",
+        ]);
+        assert_eq!(runtime_id, "runtime-123");
     }
 }

@@ -14,9 +14,18 @@ mod test {
     use diesel::prelude::*;
     use diesel::r2d2::{ConnectionManager, Pool};
     use diesel_migrations::MigrationHarness;
+    use std::sync::{Mutex, OnceLock};
 
     const DEVICE_TOKEN: &str = "abc123devicetoken";
     const PLATFORM: &str = "ios";
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        match GUARD.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     fn init_db_pool() -> Pool<ConnectionManager<PgConnection>> {
         dotenv::dotenv().ok();
@@ -48,6 +57,7 @@ mod test {
 
     #[tokio::test]
     async fn test_register() {
+        let _guard = test_guard();
         let db_pool = init_db_pool();
         clear_database(&db_pool);
 
@@ -63,6 +73,7 @@ mod test {
 
     #[tokio::test]
     async fn test_register_update() {
+        let _guard = test_guard();
         let db_pool = init_db_pool();
         clear_database(&db_pool);
 
@@ -85,6 +96,7 @@ mod test {
 
     #[tokio::test]
     async fn test_subscribe_groups() {
+        let _guard = test_guard();
         let db_pool = init_db_pool();
         clear_database(&db_pool);
 

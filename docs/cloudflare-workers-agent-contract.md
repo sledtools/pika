@@ -7,8 +7,10 @@ read_when:
 
 # Cloudflare Workers Agent Contract
 
-Status: implemented  
-Scope: MVP lane for `just agent-cf` and `pikachat agent new --provider workers --brain pi`
+Status: frozen (temporarily disabled in CLI + server)  
+Scope: reference-only while Workers is paused during marmot refactor
+
+`pikachat agent new --provider workers` currently fails fast with a temporary-disable error.
 
 ## Host API
 
@@ -90,9 +92,9 @@ Only `brain=pi` exists.
 - transcript history (unbounded in MVP)
 - last reply telemetry
 
-## CLI MVP Flow
+## CLI MVP Flow (When Re-enabled)
 
-`pikachat agent new --provider workers --brain pi` uses relay/Marmot parity path:
+`pikachat agent new --provider workers` uses relay/Marmot parity path:
 
 1. `POST /agents`
 2. poll `GET /agents/:id` until keypackage startup is complete

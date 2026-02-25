@@ -21,6 +21,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
+use pika_relay_profiles::default_primary_blossom_server;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -275,7 +276,6 @@ fn default_group_name() -> String {
     "DM".to_string()
 }
 
-const DEFAULT_BLOSSOM_SERVER: &str = "https://us-east.nostr.pikachat.org";
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
 fn is_imeta_tag(tag: &Tag) -> bool {
@@ -317,7 +317,7 @@ fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![DEFAULT_BLOSSOM_SERVER.to_string()]
+    vec![default_primary_blossom_server().to_string()]
 }
 
 fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
@@ -3640,53 +3640,29 @@ pub async fn daemon_main(
                         continue;
                     }
 
-                    // Unwrap and stage welcome in the MDK pending welcome store.
-                    let unwrapped = match nostr_sdk::nostr::nips::nip59::extract_rumor(&keys, &event).await {
-                        Ok(u) => u,
+                    let welcome = match crate::ingest_welcome_from_giftwrap(
+                        &mdk,
+                        &keys,
+                        &event,
+                        |sender_hex| sender_allowed(sender_hex),
+                    )
+                    .await
+                    {
+                        Ok(Some(w)) => w,
+                        Ok(None) => continue,
                         Err(e) => {
-                            warn!("[pikachat] giftwrap unwrap failed id={} err={e:#}", event.id.to_hex());
+                            warn!("[pikachat] welcome ingest failed wrapper_id={} err={e:#}", event.id.to_hex());
                             continue;
                         }
                     };
-                    if unwrapped.rumor.kind != Kind::MlsWelcome {
-                        continue;
-                    }
 
-                    let wrapper_event_id = event.id;
-                    let mut rumor = unwrapped.rumor;
-                    let from = unwrapped.sender;
-
-                    if !sender_allowed(&from.to_hex()) {
-                        warn!("[pikachat] reject welcome (sender not allowed) from={}", from.to_hex());
-                        continue;
-                    }
-
-                    if let Err(e) = mdk.process_welcome(&wrapper_event_id, &rumor) {
-                        warn!("[pikachat] process_welcome failed wrapper_id={} err={e:#}", wrapper_event_id.to_hex());
-                        continue;
-                    }
-
-                    // Read back the stored welcome record so we can surface group metadata.
-                    let pending = match mdk.get_pending_welcomes(None) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!("[pikachat] get_pending_welcomes failed err={e:#}");
-                            continue;
-                        }
-                    };
-                    let stored = pending.into_iter().find(|w| w.wrapper_event_id == wrapper_event_id);
-                    let (nostr_group_id, group_name) = match stored {
-                        Some(w) => (hex::encode(w.nostr_group_id), w.group_name),
-                        None => ("".to_string(), "".to_string()),
-                    };
-
-                    let wid_hex = wrapper_event_id.to_hex();
+                    let wid_hex = welcome.wrapper_event_id.to_hex();
                     out_tx.send(OutMsg::WelcomeReceived {
                         wrapper_event_id: wid_hex.clone(),
-                        welcome_event_id: rumor.id().to_hex(),
-                        from_pubkey: from.to_hex().to_lowercase(),
-                        nostr_group_id,
-                        group_name,
+                        welcome_event_id: welcome.welcome_event_id.to_hex(),
+                        from_pubkey: welcome.sender_hex,
+                        nostr_group_id: welcome.nostr_group_id_hex,
+                        group_name: welcome.group_name,
                     }).ok();
 
                     if auto_accept_welcomes {
@@ -3712,8 +3688,8 @@ pub async fn daemon_main(
                     }
 
                     let nostr_group_id = event_h_tag_hex(&event).unwrap_or_else(|| group_subs.get(&subscription_id).cloned().unwrap_or_default());
-                    match mdk.process_message(&event) {
-                        Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
+                    match crate::ingest_application_message(&mdk, &event) {
+                        Ok(Some(msg)) => {
                             let sender_hex = msg.pubkey.to_hex().to_lowercase();
                             if !sender_allowed(&sender_hex) {
                                 warn!("[pikachat] drop message (sender not allowed) from={sender_hex}");
@@ -3947,7 +3923,7 @@ pub async fn daemon_main(
                                 media,
                             }).ok();
                         }
-                        Ok(_) => {}
+                        Ok(None) => {}
                         Err(e) => {
                             warn!("[pikachat] process_message failed id={} err={e:#}", event.id.to_hex());
                         }
@@ -4246,7 +4222,7 @@ mod tests {
     #[test]
     fn blossom_servers_or_default_falls_back() {
         let result = blossom_servers_or_default(&[]);
-        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+        assert_eq!(result, vec![default_primary_blossom_server()]);
     }
 
     #[test]
@@ -4254,7 +4230,7 @@ mod tests {
         let servers = vec!["".to_string(), "  ".to_string(), "not a url".to_string()];
         let result = blossom_servers_or_default(&servers);
         // All invalid → falls back to default
-        assert_eq!(result, vec![DEFAULT_BLOSSOM_SERVER]);
+        assert_eq!(result, vec![default_primary_blossom_server()]);
     }
 
     #[test]

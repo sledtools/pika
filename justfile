@@ -719,7 +719,13 @@ run-ios *ARGS:
 
 # Build-check the desktop ICED app.
 desktop-check:
-    cargo check -p pika-desktop
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      CC=/usr/bin/clang CXX=/usr/bin/clang++ cargo check -p pika-desktop
+    else
+      cargo check -p pika-desktop
+    fi
 
 # Run desktop tests (manager + UI wiring).
 desktop-ui-test:

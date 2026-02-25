@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 
 use pika_agent_protocol::MarmotSessionBuilder;
-pub use pika_agent_protocol::{
-    AgentProtocol, MARMOT_RPC_VERSION, MarmotRpcEnvelope, MarmotRpcPayload,
-    decode_prefixed_envelope, encode_prefixed_envelope,
-};
+pub use pika_agent_protocol::{AgentProtocol, MarmotRpcEnvelope, decode_prefixed_envelope};
 
 pub trait AgentHarnessSession {
     fn protocol(&self) -> AgentProtocol;
@@ -65,6 +62,7 @@ pub fn new_harness_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_agent_protocol::{MARMOT_RPC_VERSION, MarmotRpcPayload, encode_prefixed_envelope};
 
     #[test]
     fn round_trip_acp_prompt_envelope() {

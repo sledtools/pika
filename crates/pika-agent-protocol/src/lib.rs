@@ -210,4 +210,144 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("session-a:"));
     }
+
+    #[test]
+    fn all_payload_variants_round_trip() {
+        let payloads = vec![
+            MarmotRpcPayload::Prompt {
+                message: "hello".to_string(),
+            },
+            MarmotRpcPayload::Steer {
+                message: "focus on X".to_string(),
+            },
+            MarmotRpcPayload::FollowUp {
+                message: "what about Y?".to_string(),
+            },
+            MarmotRpcPayload::Abort,
+            MarmotRpcPayload::AssistantText {
+                text: "I'll help with that".to_string(),
+            },
+            MarmotRpcPayload::TextDelta {
+                delta: "chunk".to_string(),
+            },
+            MarmotRpcPayload::ToolCall {
+                call_id: "call-1".to_string(),
+                tool_name: "bash".to_string(),
+                input: serde_json::json!({"cmd": "ls"}),
+            },
+            MarmotRpcPayload::ToolCallUpdate {
+                call_id: "call-1".to_string(),
+                status: "completed".to_string(),
+                output: Some(serde_json::json!({"stdout": "file.txt\n"})),
+            },
+            MarmotRpcPayload::ToolCallUpdate {
+                call_id: "call-2".to_string(),
+                status: "running".to_string(),
+                output: None,
+            },
+            MarmotRpcPayload::Done,
+            MarmotRpcPayload::Error {
+                message: "something went wrong".to_string(),
+            },
+            MarmotRpcPayload::Capability {
+                capabilities: vec!["tool_use".to_string(), "streaming".to_string()],
+            },
+        ];
+        for (i, payload) in payloads.into_iter().enumerate() {
+            let envelope = MarmotRpcEnvelope {
+                v: MARMOT_RPC_VERSION,
+                protocol: AgentProtocol::Acp,
+                session_id: format!("session-{i}"),
+                idempotency_key: Some(format!("session-{i}:0001")),
+                payload,
+            };
+            let encoded = encode_prefixed_envelope(&envelope).expect("encode");
+            let decoded = decode_prefixed_envelope(&encoded).expect("decode");
+            assert_eq!(decoded, envelope, "payload variant {i} round-trip mismatch");
+        }
+    }
+
+    #[test]
+    fn decode_rejects_wrong_version() {
+        let envelope = MarmotRpcEnvelope {
+            v: MARMOT_RPC_VERSION,
+            protocol: AgentProtocol::Acp,
+            session_id: "s".to_string(),
+            idempotency_key: None,
+            payload: MarmotRpcPayload::Done,
+        };
+        let mut json = serde_json::to_value(&envelope).expect("to_value");
+        json["v"] = serde_json::json!(99);
+        let content = format!(
+            "{MARMOT_RPC_PREFIX}{}",
+            serde_json::to_string(&json).unwrap()
+        );
+        assert!(decode_prefixed_envelope(&content).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_missing_prefix() {
+        let envelope = MarmotRpcEnvelope {
+            v: MARMOT_RPC_VERSION,
+            protocol: AgentProtocol::Acp,
+            session_id: "s".to_string(),
+            idempotency_key: None,
+            payload: MarmotRpcPayload::Done,
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(decode_prefixed_envelope(&json).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_invalid_json() {
+        let content = format!("{MARMOT_RPC_PREFIX}{{not valid json");
+        assert!(decode_prefixed_envelope(&content).is_none());
+    }
+
+    #[test]
+    fn session_builder_steer_follow_up_abort() {
+        let mut session = MarmotSessionBuilder::new(AgentProtocol::Acp, None);
+        let steer = session.steer("focus");
+        assert!(matches!(steer.payload, MarmotRpcPayload::Steer { .. }));
+        assert!(steer.idempotency_key.is_some());
+
+        let follow_up = session.follow_up("more");
+        assert!(matches!(
+            follow_up.payload,
+            MarmotRpcPayload::FollowUp { .. }
+        ));
+
+        let abort = session.abort();
+        assert!(matches!(abort.payload, MarmotRpcPayload::Abort));
+
+        let keys: Vec<_> = [&steer, &follow_up, &abort]
+            .iter()
+            .map(|e| e.idempotency_key.as_ref().unwrap().clone())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            keys.iter().collect::<std::collections::HashSet<_>>().len(),
+            "idempotency keys must be unique"
+        );
+    }
+
+    #[test]
+    fn session_builder_auto_generates_session_id() {
+        let session = MarmotSessionBuilder::new(AgentProtocol::Acp, None);
+        assert!(session.protocol() == AgentProtocol::Acp);
+    }
+
+    #[test]
+    fn envelope_without_idempotency_key() {
+        let envelope = MarmotRpcEnvelope {
+            v: MARMOT_RPC_VERSION,
+            protocol: AgentProtocol::Acp,
+            session_id: "s".to_string(),
+            idempotency_key: None,
+            payload: MarmotRpcPayload::Done,
+        };
+        let encoded = encode_prefixed_envelope(&envelope).expect("encode");
+        let decoded = decode_prefixed_envelope(&encoded).expect("decode");
+        assert_eq!(decoded.idempotency_key, None);
+    }
 }

@@ -291,6 +291,183 @@ mod tests {
     }
 
     #[test]
+    fn all_command_variants_round_trip() {
+        let commands = vec![
+            AgentControlCommand::Provision(ProvisionCommand {
+                provider: ProviderKind::Microvm,
+                protocol: ProtocolKind::Acp,
+                name: None,
+                runtime_class: None,
+                relay_urls: vec![],
+                keep: true,
+                bot_secret_key_hex: Some("deadbeef".to_string()),
+                microvm: Some(MicrovmProvisionParams {
+                    spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                    spawn_variant: Some("prebuilt".to_string()),
+                    flake_ref: None,
+                    dev_shell: None,
+                    cpu: Some(2),
+                    memory_mb: Some(512),
+                    ttl_seconds: Some(3600),
+                }),
+            }),
+            AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
+                runtime_id: "rt-1".to_string(),
+                group_id: "grp-1".to_string(),
+                wrapper_event_id_hex: Some("abcd".to_string()),
+                welcome_event_json: Some("{\"kind\":1059}".to_string()),
+            }),
+            AgentControlCommand::Teardown(TeardownCommand {
+                runtime_id: "rt-2".to_string(),
+            }),
+            AgentControlCommand::GetRuntime(GetRuntimeCommand {
+                runtime_id: "rt-3".to_string(),
+            }),
+            AgentControlCommand::ListRuntimes(ListRuntimesCommand {
+                provider: Some(ProviderKind::Fly),
+                protocol: Some(ProtocolKind::Acp),
+                lifecycle_phase: Some(RuntimeLifecyclePhase::Ready),
+                runtime_class: Some("fly-us-east".to_string()),
+                limit: Some(10),
+            }),
+            AgentControlCommand::ListRuntimes(ListRuntimesCommand::default()),
+        ];
+        for (i, command) in commands.into_iter().enumerate() {
+            let envelope = AgentControlCmdEnvelope::v1(
+                format!("req-{i}"),
+                format!("idem-{i}"),
+                command,
+                AuthContext {
+                    acting_as_pubkey: Some("ab".repeat(32)),
+                },
+            );
+            let encoded = serde_json::to_string(&envelope).expect("encode");
+            let decoded: AgentControlCmdEnvelope = serde_json::from_str(&encoded).expect("decode");
+            assert_eq!(decoded, envelope, "command variant {i} round-trip mismatch");
+        }
+    }
+
+    #[test]
+    fn status_envelope_round_trips() {
+        let status = AgentControlStatusEnvelope::v1(
+            "req-5".to_string(),
+            RuntimeLifecyclePhase::Provisioning,
+            Some("rt-42".to_string()),
+            Some(ProviderKind::Fly),
+            Some("provisioning started".to_string()),
+            json!({"percent": 25}),
+        );
+        let encoded = serde_json::to_string(&status).expect("encode status");
+        let decoded: AgentControlStatusEnvelope =
+            serde_json::from_str(&encoded).expect("decode status");
+        assert_eq!(decoded.schema, STATUS_SCHEMA_V1);
+        assert_eq!(decoded.phase, RuntimeLifecyclePhase::Provisioning);
+        assert_eq!(decoded.runtime_id, Some("rt-42".to_string()));
+        assert_eq!(decoded.provider, Some(ProviderKind::Fly));
+    }
+
+    #[test]
+    fn error_envelope_round_trips() {
+        let error = AgentControlErrorEnvelope::v1(
+            "req-6".to_string(),
+            "provision_failed",
+            Some("check provider credentials".to_string()),
+            Some("fly auth token expired".to_string()),
+        );
+        let encoded = serde_json::to_string(&error).expect("encode error");
+        let decoded: AgentControlErrorEnvelope =
+            serde_json::from_str(&encoded).expect("decode error");
+        assert_eq!(decoded.schema, ERROR_SCHEMA_V1);
+        assert_eq!(decoded.code, "provision_failed");
+        assert_eq!(decoded.hint, Some("check provider credentials".to_string()));
+        assert_eq!(decoded.detail, Some("fly auth token expired".to_string()));
+    }
+
+    #[test]
+    fn error_envelope_with_no_hint_or_detail() {
+        let error = AgentControlErrorEnvelope::v1("req-7".to_string(), "unknown", None, None);
+        let encoded = serde_json::to_string(&error).expect("encode");
+        let decoded: AgentControlErrorEnvelope = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded.hint, None);
+        assert_eq!(decoded.detail, None);
+    }
+
+    #[test]
+    fn runtime_descriptor_optional_fields_default_correctly() {
+        let minimal_json = json!({
+            "runtime_id": "rt-min",
+            "provider": "fly",
+            "lifecycle_phase": "queued",
+        });
+        let descriptor: RuntimeDescriptor =
+            serde_json::from_value(minimal_json).expect("decode minimal descriptor");
+        assert_eq!(descriptor.runtime_class, None);
+        assert_eq!(descriptor.region, None);
+        assert_eq!(descriptor.capacity, Value::Null);
+        assert_eq!(descriptor.policy_constraints, Value::Null);
+        assert!(descriptor.protocol_compatibility.is_empty());
+        assert_eq!(descriptor.bot_pubkey, None);
+        assert_eq!(descriptor.metadata, Value::Null);
+    }
+
+    #[test]
+    fn provider_kind_serde_uses_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ProviderKind::Fly).unwrap(),
+            "\"fly\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderKind::Microvm).unwrap(),
+            "\"microvm\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"fly\"").unwrap(),
+            ProviderKind::Fly
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"microvm\"").unwrap(),
+            ProviderKind::Microvm
+        );
+    }
+
+    #[test]
+    fn unknown_provider_kind_rejected() {
+        assert!(serde_json::from_str::<ProviderKind>("\"workers\"").is_err());
+        assert!(serde_json::from_str::<ProviderKind>("\"unknown\"").is_err());
+    }
+
+    #[test]
+    fn lifecycle_phase_all_variants_round_trip() {
+        let phases = vec![
+            RuntimeLifecyclePhase::Queued,
+            RuntimeLifecyclePhase::Provisioning,
+            RuntimeLifecyclePhase::Ready,
+            RuntimeLifecyclePhase::Failed,
+            RuntimeLifecyclePhase::Teardown,
+        ];
+        for phase in phases {
+            let encoded = serde_json::to_string(&phase).expect("encode");
+            let decoded: RuntimeLifecyclePhase = serde_json::from_str(&encoded).expect("decode");
+            assert_eq!(decoded, phase);
+        }
+    }
+
+    #[test]
+    fn provision_command_minimal_fields_decode() {
+        let json = json!({
+            "provider": "fly",
+            "protocol": "acp",
+        });
+        let cmd: ProvisionCommand = serde_json::from_value(json).expect("decode");
+        assert_eq!(cmd.name, None);
+        assert_eq!(cmd.runtime_class, None);
+        assert!(cmd.relay_urls.is_empty());
+        assert!(!cmd.keep);
+        assert_eq!(cmd.bot_secret_key_hex, None);
+        assert_eq!(cmd.microvm, None);
+    }
+
+    #[test]
     fn result_envelope_round_trips() {
         let result = AgentControlResultEnvelope::v1(
             "req-9".to_string(),

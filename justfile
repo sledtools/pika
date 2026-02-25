@@ -788,16 +788,7 @@ cli-release:
 
 # Run pikachat with shared provider/control-plane defaults; forwards args verbatim.
 cli *ARGS="":
-    set -euo pipefail; \
-    if [ -f .env ]; then \
-      set -a; \
-      source .env; \
-      set +a; \
-    fi; \
-    export PIKA_AGENT_CONTROL_MODE="${PIKA_AGENT_CONTROL_MODE:-remote}"; \
-    export PIKA_WORKERS_BASE_URL="${PIKA_WORKERS_BASE_URL:-${WORKERS_URL:-http://127.0.0.1:8787}}"; \
-    export PI_ADAPTER_BASE_URL="${PI_ADAPTER_BASE_URL:-http://127.0.0.1:8788}"; \
-    cargo run -q -p pikachat -- {{ ARGS }}
+    ./scripts/pikachat-cli.sh {{ ARGS }}
 
 # Show (or create) an identity in the given state dir.
 cli-identity STATE_DIR=".pikachat" RELAY="ws://127.0.0.1:7777":

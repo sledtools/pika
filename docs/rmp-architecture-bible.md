@@ -1099,30 +1099,264 @@ No UniFFI, no code generation, no serialization overhead. The desktop app calls 
 
 **Implication for API design:** Because the core crate must serve both UniFFI consumers (iOS, Android) and direct Rust consumers (desktop, CLI), all FFI-visible types must also be usable as regular Rust types. The `uniffi::Record` and `uniffi::Enum` derives are additive -- they don't prevent normal Rust usage.
 
-#### 4.3.2 iced Elm Architecture
+#### 4.3.2 iced Elm Architecture and the Two Nested Loops
 
-The desktop app uses [iced](https://iced.rs/) (v0.14), a Rust-native GUI framework that itself follows TEA. This creates an interesting architecture: **two nested Elm loops**.
+The desktop app uses [iced](https://iced.rs/) (v0.14), a Rust-native GUI framework that itself follows TEA. This creates an architecture of **two nested Elm loops**.
 
-The outer loop is iced's: `DesktopApp` with `new()`, `update()`, `view()`, `subscription()`. The inner loop is the Rust core's: `AppCore` processing `CoreMsg` messages on its actor thread.
+The **outer loop** is iced's: `DesktopApp` implements `new()`, `update()`, `view()`, `subscription()`. The **inner loop** is the Rust core's: `AppCore` processes `CoreMsg` messages on its actor thread and emits `AppUpdate` notifications.
 
-```rust
-// Outer (iced) loop
-enum Message {
-    CoreUpdated,           // AppManager notifies new state available
-    Home(home::Message),   // Screen-specific messages
-    Login(login::Message),
-    RelativeTimeTick,      // UI-only timer
-}
-
-// Inner (core) loop runs on its own thread
-// AppCore receives CoreMsg, mutates AppState, emits AppUpdate
+```
+┌─────────────────────────────────────────────────────────┐
+│  iced runtime (outer loop)                              │
+│                                                         │
+│   DesktopApp::view()                                    │
+│        │                                                │
+│        ▼                                                │
+│   Element<Message>  ──user interaction──▶  Message       │
+│        ▲                                    │           │
+│        │                                    ▼           │
+│   DesktopApp::update()                                  │
+│        │                                                │
+│        ├── UI-only state mutations (screen transitions) │
+│        └── manager.dispatch(AppAction::...)             │
+│                       │                                 │
+│  ┌────────────────────▼────────────────────────────┐    │
+│  │  AppCore actor (inner loop)                     │    │
+│  │  CoreMsg → handle_message → mutate AppState     │    │
+│  │  → AppUpdate notification via flume channel     │    │
+│  └────────────────────┬────────────────────────────┘    │
+│                       │                                 │
+│   Subscription::run_with() polls flume::Receiver        │
+│        │                                                │
+│        ▼                                                │
+│   Message::CoreUpdated → sync_from_manager()            │
+│   reads latest AppState, triggers re-render             │
+└─────────────────────────────────────────────────────────┘
 ```
 
-The `AppManager` wraps `FfiApp` and provides `subscribe_updates() -> flume::Receiver<()>`. iced polls this via `Subscription::run_with()`. When `Message::CoreUpdated` arrives, `sync_from_manager()` reads the latest `AppState` and updates the iced model.
+The `AppManager` wraps `FfiApp` and exposes `subscribe_updates() -> flume::Receiver<()>`. iced polls this via `Subscription::run_with()`. When `Message::CoreUpdated` arrives, `sync_from_manager()` reads the latest `AppState` snapshot and stores it, triggering a re-render.
 
-Actions flow down: `manager.dispatch(AppAction::...)` sends into the core actor.
+**Boot state as a top-level enum.** Instead of wrapping the manager in `Option<AppManager>` and scattering `if let Some(manager)` checks everywhere, model boot failure as a variant of the top-level app:
 
-#### 4.3.3 Platform-Specific Desktop Features
+```rust
+enum DesktopApp {
+    BootError { error: String },
+    Loaded {
+        manager: AppManager,
+        screen: Screen,
+        state: AppState,
+        // ...
+    },
+}
+```
+
+Every method (`update`, `view`, `subscription`) matches on the variant first. `BootError` renders an error message and ignores all input. This eliminates an entire category of `Option` unwrapping and makes the impossible state (running without a manager) unrepresentable.
+
+#### 4.3.3 The State / Message / Event Module Pattern
+
+This is the canonical pattern for structuring iced view and screen modules. It was designed by an iced contributor and is documented in `crates/pika-desktop/iced-view-pattern.md`. Every module that owns interactive UI follows the same shape:
+
+```rust
+// Every module defines these three types.
+// No prefixing needed -- use scoping rules at call sites (e.g. chat_rail::Message).
+
+pub struct State {
+    // All state owned by this module
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    // Triggered by view() interactions (button presses, text input, etc.)
+}
+
+pub enum Event {
+    // Raised to the parent -- "something happened that I can't handle myself"
+}
+
+impl State {
+    pub fn new(/* minimal init data */) -> Self { /* ... */ }
+
+    pub fn update(&mut self, message: Message) -> Option<Event> {
+        match message {
+            // Handle UI state internally, return None
+            // When something needs parent action, return Some(Event::...)
+        }
+    }
+
+    pub fn view(&self, /* read-only context */) -> Element<Message> {
+        // Pure rendering, immutable &self
+    }
+}
+```
+
+**Key principles:**
+
+1. **Messages go down, Events bubble up.** The parent calls `child.update(msg)` and inspects the returned `Option<Event>` to decide what to do. The child never reaches up to mutate parent state or call `manager.dispatch()` directly.
+
+2. **Scoped naming.** Every module uses the names `State`, `Message`, `Event` without prefixes. At call sites, Rust's module system provides the namespace: `conversation::Message`, `chat_rail::Message`, `login::Event`. This eliminates naming stutters like `ConversationMessage` or `ChatRailState`.
+
+3. **`view()` takes `&self`, not `&mut self`.** Views are pure functions of state. Side effects only happen through Messages.
+
+#### 4.3.4 Event Bubbling: The Logout Flow
+
+The event bubbling pattern is most clearly illustrated by the logout flow, which spans three levels of the module hierarchy:
+
+```
+my_profile::view()
+  └── button("Logout").on_press(Message::Logout)
+        │
+        ▼
+my_profile::update(Message::Logout)
+  └── returns Some(Event::Logout)
+        │
+        ▼
+home::update(Message::MyProfile(msg))
+  └── matches Event::Logout → returns Some(home::Event::Logout)
+        │
+        ▼
+DesktopApp::update(Message::Home(msg))
+  └── matches home::Event::Logout
+        ├── manager.logout()
+        ├── avatar_cache.borrow_mut().clear()
+        └── *screen = Screen::Login(screen::login::State::new())
+```
+
+At no point does `my_profile` know about `AppManager` or screen transitions. It only knows that logout was requested and communicates this upward. The top level -- which owns the manager and the screen enum -- is the only place that performs the destructive session teardown and screen swap.
+
+This pattern replaces the alternative of passing `&mut AppManager` down through every module, which creates tight coupling and makes modules impossible to test in isolation.
+
+#### 4.3.5 Screen Modules vs. View Modules
+
+The module hierarchy has two tiers:
+
+```
+src/
+├── main.rs              # DesktopApp: top-level iced application
+├── screen/
+│   ├── home.rs          # Authenticated experience (composes view modules)
+│   └── login.rs         # Unauthenticated login form
+└── views/
+    ├── chat_rail.rs     # Left sidebar with chat list
+    ├── conversation.rs  # Message thread + input
+    ├── call_screen.rs   # Voice/video call UI
+    ├── my_profile.rs    # Profile editor overlay
+    ├── peer_profile.rs  # Other user's profile
+    ├── new_chat.rs      # Start DM form
+    ├── new_group_chat.rs# Group creation form
+    ├── group_info.rs    # Group settings
+    ├── toast.rs         # Notification bar
+    └── ...
+```
+
+**Screen modules** (`screen/home.rs`, `screen/login.rs`) are top-level composition units. They own the full-screen layout, compose multiple view modules together, and are the primary routing targets. The top-level `Screen` enum switches between them:
+
+```rust
+enum Screen {
+    Home(Box<screen::home::State>),   // Boxed because it's large
+    Login(screen::login::State),
+}
+```
+
+Screen transitions happen at the `DesktopApp` level in response to auth state changes in `sync_from_manager()` or events like `Event::Logout`.
+
+**View modules** (`views/conversation.rs`, `views/chat_rail.rs`, etc.) are reusable components owned by a screen. The home screen composes them:
+
+```rust
+// home.rs owns child view states
+pub struct State {
+    pane: Pane,                              // Active overlay/panel
+    conversation: views::conversation::State,
+    group_info: Option<views::group_info::State>,
+    // ...
+}
+
+// home.rs delegates messages to the right child
+pub fn update(&mut self, message: Message, ...) -> Option<Event> {
+    match message {
+        Message::Conversation(msg) => {
+            let (event, task) = self.conversation.update(msg);
+            // Handle conversation events (SendMessage, ReactToMessage, etc.)
+        }
+        Message::ChatRail(msg) => {
+            // Handle chat selection, overlay toggles
+        }
+        // ...
+    }
+}
+```
+
+The home screen's `view()` method maps each child's output into its own message namespace:
+
+```rust
+// Each child view's Message type is wrapped via .map()
+let rail = views::chat_rail::view(&state.chat_list, ...)
+    .map(Message::ChatRail);
+
+let center = self.conversation.view(chat, ...)
+    .map(Message::Conversation);
+```
+
+This `.map()` wrapping is how iced maintains type-safe message routing through the component tree.
+
+**When to use a screen vs. a view:**
+
+- If it replaces the entire window content and corresponds to an auth state or major navigation boundary, it is a **screen**.
+- If it fills a panel, overlay, or section within a screen and can be composed alongside other views, it is a **view**.
+- Views can nest (a conversation view contains message bubble views), but screens do not nest.
+
+#### 4.3.6 The Home Screen as Composition Root
+
+The home screen (`screen/home.rs`) deserves special attention because it demonstrates the full pattern at scale. It owns:
+
+- A **Pane enum** for mutually exclusive overlays (new chat form, new group form, profile editor, or empty)
+- A **conversation state** that is always present (for the active chat)
+- An **optional group_info state** (shown only when viewing group settings)
+- **Optimistic selection** tracking (for instant chat switching before the core confirms)
+
+Its `update()` method is a large match that delegates to child modules and translates their Events:
+
+```rust
+Message::Conversation(msg) => {
+    let (event, task) = self.conversation.update(msg);
+    if let Some(event) = event {
+        match event {
+            conversation::Event::SendMessage { content, reply_to_message_id } => {
+                manager.dispatch(AppAction::SendMessage { ... });
+            }
+            conversation::Event::ShowGroupInfo => {
+                self.group_info = Some(views::group_info::State::new(...));
+                manager.dispatch(AppAction::PushScreen { ... });
+            }
+            // ... 10+ other event variants
+        }
+    }
+}
+```
+
+The home screen also receives a `sync_from_update()` call whenever the core state changes, which it uses to:
+- Close overlays when async operations complete (e.g., `creating_chat` goes from `true` to `false`)
+- Reconcile optimistic chat selection with the authoritative route
+- Auto-dismiss the call screen when a call ends
+- Refilter follow lists for open overlays
+
+This is the desktop equivalent of the mobile `AppManager` reconciliation, but structured as explicit Rust state machine transitions rather than reactive UI framework bindings.
+
+#### 4.3.7 Contrast with Mobile Platform Layers
+
+The desktop pattern differs from iOS and Android in a fundamental way:
+
+| Aspect | Mobile (iOS/Android) | Desktop (iced) |
+|--------|---------------------|----------------|
+| Core integration | UniFFI bridge (cross-process serialization) | Direct Rust dependency (zero-cost) |
+| State observation | Callback interface (`AppReconciler`) pushes state | Subscription polls `flume::Receiver` |
+| UI state | Derived in the native layer (`ViewState`) | Modules own local state alongside `AppState` |
+| Component model | SwiftUI/Compose declarative views | iced State/Message/Event modules |
+| Message routing | Framework handles (SwiftUI bindings, Compose state) | Explicit `.map()` wrapping through module tree |
+| Event bubbling | Not needed (flat reconciler callback) | Required (hierarchical State/Message/Event) |
+
+The key insight: mobile platforms have flat state observation (one `AppReconciler` callback updates the entire UI), while desktop has hierarchical state ownership (each module owns its local state and communicates via events). This hierarchy is necessary because iced has no equivalent to SwiftUI's `@Observable` or Compose's `mutableStateOf` -- state flow must be explicit.
+
+#### 4.3.8 Platform-Specific Desktop Features
 
 Desktop has capabilities that don't apply to mobile:
 

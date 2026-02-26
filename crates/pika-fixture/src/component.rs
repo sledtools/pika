@@ -148,7 +148,6 @@ impl Postgres {
 
 pub struct Relay {
     pub child: Child,
-    pub port: u16,
     pub url: String,
 }
 
@@ -205,7 +204,7 @@ impl Relay {
         health::wait_for_http(&health_url, Duration::from_secs(15)).await?;
 
         info!("[relay] Ready ({url})");
-        Ok(Self { child, port, url })
+        Ok(Self { child, url })
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -248,7 +247,6 @@ fn find_or_build_relay(workspace_root: &Path) -> Result<PathBuf> {
 
 pub struct Server {
     pub child: Child,
-    pub port: u16,
     pub url: String,
     pub pubkey_hex: String,
 }
@@ -303,7 +301,6 @@ impl Server {
         info!("[server] Ready ({url})");
         Ok(Self {
             child,
-            port,
             url,
             pubkey_hex,
         })

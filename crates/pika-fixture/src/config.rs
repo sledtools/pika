@@ -89,6 +89,7 @@ pub struct ResolvedConfig {
     pub relay_port: u16,
     pub server_port: u16,
     pub state_dir: PathBuf,
+    #[allow(dead_code)]
     pub ephemeral: bool,
     pub open_provisioning: bool,
     pub bot_timeout_secs: u64,
@@ -182,11 +183,6 @@ impl ResolvedConfig {
 
     pub fn server_url(&self) -> String {
         format!("http://localhost:{}", self.server_port)
-    }
-
-    pub fn database_url(&self) -> String {
-        let pgdata = self.pgdata();
-        format!("postgresql:///pika_server?host={}", pgdata.display())
     }
 }
 

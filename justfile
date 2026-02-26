@@ -229,6 +229,7 @@ pre-commit: fmt
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
     cargo clippy -p pika-server --tests -- -D warnings
+    cargo clippy -p pika-fixture -- -D warnings
 
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt
@@ -277,11 +278,26 @@ pre-merge-rmp:
     just rmp-init-smoke-ci
     @echo "pre-merge-rmp complete"
 
+# CI-safe pre-merge for the pika-fixture tooling lane.
+pre-merge-fixture:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo clippy -p pika-fixture -- -D warnings
+    cargo test -p pika-fixture
+    SD="$(mktemp -d /tmp/pika-fixture-smoke.XXXXXX)"
+    cleanup() { cargo run -q -p pika-fixture -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+    trap cleanup EXIT
+    cargo run -q -p pika-fixture -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
+    cargo run -q -p pika-fixture -- wait --state-dir "$SD" --timeout 30
+    cargo run -q -p pika-fixture -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
+    echo "pre-merge-fixture complete"
+
 # Single CI entrypoint for the whole repo.
 pre-merge:
     just pre-merge-pika
     just pre-merge-notifications
     just pre-merge-pikachat
+    just pre-merge-fixture
     just pre-merge-rmp
     @echo "pre-merge complete"
 

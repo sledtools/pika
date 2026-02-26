@@ -158,12 +158,12 @@ impl AppCore {
                 (display_name, subtitle)
             } else {
                 let peer = members_for_state.first();
-                let display_name = peer
-                    .and_then(|member| member.name.clone())
-                    .unwrap_or_else(|| {
-                        peer.map(|member| truncated_npub(&member.npub))
-                            .unwrap_or_else(|| "Chat".to_string())
-                    });
+                let display_name =
+                    peer.and_then(|member| member.name.clone())
+                        .unwrap_or_else(|| {
+                            peer.map(|member| truncated_npub(&member.npub))
+                                .unwrap_or_else(|| "Chat".to_string())
+                        });
                 let subtitle = if peer.and_then(|member| member.name.as_ref()).is_some() {
                     peer.map(|member| truncated_npub(&member.npub))
                 } else {
@@ -733,12 +733,12 @@ impl AppCore {
                 process_html_updates(&mut cur.messages);
                 process_html_state_updates(&mut cur.messages);
                 let unread_count = *self.unread_counts.get(chat_id).unwrap_or(&0) as usize;
-                cur.first_unread_message_id = if unread_count > 0 && unread_count <= cur.messages.len()
-                {
-                    Some(cur.messages[cur.messages.len() - unread_count].id.clone())
-                } else {
-                    None
-                };
+                cur.first_unread_message_id =
+                    if unread_count > 0 && unread_count <= cur.messages.len() {
+                        Some(cur.messages[cur.messages.len() - unread_count].id.clone())
+                    } else {
+                        None
+                    };
                 self.emit_current_chat();
             }
         }
@@ -1153,7 +1153,8 @@ mod tests {
 
     #[test]
     fn parse_message_segments_drops_prompt_response_blocks() {
-        let content = "before\n```pika-prompt-response\n{\"prompt_id\":\"a\",\"selected\":\"x\"}\n```\nafter";
+        let content =
+            "before\n```pika-prompt-response\n{\"prompt_id\":\"a\",\"selected\":\"x\"}\n```\nafter";
         let segments = parse_message_segments(content);
         assert_eq!(segments.len(), 2);
         assert!(matches!(segments[0], MessageSegment::Markdown { .. }));

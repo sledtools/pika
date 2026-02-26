@@ -33,8 +33,8 @@ use crate::mdk_support::{open_mdk, PikaMdk};
 use crate::state::now_seconds;
 use crate::state::{
     AuthMode, AuthState, BusyState, CallDebugStats, CallStatus, ChatMediaAttachment, ChatMessage,
-    ChatSummary, ChatViewState, MessageDeliveryState, MyProfileState, Screen,
-    VoiceRecordingPhase, VoiceRecordingState,
+    ChatSummary, ChatViewState, MessageDeliveryState, MyProfileState, Screen, VoiceRecordingPhase,
+    VoiceRecordingState,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
@@ -796,9 +796,9 @@ impl AppCore {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::ToastAutoDismiss {
-                token,
-            })));
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::ToastAutoDismiss { token },
+            )));
         });
     }
 
@@ -810,9 +810,9 @@ impl AppCore {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::CallDurationTick {
-                token,
-            })));
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::CallDurationTick { token },
+            )));
         });
     }
 
@@ -2553,7 +2553,9 @@ impl AppCore {
                     .state
                     .active_call
                     .as_ref()
-                    .map(|call| matches!(call.status, CallStatus::Active) && call.started_at.is_some())
+                    .map(|call| {
+                        matches!(call.status, CallStatus::Active) && call.started_at.is_some()
+                    })
                     .unwrap_or(false);
                 if !should_continue {
                     return;

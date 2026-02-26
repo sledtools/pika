@@ -781,8 +781,8 @@ fn print(v: serde_json::Value) {
 }
 
 /// Fetch recent group messages from the relay and feed them through
-/// `mdk.process_message` so the local MLS epoch is up-to-date before we
-/// attempt to create a new message.
+/// `ingest_application_message` so the local MLS epoch is up-to-date
+/// before we attempt to create a new message.
 async fn ingest_group_backlog(
     mdk: &mdk_util::PikaMdk,
     client: &Client,
@@ -790,25 +790,15 @@ async fn ingest_group_backlog(
     nostr_group_id_hex: &str,
     seen_mls_event_ids: &mut HashSet<EventId>,
 ) -> anyhow::Result<()> {
-    let filter = Filter::new()
-        .kind(Kind::MlsGroupMessage)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
-        .limit(200);
-
-    let events = client
-        .fetch_events_from(relay_urls.to_vec(), filter, Duration::from_secs(10))
-        .await
-        .context("fetch group backlog")?;
-
-    for ev in events.iter() {
-        if !seen_mls_event_ids.insert(ev.id) {
-            continue;
-        }
-        // Errors are expected (own messages bouncing back, already-processed
-        // events, etc.) — the important thing is that commits get applied.
-        let _ = mdk.process_message(ev);
-    }
-
+    pika_marmot_runtime::ingest_group_backlog(
+        mdk,
+        client,
+        relay_urls,
+        nostr_group_id_hex,
+        seen_mls_event_ids,
+        200,
+    )
+    .await?;
     Ok(())
 }
 

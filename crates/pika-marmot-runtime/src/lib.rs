@@ -172,6 +172,48 @@ pub fn ingest_application_message(
     }
 }
 
+/// Fetch recent group messages from relays and process them through
+/// `ingest_application_message` so the local MLS epoch is up-to-date.
+///
+/// Returns the messages that were successfully ingested.
+/// Errors on individual events are silently ignored (expected for
+/// own messages bouncing back, already-processed events, etc.).
+pub async fn ingest_group_backlog(
+    mdk: &PikaMdk,
+    client: &nostr_sdk::Client,
+    relay_urls: &[nostr_sdk::RelayUrl],
+    nostr_group_id_hex: &str,
+    seen: &mut HashSet<EventId>,
+    limit: usize,
+) -> Result<Vec<mdk_storage_traits::messages::types::Message>> {
+    use nostr_sdk::prelude::{Alphabet, Filter, SingleLetterTag};
+
+    let filter = Filter::new()
+        .kind(Kind::MlsGroupMessage)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
+        .limit(limit);
+
+    let events = client
+        .fetch_events_from(
+            relay_urls.to_vec(),
+            filter,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .context("fetch group backlog")?;
+
+    let mut messages = Vec::new();
+    for ev in events.iter() {
+        if !seen.insert(ev.id) {
+            continue;
+        }
+        if let Ok(Some(msg)) = ingest_application_message(mdk, ev) {
+            messages.push(msg);
+        }
+    }
+    Ok(messages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

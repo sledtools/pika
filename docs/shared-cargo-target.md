@@ -29,10 +29,16 @@ A shared target directory lets Cargo reuse compiled artifacts across all worktre
 
 2. **Done.** All worktrees under `pika/worktrees/` and `pika/.worktrees/` are subdirectories of the repo root, so Cargo's parent-directory walk finds the same config automatically.
 
-3. **(Optional)** Delete old per-worktree `target/` dirs to reclaim disk space:
+3. **Symlink `target` to `.shared-target`** so recipes that hardcode `target/` still work:
 
    ```bash
-   rm -rf worktrees/*/target .worktrees/*/target target
+   rm -rf target && ln -s .shared-target target
+   ```
+
+4. **(Optional)** Delete old per-worktree `target/` dirs to reclaim disk space:
+
+   ```bash
+   rm -rf worktrees/*/target .worktrees/*/target
    ```
 
 ## How it works
@@ -46,6 +52,13 @@ A shared target directory lets Cargo reuse compiled artifacts across all worktre
 - **No concurrent builds**: Cargo holds a lock on the target dir. If two worktrees build at the same time, one blocks until the other finishes.
 - **Absolute path**: Machine-specific, but since `.cargo/config.toml` is gitignored that's fine.
 - **Branch switching thrash**: If two worktrees have very different deps, Cargo may recompile more. In practice most worktrees share 99% of deps.
+- **Stale `target/` directory**: If you previously built without the shared target config, a `target/` directory with old artifacts may still exist in the repo root. The justfile's `ios-gen-swift` and other recipes reference `target/$PROFILE/`, so a stale `target/` will shadow the correct `.shared-target/` output, causing uniffi to generate bindings from an outdated dylib. **After enabling the shared target, delete or replace the old `target/` directory:**
+
+  ```bash
+  rm -rf target && ln -s .shared-target target
+  ```
+
+  The symlink ensures recipes that hardcode `target/` still find the correct artifacts.
 
 ## Optional: sccache
 

@@ -193,7 +193,7 @@ Then set `sidecarCmd` in your plugin config to the absolute path of the binary:
 ```
 
 Defaults:
-- Relay URL: random free localhost port (started via `nostr-rs-relay` from the Nix devShell)
+- Relay URL: random free localhost port (started via `pika-fixture` / `pika-relay`)
 - State dir: a fresh temp dir (override via `STATE_DIR=...` if you want to keep artifacts)
 
 ### Run Phase 2

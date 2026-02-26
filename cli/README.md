@@ -100,7 +100,7 @@ pika-cli download-media <message-id> --output photo.jpg
 ## Smoke tests
 
 ```sh
-# Enter nix shell (provides nostr-rs-relay)
+# Enter nix shell
 nix develop
 
 # Text-only (starts its own relay automatically)

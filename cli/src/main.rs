@@ -2082,13 +2082,17 @@ async fn run_interactive_session(
         fetch_timeout: Duration::from_secs(5),
         retry_delay: Duration::from_secs(2),
     };
-    let bot_kp = agent::session::wait_for_latest_key_package(
-        &control_client.client,
-        bot_pubkey,
-        &kp_relays,
-        kp_plan,
-    )
-    .await?;
+    let bot_kp = tokio::select! {
+        result = agent::session::wait_for_latest_key_package(
+            &control_client.client,
+            bot_pubkey,
+            &kp_relays,
+            kp_plan,
+        ) => result?,
+        _ = tokio::signal::ctrl_c() => {
+            anyhow::bail!("interrupted during key package wait");
+        }
+    };
 
     let group_plan = agent::provider::GroupCreatePlan {
         progress_message: "Creating MLS group...",
@@ -2096,16 +2100,20 @@ async fn run_interactive_session(
         build_welcome_context: "build welcome message",
         welcome_publish_label: "agent welcome",
     };
-    let group = agent::session::create_group_and_publish_welcomes(
-        keys,
-        mdk,
-        &control_client.client,
-        &relays,
-        bot_kp,
-        bot_pubkey,
-        group_plan,
-    )
-    .await?;
+    let group = tokio::select! {
+        result = agent::session::create_group_and_publish_welcomes(
+            keys,
+            mdk,
+            &control_client.client,
+            &relays,
+            bot_kp,
+            bot_pubkey,
+            group_plan,
+        ) => result?,
+        _ = tokio::signal::ctrl_c() => {
+            anyhow::bail!("interrupted during group creation");
+        }
+    };
 
     eprintln!("Chat ready. Type a message and press Enter. Ctrl-C to exit.");
 

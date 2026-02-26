@@ -602,7 +602,32 @@ impl State {
                             }
                         }
                         views::peer_profile::Event::StartChat { peer_npub } => {
-                            manager.dispatch(AppAction::CreateChat { peer_npub });
+                            // If a 1:1 chat already exists with this peer, open it
+                            // instead of creating a duplicate.
+                            let existing_chat_id =
+                                state.peer_profile.as_ref().and_then(|profile| {
+                                    state.chat_list.iter().find_map(|chat| {
+                                        if !chat.is_group
+                                            && chat
+                                                .members
+                                                .iter()
+                                                .any(|m| m.pubkey == profile.pubkey)
+                                        {
+                                            Some(chat.chat_id.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
+
+                            if let Some(chat_id) = existing_chat_id {
+                                manager.dispatch(AppAction::ClosePeerProfile);
+                                self.optimistic_selected_chat_id = Some(chat_id.clone());
+                                self.clear_pane();
+                                manager.dispatch(AppAction::OpenChat { chat_id });
+                            } else {
+                                manager.dispatch(AppAction::CreateChat { peer_npub });
+                            }
                         }
                     }
                 }

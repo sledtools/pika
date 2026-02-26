@@ -9,10 +9,10 @@ pub fn view<'a, M: 'a>() -> Element<'a, M, Theme> {
         column![
             text("Select a conversation")
                 .size(22)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
             text("Choose a chat from the sidebar to start messaging")
                 .size(14)
-                .color(theme::TEXT_FADED),
+                .color(theme::text_faded()),
         ]
         .spacing(8)
         .align_x(iced::Alignment::Center),

@@ -29,13 +29,13 @@ pub fn view<'a>(
         text("Chats")
             .size(22)
             .font(icons::BOLD)
-            .color(theme::TEXT_PRIMARY),
+            .color(theme::text_primary()),
         Space::new().width(Fill),
         button(
             text(icons::MESSAGE_SQUARE_PLUS)
                 .font(icons::LUCIDE_FONT)
                 .size(20)
-                .color(theme::TEXT_PRIMARY)
+                .color(theme::text_primary())
                 .center(),
         )
         .on_press(Message::ClickNewChat)
@@ -45,7 +45,7 @@ pub fn view<'a>(
             text(icons::USERS)
                 .font(icons::LUCIDE_FONT)
                 .size(20)
-                .color(theme::TEXT_PRIMARY)
+                .color(theme::text_primary())
                 .center(),
         )
         .on_press(Message::ClickNewGroup)
@@ -74,7 +74,7 @@ pub fn view<'a>(
     // Profile button at bottom
     let profile_btn_content = row![
         avatar_circle(Some("Me"), my_picture_url, 28.0, avatar_cache),
-        text("My Profile").size(14).color(theme::TEXT_PRIMARY),
+        text("My Profile").size(14).color(theme::text_primary()),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -108,7 +108,7 @@ fn chat_item<'a>(
     let timestamp_text: Element<'a, Message, Theme> = if let Some(ts) = chat.last_message_at {
         text(theme::relative_time(ts))
             .size(12)
-            .color(theme::TEXT_FADED)
+            .color(theme::text_faded())
             .into()
     } else {
         Space::new().width(0).into()
@@ -128,7 +128,7 @@ fn chat_item<'a>(
         text(theme::truncate(&name, 20))
             .size(15)
             .font(icons::BOLD)
-            .color(theme::TEXT_PRIMARY),
+            .color(theme::text_primary()),
         Space::new().width(Fill),
         timestamp_text,
     ]
@@ -137,7 +137,7 @@ fn chat_item<'a>(
     // Preview + optional badge
     let mut bottom_row = row![text(theme::truncate(preview, 30))
         .size(13)
-        .color(theme::TEXT_SECONDARY)
+        .color(theme::text_secondary())
         .wrapping(text::Wrapping::None)]
     .align_y(Alignment::Center);
 

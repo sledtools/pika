@@ -80,7 +80,7 @@ impl State {
                 text("Profile")
                     .size(16)
                     .font(icons::BOLD)
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::text_primary()),
             )
             .width(Fill)
             .center_x(Fill)
@@ -144,16 +144,16 @@ impl State {
                         text(icons::KEY)
                             .font(icons::LUCIDE_FONT)
                             .size(18)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                         text(theme::truncated_npub_long(npub))
                             .size(14)
                             .font(icons::MONO)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                         Space::new().width(Fill),
                         text(icons::COPY)
                             .font(icons::LUCIDE_FONT)
                             .size(16)
-                            .color(theme::TEXT_FADED),
+                            .color(theme::text_faded()),
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
@@ -174,16 +174,16 @@ impl State {
                         text(icons::INFO)
                             .font(icons::LUCIDE_FONT)
                             .size(18)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                         text(format!("Version {app_version}"))
                             .size(14)
                             .font(icons::MONO)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                         Space::new().width(Fill),
                         text(icons::COPY)
                             .font(icons::LUCIDE_FONT)
                             .size(16)
-                            .color(theme::TEXT_FADED),
+                            .color(theme::text_faded()),
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
@@ -207,8 +207,8 @@ impl State {
                     text(icons::LOG_OUT)
                         .font(icons::LUCIDE_FONT)
                         .size(18)
-                        .color(theme::DANGER),
-                    text("Logout").size(14).color(theme::DANGER),
+                        .color(theme::danger()),
+                    text("Logout").size(14).color(theme::danger()),
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),
@@ -218,12 +218,12 @@ impl State {
             .padding([12, 24])
             .style(|_: &Theme, status: button::Status| {
                 let bg = match status {
-                    button::Status::Hovered => theme::HOVER_BG,
+                    button::Status::Hovered => theme::hover_bg(),
                     _ => iced::Color::TRANSPARENT,
                 };
                 button::Style {
                     background: Some(iced::Background::Color(bg)),
-                    text_color: theme::DANGER,
+                    text_color: theme::danger(),
                     ..Default::default()
                 }
             }),
@@ -242,12 +242,12 @@ impl State {
 /// Signal-style ghost row: transparent by default, subtle hover bg.
 fn ghost_row_style(_theme: &Theme, status: button::Status) -> button::Style {
     let bg = match status {
-        button::Status::Hovered => theme::HOVER_BG,
+        button::Status::Hovered => theme::hover_bg(),
         _ => iced::Color::TRANSPARENT,
     };
     button::Style {
         background: Some(iced::Background::Color(bg)),
-        text_color: theme::TEXT_PRIMARY,
+        text_color: theme::text_primary(),
         ..Default::default()
     }
 }
@@ -264,7 +264,7 @@ fn icon_input_row<'a>(
             text(icon_cp)
                 .font(icons::LUCIDE_FONT)
                 .size(18)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
             text_input(placeholder, value)
                 .on_input(on_input)
                 .padding(10)

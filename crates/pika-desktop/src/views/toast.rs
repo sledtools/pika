@@ -27,7 +27,7 @@ pub fn toast_bar(message: &str, show_relay_reset: bool) -> Element<'_, Message, 
             .on_press(Message::ResetRelayConfig)
             .padding([4, 8])
             .style(|_theme: &Theme, _status: button::Status| button::Style {
-                background: Some(iced::Background::Color(crate::theme::DANGER)),
+                background: Some(iced::Background::Color(crate::theme::danger())),
                 text_color: iced::Color::WHITE,
                 border: iced::border::rounded(6),
                 ..Default::default()
@@ -64,7 +64,7 @@ pub fn toast_bar(message: &str, show_relay_reset: bool) -> Element<'_, Message, 
         container(row)
             .padding([8, 16])
             .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Background::Color(theme::ACCENT_BLUE)),
+                background: Some(iced::Background::Color(theme::accent_blue())),
                 border: iced::border::rounded(8),
                 ..Default::default()
             }),

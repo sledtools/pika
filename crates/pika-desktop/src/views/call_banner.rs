@@ -1,7 +1,7 @@
 use iced::widget::{button, container, row, text};
 use iced::{Element, Fill, Theme};
 
-use crate::theme;
+use crate::{design, theme};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -23,18 +23,7 @@ pub fn view(peer_name: &str, is_video_call: bool) -> Element<'_, Message, Theme>
         button(text("Accept").size(13).center())
             .on_press(Message::Accept)
             .padding([6, 16])
-            .style(|_theme: &Theme, status: button::Status| {
-                let bg = match status {
-                    button::Status::Hovered => iced::Color::from_rgb(0.9, 0.9, 0.9),
-                    _ => iced::Color::WHITE,
-                };
-                button::Style {
-                    background: Some(iced::Background::Color(bg)),
-                    text_color: iced::Color::from_rgb(0.1, 0.1, 0.1),
-                    border: iced::border::rounded(6),
-                    ..Default::default()
-                }
-            }),
+            .style(design::call_banner_button_style),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);

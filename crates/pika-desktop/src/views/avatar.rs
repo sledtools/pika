@@ -79,7 +79,7 @@ pub fn avatar_circle<'a, M: 'a>(
     container(
         text(initial)
             .size(size * 0.45)
-            .color(theme::TEXT_PRIMARY)
+            .color(theme::text_primary())
             .center(),
     )
     .width(Length::Fixed(size))

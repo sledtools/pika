@@ -84,11 +84,11 @@ impl State {
         let show_recovery = should_offer_recovery_controls(state, manager);
         let show_relay_reset = should_offer_relay_reset(state);
 
-        let heading = text("Pika").size(36).color(theme::TEXT_PRIMARY).center();
+        let heading = text("Pika").size(36).color(theme::text_primary()).center();
 
         let subtitle = text("Secure messaging over Nostr + MLS")
             .size(14)
-            .color(theme::TEXT_SECONDARY)
+            .color(theme::text_secondary())
             .center();
 
         let nsec_field = text_input("nsec1\u{2026}", self.nsec_input.as_str())
@@ -102,7 +102,7 @@ impl State {
 
         if state.busy.creating_account {
             buttons = buttons.push(
-                button(text("Creating\u{2026}").color(theme::TEXT_FADED).center())
+                button(text("Creating\u{2026}").color(theme::text_faded()).center())
                     .width(Length::Fill)
                     .padding([10, 20])
                     .style(theme::secondary_button_style),
@@ -140,13 +140,13 @@ impl State {
         if let Some(msg) = state.toast.as_ref() {
             card = card.push(
                 row![
-                    text(msg).size(13).color(theme::DANGER),
-                    button(text("\u{2715}").size(12).color(theme::TEXT_FADED))
+                    text(msg).size(13).color(theme::danger()),
+                    button(text("\u{2715}").size(12).color(theme::text_faded()))
                         .on_press(Message::ClearToast)
                         .padding([2, 6])
                         .style(|_: &Theme, _: button::Status| button::Style {
                             background: None,
-                            text_color: theme::TEXT_FADED,
+                            text_color: theme::text_faded(),
                             ..Default::default()
                         }),
                 ]
@@ -157,7 +157,7 @@ impl State {
             card = card.push(
                 text("Restoring previous session\u{2026}")
                     .size(13)
-                    .color(theme::TEXT_FADED)
+                    .color(theme::text_faded())
                     .center(),
             );
         }

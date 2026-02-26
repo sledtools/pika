@@ -421,3 +421,42 @@ pub async fn wait(state_dir: &Path, timeout_secs: u64) -> Result<()> {
     info!("[wait] all components healthy");
     Ok(())
 }
+
+pub async fn nuke(state_dir: &Path) -> Result<()> {
+    // 1. Try a graceful down first (manifest-based).
+    if Manifest::load(state_dir)?.is_some() {
+        info!("[nuke] running graceful down first...");
+        let _ = down(state_dir).await;
+    }
+
+    // 2. Stop any postgres instance whose pgdata lives inside state_dir.
+    let pgdata = state_dir.join("pgdata");
+    if pgdata.join("postmaster.pid").exists() {
+        info!("[nuke] stopping postgres in {}", pgdata.display());
+        let _ = std::process::Command::new("pg_ctl")
+            .args(["stop", "-D"])
+            .arg(&pgdata)
+            .args(["-m", "immediate"])
+            .stdout(StdStdio::null())
+            .stderr(StdStdio::null())
+            .status();
+    }
+
+    // 3. Kill any remaining pikahub-related processes.
+    for pattern in ["pika-relay", "pika-server", "pikachat.*bot"] {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", pattern])
+            .stdout(StdStdio::null())
+            .stderr(StdStdio::null())
+            .status();
+    }
+
+    // 4. Remove the state directory entirely.
+    if state_dir.exists() {
+        info!("[nuke] removing {}", state_dir.display());
+        std::fs::remove_dir_all(state_dir)?;
+    }
+
+    info!("[nuke] done");
+    Ok(())
+}

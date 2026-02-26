@@ -91,6 +91,11 @@ enum Command {
         #[arg(long, default_value = "60")]
         timeout: u64,
     },
+    /// Kill all pikahub processes and remove state directory
+    Nuke {
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -169,6 +174,10 @@ async fn main() -> Result<()> {
         Command::Wait { state_dir, timeout } => {
             let dir = config::resolve_state_dir(state_dir)?;
             fixture::wait(&dir, timeout).await
+        }
+        Command::Nuke { state_dir } => {
+            let dir = config::resolve_state_dir(state_dir)?;
+            fixture::nuke(&dir).await
         }
     }
 }

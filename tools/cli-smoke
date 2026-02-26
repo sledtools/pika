@@ -3,14 +3,11 @@ set -euo pipefail
 
 # Quick smoke test: two users, local relay, send+receive.
 #
-# Starts its own nostr-rs-relay on a free port, runs the test, then cleans up.
-# Requires nostr-rs-relay on PATH (available via `nix develop`).
+# Starts its own pika-relay on a free port, runs the test, then cleans up.
+# Uses pika-fixture for relay lifecycle.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-# shellcheck source=lib/local-e2e-fixture.sh
-source "$ROOT/tools/lib/local-e2e-fixture.sh"
 
 with_media=0
 external_relay=""
@@ -19,7 +16,7 @@ usage() {
   cat >&2 <<EOF
 usage: ./tools/cli-smoke [--relay <ws://...>] [--with-media]
 
-If --relay is omitted, a local nostr-rs-relay is started automatically.
+If --relay is omitted, a local pika-relay is started automatically.
 EOF
 }
 
@@ -47,10 +44,7 @@ done
 STATE_DIR="$(mktemp -d /tmp/pikachat-smoke.XXXXXX)"
 
 cleanup() {
-  if [ -n "${RELAY_PID:-}" ]; then
-    kill "${RELAY_PID}" >/dev/null 2>&1 || true
-    wait "${RELAY_PID}" >/dev/null 2>&1 || true
-  fi
+  cargo run -q -p pika-fixture -- down --state-dir "$STATE_DIR" 2>/dev/null || true
   rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -60,31 +54,13 @@ trap cleanup EXIT
 if [ -n "$external_relay" ]; then
   relay="$external_relay"
 else
-  pika_fixture_need nostr-rs-relay
-
-  RELAY_PORT="$(pika_fixture_pick_free_port)"
-  RELAY_DB_DIR="${STATE_DIR}/relay-db"
-  mkdir -p "$RELAY_DB_DIR"
-
-  RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
-  pika_fixture_rewrite_relay_config \
-    "$ROOT/tools/nostr-rs-relay-config.toml" \
-    "$RELAY_CONFIG_TMP" \
-    "$RELAY_PORT" \
-    "$RELAY_DB_DIR"
-
-  RELAY_LOG="${STATE_DIR}/relay.log"
-  pika_fixture_start_relay "$RELAY_DB_DIR" "$RELAY_CONFIG_TMP" "$RELAY_LOG"
-  RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
-
-  if ! pika_fixture_wait_for_tcp "127.0.0.1" "$RELAY_PORT" 200 0.05; then
-    echo "error: local relay did not start on port ${RELAY_PORT}" >&2
-    cat "$RELAY_LOG" >&2 || true
-    exit 1
-  fi
-
-  relay="ws://127.0.0.1:${RELAY_PORT}"
-  echo "relay: $relay (pid $RELAY_PID)"
+  MANIFEST="$(cargo run -q -p pika-fixture -- up \
+    --profile relay \
+    --background \
+    --state-dir "$STATE_DIR" \
+    --relay-port 0)"
+  relay="$(echo "$MANIFEST" | python3 -c "import json,sys; print(json.load(sys.stdin)['relay_url'])")"
+  echo "relay: $relay"
 fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

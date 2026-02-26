@@ -159,26 +159,47 @@ impl Relay {
         std::fs::create_dir_all(&data_dir)?;
         std::fs::create_dir_all(&media_dir)?;
 
-        let port = config.relay_port;
-        let url = config.relay_url();
+        let requested_port = config.relay_port;
         let log_path = state_dir.join("relay.log");
 
         let relay_bin = find_or_build_relay(&config.workspace_root)?;
 
-        info!("[relay] Starting pika-relay on port {port}...");
+        info!("[relay] Starting pika-relay on port {requested_port}...");
         let log_file = std::fs::File::create(&log_path)?;
         let stderr_file = log_file.try_clone()?;
 
-        let child = Command::new(&relay_bin)
-            .env("PORT", port.to_string())
+        let mut cmd = Command::new(&relay_bin);
+        cmd.env("PORT", requested_port.to_string())
             .env("DATA_DIR", &data_dir)
             .env("MEDIA_DIR", &media_dir)
-            .env("SERVICE_URL", format!("http://localhost:{port}"))
             .stdout(StdStdio::from(log_file))
             .stderr(StdStdio::from(stderr_file))
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        // Only set SERVICE_URL when we know the port up-front; the Go relay
+        // derives it from the actual bound port when SERVICE_URL is unset.
+        if requested_port != 0 {
+            cmd.env("SERVICE_URL", format!("http://localhost:{requested_port}"));
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("spawn relay binary: {}", relay_bin.display()))?;
+
+        // The relay prints "PIKA_RELAY_PORT=<N>" to its log, which tells us
+        // the actual port (important when requested_port is 0).
+        let port_line =
+            health::wait_for_log_line(&log_path, "PIKA_RELAY_PORT=", Duration::from_secs(15))
+                .await
+                .context("relay did not report its port")?;
+
+        let port: u16 = port_line
+            .split("PIKA_RELAY_PORT=")
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .parse()
+            .context("failed to parse relay port from log")?;
+
+        let url = format!("ws://localhost:{port}");
 
         let health_url = format!("http://127.0.0.1:{port}/health");
         health::wait_for_http(&health_url, Duration::from_secs(15)).await?;
@@ -237,6 +258,7 @@ impl Server {
         config: &ResolvedConfig,
         state_dir: &Path,
         database_url: &str,
+        relay_url: &str,
     ) -> Result<Self> {
         let identity_path = config.identity_json();
         let keys = pika_marmot_runtime::load_or_create_keys(&identity_path)?;
@@ -247,7 +269,6 @@ impl Server {
 
         let port = config.server_port;
         let url = config.server_url();
-        let relay_url = config.relay_url();
         let log_path = state_dir.join("server.log");
 
         let open_prov = if config.open_provisioning { "1" } else { "0" };
@@ -258,12 +279,12 @@ impl Server {
 
         let child = Command::new("cargo")
             .args(["run", "-q", "-p", "pika-server"])
-            .env("RELAYS", &relay_url)
+            .env("RELAYS", relay_url)
             .env("DATABASE_URL", database_url)
             .env("NOTIFICATION_PORT", port.to_string())
             .env("PIKA_AGENT_CONTROL_ENABLED", "1")
             .env("PIKA_AGENT_CONTROL_NOSTR_SECRET", &secret_hex)
-            .env("PIKA_AGENT_CONTROL_RELAYS", &relay_url)
+            .env("PIKA_AGENT_CONTROL_RELAYS", relay_url)
             .env("PIKA_AGENT_CONTROL_ALLOW_OPEN_PROVISIONING", open_prov)
             .env(
                 "RUST_LOG",

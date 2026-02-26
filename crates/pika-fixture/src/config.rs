@@ -108,13 +108,21 @@ impl ResolvedConfig {
     ) -> Result<Self> {
         let overlay = overlay.unwrap_or_default();
 
+        // relay_port=0 is passed through to the Go relay which binds :0 natively;
+        // pika-fixture discovers the actual port from the relay's log output.
         let relay_port = relay_port_cli
             .or(overlay.relay.as_ref().and_then(|r| r.port))
             .unwrap_or(DEFAULT_RELAY_PORT);
 
+        // pika-server doesn't support port 0 natively, so pre-pick a free port.
         let server_port = server_port_cli
             .or(overlay.server.as_ref().and_then(|s| s.port))
             .unwrap_or(DEFAULT_SERVER_PORT);
+        let server_port = if server_port == 0 {
+            pick_free_port()?
+        } else {
+            server_port
+        };
 
         let open_provisioning = overlay
             .server
@@ -172,10 +180,6 @@ impl ResolvedConfig {
         self.server_state_dir().join("identity.json")
     }
 
-    pub fn relay_url(&self) -> String {
-        format!("ws://localhost:{}", self.relay_port)
-    }
-
     pub fn server_url(&self) -> String {
         format!("http://localhost:{}", self.server_port)
     }
@@ -184,6 +188,11 @@ impl ResolvedConfig {
         let pgdata = self.pgdata();
         format!("postgresql:///pika_server?host={}", pgdata.display())
     }
+}
+
+fn pick_free_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
 }
 
 /// Walk up from CWD looking for the workspace Cargo.toml (contains [workspace]).

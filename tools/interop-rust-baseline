@@ -5,15 +5,12 @@ set -euo pipefail
 # from marmot-interop-lab-rust over a local relay.
 #
 # This script:
-# 1) starts a local nostr-rs-relay (nix develop: nostr-rs-relay on PATH)
+# 1) starts a local pika-relay via pika-fixture
 # 2) starts the rust_harness "bot" (publishes kind 443 + waits for a welcome)
 # 3) runs the Pika core baseline client to create a chat and verify `ping` -> `pong`
-#
-# Run from the Pika repo root, ideally inside `nix develop`.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-source "$ROOT/tools/lib/local-e2e-fixture.sh"
 
 KEEP=0
 MANUAL=0
@@ -46,9 +43,6 @@ if [ ! -d "$RUST_INTEROP_DIR" ]; then
 fi
 MDK_DIR="${MDK_DIR:-$HOME/code/mdk}"
 
-pika_fixture_need nostr-rs-relay
-pika_fixture_need cargo
-
 if [ -d "$MDK_DIR/.git" ]; then
   mdk_head="$(cd "$MDK_DIR" && git rev-parse HEAD 2>/dev/null || true)"
   harness_rev="$(
@@ -76,63 +70,68 @@ fi
 
 BOT_LOG="${STATE_DIR}/rustbot.log"
 BOT_TIMEOUT_SEC="${BOT_TIMEOUT_SEC:-900}"
+BOT_PID=""
 
 cleanup() {
   if [ -n "${BOT_PID:-}" ]; then
     kill "${BOT_PID}" >/dev/null 2>&1 || true
-    # Avoid "Terminated: 15" noise from bash job control on exit.
     wait "${BOT_PID}" >/dev/null 2>&1 || true
   fi
-  if [ -n "${RELAY_PID:-}" ]; then
-    kill "${RELAY_PID}" >/dev/null 2>&1 || true
-    wait "${RELAY_PID}" >/dev/null 2>&1 || true
-  fi
+  cargo run -q -p pika-fixture -- down --state-dir "$STATE_DIR" 2>/dev/null || true
   if [ "$KEEP" -eq 0 ] && [ -z "${PIKA_INTEROP_STATE_DIR:-}" ]; then
     rm -rf "$STATE_DIR" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-RELAY_PORT="$(pika_fixture_pick_free_port)"
+# ── Start relay via pika-fixture ─────────────────────────────────────────────
 
-RELAY_DB_DIR="${STATE_DIR}/relay-db"
-mkdir -p "$RELAY_DB_DIR"
-RELAY_CONFIG="${RUST_INTEROP_DIR}/relay/nostr-rs-relay-config.toml"
-if [ ! -f "$RELAY_CONFIG" ]; then
-  echo "error: missing relay config: $RELAY_CONFIG" >&2
-  exit 1
-fi
+MANIFEST="$(cargo run -q -p pika-fixture -- up \
+  --profile relay \
+  --background \
+  --state-dir "$STATE_DIR" \
+  --relay-port 0)"
 
-RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
-pika_fixture_rewrite_relay_config "${RELAY_CONFIG}" "${RELAY_CONFIG_TMP}" "${RELAY_PORT}" "${RELAY_DB_DIR}"
-
-RELAY_LOG="${STATE_DIR}/relay.log"
-echo "starting local relay (nostr-rs-relay) state_dir=$STATE_DIR port=$RELAY_PORT"
-pika_fixture_start_relay "${RELAY_DB_DIR}" "${RELAY_CONFIG_TMP}" "${RELAY_LOG}"
-RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
-if ! pika_fixture_wait_for_tcp "127.0.0.1" "${RELAY_PORT}" 200 0.05; then
-  echo "error: local relay did not become reachable on port ${RELAY_PORT}" >&2
-  exit 1
-fi
-
-RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
+RELAY_URL="$(echo "$MANIFEST" | python3 -c "import json,sys; print(json.load(sys.stdin)['relay_url'])")"
+RELAY_PORT="$(echo "$RELAY_URL" | sed 's/.*://')"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 
 echo "relay_url=${RELAY_URL}"
 echo "android_relay_url=${ANDROID_RELAY_URL}"
 
+# ── Start external bot (from marmot-interop-lab-rust) ────────────────────────
+
 echo "starting rust bot (logs at: $BOT_LOG)"
-if ! pika_fixture_start_bot_and_wait \
-  "${BOT_LOG}" \
-  "\\[openclaw_bot\\] ready pubkey=" \
-  1200 \
-  0.5 \
-  bash -lc "cd \"${RUST_INTEROP_DIR}\" && cargo run -q -p rust_harness -- bot --relay \"${RELAY_URL}\" --state-dir \"${STATE_DIR}/bot\" --timeout-sec \"${BOT_TIMEOUT_SEC}\""; then
+bash -lc "cd \"${RUST_INTEROP_DIR}\" && cargo run -q -p rust_harness -- bot --relay \"${RELAY_URL}\" --state-dir \"${STATE_DIR}/bot\" --timeout-sec \"${BOT_TIMEOUT_SEC}\"" >"${BOT_LOG}" 2>&1 &
+BOT_PID="$!"
+
+# Wait for bot ready line
+BOT_NPUB=""
+BOT_PUBKEY=""
+for _ in $(seq 1 1200); do
+  if [ -s "${BOT_LOG}" ]; then
+    line="$(grep -E '\[openclaw_bot\] ready pubkey=' "${BOT_LOG}" | tail -n 1 || true)"
+    if [ -n "${line:-}" ]; then
+      BOT_PUBKEY="${line#*pubkey=}"
+      BOT_PUBKEY="${BOT_PUBKEY%% *}"
+      BOT_NPUB="${line#*npub=}"
+      BOT_NPUB="${BOT_NPUB%% *}"
+      break
+    fi
+  fi
+  if ! kill -0 "${BOT_PID}" 2>/dev/null; then
+    echo "error: rust bot exited early; last logs:" >&2
+    tail -n 120 "${BOT_LOG}" >&2 || true
+    exit 1
+  fi
+  sleep 0.5
+done
+
+if [ -z "${BOT_NPUB:-}" ]; then
+  echo "error: failed to detect bot identity from logs" >&2
+  tail -n 160 "${BOT_LOG}" >&2 || true
   exit 1
 fi
-BOT_PID="${PIKA_FIXTURE_BOT_PID}"
-BOT_NPUB="${PIKA_FIXTURE_BOT_NPUB}"
-BOT_PUBKEY="${PIKA_FIXTURE_BOT_PUBKEY}"
 
 echo "bot_npub=${BOT_NPUB}"
 echo "bot_pubkey_hex=${BOT_PUBKEY}"

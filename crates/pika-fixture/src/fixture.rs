@@ -166,7 +166,8 @@ async fn start_components(
             .as_ref()
             .map(|pg| pg.database_url.as_str())
             .unwrap_or("");
-        fixture.server = Some(Server::start(config, state_dir, db_url).await?);
+        let relay_url = fixture.relay.as_ref().map(|r| r.url.as_str()).unwrap_or("");
+        fixture.server = Some(Server::start(config, state_dir, db_url, relay_url).await?);
     }
 
     if config.profile.needs_bot() {

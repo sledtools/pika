@@ -183,7 +183,7 @@ But Pika is also alpha software. It does not perfectly follow its own stated phi
 
 **Known deviations (as of the `android-design-pass` branch):**
 
-- **Duplicated formatting logic.** Timestamp formatting, chat summary display strings, and peer key validation were implemented independently in both Swift and Kotlin instead of living in Rust. The `android-design-pass` branch is correcting this by adding pre-formatted fields to `AppState` (e.g., `display_timestamp`, `last_message_preview`).
+- **Duplicated formatting logic.** Timestamp formatting, chat summary display strings, and peer key validation were implemented independently in both Swift and Kotlin instead of living in Rust. As of this draft, timestamp/chat-preview formatting is still native on both mobile platforms; lowering it to Rust fields (e.g., `display_timestamp`, `last_message_preview`) remains an active migration target.
 - **Business logic in ViewState derivation.** Some iOS `ViewState` mapping functions contain conditional logic that should be computed in Rust and exposed as state fields.
 - **Navigation leaks.** Platform code occasionally manages navigation state alongside Rust's `Router` instead of treating the Router as the sole source of truth.
 - **God module.** `core/mod.rs` is 4,600+ lines -- the main actor file that handles all actions. This should be split by domain (chat, calls, profiles, auth) with each domain module handling its own action subset.
@@ -284,6 +284,7 @@ The actor thread is a plain `std::thread::spawn`, not a tokio task. This keeps t
 - **Navigation as state.** A `Router` field contains the current screen stack, making navigation declarative and Rust-driven.
 - **Busy flags.** A `BusyState` record contains boolean flags for in-flight async operations (creating account, sending message, etc.). This lets the UI show spinners without native-side timing heuristics.
 - **Ephemeral messages.** A `toast: Option<String>` field carries transient user-visible messages (errors, confirmations). The platform displays and then dispatches `ClearToast`.
+- **Raw + display field pairs for user text.** Keep protocol-raw text and Rust-computed display text as separate fields when needed (e.g., `content` + `display_content`). Native renders display fields, while raw fields remain available for copy/share/debug flows.
 
 **Shared state access.** `AppState` is held in an `Arc<RwLock<AppState>>`. The actor thread writes to it after every mutation. The platform can read a synchronous snapshot at any time via `FfiApp::state()`, which is useful for initial hydration before the update stream starts.
 
@@ -337,17 +338,23 @@ pub enum AppAction {
 
 `AppUpdate` is the outbound enum sent from the Rust core to the platform. The primary variant is `FullState(AppState)` -- a complete snapshot sent on every state change.
 
-**Side-effect variants** carry ephemeral data that should not live in `AppState`. The canonical example is `AccountCreated { rev, nsec, pubkey, npub }` -- the `nsec` (private key) must be stored securely by the native platform (Keychain/EncryptedSharedPreferences), but it must never persist in Rust state or be sent as part of `FullState`.
+**Side-effect variants** carry ephemeral data that should not live in `AppState`. In Pika today, these include:
+
+- `AccountCreated { rev, nsec, pubkey, npub }` -- generated local account secret (`nsec`) must be persisted natively, never in Rust state.
+- `BunkerSessionDescriptor { rev, bunker_uri, client_nsec }` -- bunker-session credentials must be persisted natively, never in Rust state.
 
 ```rust
 #[derive(uniffi::Enum, Clone, Debug)]
 pub enum AppUpdate {
     FullState(AppState),
     AccountCreated { rev: u64, nsec: String, pubkey: String, npub: String },
+    BunkerSessionDescriptor { rev: u64, bunker_uri: String, client_nsec: String },
 }
 ```
 
 Side-effect variants carry a `rev` field so platforms can maintain ordering. The native `apply()` method handles side effects (e.g., saving credentials) *before* checking the rev guard, ensuring credentials are never lost even if the rev check would skip the update.
+
+Design rule: if an auth/capability flow produces a secret that native must persist, introduce a dedicated side-effect `AppUpdate` variant rather than embedding that value in `FullState`.
 
 **Internal message types** (not FFI-visible):
 - `CoreMsg` -- the envelope wrapping both `AppAction` (from platform) and `InternalEvent` (from async tasks). Uses `Box<InternalEvent>` to avoid bloating the enum.
@@ -372,10 +379,18 @@ The core crate follows a two-level organization: the FFI boundary layer at the t
 | File | Responsibility |
 |------|----------------|
 | `mod.rs` | `AppCore` struct, `handle_message()`, `handle_action()`, `handle_internal()`, state emission |
-| `storage.rs` | Persistence layer -- refreshing state from databases |
-| `session.rs` | Session lifecycle (login, relay connections, subscriptions) |
-| `config.rs` | App configuration loading and defaults |
-| Domain modules | Split by feature area (e.g., `profile.rs`, `chat_media.rs`, `call_control.rs`, `push.rs`) |
+| `storage.rs` | Persistence refresh and paging (`refresh_all_from_storage`, message/chat reconstruction) |
+| `session.rs` | Session lifecycle (login/restore, relay connections, subscriptions) |
+| `config.rs` | App configuration loading/defaults (`pika_config.json`) |
+| `profile.rs` | Profile fetch/save/update orchestration |
+| `profile_db.rs` | Profile database access layer |
+| `profile_pics.rs` | Profile-picture cache helpers |
+| `chat_media.rs` | Media upload/download/encryption orchestration |
+| `chat_media_db.rs` | Media attachment database access layer |
+| `push.rs` | Push subscription sync management |
+| `call_control.rs` | Call state machine + call signaling orchestration |
+| `call_runtime.rs` | MoQ runtime/media transport integration |
+| `interop.rs` | Interop and protocol normalization helpers |
 
 **Guidance:**
 - Keep the actor file (`core/mod.rs`) as an orchestrator. When it grows beyond ~1,000 lines, split domain logic into sub-modules that the actor calls. Each sub-module handles its own subset of actions and returns state mutations.
@@ -729,6 +744,21 @@ protocol AppCore: AnyObject, Sendable {
 extension FfiApp: AppCore {}
 ```
 
+#### 4.1.2.1 Production boot flow (critical)
+
+The minimal constructor above is intentionally simplified. A production iOS app should add a deterministic boot sequence:
+
+1. Resolve the data directory (prefer App Group container when available).
+2. Run one-time migration from app-private storage to App Group storage (for NSE sharing).
+3. Ensure a default config file exists (`pika_config.json`) and fill missing keys without clobbering user overrides.
+4. Create `FfiApp`.
+5. Load stored auth mode from secure storage and dispatch the correct restore action:
+   - `.restoreSession(nsec:)`
+   - `.restoreSessionBunker(bunkerUri:clientNsec:)`
+6. Expose an `isRestoringSession` UI flag and show a loading surface until Rust settles on logged-in or logged-out state.
+
+This startup contract is architecture-level guidance, not product-specific behavior.
+
 #### 4.1.3 State Observation with @Observable
 
 RMP uses Swift 5.9's `@Observable` macro (Observation framework), not the older `ObservableObject`/`@Published` pattern.
@@ -941,6 +971,20 @@ class AppManager private constructor(context: Context) : AppReconciler {
 ```
 
 The singleton pattern ensures `AppManager` survives Activity configuration changes. `mutableStateOf` makes `state` observable to the Compose runtime -- any composable reading `manager.state` recomposes automatically when state is replaced.
+
+#### 4.2.2.1 Production boot flow (critical)
+
+As on iOS, production Android startup should do more than instantiate `FfiApp`:
+
+1. Ensure default config exists (`pika_config.json`) before Rust bootstraps.
+2. Create `FfiApp` and start update listener.
+3. Restore session from secure storage with mode-specific actions:
+   - `RestoreSession(nsec)`
+   - `RestoreSessionExternalSigner(pubkey, signerPackage, currentUser)`
+   - `RestoreSessionBunker(bunkerUri, clientNsec)`
+4. Keep side-effect update handling (`AccountCreated`, `BunkerSessionDescriptor`) before stale-rev checks.
+
+This ensures startup behavior is deterministic and auth mode handling does not drift by platform.
 
 #### 4.2.3 State Observation with Compose mutableStateOf
 
@@ -1463,15 +1507,18 @@ use android_native_keyring_store::Store;
 **The rule: Rust never persists secrets.** Private keys, passwords, and tokens are stored natively using each platform's secure storage.
 
 **The pattern:**
-1. Rust generates or receives a secret (e.g., a new account's private key).
-2. Rust sends it as a side-effect `AppUpdate` variant (e.g., `AccountCreated { nsec }`), not as part of `FullState`.
-3. Native receives the update, persists the secret in platform secure storage.
-4. On session restore, native reads the secret and dispatches it to Rust (e.g., `AppAction::RestoreSession { nsec }`).
-5. Rust holds the secret in memory for the session duration but never writes it to disk.
+1. Rust generates or receives auth/session secrets.
+2. Rust emits secret-bearing side-effect updates (e.g., `AccountCreated`, `BunkerSessionDescriptor`), never embedding those secrets in `FullState`.
+3. Native persists those secrets in platform secure storage.
+4. On cold launch, native restores auth by loading stored mode and dispatching the matching action (`RestoreSession`, `RestoreSessionExternalSigner`, or `RestoreSessionBunker`).
+5. Rust reconstructs session state and emits normal `FullState` updates.
+6. Rust may keep secrets in memory for active session use, but does not write them to disk.
+
+**Startup restoration UX contract:** expose an explicit "restoring session" loading state during step 4→5 so the UI does not briefly flash the logged-out screen.
 
 **Platform implementations:**
-- **iOS:** `KeychainNsecStore` using `kSecClassGenericPassword` with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. Use a shared access group for App Group sharing (e.g., with NSE).
-- **Android:** `SecureAuthStore` using `EncryptedSharedPreferences` with `AES256_GCM` encryption backed by Android Keystore.
+- **iOS:** `KeychainAuthStore` + `KeychainNsecStore` using `kSecClassGenericPassword` with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. Use a shared access group for App Group sharing (e.g., with NSE).
+- **Android:** `SecureAuthStore` using `EncryptedSharedPreferences` with `AES256_GCM` encryption backed by Android Keystore; supports local nsec, external signer, and bunker modes.
 - **Desktop:** File-based storage with restricted permissions (`0600` on Unix). Less secure than mobile but acceptable for desktop environments.
 
 ### 6.7 Push Notifications
@@ -1506,7 +1553,7 @@ These are the ways RMP discipline breaks down in practice. Each is named, explai
 - **Symptom:** Both Swift and Kotlin have their own timestamp formatting, display name derivation, or message preview generation.
 - **Why it happens:** Writing a 5-line Swift extension is faster than adding a Rust field, regenerating bindings, and updating both platforms.
 - **The fix:** Add a pre-formatted field to `AppState` (e.g., `display_timestamp: String`). Rust does the work once. Native renders.
-- **Pika example:** Timestamp formatting and chat summary strings were duplicated across iOS and Kotlin until the `android-design-pass` branch added `display_timestamp` and `last_message_preview` to Rust state.
+- **Pika example:** Timestamp formatting and chat summary strings are still duplicated across iOS and Kotlin in the current codebase. Lowering these into Rust fields (`display_timestamp`, `last_message_preview`) is the intended migration path.
 
 **Anti-pattern 2: Business Logic in ViewState Derivation**
 - **Symptom:** Native ViewState mapping functions contain conditional logic, filtering, sorting, or validation.
@@ -1964,8 +2011,8 @@ pika/
 **Things That Belong in Rust (Examples from Pika):**
 - Message content parsing/formatting (ContentSegment enum)
 - Peer key validation/normalization
-- Timestamp formatting (display_timestamp)
-- Chat list display strings (display_name, subtitle, last_message_preview)
+- Timestamp formatting (`display_timestamp`) *(planned migration target; currently still formatted natively on mobile)*
+- Chat list display strings (`display_name`, `subtitle`, `last_message_preview`) *(planned migration target; currently still partially native-derived)*
 - First-unread-message tracking
 - Toast auto-dismiss timers
 - Voice recording state machine (but audio capture stays native)

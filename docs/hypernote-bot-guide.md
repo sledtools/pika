@@ -67,6 +67,7 @@ Response:
     "catalog": {
       "protocol_version": 1,
       "kinds": { "note": 9467, "action_response": 9468 },
+      "design_principles": [...],
       "components": [...],
       "actions": [...]
     }
@@ -100,6 +101,15 @@ Current catalog:
 - Layout: `Card`, `VStack`, `HStack`
 - Typography: `Heading`, `Body`, `Caption`
 - Interactive: `TextInput`, `ChecklistItem`, `SubmitButton`
+- Catalog entries include terse `design_principles` (both top-level and per-component).
+
+Current key layout principles:
+
+- `HStack`: only for short fixed-width items (for example buttons); never place `ChecklistItem` or variable-length text in `HStack`.
+- `ChecklistItem`: labels wrap on narrow widths; keep labels short (around three words), or stack items in `VStack`.
+- `Card`: no scrolling; keep content brief.
+- `TextInput`: full-width by default; do not nest inside `HStack`.
+- General: when in doubt, use `VStack`; use `HStack` only for short pill-shaped items side by side.
 
 Unknown components degrade gracefully and render children.
 

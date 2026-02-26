@@ -19,6 +19,8 @@ pub struct ComponentSpec {
     pub name: String,
     pub category: String,
     pub description: String,
+    #[serde(default)]
+    pub design_principles: Vec<String>,
     pub props: Vec<ComponentPropSpec>,
 }
 
@@ -37,6 +39,8 @@ pub struct ActionSpec {
 pub struct HypernoteCatalog {
     pub protocol_version: u16,
     pub kinds: HypernoteKinds,
+    #[serde(default)]
+    pub design_principles: Vec<String>,
     pub components: Vec<ComponentSpec>,
     pub actions: Vec<ActionSpec>,
 }
@@ -59,12 +63,16 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             name: "Card".to_string(),
             category: "layout".to_string(),
             description: "Visual container with rounded background.".to_string(),
+            design_principles: vec![
+                "No scrolling. Keep total content brief or content can be cut off.".to_string(),
+            ],
             props: vec![],
         },
         ComponentSpec {
             name: "VStack".to_string(),
             category: "layout".to_string(),
             description: "Vertical stack layout container.".to_string(),
+            design_principles: vec!["Default layout when unsure.".to_string()],
             props: vec![ComponentPropSpec {
                 name: "gap".to_string(),
                 kind: "number".to_string(),
@@ -76,6 +84,11 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             name: "HStack".to_string(),
             category: "layout".to_string(),
             description: "Horizontal stack layout container.".to_string(),
+            design_principles: vec![
+                "Only use for short, fixed-width items like buttons.".to_string(),
+                "Never put ChecklistItem or variable-length text in HStack; use VStack instead."
+                    .to_string(),
+            ],
             props: vec![ComponentPropSpec {
                 name: "gap".to_string(),
                 kind: "number".to_string(),
@@ -87,24 +100,30 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             name: "Heading".to_string(),
             category: "typography".to_string(),
             description: "Headline text.".to_string(),
+            design_principles: vec![],
             props: vec![],
         },
         ComponentSpec {
             name: "Body".to_string(),
             category: "typography".to_string(),
             description: "Body text.".to_string(),
+            design_principles: vec![],
             props: vec![],
         },
         ComponentSpec {
             name: "Caption".to_string(),
             category: "typography".to_string(),
             description: "Secondary caption text.".to_string(),
+            design_principles: vec![],
             props: vec![],
         },
         ComponentSpec {
             name: "TextInput".to_string(),
             category: "interactive".to_string(),
             description: "Single-line text input bound to form state.".to_string(),
+            design_principles: vec![
+                "Full-width by default; do not nest inside HStack.".to_string(),
+            ],
             props: vec![
                 ComponentPropSpec {
                     name: "name".to_string(),
@@ -124,6 +143,11 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             name: "ChecklistItem".to_string(),
             category: "interactive".to_string(),
             description: "Boolean checklist item bound to form state.".to_string(),
+            design_principles: vec![
+                "Labels wrap at narrow widths; keep labels around 3 words when possible."
+                    .to_string(),
+                "For longer labels, stack ChecklistItems vertically in VStack.".to_string(),
+            ],
             props: vec![
                 ComponentPropSpec {
                     name: "name".to_string(),
@@ -144,6 +168,7 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             name: "SubmitButton".to_string(),
             category: "interactive".to_string(),
             description: "Submits current form state as a hypernote action response.".to_string(),
+            design_principles: vec![],
             props: vec![
                 ComponentPropSpec {
                     name: "action".to_string(),
@@ -181,6 +206,10 @@ pub fn hypernote_catalog() -> HypernoteCatalog {
             note: HYPERNOTE_KIND,
             action_response: HYPERNOTE_ACTION_RESPONSE_KIND,
         },
+        design_principles: vec![
+            "When in doubt, use VStack.".to_string(),
+            "HStack is only for short, pill-shaped items side by side.".to_string(),
+        ],
         components: component_registry(),
         actions: action_registry(),
     }
@@ -378,5 +407,40 @@ mod tests {
         assert!(body.contains("# Do &lt;you&gt; &amp; me?"));
         assert!(body.contains("<SubmitButton action=\"option_0\">yes</SubmitButton>"));
         assert!(body.contains("no &amp; never"));
+    }
+
+    #[test]
+    fn catalog_contains_design_principles() {
+        let catalog = hypernote_catalog();
+        assert!(
+            catalog
+                .design_principles
+                .iter()
+                .any(|p| p.contains("When in doubt, use VStack"))
+        );
+
+        let hstack = catalog
+            .components
+            .iter()
+            .find(|c| c.name == "HStack")
+            .expect("HStack exists");
+        assert!(
+            hstack
+                .design_principles
+                .iter()
+                .any(|p| p.contains("Only use for short, fixed-width items"))
+        );
+
+        let checklist = catalog
+            .components
+            .iter()
+            .find(|c| c.name == "ChecklistItem")
+            .expect("ChecklistItem exists");
+        assert!(
+            checklist
+                .design_principles
+                .iter()
+                .any(|p| p.contains("Labels wrap at narrow widths"))
+        );
     }
 }

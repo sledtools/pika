@@ -1,6 +1,8 @@
-# Calling Project 1: Audio Reliability First Plan
+# call-audio-plan.md
 
 Status: proposed (highest priority)
+
+This plan has no upstream dependency and is the prerequisite foundation for `call-transport-plan.md`, `call-video-plan.md`, and `call-native-audio-plan.md`.
 
 ## Why Start Here
 Audio quality failures are the fastest way to make calls feel broken. In the current stack, `OpusCodec` is still PCM passthrough, so quality and resilience are capped before transport tuning even helps.

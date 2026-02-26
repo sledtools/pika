@@ -1,6 +1,8 @@
-# Calling Project 2: MoQ Transport Resilience Plan
+# call-transport-plan.md
 
 Status: proposed (second priority)
+
+This plan depends on `call-audio-plan.md`, should be completed before `call-video-plan.md`, and must stay contract-compatible with `call-native-audio-plan.md`.
 
 ## Why This Is Next
 After codec quality is fixed, the biggest user-visible failures are call drops, stalls after relay hiccups, and startup race conditions. Current runtime does not actively recover transport state mid-call.

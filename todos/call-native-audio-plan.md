@@ -1,8 +1,10 @@
-# Calling Project 4: Native Mobile Audio I/O Migration Spec
+# call-native-audio-plan.md
 
 Status: proposed (high bang-for-buck, RMP native-capability-bridge compliant)
 
-## Why This Project Exists
+This plan depends on `call-audio-plan.md` for codec/jitter quality baselines, must remain compatible with `call-transport-plan.md` recovery behavior, and should avoid blocking `call-video-plan.md`.
+
+## Why This Plan Exists
 Current mobile calls still rely on Rust `cpal` capture/playback in `rust/src/core/call_runtime.rs`. iOS and Android only do session/focus setup today, so we are not fully leveraging platform voice-processing paths (AEC/NS/AGC, route handling, communication-mode tuning). This is the most direct path to clearer calls without changing relay capacity.
 
 ## Objective

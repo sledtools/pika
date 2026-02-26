@@ -1,6 +1,8 @@
-# Calling Project 3: Video Recovery and Adaptation Plan
+# call-video-plan.md
 
 Status: proposed (third priority)
+
+This plan depends on `call-audio-plan.md` and `call-transport-plan.md` for stable media quality/transport baselines and should coordinate with `call-native-audio-plan.md` only on shared runtime interfaces.
 
 ## Why This Is Third
 Video quality gains are large, but they depend on audio and transport stability first. Once those foundations are in, the next high-impact work is preventing persistent freezes and improving quality under fluctuating conditions.

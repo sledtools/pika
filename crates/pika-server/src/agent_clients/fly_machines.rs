@@ -378,6 +378,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_machine_contract_request_shape() {
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"machine-xyz","state":"stopped"}"#);
+        let fly = test_client(base_url);
+
+        let machine = fly
+            .get_machine("machine-xyz")
+            .await
+            .expect("get machine succeeds");
+        assert_eq!(machine.id, "machine-xyz");
+        assert_eq!(machine.state, "stopped");
+
+        let req = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/v1/apps/pika-test/machines/machine-xyz");
+        assert_eq!(
+            req.headers.get("authorization").map(String::as_str),
+            Some("Bearer fly-token")
+        );
+        assert!(req.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn create_volume_surfaces_error_body() {
         let (base_url, _rx) = spawn_one_shot_server("500 Internal Server Error", "no quota");
         let fly = test_client(base_url);
@@ -390,5 +415,35 @@ mod tests {
         assert!(msg.contains("failed to create volume"));
         assert!(msg.contains("500 Internal Server Error"));
         assert!(msg.contains("no quota"));
+    }
+
+    #[tokio::test]
+    async fn create_machine_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("422 Unprocessable Entity", "invalid config");
+        let fly = test_client(base_url);
+
+        let err = fly
+            .create_machine("bot-machine", "vol-bad", HashMap::new())
+            .await
+            .expect_err("expected create_machine failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create machine"));
+        assert!(msg.contains("422 Unprocessable Entity"));
+        assert!(msg.contains("invalid config"));
+    }
+
+    #[tokio::test]
+    async fn get_machine_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("404 Not Found", "machine not found");
+        let fly = test_client(base_url);
+
+        let err = fly
+            .get_machine("machine-missing")
+            .await
+            .expect_err("expected get_machine failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to get machine"));
+        assert!(msg.contains("404 Not Found"));
+        assert!(msg.contains("machine not found"));
     }
 }

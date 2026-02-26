@@ -928,4 +928,43 @@ mod tests {
         assert!(msg.contains("503 Service Unavailable"));
         assert!(msg.contains("spawner down"));
     }
+
+    #[tokio::test]
+    async fn delete_vm_surfaces_error_body() {
+        let (base_url, _rx) =
+            spawn_one_shot_server("500 Internal Server Error", "vm stuck in cleanup");
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let err = client
+            .delete_vm("vm-stuck")
+            .await
+            .expect_err("expected delete_vm failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to delete vm vm-stuck"));
+        assert!(msg.contains("500 Internal Server Error"));
+        assert!(msg.contains("vm stuck in cleanup"));
+    }
+
+    #[test]
+    fn resolve_params_trims_whitespace_and_ignores_empty() {
+        let params = MicrovmProvisionParams {
+            spawner_url: Some("  ".to_string()),
+            spawn_variant: Some("  prebuilt  ".to_string()),
+            flake_ref: Some("".to_string()),
+            dev_shell: None,
+            cpu: None,
+            memory_mb: None,
+            ttl_seconds: None,
+        };
+        let resolved = resolve_params(&params, false);
+        assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);
+        assert_eq!(resolved.spawn_variant, "prebuilt");
+        assert_eq!(resolved.flake_ref, DEFAULT_FLAKE_REF);
+    }
+
+    #[test]
+    fn spawner_client_strips_trailing_slashes() {
+        let client = MicrovmSpawnerClient::new("http://localhost:8080///");
+        assert_eq!(client.base_url(), "http://localhost:8080");
+    }
 }

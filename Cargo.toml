@@ -9,6 +9,7 @@ members = [
   "crates/pika-agent-microvm",
   "crates/pika-relay-profiles",
   "crates/pika-marmot-runtime",
+  "crates/hypernote-protocol",
   "crates/pikachat-sidecar",
   "crates/pika-desktop",
   "crates/pika-media",
@@ -26,4 +27,5 @@ members = [
 mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "d9f372743625de17f6fcd81eecd5084917a8ebb1", features = ["mip04"] }
 mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "d9f372743625de17f6fcd81eecd5084917a8ebb1" }
 mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "d9f372743625de17f6fcd81eecd5084917a8ebb1" }
-hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx" }
+hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx", rev = "041ea6ea3d217813933f96275d2a2be35ecfe854", version = "0.2.0" }
+hypernote-protocol = { path = "crates/hypernote-protocol" }

@@ -209,6 +209,7 @@ interface CachedProfile {
 const profileCache = new Map<string, CachedProfile>();
 const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const pendingFetches = new Set<string>();
+const HYPERNOTE_ACTION_RESPONSE_KIND = 9468;
 
 async function fetchNostrProfileName(pubkeyHex: string, relays: string[]): Promise<string | null> {
   if (pendingFetches.has(pubkeyHex)) return null;
@@ -393,8 +394,8 @@ const GROUP_SYSTEM_PROMPT = [
   "Only the owner (CommandAuthorized=true) can run commands or access private information.",
   "If a friend asks for something sensitive, politely explain the boundary.",
   "Load GROUP_MEMORY.md for shared context. Never reference MEMORY.md or secrets in groups.",
-  'To create a poll, send a pika-prompt code block: ```pika-prompt\n{"title":"Your question?","options":["Option A","Option B","Option C"]}\n```',
-  'When users vote, you\'ll see messages like [Voted "Option A"]. Track votes to determine results.',
+  'To send interactive UI, use a hypernote block: ```pika-hypernote\n# Title\n<SubmitButton action="option_0">Option A</SubmitButton>\n<SubmitButton action="option_1">Option B</SubmitButton>\n```',
+  'User submissions arrive as structured action text like [Hypernote action "option_0" submitted] with optional form fields below.',
   'To send rich HTML content (forms, styled widgets, visualizations), use a pika-html code block with a short ID: ```pika-html my-widget\n<h1>Hello</h1>\n```',
   'Always include an ID after pika-html (e.g. "dashboard", "search-results"). To update it later, send: ```pika-html-update my-widget\n<h1>Updated</h1>\n``` The update replaces the original inline.',
   "The HTML renders in an inline WebView in the app. You can include CSS styles inline or in a <style> tag.",
@@ -558,6 +559,88 @@ function parsePikaPromptResponse(text: string): { promptId: string; selected: st
   return null;
 }
 
+function parseHypernoteActionResponse(text: string): { action: string; form: Record<string, string> } | null {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return null;
+    const action = typeof parsed.action === "string" ? parsed.action.trim() : "";
+    if (!action) return null;
+    const formRaw = parsed.form;
+    const form: Record<string, string> = {};
+    if (formRaw && typeof formRaw === "object" && !Array.isArray(formRaw)) {
+      for (const [key, value] of Object.entries(formRaw)) {
+        if (value == null) continue;
+        form[String(key)] = String(value);
+      }
+    }
+    return { action, form };
+  } catch {
+    return null;
+  }
+}
+
+function formatHypernoteActionResponse(response: { action: string; form: Record<string, string> }): string {
+  const lines = Object.entries(response.form).map(([k, v]) => `- ${k}: ${v}`);
+  if (lines.length === 0) {
+    return `[Hypernote action "${response.action}" submitted]`;
+  }
+  return [`[Hypernote action "${response.action}" submitted]`, ...lines].join("\n");
+}
+
+type ParsedHypernoteOutbound = {
+  content: string;
+  title?: string;
+  state?: string;
+};
+
+function parseHypernoteOutbound(text: string): ParsedHypernoteOutbound | null {
+  const m = text.trim().match(/^```(?:pika-hypernote|hypernote|hnmd)\n([\s\S]*?)\n```$/i);
+  if (!m) return null;
+
+  let body = (m[1] ?? "").replace(/\r\n/g, "\n");
+  let title: string | undefined;
+  let state: string | undefined;
+
+  // Optional single-line JSON metadata header:
+  // {"title":"...", "state": {...}}
+  const [firstLine, ...rest] = body.split("\n");
+  const first = (firstLine ?? "").trim();
+  if (first.startsWith("{") && first.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(first);
+      if (typeof parsed?.title === "string" && parsed.title.trim()) {
+        title = parsed.title.trim();
+      }
+      if (parsed?.state !== undefined) {
+        state = typeof parsed.state === "string" ? parsed.state : JSON.stringify(parsed.state);
+      }
+      body = rest.join("\n");
+    } catch {
+      // Treat invalid metadata as part of the hypernote body.
+    }
+  }
+
+  const content = body.trim();
+  if (!content) return null;
+  return { content, title, state };
+}
+
+async function sendTextOrHypernote(params: {
+  sidecar: PikachatSidecar;
+  nostrGroupId: string;
+  text: string;
+}): Promise<void> {
+  const parsed = parseHypernoteOutbound(params.text);
+  if (parsed) {
+    params.sidecar.sendHypernote(params.nostrGroupId, parsed.content, {
+      title: parsed.title,
+      state: parsed.state,
+    });
+    return;
+  }
+  params.sidecar.sendMessage(params.nostrGroupId, params.text);
+}
+
 function resolveSidecarCmd(cfgCmd?: string | null): string | null {
   const env = process.env.PIKACHAT_SIDECAR_CMD?.trim();
   if (env) return env;
@@ -659,7 +742,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
-      await handle.sidecar.sendMessage(groupId, text ?? "");
+      await sendTextOrHypernote({
+        sidecar: handle.sidecar,
+        nostrGroupId: groupId,
+        text: text ?? "",
+      });
       return { channel: "pikachat-openclaw", to: groupId };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId }) => {
@@ -1151,6 +1238,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           // Note: we key off either explicit `pika.call` markers or "looks like JSON" to avoid
           // missing shape mismatches (e.g. JSON envelopes without expected substrings).
           if (
+            ev.kind !== HYPERNOTE_ACTION_RESPONSE_KIND &&
             typeof ev.content === "string" &&
             (ev.content.includes("pika.call") ||
               ev.content.includes("call.invite") ||
@@ -1181,6 +1269,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           const pollResponse = parsePikaPromptResponse(ev.content);
           if (pollResponse !== null) {
             ev.content = `[Voted "${pollResponse.selected}"]`;
+          } else if (ev.kind === HYPERNOTE_ACTION_RESPONSE_KIND) {
+            const actionResponse = parseHypernoteActionResponse(ev.content);
+            if (actionResponse) {
+              ev.content = formatHypernoteActionResponse(actionResponse);
+            }
           }
 
           // Augment content with media attachment descriptions so the agent can see them
@@ -1211,8 +1304,9 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               // GROUP CHAT FLOW — mention gating + history buffering
               const requireMention = resolveRequireMention(groupId, currentCfg);
               const wasMentioned = handle ? detectMention(messageText, handle.pubkey, handle.npub, currentCfg) : false;
+              const isHypernoteActionResponse = ev.kind === HYPERNOTE_ACTION_RESPONSE_KIND;
 
-              if (requireMention && !wasMentioned) {
+              if (requireMention && !wasMentioned && !isHypernoteActionResponse) {
                 // Not mentioned — buffer for context, don't dispatch.
                 // Use sync resolveMemberName (returns cached name or npub) to
                 // avoid the slow relay fetch just for history buffering.
@@ -1246,7 +1340,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 text: messageText,
                 isOwner: senderIsOwner,
                 isGroupChat: true,
-                wasMentioned,
+                wasMentioned: wasMentioned || isHypernoteActionResponse,
                 inboundHistory: pendingHistory.length > 0 ? pendingHistory : undefined,
                 groupName: groupNames.get(groupId),
                 stateDir: baseStateDir,
@@ -1254,7 +1348,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   ctx.log?.info(
                     `[${resolved.accountId}] send group=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await sendTextOrHypernote({
+                    sidecar,
+                    nostrGroupId: ev.nostr_group_id,
+                    text: responseText,
+                  });
                 },
                 sendTyping: async () => {
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
@@ -1280,7 +1378,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   ctx.log?.info(
                     `[${resolved.accountId}] send dm=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await sendTextOrHypernote({
+                    sidecar,
+                    nostrGroupId: ev.nostr_group_id,
+                    text: responseText,
+                  });
                 },
                 sendTyping: async () => {
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {

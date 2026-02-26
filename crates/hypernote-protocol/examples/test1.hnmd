@@ -1,7 +1,7 @@
 # What would you like to do?
 
-<HStack>
+<VStack>
 <SubmitButton action="check_balance" variant="primary">Check Balance</SubmitButton>
 <SubmitButton action="send_payment" variant="secondary">Send Payment</SubmitButton>
 <SubmitButton action="cancel" variant="danger">Cancel</SubmitButton>
-</HStack>
+</VStack>

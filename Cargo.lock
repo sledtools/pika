@@ -3245,9 +3245,17 @@ dependencies = [
 
 [[package]]
 name = "hypernote-mdx"
-version = "0.1.0"
-source = "git+https://github.com/futurepaul/hypernote-mdx#05f3fe0b5a517476eded2b68728f0ce2c1c0e830"
+version = "0.2.0"
+source = "git+https://github.com/futurepaul/hypernote-mdx?rev=041ea6ea3d217813933f96275d2a2be35ecfe854#041ea6ea3d217813933f96275d2a2be35ecfe854"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "hypernote-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_json",
 ]
 
@@ -5959,6 +5967,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hypernote-mdx",
+ "hypernote-protocol",
  "image 0.25.9",
  "jni",
  "keyring-core",
@@ -5999,6 +6008,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "hex",
+ "hypernote-protocol",
  "mdk-core 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
  "mdk-sqlite-storage",
  "mdk-storage-traits 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
@@ -6028,6 +6038,7 @@ dependencies = [
  "anyhow",
  "hex",
  "hound",
+ "hypernote-protocol",
  "mdk-core 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",
  "mdk-sqlite-storage",
  "mdk-storage-traits 0.6.0 (git+https://github.com/marmot-protocol/mdk?rev=d9f372743625de17f6fcd81eecd5084917a8ebb1)",

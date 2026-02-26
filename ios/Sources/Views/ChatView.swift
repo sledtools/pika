@@ -19,7 +19,8 @@ struct ChatView: View {
     let onTypingStarted: (@MainActor () -> Void)?
     let onDownloadMedia: (@MainActor (String, String, String) -> Void)?
     let onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)?
-    let onHypernoteAction: (@MainActor (String, String, String, String) -> Void)?
+    let onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)?
+    let onSendPoll: (@MainActor (String, String, [String]) -> Void)?
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showFileImporter = false
     @State private var messageText = ""
@@ -36,6 +37,7 @@ struct ChatView: View {
     @State private var insertedMentions: [(display: String, npub: String)] = []
     @State private var replyDraftMessage: ChatMessage?
     @State private var fullscreenImageAttachment: ChatMediaAttachment?
+    @State private var showPollComposer = false
     @State private var voiceRecorder = VoiceRecorder()
     @State private var showMicPermissionDenied = false
     @FocusState private var isInputFocused: Bool
@@ -59,7 +61,8 @@ struct ChatView: View {
         onTypingStarted: (@MainActor () -> Void)? = nil,
         onDownloadMedia: (@MainActor (String, String, String) -> Void)? = nil,
         onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)? = nil,
-        onHypernoteAction: (@MainActor (String, String, String, String) -> Void)? = nil
+        onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)? = nil,
+        onSendPoll: (@MainActor (String, String, [String]) -> Void)? = nil
     ) {
         self.chatId = chatId
         self.state = state
@@ -76,6 +79,7 @@ struct ChatView: View {
         self.onDownloadMedia = onDownloadMedia
         self.onSendMedia = onSendMedia
         self.onHypernoteAction = onHypernoteAction
+        self.onSendPoll = onSendPoll
     }
 
     var body: some View {
@@ -265,6 +269,12 @@ struct ChatView: View {
         .fullScreenCover(item: $fullscreenImageAttachment, onDismiss: nil) { attachment in
             FullscreenImageViewer(attachment: attachment)
         }
+        .sheet(isPresented: $showPollComposer) {
+            PollComposerView { question, options in
+                onSendPoll?(chatId, question, options)
+                showPollComposer = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -307,8 +317,8 @@ struct ChatView: View {
                                             fullscreenImageAttachment = attachment
                                         },
                                         onHypernoteAction: onHypernoteAction.map { callback in
-                                            { actionName, messageId, formJson in
-                                                callback(chatId, actionName, messageId, formJson)
+                                            { actionName, messageId, form in
+                                                callback(chatId, actionName, messageId, form)
                                             }
                                         }
                                     )
@@ -679,6 +689,7 @@ struct ChatView: View {
                     messageText: $messageText,
                     selectedPhotoItem: $selectedPhotoItem,
                     showFileImporter: $showFileImporter,
+                    showPollComposer: $showPollComposer,
                     showAttachButton: onSendMedia != nil,
                     showMicButton: onSendMedia != nil,
                     isInputFocused: $isInputFocused,
@@ -1135,7 +1146,8 @@ private enum ChatViewPreviewData {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "incoming-2",
@@ -1152,7 +1164,8 @@ private enum ChatViewPreviewData {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
         ]
     )
@@ -1179,7 +1192,8 @@ private enum ChatViewPreviewData {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "outgoing-2",
@@ -1196,7 +1210,8 @@ private enum ChatViewPreviewData {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
         ]
     )

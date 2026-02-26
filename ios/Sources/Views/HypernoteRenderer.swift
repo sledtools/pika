@@ -23,15 +23,18 @@ private struct HypernoteAstAttribute: Decodable {
 
 struct HypernoteRenderer: View {
     let astJson: String
-    let actions: String?
     let messageId: String
-    let isMine: Bool
     let defaultState: String?
-    let onAction: (String, String, String) -> Void
+    let myResponse: String?
+    let responseTallies: [HypernoteResponseTally]
+    let responders: [HypernoteResponder]
+    let onAction: (String, String, [String: String]) -> Void
 
     @State private var interactionState: [String: String] = [:]
+    @State private var localSubmittedAction: String?
     @State private var hasInitialized = false
-    private var isSubmitted: Bool { interactionState["_submitted"] == "true" }
+    private var selectedAction: String? { myResponse ?? localSubmittedAction }
+    private var isSubmitted: Bool { selectedAction != nil }
 
     var body: some View {
         Group {
@@ -42,13 +45,22 @@ struct HypernoteRenderer: View {
                             renderNode(node)
                         }
                     }
-                    if isSubmitted {
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                            Text("Response sent")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    if !responders.isEmpty {
+                        HStack(spacing: -6) {
+                            ForEach(responders.prefix(5), id: \.npub) { responder in
+                                AvatarView(
+                                    name: responder.name,
+                                    npub: responder.npub,
+                                    pictureUrl: responder.pictureUrl,
+                                    size: 20
+                                )
+                                .overlay(Circle().stroke(.background, lineWidth: 1.5))
+                            }
+                            if responders.count > 5 {
+                                Text("+\(responders.count - 5)")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .padding(.top, 4)
                     }
@@ -59,6 +71,7 @@ struct HypernoteRenderer: View {
                     .italic()
             }
         }
+        .opacity(isSubmitted ? 0.8 : 1.0)
         .padding(12)
         .onAppear {
             guard !hasInitialized else { return }
@@ -315,36 +328,35 @@ struct HypernoteRenderer: View {
                 ))
                 .textFieldStyle(.roundedBorder)
                 .disabled(isSubmitted)
-                .opacity(isSubmitted ? 0.6 : 1.0)
             )
 
         case "SubmitButton":
             let actionName = attrs["action"] ?? "submit"
             let variant = attrs["variant"] ?? "primary"
-            let isSelected = interactionState["_selectedAction"] == actionName
+            let isSelected = selectedAction == actionName
             let isUnselected = isSubmitted && !isSelected
             let useProminent: Bool = switch variant {
             case "secondary": isSelected
             default: !isSubmitted || isSelected
             }
+            let tally = responseTallies.first(where: { $0.action == actionName })
             let buttonLabel = HStack(spacing: 6) {
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.caption.weight(.bold))
                 }
                 inlineText(from: node.children)
+                if let tally {
+                    Text("\(tally.count)")
+                        .font(.caption.weight(.semibold))
+                }
             }
             .frame(maxWidth: .infinity)
 
             let buttonAction = {
-                let formData = interactionState.filter { !$0.key.hasPrefix("_") }
-                let formJson = (try? String(data: JSONSerialization.data(
-                    withJSONObject: formData,
-                    options: [.sortedKeys]
-                ), encoding: .utf8)) ?? "{}"
-                interactionState["_submitted"] = "true"
-                interactionState["_selectedAction"] = actionName
-                onAction(actionName, messageId, formJson)
+                let formData = interactionState
+                localSubmittedAction = actionName
+                onAction(actionName, messageId, formData)
             }
 
             if useProminent {

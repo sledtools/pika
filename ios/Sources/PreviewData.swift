@@ -279,7 +279,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "m2",
@@ -296,7 +297,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "m3",
@@ -313,7 +315,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
         ]
 
@@ -349,7 +352,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             )
         }
 
@@ -382,7 +386,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm2",
@@ -399,7 +404,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm3",
@@ -416,7 +422,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm4",
@@ -433,7 +440,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm5",
@@ -450,7 +458,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm6",
@@ -467,7 +476,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             ChatMessage(
                 id: "gm7",
@@ -484,7 +494,8 @@ enum PreviewAppState {
                 media: [],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
         ]
 
@@ -546,7 +557,8 @@ enum PreviewAppState {
                 ],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             // Image with caption, already downloaded (simulated local path)
             ChatMessage(
@@ -577,7 +589,8 @@ enum PreviewAppState {
                 ],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
             // Non-image file attachment
             ChatMessage(
@@ -608,7 +621,8 @@ enum PreviewAppState {
                 ],
                 pollTally: [],
                 myPollVote: nil,
-                htmlState: nil
+                htmlState: nil,
+            hypernote: nil
             ),
         ]
 

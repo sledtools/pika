@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use hypernote_protocol as hn;
 use mdk_core::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
@@ -63,6 +64,10 @@ enum InCmd {
         #[serde(default)]
         request_id: Option<String>,
     },
+    HypernoteCatalog {
+        #[serde(default)]
+        request_id: Option<String>,
+    },
     SendMessage {
         #[serde(default)]
         request_id: Option<String>,
@@ -74,8 +79,6 @@ enum InCmd {
         request_id: Option<String>,
         nostr_group_id: String,
         content: String,
-        #[serde(default)]
-        actions: Option<String>,
         #[serde(default)]
         title: Option<String>,
         #[serde(default)]
@@ -211,6 +214,7 @@ enum OutMsg {
         nostr_group_id: String,
         from_pubkey: String,
         content: String,
+        kind: u16,
         created_at: u64,
         message_id: String,
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2630,6 +2634,7 @@ pub async fn daemon_main(
                                                             nostr_group_id: event_h_tag_hex(ev).unwrap_or_else(|| nostr_group_id_hex.clone()),
                                                             from_pubkey: msg.pubkey.to_hex().to_lowercase(),
                                                             content: msg.content,
+                                                            kind: msg.kind.as_u16(),
                                                             created_at: msg.created_at.as_secs(),
                                                             message_id: msg.id.to_hex(),
                                                             media,
@@ -2676,6 +2681,11 @@ pub async fn daemon_main(
                             }
                         }
                     }
+                    InCmd::HypernoteCatalog { request_id } => {
+                        let _ = out_tx.send(out_ok(request_id, Some(json!({
+                            "catalog": hn::hypernote_catalog_value(),
+                        }))));
+                    }
                     InCmd::SendMessage { request_id, nostr_group_id, content } => {
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
@@ -2698,7 +2708,6 @@ pub async fn daemon_main(
                         request_id,
                         nostr_group_id,
                         content,
-                        actions,
                         title,
                         state,
                     } => {
@@ -2710,16 +2719,15 @@ pub async fn daemon_main(
                             }
                         };
                         let mut tags = Vec::new();
-                        if let Some(ref a) = actions {
-                            tags.push(Tag::custom(TagKind::custom("actions"), vec![a.clone()]));
-                        }
                         if let Some(ref t) = title {
                             tags.push(Tag::custom(TagKind::custom("title"), vec![t.clone()]));
                         }
                         if let Some(ref s) = state {
                             tags.push(Tag::custom(TagKind::custom("state"), vec![s.clone()]));
                         }
-                        let rumor = EventBuilder::new(Kind::Custom(9467), content).tags(tags).build(keys.public_key());
+                        let rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
+                            .tags(tags)
+                            .build(keys.public_key());
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_hypernote").await {
                             Ok(ev) => {
                                 let _ = out_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
@@ -3965,6 +3973,7 @@ pub async fn daemon_main(
                                 nostr_group_id,
                                 from_pubkey: sender_hex,
                                 content: msg.content,
+                                kind: msg.kind.as_u16(),
                                 created_at: msg.created_at.as_secs(),
                                 message_id: msg.id.to_hex(),
                                 media,
@@ -4354,6 +4363,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deserialize_hypernote_catalog_cmd() {
+        let json = r#"{"cmd":"hypernote_catalog","request_id":"r2"}"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::HypernoteCatalog { request_id } => {
+                assert_eq!(request_id.as_deref(), Some("r2"));
+            }
+            other => panic!("expected HypernoteCatalog, got {other:?}"),
+        }
+    }
+
     // ── OutMsg serialization tests ─────────────────────────────────────
 
     #[test]
@@ -4362,6 +4383,7 @@ mod tests {
             nostr_group_id: "aabb".into(),
             from_pubkey: "cc".into(),
             content: "hello".into(),
+            kind: Kind::ChatMessage.as_u16(),
             created_at: 123,
             message_id: "dd".into(),
             media: vec![],
@@ -4369,6 +4391,7 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["type"], "message_received");
         assert_eq!(json["content"], "hello");
+        assert_eq!(json["kind"], Kind::ChatMessage.as_u16());
         // Empty media vec should be omitted
         assert!(json.get("media").is_none());
     }
@@ -4379,6 +4402,7 @@ mod tests {
             nostr_group_id: "aabb".into(),
             from_pubkey: "cc".into(),
             content: "look at this".into(),
+            kind: Kind::ChatMessage.as_u16(),
             created_at: 456,
             message_id: "dd".into(),
             media: vec![MediaAttachmentOut {
@@ -4394,6 +4418,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["kind"], Kind::ChatMessage.as_u16());
         let media = json["media"].as_array().expect("media should be array");
         assert_eq!(media.len(), 1);
         assert_eq!(media[0]["url"], "https://blossom.example.com/abc123");
@@ -4409,6 +4434,7 @@ mod tests {
             nostr_group_id: "aabb".into(),
             from_pubkey: "cc".into(),
             content: "".into(),
+            kind: Kind::ChatMessage.as_u16(),
             created_at: 0,
             message_id: "dd".into(),
             media: vec![MediaAttachmentOut {

@@ -288,12 +288,19 @@ private func screenView(
                     caption: caption
                 ))
             },
-            onHypernoteAction: { chatId, actionName, messageId, formJson in
+            onHypernoteAction: { chatId, actionName, messageId, form in
                 manager.dispatch(.hypernoteAction(
                     chatId: chatId,
                     messageId: messageId,
                     actionName: actionName,
-                    formJson: formJson
+                    form: form
+                ))
+            },
+            onSendPoll: { chatId, question, options in
+                manager.dispatch(.sendHypernotePoll(
+                    chatId: chatId,
+                    question: question,
+                    options: options
                 ))
             }
         )

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use flume::Sender;
+use hypernote_protocol as hn;
 
 use crate::actions::AppAction;
 use crate::bunker_signer::{
@@ -103,8 +104,9 @@ const IOS_MIGRATION_SENTINEL: &str = ".migrated_to_app_group";
 
 const TYPING_INDICATOR_KIND: Kind = Kind::Custom(20_067);
 pub(crate) const CALL_SIGNAL_KIND: Kind = Kind::Custom(10);
-pub(crate) const HYPERNOTE_KIND: Kind = Kind::Custom(9467);
-pub(crate) const HYPERNOTE_ACTION_RESPONSE_KIND: Kind = Kind::Custom(9468);
+pub(crate) const HYPERNOTE_KIND: Kind = Kind::Custom(hn::HYPERNOTE_KIND);
+pub(crate) const HYPERNOTE_ACTION_RESPONSE_KIND: Kind =
+    Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND);
 
 const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
 const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
@@ -3121,6 +3123,7 @@ impl AppCore {
                 let mut is_typing_indicator = false;
                 let mut is_call_signal_kind = false;
                 let mut is_reaction = false;
+                let mut is_hypernote_response = false;
 
                 let mls_group_id: Option<GroupId> = match &result {
                     MessageProcessingResult::ApplicationMessage(msg) => {
@@ -3140,12 +3143,18 @@ impl AppCore {
                                 app_sender = Some(msg.pubkey);
                                 app_content = Some(msg.content.clone());
                             }
-                            Kind::ChatMessage
-                            | Kind::Reaction
-                            | Kind::Custom(9467)
-                            | Kind::Custom(9468) => {
+                            Kind::ChatMessage | Kind::Reaction => {
                                 if msg.kind == Kind::Reaction {
                                     is_reaction = true;
+                                }
+                                app_sender = Some(msg.pubkey);
+                                app_content = Some(msg.content.clone());
+                            }
+                            kind if kind == HYPERNOTE_KIND
+                                || kind == HYPERNOTE_ACTION_RESPONSE_KIND =>
+                            {
+                                if msg.kind == HYPERNOTE_ACTION_RESPONSE_KIND {
+                                    is_hypernote_response = true;
                                 }
                                 app_sender = Some(msg.pubkey);
                                 app_content = Some(msg.content.clone());
@@ -3218,10 +3227,13 @@ impl AppCore {
                             let current =
                                 self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
                             let is_call_signal = is_call_signal_kind;
-                            if current != Some(chat_id.as_str()) && !is_call_signal && !is_reaction
+                            if current != Some(chat_id.as_str())
+                                && !is_call_signal
+                                && !is_reaction
+                                && !is_hypernote_response
                             {
                                 *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
-                            } else if is_app_message && !is_call_signal {
+                            } else if is_app_message && !is_call_signal && !is_hypernote_response {
                                 self.loaded_count
                                     .entry(chat_id.clone())
                                     .and_modify(|n| *n += 1)
@@ -3374,124 +3386,50 @@ impl AppCore {
                 chat_id,
                 message_id,
                 action_name,
-                form_json,
+                form,
             } => {
                 if !self.is_logged_in() {
                     self.toast("Please log in first");
                     return;
                 }
 
-                // Look up the message to get its hypernote actions definition.
-                let actions_json = self
-                    .state
-                    .current_chat
-                    .as_ref()
-                    .and_then(|cv| cv.messages.iter().find(|m| m.id == message_id))
-                    .and_then(|m| m.hypernote.as_ref())
-                    .and_then(|h| h.actions.clone());
-
-                let action_defs: std::collections::HashMap<String, serde_json::Value> =
-                    actions_json
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_default();
-
-                if let Some(def) = action_defs.get(&action_name) {
-                    // Signed action: build and publish a Nostr event from the action definition.
-                    let kind_num = def.get("kind").and_then(|v| v.as_u64()).unwrap_or(1) as u16;
-                    let content_template = def
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let tag_templates: Vec<Vec<String>> = def
-                        .get("tags")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-
-                    let form: std::collections::HashMap<String, String> =
-                        serde_json::from_str(&form_json).unwrap_or_default();
-
-                    let sess_pubkey = self.session.as_ref().map(|s| s.pubkey.to_hex());
-
-                    // Simple template interpolation for {{form.field}}, {{bot.pubkey}}, {{user.pubkey}}.
-                    let interpolate = |s: &str| -> String {
-                        let mut result = s.to_string();
-                        for (k, v) in &form {
-                            result = result.replace(&format!("{{{{form.{k}}}}}"), v);
-                        }
-                        // Look up the message sender as the bot pubkey.
-                        if let Some(msg) = self
-                            .state
-                            .current_chat
-                            .as_ref()
-                            .and_then(|cv| cv.messages.iter().find(|m| m.id == message_id))
-                        {
-                            result = result.replace("{{bot.pubkey}}", &msg.sender_pubkey);
-                        }
-                        if let Some(ref pk) = sess_pubkey {
-                            result = result.replace("{{user.pubkey}}", pk);
-                        }
-                        result
-                    };
-
-                    let content = interpolate(&content_template);
-                    let tags: Vec<Tag> = tag_templates
-                        .iter()
-                        .map(|parts| {
-                            let interpolated: Vec<String> =
-                                parts.iter().map(|p| interpolate(p)).collect();
-                            Tag::parse(interpolated).unwrap_or_else(|_| {
-                                Tag::custom(TagKind::custom("err"), Vec::<String>::new())
-                            })
-                        })
-                        .collect();
-
-                    let Some(sess) = self.session.as_ref() else {
-                        return;
-                    };
-                    let client = sess.client.clone();
-                    let event_kind = Kind::from(kind_num);
-                    let tx = self.core_sender.clone();
-
-                    self.runtime.spawn(async move {
-                        let builder = EventBuilder::new(event_kind, content).tags(tags);
-                        match client.sign_event_builder(builder).await {
-                            Ok(event) => {
-                                if let Err(e) = client.send_event(&event).await {
-                                    tracing::warn!("hypernote signed action publish failed: {e}");
-                                    let _ =
-                                        tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                                            format!("Hypernote action failed: {e}"),
-                                        ))));
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("hypernote signed action sign failed: {e}");
-                                let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                                    format!("Hypernote action sign failed: {e}"),
-                                ))));
-                            }
-                        }
-                    });
-                } else {
-                    // Chat action: send as a hypernote action response (kind 9468).
-                    // This is stored by MDK but excluded from the visible chat timeline,
-                    // so the user doesn't see a raw JSON blob. Bots still receive it
-                    // via the daemon's message_received events.
-                    let payload = serde_json::json!({
-                        "action": action_name,
-                        "form": serde_json::from_str::<serde_json::Value>(&form_json).unwrap_or(serde_json::Value::Null),
-                    });
-                    self.publish_chat_message_with_tags(
-                        chat_id,
-                        payload.to_string(),
-                        HYPERNOTE_ACTION_RESPONSE_KIND,
-                        vec![],
-                        None,
-                        vec![],
-                    );
+                // Always send actions as kind-9468 response payloads.
+                // Signed action publishing has been removed from hypernote v1.
+                let payload = hn::build_action_response_payload(&action_name, &form);
+                let mut tags = Vec::new();
+                if let Ok(eid) = EventId::parse(&message_id) {
+                    tags.push(Tag::event(eid));
                 }
+                self.publish_chat_message_with_tags(
+                    chat_id,
+                    payload.to_string(),
+                    HYPERNOTE_ACTION_RESPONSE_KIND,
+                    tags,
+                    Some(message_id),
+                    vec![],
+                );
+            }
+            AppAction::SendHypernotePoll {
+                chat_id,
+                question,
+                options,
+            } => {
+                if !self.is_logged_in() {
+                    self.toast("Please log in first");
+                    return;
+                }
+                let Some(content) = hn::build_poll_hypernote(&question, &options) else {
+                    self.toast("Poll needs a question and at least two options");
+                    return;
+                };
+                self.publish_chat_message_with_tags(
+                    chat_id,
+                    content,
+                    HYPERNOTE_KIND,
+                    vec![],
+                    None,
+                    vec![],
+                );
             }
             AppAction::ArchiveChat { chat_id } => {
                 self.archived_chats.insert(chat_id.clone());

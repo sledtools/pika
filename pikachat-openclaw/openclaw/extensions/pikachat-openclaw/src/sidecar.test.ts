@@ -54,6 +54,7 @@ describe("SidecarOutMsg message_received with media", () => {
       nostr_group_id: "aabb",
       from_pubkey: "cc",
       content: "look at this",
+      kind: 1,
       created_at: 1234567890,
       message_id: "dd",
       media: [
@@ -73,6 +74,7 @@ describe("SidecarOutMsg message_received with media", () => {
     const parsed = JSON.parse(json);
     assert.equal(parsed.type, "message_received");
     assert.equal(parsed.content, "look at this");
+    assert.equal(parsed.kind, 1);
     assert.ok(Array.isArray(parsed.media));
     assert.equal(parsed.media.length, 1);
     assert.equal(parsed.media[0].url, "https://blossom.example.com/abc123");
@@ -87,12 +89,14 @@ describe("SidecarOutMsg message_received with media", () => {
       nostr_group_id: "aabb",
       from_pubkey: "cc",
       content: "hello",
+      kind: 9468,
       created_at: 1234567890,
       message_id: "dd",
     };
     const json = JSON.stringify(msg);
     const parsed = JSON.parse(json);
     assert.equal(parsed.type, "message_received");
+    assert.equal(parsed.kind, 9468);
     assert.equal(parsed.media, undefined);
   });
 
@@ -102,6 +106,7 @@ describe("SidecarOutMsg message_received with media", () => {
       nostr_group_id: "aabb",
       from_pubkey: "cc",
       content: "",
+      kind: 1,
       created_at: 0,
       message_id: "dd",
       media: [

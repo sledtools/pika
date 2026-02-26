@@ -107,7 +107,7 @@ struct MessageGroupRow: View {
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
-    var onHypernoteAction: ((String, String, String) -> Void)? = nil
+    var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
 
     private let avatarSize: CGFloat = 24
     private let avatarGutterWidth: CGFloat = 28
@@ -209,7 +209,7 @@ private struct MessageBubbleStack: View {
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
-    var onHypernoteAction: ((String, String, String) -> Void)? = nil
+    var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: group.isMine ? .trailing : .leading, spacing: 2) {
@@ -404,7 +404,7 @@ private struct MessageBubble: View {
     var onLongPressMessage: ((ChatMessage, CGRect) -> Void)? = nil
     var onDownloadMedia: ((String, String) -> Void)? = nil
     var onTapImage: ((ChatMediaAttachment) -> Void)? = nil
-    var onHypernoteAction: ((String, String, String) -> Void)? = nil
+    var onHypernoteAction: ((String, String, [String: String]) -> Void)? = nil
 
     @State private var isBeingPressed = false
     @State private var bubbleFrameRef = BubbleFrameRef()
@@ -437,12 +437,13 @@ private struct MessageBubble: View {
             if let hypernote = message.hypernote {
                 HypernoteRenderer(
                     astJson: hypernote.astJson,
-                    actions: hypernote.actions,
                     messageId: message.id,
-                    isMine: message.isMine,
                     defaultState: hypernote.defaultState,
-                    onAction: { actionName, messageId, formJson in
-                        onHypernoteAction?(actionName, messageId, formJson)
+                    myResponse: hypernote.myResponse,
+                    responseTallies: hypernote.responseTallies,
+                    responders: hypernote.responders,
+                    onAction: { actionName, messageId, form in
+                        onHypernoteAction?(actionName, messageId, form)
                     }
                 )
             } else if hasMedia {

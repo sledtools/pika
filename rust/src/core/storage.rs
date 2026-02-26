@@ -1,7 +1,10 @@
 // Storage-derived state refresh + paging.
 
 use super::*;
-use crate::state::{resolve_mentions, MemberInfo, PollTally};
+use crate::state::{
+    resolve_mentions, HypernoteResponder, HypernoteResponseTally, MemberInfo, PollTally,
+};
+use hypernote_protocol as hn;
 
 impl AppCore {
     pub(super) fn refresh_all_from_storage(&mut self) {
@@ -103,7 +106,10 @@ impl AppCore {
                 .mdk
                 .get_messages(&g.mls_group_id, Some(Pagination::new(Some(20), Some(0))))
                 .ok()
-                .and_then(|v| v.into_iter().find(|m| m.kind == Kind::ChatMessage));
+                .and_then(|v| {
+                    v.into_iter()
+                        .find(|m| m.kind == Kind::ChatMessage || m.kind == super::HYPERNOTE_KIND)
+                });
 
             let stored_last_message = newest.as_ref().map(|m| m.content.clone());
             let stored_last_message_at = newest
@@ -276,6 +282,36 @@ impl AppCore {
             sender_names.insert(my_pubkey_hex.clone(), my_name.clone());
         }
 
+        // Build member profile lookup: pubkey_hex -> (name, npub, picture_url)
+        let mut member_profiles: HashMap<String, (Option<String>, String, Option<String>)> = entry
+            .members
+            .iter()
+            .map(|m| {
+                let hex = m.pubkey.to_hex();
+                let npub = m.pubkey.to_bech32().unwrap_or_else(|_| hex.clone());
+                let name = m
+                    .name
+                    .clone()
+                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
+                let picture_url = m.picture_url.clone();
+                (hex, (name, npub, picture_url))
+            })
+            .collect();
+        // Include self in member profiles.
+        if !member_profiles.contains_key(&my_pubkey_hex) {
+            let my_npub = sess
+                .pubkey
+                .to_bech32()
+                .unwrap_or_else(|_| my_pubkey_hex.clone());
+            let my_pic = self.state.my_profile.picture_url.clone();
+            let name = if my_name.is_empty() {
+                None
+            } else {
+                Some(my_name.clone())
+            };
+            member_profiles.insert(my_pubkey_hex.clone(), (name, my_npub, my_pic));
+        }
+
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let target = desired.max(50);
 
@@ -299,6 +335,7 @@ impl AppCore {
                 m.kind == Kind::ChatMessage
                     || m.kind == Kind::Reaction
                     || m.kind == super::HYPERNOTE_KIND
+                    || m.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND
             }));
             if batch_len < target || visible_messages.len() >= target {
                 break;
@@ -309,6 +346,7 @@ impl AppCore {
         // Separate reactions (kind 7) from regular messages.
         // reaction_target_id -> Vec<(emoji, sender_pubkey)>
         let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut hypernote_responses: Vec<HypernoteResponseMessage> = Vec::new();
         let mut regular_messages = Vec::new();
         for m in &visible_messages {
             if m.kind == Kind::Reaction {
@@ -323,6 +361,18 @@ impl AppCore {
                         .entry(target_id)
                         .or_default()
                         .push((emoji, m.pubkey.to_hex()));
+                }
+                continue;
+            }
+            if m.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND {
+                if let Some(response) = parse_hypernote_response_message(
+                    m.pubkey.to_hex(),
+                    sender_names.get(&m.pubkey.to_hex()).cloned(),
+                    m.created_at.as_secs() as i64,
+                    last_event_tag_id(&m.tags),
+                    &m.content,
+                ) {
+                    hypernote_responses.push(response);
                 }
                 continue;
             }
@@ -396,11 +446,7 @@ impl AppCore {
                     hypernote: if m.kind == super::HYPERNOTE_KIND {
                         let ast_json =
                             hypernote_mdx::serialize_tree(&hypernote_mdx::parse(&m.content));
-                        let actions = m
-                            .tags
-                            .iter()
-                            .find(|t| t.kind() == TagKind::custom("actions"))
-                            .and_then(|t| t.content().map(|s| s.to_string()));
+                        let declared_actions = hn::extract_submit_actions_from_ast_json(&ast_json);
                         let title = m
                             .tags
                             .iter()
@@ -413,9 +459,12 @@ impl AppCore {
                             .and_then(|t| t.content().map(|s| s.to_string()));
                         Some(crate::state::HypernoteData {
                             ast_json,
-                            actions,
+                            declared_actions,
                             title,
                             default_state,
+                            my_response: None,
+                            response_tallies: vec![],
+                            responders: vec![],
                         })
                     } else {
                         None
@@ -435,11 +484,24 @@ impl AppCore {
                 if lm.timestamp < oldest_loaded_ts {
                     continue;
                 }
-                // Skip non-visible kinds (e.g. hypernote action responses).
+                // Skip non-visible kinds.
                 if lm.kind != Kind::ChatMessage
                     && lm.kind != Kind::Reaction
                     && lm.kind != super::HYPERNOTE_KIND
+                    && lm.kind != super::HYPERNOTE_ACTION_RESPONSE_KIND
                 {
+                    continue;
+                }
+                if lm.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND {
+                    if let Some(response) = parse_hypernote_response_message(
+                        lm.sender_pubkey.clone(),
+                        sender_names.get(&lm.sender_pubkey).cloned(),
+                        lm.timestamp,
+                        lm.reply_to_message_id.clone(),
+                        &lm.content,
+                    ) {
+                        hypernote_responses.push(response);
+                    }
                     continue;
                 }
                 let delivery = self
@@ -455,7 +517,7 @@ impl AppCore {
                     sender_name: None,
                     content: lm.content,
                     display_content,
-                    reply_to_message_id: lm.reply_to_message_id,
+                    reply_to_message_id: lm.reply_to_message_id.clone(),
                     mentions,
                     timestamp: lm.timestamp,
                     is_mine: true,
@@ -478,6 +540,12 @@ impl AppCore {
         let can_load_older = visible_messages.len() >= target;
         self.loaded_count.insert(chat_id.to_string(), storage_len);
 
+        process_hypernote_responses(
+            &mut msgs,
+            &hypernote_responses,
+            &my_pubkey_hex,
+            &member_profiles,
+        );
         process_html_updates(&mut msgs);
         process_html_state_updates(&mut msgs);
         process_poll_tallies(&mut msgs, &my_pubkey_hex);
@@ -729,6 +797,127 @@ fn process_poll_tallies(msgs: &mut Vec<ChatMessage>, my_pubkey_hex: &str) {
     // Remove response messages (reverse order to preserve indices).
     for i in response_indices.into_iter().rev() {
         msgs.remove(i);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HypernoteResponseMessage {
+    sender_pubkey: String,
+    sender_name: Option<String>,
+    target_hypernote_id: String,
+    action: String,
+    timestamp: i64,
+}
+
+fn parse_hypernote_response_message(
+    sender_pubkey: String,
+    sender_name: Option<String>,
+    timestamp: i64,
+    target_hypernote_id: Option<String>,
+    content: &str,
+) -> Option<HypernoteResponseMessage> {
+    let target_hypernote_id = target_hypernote_id?;
+    let parsed = hn::parse_action_response(content)?;
+    Some(HypernoteResponseMessage {
+        sender_pubkey,
+        sender_name,
+        target_hypernote_id,
+        action: parsed.action,
+        timestamp,
+    })
+}
+
+/// Tally explicit kind-9468 response messages onto matching kind-9467 hypernotes.
+fn process_hypernote_responses(
+    msgs: &mut [ChatMessage],
+    responses: &[HypernoteResponseMessage],
+    my_pubkey_hex: &str,
+    member_profiles: &HashMap<String, (Option<String>, String, Option<String>)>,
+) {
+    if responses.is_empty() {
+        return;
+    }
+
+    // Keep only the latest response per (sender, target hypernote).
+    let mut latest_responses: HashMap<(String, String), (String, i64, Option<String>)> =
+        HashMap::new();
+    for response in responses {
+        let key = (
+            response.sender_pubkey.clone(),
+            response.target_hypernote_id.clone(),
+        );
+        if latest_responses
+            .get(&key)
+            .map(|(_, ts, _)| response.timestamp > *ts)
+            .unwrap_or(true)
+        {
+            latest_responses.insert(
+                key,
+                (
+                    response.action.clone(),
+                    response.timestamp,
+                    response.sender_name.clone(),
+                ),
+            );
+        }
+    }
+
+    // Attach tallies and responders to matching hypernote messages.
+    for msg in msgs.iter_mut() {
+        if msg.hypernote.is_none() {
+            continue;
+        }
+        let hn = msg.hypernote.as_mut().unwrap();
+        let declared: HashSet<String> = hn.declared_actions.iter().cloned().collect();
+
+        let mut action_counts: HashMap<String, u32> = HashMap::new();
+        let mut responder_pubkeys: Vec<String> = Vec::new();
+        let mut my_response: Option<String> = None;
+
+        for ((sender_pubkey, hypernote_id), (action, _, _sender_name)) in &latest_responses {
+            if hypernote_id != &msg.id {
+                continue;
+            }
+            if !declared.is_empty() && !declared.contains(action) {
+                continue;
+            }
+            *action_counts.entry(action.clone()).or_insert(0) += 1;
+            if !responder_pubkeys.contains(sender_pubkey) {
+                responder_pubkeys.push(sender_pubkey.clone());
+            }
+            if sender_pubkey == my_pubkey_hex {
+                my_response = Some(action.clone());
+            }
+        }
+
+        hn.response_tallies = action_counts
+            .iter()
+            .map(|(action, count)| HypernoteResponseTally {
+                action: action.clone(),
+                count: *count,
+            })
+            .collect();
+        hn.response_tallies
+            .sort_by_key(|t| std::cmp::Reverse(t.count));
+        hn.my_response = my_response;
+        hn.responders = responder_pubkeys
+            .iter()
+            .map(|pk| {
+                if let Some((name, npub, picture_url)) = member_profiles.get(pk) {
+                    HypernoteResponder {
+                        name: name.clone(),
+                        npub: npub.clone(),
+                        picture_url: picture_url.clone(),
+                    }
+                } else {
+                    HypernoteResponder {
+                        name: None,
+                        npub: pk[..pk.len().min(16)].to_string(),
+                        picture_url: None,
+                    }
+                }
+            })
+            .collect();
     }
 }
 
@@ -1101,5 +1290,120 @@ mod tests {
 
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].html_state.is_none());
+    }
+
+    fn make_hypernote_msg(id: &str, declared_actions: &[&str]) -> ChatMessage {
+        let mut msg = make_msg(id, "# Note", 100);
+        msg.hypernote = Some(crate::state::HypernoteData {
+            ast_json: "{}".to_string(),
+            declared_actions: declared_actions.iter().map(|a| a.to_string()).collect(),
+            title: None,
+            default_state: None,
+            my_response: None,
+            response_tallies: vec![],
+            responders: vec![],
+        });
+        msg
+    }
+
+    #[test]
+    fn parse_hypernote_response_requires_target_and_action() {
+        assert!(parse_hypernote_response_message(
+            "alice".to_string(),
+            None,
+            1,
+            None,
+            r#"{"action":"yes","form":{}}"#
+        )
+        .is_none());
+        assert!(parse_hypernote_response_message(
+            "alice".to_string(),
+            None,
+            1,
+            Some("note1".to_string()),
+            r#"{"form":{}}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn process_hypernote_responses_uses_latest_and_declared_actions_only() {
+        let mut msgs = vec![make_hypernote_msg("note1", &["yes", "no"])];
+        let responses = vec![
+            HypernoteResponseMessage {
+                sender_pubkey: "alice".to_string(),
+                sender_name: Some("Alice".to_string()),
+                target_hypernote_id: "note1".to_string(),
+                action: "yes".to_string(),
+                timestamp: 10,
+            },
+            HypernoteResponseMessage {
+                sender_pubkey: "alice".to_string(),
+                sender_name: Some("Alice".to_string()),
+                target_hypernote_id: "note1".to_string(),
+                action: "no".to_string(),
+                timestamp: 11,
+            },
+            HypernoteResponseMessage {
+                sender_pubkey: "bob".to_string(),
+                sender_name: Some("Bob".to_string()),
+                target_hypernote_id: "note1".to_string(),
+                action: "maybe".to_string(),
+                timestamp: 12,
+            },
+            HypernoteResponseMessage {
+                sender_pubkey: "carol".to_string(),
+                sender_name: Some("Carol".to_string()),
+                target_hypernote_id: "note1".to_string(),
+                action: "yes".to_string(),
+                timestamp: 13,
+            },
+        ];
+
+        let member_profiles = HashMap::from([
+            (
+                "alice".to_string(),
+                (
+                    Some("Alice".to_string()),
+                    "npub_alice".to_string(),
+                    Some("https://img/alice.png".to_string()),
+                ),
+            ),
+            (
+                "bob".to_string(),
+                (
+                    Some("Bob".to_string()),
+                    "npub_bob".to_string(),
+                    Some("https://img/bob.png".to_string()),
+                ),
+            ),
+            (
+                "carol".to_string(),
+                (
+                    Some("Carol".to_string()),
+                    "npub_carol".to_string(),
+                    Some("https://img/carol.png".to_string()),
+                ),
+            ),
+        ]);
+
+        process_hypernote_responses(&mut msgs, &responses, "alice", &member_profiles);
+
+        let hn = msgs[0].hypernote.as_ref().expect("has hypernote");
+        assert_eq!(hn.my_response.as_deref(), Some("no"));
+
+        let mut tallies = hn.response_tallies.clone();
+        tallies.sort_by(|a, b| a.action.cmp(&b.action));
+        assert_eq!(tallies.len(), 2);
+        assert_eq!(tallies[0].action, "no");
+        assert_eq!(tallies[0].count, 1);
+        assert_eq!(tallies[1].action, "yes");
+        assert_eq!(tallies[1].count, 1);
+
+        // "maybe" is undeclared and must not appear in responders/tallies.
+        let responder_npubs: Vec<String> = hn.responders.iter().map(|r| r.npub.clone()).collect();
+        assert!(responder_npubs.contains(&"npub_alice".to_string()));
+        assert!(responder_npubs.contains(&"npub_carol".to_string()));
+        assert!(!responder_npubs.contains(&"npub_bob".to_string()));
     }
 }

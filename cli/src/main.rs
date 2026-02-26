@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use hypernote_protocol as hn;
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
@@ -207,12 +208,12 @@ server, and --content becomes the caption (optional).")]
     #[command(after_help = "Examples:
   pikachat send-hypernote --group <hex-group-id> --content '# Hello\\n\\n<Card><Heading>Test</Heading></Card>'
   pikachat send-hypernote --to <npub> --file note.hnmd
-  pikachat send-hypernote --group <hex-group-id> --content '<SubmitButton action=\"vote\">Vote</SubmitButton>' --actions '{\"vote\":{\"kind\":1,\"content\":\"\"}}'
+  pikachat send-hypernote --group <hex-group-id> --content '# Poll\\n\\n<SubmitButton action=\"yes\">Yes</SubmitButton>'
 
-A .hnmd file can include a JSON frontmatter block with title and actions:
+A .hnmd file can include a JSON frontmatter block with title and state:
 
   ```hnmd
-  {\"title\": \"My Note\", \"actions\": {\"vote\": {\"kind\": 7}}}
+  {\"title\": \"My Note\", \"state\": {\"name\": \"Alice\"}}
   ```
   # Content starts here")]
     SendHypernote {
@@ -232,10 +233,6 @@ A .hnmd file can include a JSON frontmatter block with title and actions:
         #[arg(long, conflicts_with = "content")]
         file: Option<std::path::PathBuf>,
 
-        /// JSON-encoded actions map (action_name -> ActionDef)
-        #[arg(long)]
-        actions: Option<String>,
-
         /// Hypernote title
         #[arg(long)]
         title: Option<String>,
@@ -243,6 +240,13 @@ A .hnmd file can include a JSON frontmatter block with title and actions:
         /// JSON-encoded default state for interactive components
         #[arg(long)]
         state: Option<String>,
+    },
+
+    /// Print the canonical hypernote component/action catalog
+    HypernoteCatalog {
+        /// Compact JSON output (single line)
+        #[arg(long, default_value_t = false)]
+        compact: bool,
     },
 
     /// Download and decrypt a media attachment from a message
@@ -601,13 +605,11 @@ async fn main() -> anyhow::Result<()> {
             to,
             content,
             file,
-            actions,
             title,
             state,
         } => {
-            let (content, file_actions, file_title, file_state): HnmdParts = match (&content, &file)
-            {
-                (Some(c), None) => (c.clone(), None, None, None),
+            let (content, file_title, file_state): HnmdParts = match (&content, &file) {
+                (Some(c), None) => (c.clone(), None, None),
                 (None, Some(path)) => parse_hnmd_file(path)?,
                 (None, None) => anyhow::bail!("either --content or --file is required"),
                 _ => unreachable!(), // conflicts_with prevents this
@@ -617,12 +619,12 @@ async fn main() -> anyhow::Result<()> {
                 group.as_deref(),
                 to.as_deref(),
                 &content,
-                actions.as_deref().or(file_actions.as_deref()),
                 title.as_deref().or(file_title.as_deref()),
                 state.as_deref().or(file_state.as_deref()),
             )
             .await
         }
+        Command::HypernoteCatalog { compact } => cmd_hypernote_catalog(*compact),
         Command::DownloadMedia { message_id, output } => {
             cmd_download_media(&cli, message_id, output.as_deref()).await
         }
@@ -1400,15 +1402,15 @@ async fn cmd_send(
     Ok(())
 }
 
-/// (content, actions, title, state)
-type HnmdParts = (String, Option<String>, Option<String>, Option<String>);
+/// (content, title, state)
+type HnmdParts = (String, Option<String>, Option<String>);
 
-/// Parse a `.hnmd` file into (content, actions, title, state).
+/// Parse a `.hnmd` file into (content, title, state).
 ///
 /// The file may optionally start with a JSON frontmatter block:
 /// ````
 /// ```hnmd
-/// {"title": "...", "actions": {...}, "state": {...}}
+/// {"title": "...", "state": {...}}
 /// ```
 /// # MDX content here
 /// ````
@@ -1429,16 +1431,15 @@ fn parse_hnmd_file(path: &std::path::Path) -> anyhow::Result<HnmdParts> {
                 .with_context(|| "invalid JSON in ```hnmd frontmatter")?;
 
             let title = meta.get("title").and_then(|v| v.as_str()).map(String::from);
-            let actions = meta.get("actions").map(|v| v.to_string());
             let state = meta.get("state").map(|v| v.to_string());
 
-            return Ok((body.to_string(), actions, title, state));
+            return Ok((body.to_string(), title, state));
         }
         anyhow::bail!("unclosed ```hnmd frontmatter block in {}", path.display());
     }
 
     // No frontmatter — entire file is content.
-    Ok((raw, None, None, None))
+    Ok((raw, None, None))
 }
 
 async fn cmd_send_hypernote(
@@ -1446,7 +1447,6 @@ async fn cmd_send_hypernote(
     group_hex: Option<&str>,
     to_str: Option<&str>,
     content: &str,
-    actions: Option<&str>,
     title: Option<&str>,
     state: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -1524,9 +1524,6 @@ async fn cmd_send_hypernote(
 
     // Build tags.
     let mut tags: Vec<Tag> = Vec::new();
-    if let Some(a) = actions {
-        tags.push(Tag::custom(TagKind::custom("actions"), vec![a.to_string()]));
-    }
     if let Some(t) = title {
         tags.push(Tag::custom(TagKind::custom("title"), vec![t.to_string()]));
     }
@@ -1535,7 +1532,7 @@ async fn cmd_send_hypernote(
     }
 
     // Build and send MLS message with hypernote kind.
-    let rumor = EventBuilder::new(Kind::Custom(9467), content)
+    let rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
         .tags(tags)
         .build(keys.public_key());
     let msg_event = mdk
@@ -1549,6 +1546,15 @@ async fn cmd_send_hypernote(
         "event_id": msg_event.id.to_hex(),
         "nostr_group_id": ngid,
     }));
+    Ok(())
+}
+
+fn cmd_hypernote_catalog(compact: bool) -> anyhow::Result<()> {
+    if compact {
+        print(hn::hypernote_catalog_value());
+    } else {
+        println!("{}", hn::hypernote_catalog_json());
+    }
     Ok(())
 }
 

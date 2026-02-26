@@ -6,6 +6,7 @@ struct ChatInputBar: View {
     @Binding var messageText: String
     @Binding var selectedPhotoItem: PhotosPickerItem?
     @Binding var showFileImporter: Bool
+    @Binding var showPollComposer: Bool
     let showAttachButton: Bool
     let showMicButton: Bool
     @FocusState.Binding var isInputFocused: Bool
@@ -22,15 +23,21 @@ struct ChatInputBar: View {
                     // TODO: Stickers
 
                     Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Label("Photos & Videos", systemImage: "photo.on.rectangle")
+                    }
+
+                    Button {
                         showFileImporter = true
                     } label: {
                         Label("File", systemImage: "doc")
                     }
 
                     Button {
-                        showPhotoPicker = true
+                        showPollComposer = true
                     } label: {
-                        Label("Photos & Videos", systemImage: "photo.on.rectangle")
+                        Label("Poll", systemImage: "chart.bar")
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -151,6 +158,7 @@ private struct ChatInputBarPreview: View {
     @State var messageText = ""
     @State var selectedPhotoItem: PhotosPickerItem?
     @State var showFileImporter = false
+    @State var showPollComposer = false
     @FocusState var isInputFocused: Bool
 
     let showAttach: Bool
@@ -161,6 +169,7 @@ private struct ChatInputBarPreview: View {
             messageText: $messageText,
             selectedPhotoItem: $selectedPhotoItem,
             showFileImporter: $showFileImporter,
+            showPollComposer: $showPollComposer,
             showAttachButton: showAttach,
             showMicButton: showMic,
             isInputFocused: $isInputFocused,

@@ -1,4 +1,5 @@
 use crate::state::Screen;
+use std::collections::HashMap;
 
 #[derive(uniffi::Enum, Debug, Clone)]
 pub enum AppAction {
@@ -123,7 +124,12 @@ pub enum AppAction {
         chat_id: String,
         message_id: String,
         action_name: String,
-        form_json: String,
+        form: HashMap<String, String>,
+    },
+    SendHypernotePoll {
+        chat_id: String,
+        question: String,
+        options: Vec<String>,
     },
 
     // Chat management
@@ -220,6 +226,7 @@ impl AppAction {
 
             // Hypernote
             AppAction::HypernoteAction { .. } => "HypernoteAction",
+            AppAction::SendHypernotePoll { .. } => "SendHypernotePoll",
 
             // Chat management
             AppAction::ArchiveChat { .. } => "ArchiveChat",

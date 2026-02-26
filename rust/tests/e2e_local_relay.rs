@@ -11,7 +11,7 @@ use nostr_sdk::nostr::{Event, EventId, Filter, Kind, PublicKey};
 use nostr_sdk::prelude::{
     Alphabet, Client, EventBuilder, RelayPoolNotification, SingleLetterTag, Tag,
 };
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp};
+use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp, Screen};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -1542,14 +1542,88 @@ fn alice_sends_hypernote_bob_receives_and_parses() {
     // Verify the message is not marked as mine (Bob is the receiver).
     assert!(!msg.is_mine, "Bob should see the message as not his");
 
-    // No actions or title tags were sent, so those should be None.
+    // Declared actions come from SubmitButton nodes, and title remains optional metadata.
     assert!(
-        hypernote.actions.is_none(),
-        "actions should be None when not sent"
+        hypernote.declared_actions.iter().any(|a| a == "confirm"),
+        "declared actions should include confirm"
     );
     assert!(
         hypernote.title.is_none(),
         "title should be None when not sent"
+    );
+
+    // Bob submits the hypernote action response (kind 9468) with form data.
+    bob.dispatch(AppAction::HypernoteAction {
+        chat_id: chat_id.clone(),
+        message_id: msg.id.clone(),
+        action_name: "confirm".to_string(),
+        form: HashMap::from([("amount".to_string(), "1000".to_string())]),
+    });
+
+    // Move Alice away from the chat so hidden responses would incorrectly increase unread
+    // if the unread filter regresses.
+    alice.dispatch(AppAction::PushScreen {
+        screen: Screen::ChatList,
+    });
+    wait_until(
+        "alice returned to chat list",
+        Duration::from_secs(5),
+        || alice.state().current_chat.is_none(),
+    );
+
+    // Hidden responses must not change unread count or chat preview text.
+    wait_until(
+        "alice hidden response does not bump unread or preview",
+        Duration::from_secs(10),
+        || {
+            alice
+                .state()
+                .chat_list
+                .iter()
+                .find(|c| c.chat_id == chat_id)
+                .map(|c| {
+                    c.unread_count == 0 && c.last_message.as_deref() == Some(hypernote_content)
+                })
+                .unwrap_or(false)
+        },
+    );
+
+    // Alice sees tally + responder attribution when reopening the hypernote.
+    alice.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until(
+        "alice sees hypernote response tally",
+        Duration::from_secs(10),
+        || {
+            alice
+                .state()
+                .current_chat
+                .as_ref()
+                .and_then(|c| c.messages.iter().find(|m| m.id == msg.id))
+                .and_then(|m| m.hypernote.as_ref())
+                .map(|h| {
+                    h.response_tallies
+                        .iter()
+                        .any(|t| t.action == "confirm" && t.count == 1)
+                })
+                .unwrap_or(false)
+        },
+    );
+
+    // Bob sees his own response reflected as selected.
+    wait_until(
+        "bob sees my_response for hypernote",
+        Duration::from_secs(10),
+        || {
+            bob.state()
+                .current_chat
+                .as_ref()
+                .and_then(|c| c.messages.iter().find(|m| m.id == msg.id))
+                .and_then(|m| m.hypernote.as_ref())
+                .and_then(|h| h.my_response.as_deref())
+                == Some("confirm")
+        },
     );
 
     drop(general_relay);

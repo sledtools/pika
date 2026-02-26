@@ -269,7 +269,7 @@ run_lab() {
   tap_log="$run_dir/nostr_connect_tap.log"
   sim_log="$run_dir/sim.log"
 
-  MANIFEST="$(cargo run -q -p pika-fixture -- up \
+  MANIFEST="$(cargo run -q -p pikahub -- up \
     --profile relay \
     --background \
     --state-dir "$run_dir" \
@@ -424,7 +424,7 @@ cleanup() {
     wait "$TAP_PID" >/dev/null 2>&1 || true
   fi
   if [ -n "${LAST_RUN_DIR:-}" ]; then
-    cargo run -q -p pika-fixture -- down --state-dir "$LAST_RUN_DIR" 2>/dev/null || true
+    cargo run -q -p pikahub -- down --state-dir "$LAST_RUN_DIR" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT

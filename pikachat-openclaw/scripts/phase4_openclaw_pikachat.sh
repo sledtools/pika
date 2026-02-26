@@ -28,7 +28,7 @@ cleanup() {
     kill "${OPENCLAW_PID}" >/dev/null 2>&1 || true
   fi
   if [[ -z "${RELAY_URL_WAS_SET:-}" ]]; then
-    cargo run -q --manifest-path "${REPO_ROOT}/Cargo.toml" -p pika-fixture -- down --state-dir "${STATE_DIR_ABS}" 2>/dev/null || true
+    cargo run -q --manifest-path "${REPO_ROOT}/Cargo.toml" -p pikahub -- down --state-dir "${STATE_DIR_ABS}" 2>/dev/null || true
   fi
   if [[ "${AUTO_STATE_DIR}" == "1" ]]; then
     rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
@@ -37,7 +37,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${RELAY_URL}" ]]; then
-  MANIFEST="$(cargo run -q --manifest-path "${REPO_ROOT}/Cargo.toml" -p pika-fixture -- up \
+  MANIFEST="$(cargo run -q --manifest-path "${REPO_ROOT}/Cargo.toml" -p pikahub -- up \
     --profile relay \
     --background \
     --state-dir "${STATE_DIR_ABS}" \

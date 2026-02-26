@@ -72,6 +72,6 @@ AGENTS.private.md
 .pika-relay/
 
 # Local backend state (just run-server)
-.pika-fixture/
+.pikahub/
 
 

@@ -5,7 +5,7 @@ set -euo pipefail
 # from marmot-interop-lab-rust over a local relay.
 #
 # This script:
-# 1) starts a local pika-relay via pika-fixture
+# 1) starts a local pika-relay via pikahub
 # 2) starts the rust_harness "bot" (publishes kind 443 + waits for a welcome)
 # 3) runs the Pika core baseline client to create a chat and verify `ping` -> `pong`
 
@@ -77,16 +77,16 @@ cleanup() {
     kill "${BOT_PID}" >/dev/null 2>&1 || true
     wait "${BOT_PID}" >/dev/null 2>&1 || true
   fi
-  cargo run -q -p pika-fixture -- down --state-dir "$STATE_DIR" 2>/dev/null || true
+  cargo run -q -p pikahub -- down --state-dir "$STATE_DIR" 2>/dev/null || true
   if [ "$KEEP" -eq 0 ] && [ -z "${PIKA_INTEROP_STATE_DIR:-}" ]; then
     rm -rf "$STATE_DIR" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-# ── Start relay via pika-fixture ─────────────────────────────────────────────
+# ── Start relay via pikahub ─────────────────────────────────────────────
 
-MANIFEST="$(cargo run -q -p pika-fixture -- up \
+MANIFEST="$(cargo run -q -p pikahub -- up \
   --profile relay \
   --background \
   --state-dir "$STATE_DIR" \

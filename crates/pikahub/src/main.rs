@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "pika-fixture")]
+#[command(name = "pikahub")]
 #[command(about = "Unified test environment runner for Pika")]
 struct Cli {
     #[command(subcommand)]

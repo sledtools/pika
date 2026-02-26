@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Deterministic local E2E UI runner:
-# - starts a local pika-relay + Rust bot via pika-fixture
+# - starts a local pika-relay + Rust bot via pikahub
 # - runs platform UI E2E tests against that relay+bot
 #
 # Usage:
@@ -82,7 +82,7 @@ fi
 STATE_DIR="$(mktemp -d /tmp/pika-ui-e2e-local.XXXXXX)"
 
 cleanup() {
-  cargo run -q -p pika-fixture -- down --state-dir "$STATE_DIR" 2>/dev/null || true
+  cargo run -q -p pikahub -- down --state-dir "$STATE_DIR" 2>/dev/null || true
   if [ "${KEEP}" != "1" ]; then
     rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
   else
@@ -91,7 +91,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Start relay + bot via pika-fixture ───────────────────────────────────────
+# ── Start relay + bot via pikahub ───────────────────────────────────────
 
 FIXTURE_CONFIG="$STATE_DIR/fixture-config.toml"
 cat > "$FIXTURE_CONFIG" <<EOF
@@ -99,7 +99,7 @@ cat > "$FIXTURE_CONFIG" <<EOF
 timeout_secs = ${BOT_TIMEOUT_SEC}
 EOF
 
-MANIFEST="$(cargo run -q -p pika-fixture -- up \
+MANIFEST="$(cargo run -q -p pikahub -- up \
   --profile relay-bot \
   --background \
   --state-dir "$STATE_DIR" \

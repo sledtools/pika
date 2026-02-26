@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_RELAY_PORT: u16 = 3334;
 pub const DEFAULT_SERVER_PORT: u16 = 8080;
-pub const DEFAULT_STATE_DIR: &str = ".pika-fixture";
+pub const DEFAULT_STATE_DIR: &str = ".pikahub";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -110,7 +110,7 @@ impl ResolvedConfig {
         let overlay = overlay.unwrap_or_default();
 
         // relay_port=0 is passed through to the Go relay which binds :0 natively;
-        // pika-fixture discovers the actual port from the relay's log output.
+        // pikahub discovers the actual port from the relay's log output.
         let relay_port = relay_port_cli
             .or(overlay.relay.as_ref().and_then(|r| r.port))
             .unwrap_or(DEFAULT_RELAY_PORT);
@@ -212,7 +212,7 @@ fn find_workspace_root() -> Result<PathBuf> {
 }
 
 /// Resolve the state directory. If no explicit path is given, defaults to
-/// `<workspace_root>/.pika-fixture` so that down/status/env/logs/exec/wait
+/// `<workspace_root>/.pikahub` so that down/status/env/logs/exec/wait
 /// work regardless of CWD.
 pub fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf> {
     match state_dir {

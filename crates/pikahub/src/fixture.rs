@@ -205,7 +205,7 @@ fn build_manifest(config: &ResolvedConfig, fixture: &RunningFixture) -> Manifest
 
 fn print_summary(config: &ResolvedConfig, manifest: &Manifest) {
     eprintln!();
-    eprintln!("=== pika-fixture ready ({}) ===", config.profile);
+    eprintln!("=== pikahub ready ({}) ===", config.profile);
     eprintln!();
     if let Some(ref url) = manifest.relay_url {
         eprintln!("  Relay:     {url}");

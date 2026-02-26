@@ -114,7 +114,7 @@ jobs:
               - 'nix/**'
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
-              - 'crates/pika-fixture/**'
+              - 'crates/pikahub/**'
               - 'crates/pika-marmot-runtime/**'
               - 'cmd/pika-relay/**'
 

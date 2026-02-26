@@ -5777,25 +5777,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pika-fixture"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "nix",
- "pika-marmot-runtime",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "pika-marmot-runtime"
 version = "0.1.0"
 dependencies = [
@@ -5994,6 +5975,25 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "pikahub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "nix",
+ "pika-marmot-runtime",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

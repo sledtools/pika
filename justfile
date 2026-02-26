@@ -229,7 +229,7 @@ pre-commit: fmt
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
     cargo clippy -p pika-server --tests -- -D warnings
-    cargo clippy -p pika-fixture -- -D warnings
+    cargo clippy -p pikahub -- -D warnings
 
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt
@@ -247,11 +247,11 @@ pre-merge-pika: fmt
 pre-merge-notifications:
     #!/usr/bin/env bash
     set -euo pipefail
-    SD="$(mktemp -d /tmp/pika-fixture-notifications.XXXXXX)"
-    cleanup() { cargo run -q -p pika-fixture -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+    SD="$(mktemp -d /tmp/pikahub-notifications.XXXXXX)"
+    cleanup() { cargo run -q -p pikahub -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT
-    cargo run -q -p pika-fixture -- up --profile postgres --background --state-dir "$SD" >/dev/null
-    eval "$(cargo run -q -p pika-fixture -- env --state-dir "$SD")"
+    cargo run -q -p pikahub -- up --profile postgres --background --state-dir "$SD" >/dev/null
+    eval "$(cargo run -q -p pikahub -- env --state-dir "$SD")"
     cargo clippy -p pika-server -- -D warnings
     cargo test -p pika-server -- --test-threads=1
     echo "pre-merge-notifications complete"
@@ -278,18 +278,18 @@ pre-merge-rmp:
     just rmp-init-smoke-ci
     @echo "pre-merge-rmp complete"
 
-# CI-safe pre-merge for the pika-fixture tooling lane.
+# CI-safe pre-merge for the pikahub tooling lane.
 pre-merge-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo clippy -p pika-fixture -- -D warnings
-    cargo test -p pika-fixture
-    SD="$(mktemp -d /tmp/pika-fixture-smoke.XXXXXX)"
-    cleanup() { cargo run -q -p pika-fixture -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+    cargo clippy -p pikahub -- -D warnings
+    cargo test -p pikahub
+    SD="$(mktemp -d /tmp/pikahub-smoke.XXXXXX)"
+    cleanup() { cargo run -q -p pikahub -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT
-    cargo run -q -p pika-fixture -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
-    cargo run -q -p pika-fixture -- wait --state-dir "$SD" --timeout 30
-    cargo run -q -p pika-fixture -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
+    cargo run -q -p pikahub -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
+    cargo run -q -p pikahub -- wait --state-dir "$SD" --timeout 30
+    cargo run -q -p pikahub -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
     echo "pre-merge-fixture complete"
 
 # Single CI entrypoint for the whole repo.
@@ -762,15 +762,15 @@ relay-build:
 # ── Local backend (postgres + relay + pika-server) ──────────────────────────
 # Start local backend (postgres, pika-relay, pika-server with agent control).
 
-# State persists in .pika-fixture/. Press Ctrl-C to stop all services.
+# State persists in .pikahub/. Press Ctrl-C to stop all services.
 run-server:
-    cargo run -p pika-fixture -- up --profile backend
+    cargo run -p pikahub -- up --profile backend
 
 # Run agent-fly against local backend (requires `just run-server` in another terminal).
 agent-fly-local *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
-    eval "$(cargo run -q -p pika-fixture -- env)"
+    eval "$(cargo run -q -p pikahub -- env)"
     if [ ! -f .env ]; then
       echo "error: missing .env in repo root"
       echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"

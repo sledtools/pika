@@ -414,6 +414,16 @@ enum AgentCommand {
         #[command(flatten)]
         control: AgentControlArgs,
     },
+
+    /// Tear down a runtime by id
+    Teardown {
+        /// Runtime id to tear down
+        #[arg(long)]
+        runtime_id: String,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -694,6 +704,10 @@ async fn main() -> anyhow::Result<()> {
                 runtime_id,
                 control,
             } => cmd_agent_get_runtime(&cli, runtime_id, control).await,
+            AgentCommand::Teardown {
+                runtime_id,
+                control,
+            } => cmd_agent_teardown(&cli, runtime_id, control).await,
         },
     }
 }
@@ -2015,7 +2029,51 @@ async fn cmd_agent_new_remote(
         return Ok(());
     }
 
-    // Interactive mode: wait for bot, create group, chat, teardown on exit
+    // Interactive mode: setup chat, run loop, teardown on exit or setup failure.
+    // All fallible steps after provisioning are wrapped so teardown always runs.
+    let session_result = run_interactive_session(
+        &keys,
+        &mdk,
+        &control_client,
+        &relay_urls,
+        &kp_relay_urls,
+        &runtime,
+    )
+    .await;
+
+    // Best-effort teardown unless --keep (runs on success, chat exit, AND setup failures)
+    if keep {
+        eprintln!("\n--keep: runtime {runtime_id} left alive.");
+    } else {
+        eprintln!("\nTearing down runtime {runtime_id}...");
+        match control_client
+            .send_command(AgentControlCommand::Teardown(TeardownCommand {
+                runtime_id: runtime_id.clone(),
+            }))
+            .await
+        {
+            Ok(_) => eprintln!("Runtime {runtime_id} torn down."),
+            Err(err) => {
+                eprintln!("Teardown failed: {err:#}");
+                eprintln!("Manual cleanup: pikachat agent teardown --runtime-id {runtime_id}");
+            }
+        }
+    }
+
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+
+    session_result
+}
+
+async fn run_interactive_session(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    control_client: &RemoteControlClient,
+    relay_urls: &[String],
+    kp_relay_urls: &[String],
+    runtime: &pika_agent_control_plane::RuntimeDescriptor,
+) -> anyhow::Result<()> {
     let bot_pubkey_hex = runtime
         .bot_pubkey
         .as_deref()
@@ -2024,13 +2082,12 @@ async fn cmd_agent_new_remote(
         PublicKey::parse(bot_pubkey_hex).context("parse bot pubkey from provision result")?;
 
     eprintln!(
-        "Runtime {} provisioned ({provider:?}). Connecting to chat...",
-        runtime_id
+        "Runtime {} provisioned. Connecting to chat...",
+        runtime.runtime_id
     );
 
-    // Reuse the control client's nostr connection for key-package fetch + chat
-    let relays = relay_util::parse_relay_urls(&relay_urls)?;
-    let kp_relays = relay_util::parse_relay_urls(&kp_relay_urls)?;
+    let relays = relay_util::parse_relay_urls(relay_urls)?;
+    let kp_relays = relay_util::parse_relay_urls(kp_relay_urls)?;
 
     let kp_plan = agent::provider::KeyPackageWaitPlan {
         progress_message: "Waiting for bot key package...",
@@ -2053,8 +2110,8 @@ async fn cmd_agent_new_remote(
         welcome_publish_label: "agent welcome",
     };
     let group = agent::session::create_group_and_publish_welcomes(
-        &keys,
-        &mdk,
+        keys,
+        mdk,
         &control_client.client,
         &relays,
         bot_kp,
@@ -2070,9 +2127,9 @@ async fn cmd_agent_new_remote(
         wait_for_pending_replies_on_eof: false,
         eof_reply_timeout: Duration::from_secs(30),
     };
-    let chat_result = agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys: &keys,
-        mdk: &mdk,
+    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
+        keys,
+        mdk,
         send_client: &control_client.client,
         listen_client: &control_client.client,
         relays: &relays,
@@ -2082,31 +2139,7 @@ async fn cmd_agent_new_remote(
         plan: chat_plan,
         seen_mls_event_ids: None,
     })
-    .await;
-
-    // Best-effort teardown unless --keep
-    if keep {
-        eprintln!("\n--keep: runtime {runtime_id} left alive.");
-    } else {
-        eprintln!("\nTearing down runtime {runtime_id}...");
-        match control_client
-            .send_command(AgentControlCommand::Teardown(TeardownCommand {
-                runtime_id: runtime_id.clone(),
-            }))
-            .await
-        {
-            Ok(_) => eprintln!("Runtime {runtime_id} torn down."),
-            Err(err) => {
-                eprintln!("Teardown failed: {err:#}");
-                eprintln!("Manual cleanup: pikachat agent teardown --runtime-id {runtime_id}");
-            }
-        }
-    }
-
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-
-    chat_result
+    .await
 }
 
 fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
@@ -2172,6 +2205,30 @@ async fn cmd_agent_get_runtime(
     control_client.client.shutdown().await;
     print(json!({
         "operation": "get_runtime",
+        "runtime": result.runtime,
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_teardown(
+    cli: &Cli,
+    runtime_id: &str,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::Teardown(TeardownCommand {
+            runtime_id: runtime_id.to_string(),
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "teardown",
         "runtime": result.runtime,
         "payload": result.payload,
     }));
@@ -2718,5 +2775,23 @@ mod tests {
             "runtime-123",
         ]);
         assert_eq!(runtime_id, "runtime-123");
+    }
+
+    #[test]
+    fn agent_teardown_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "teardown",
+            "--runtime-id",
+            "fly-abc123",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::Teardown { runtime_id, .. },
+            } => assert_eq!(runtime_id, "fly-abc123"),
+            _ => panic!("expected agent teardown command"),
+        }
     }
 }

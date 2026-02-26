@@ -1,9 +1,12 @@
 package com.pika.app.ui.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,14 +18,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -60,7 +65,8 @@ fun PeerProfileSheet(
     ) {
         LazyColumn(
             modifier = Modifier.padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             // Avatar
             item {
@@ -80,42 +86,41 @@ fun PeerProfileSheet(
             // Name and about
             if (profile.name != null || profile.about != null) {
                 item {
-                    Text("Profile", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(4.dp))
-                    if (profile.name != null) {
-                        Text(
-                            profile.name!!,
-                            style = MaterialTheme.typography.headlineSmall,
-                        )
-                    }
-                    if (profile.about != null) {
-                        Text(
-                            profile.about!!,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    ProfileSectionCard(title = "Profile") {
+                        if (profile.name != null) {
+                            Text(
+                                profile.name!!,
+                                style = MaterialTheme.typography.headlineMedium,
+                            )
+                        }
+                        if (profile.about != null) {
+                            Text(
+                                profile.about!!,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
 
             // Public key
             item {
-                HorizontalDivider()
-                Text("Public Key", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        profile.npub,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = {
-                        clipboard.setText(AnnotatedString(profile.npub))
-                        Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
-                    }) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy npub", modifier = Modifier.size(18.dp))
+                ProfileSectionCard(title = "Public Key") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            profile.npub,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString(profile.npub))
+                            Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy npub", modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
             }
@@ -123,42 +128,78 @@ fun PeerProfileSheet(
             // QR code
             item {
                 val qr = remember(profile.npub) { QrCode.encode(profile.npub, 512).asImageBitmap() }
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Image(
-                        bitmap = qr,
-                        contentDescription = "Peer npub QR",
-                        modifier = Modifier.size(200.dp).clip(MaterialTheme.shapes.medium),
-                    )
+                ProfileSectionCard {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Image(
+                            bitmap = qr,
+                            contentDescription = "Peer npub QR",
+                            modifier = Modifier.size(200.dp).clip(MaterialTheme.shapes.medium),
+                        )
+                    }
                 }
             }
 
             // Follow / Unfollow
             item {
-                HorizontalDivider()
-                Spacer(Modifier.height(4.dp))
-                if (profile.isFollowed) {
-                    Button(
-                        onClick = { manager.dispatch(AppAction.UnfollowUser(profile.pubkey)) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Unfollow")
-                    }
-                } else {
-                    Button(
-                        onClick = { manager.dispatch(AppAction.FollowUser(profile.pubkey)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Follow")
+                ProfileSectionCard {
+                    if (profile.isFollowed) {
+                        Button(
+                            onClick = { manager.dispatch(AppAction.UnfollowUser(profile.pubkey)) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Unfollow")
+                        }
+                    } else {
+                        Button(
+                            onClick = { manager.dispatch(AppAction.FollowUser(profile.pubkey)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Follow")
+                        }
                     }
                 }
-                Spacer(Modifier.height(24.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun ProfileSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun ProfileSectionCard(
+    title: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.24f)),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
+            ),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (title != null) {
+                ProfileSectionTitle(title)
+            }
+            content()
         }
     }
 }

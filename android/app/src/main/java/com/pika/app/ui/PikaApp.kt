@@ -1,22 +1,21 @@
 package com.pika.app.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.Scaffold
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.Screen
@@ -31,14 +30,14 @@ import com.pika.app.ui.screens.PeerProfileSheet
 
 @Composable
 fun PikaApp(manager: AppManager) {
-    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
     val state = manager.state
     var callSurfaceChatId by rememberSaveable { mutableStateOf<String?>(null) }
     var isCallSurfacePresented by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.toast) {
         val msg = state.toast ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message = msg)
+        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
     }
 
     LaunchedEffect(state.activeCall?.callId, state.activeCall?.status) {
@@ -57,7 +56,6 @@ fun PikaApp(manager: AppManager) {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
         val router = state.router
         when (router.defaultScreen) {

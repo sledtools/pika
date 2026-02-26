@@ -41,7 +41,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -245,7 +244,7 @@ fun CallSurface(manager: AppManager, chatId: String, onDismiss: () -> Unit) {
                         modifier =
                             Modifier
                                 .fillMaxSize()
-                                .background(Color.Black)
+                                .background(MaterialTheme.colorScheme.scrim)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,

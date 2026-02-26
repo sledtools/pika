@@ -510,9 +510,11 @@ android-install: gen-kotlin android-rust android-local-properties
 
 # Run Android instrumentation tests (requires running emulator/device).
 android-ui-test: gen-kotlin android-rust android-local-properties
-    ./tools/android-ensure-debug-installable
+    TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"; \
+    TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"; \
+    PIKA_ANDROID_APP_ID="$TEST_APP_ID" ./tools/android-ensure-debug-installable; \
     SERIAL="$(./tools/android-pick-serial)"; \
-    cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest
+    cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest -PPIKA_ANDROID_APPLICATION_ID_SUFFIX="$TEST_SUFFIX"
 
 # Android E2E: local Nostr relay + local Rust bot. Requires emulator.
 android-ui-e2e-local:

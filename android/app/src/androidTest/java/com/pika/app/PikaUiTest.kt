@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -13,10 +14,14 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.input.key.Key
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pika.app.ui.TestTags
@@ -77,6 +82,7 @@ class PikaUiTest {
     }
 
     @Test
+    @OptIn(ExperimentalTestApi::class)
     fun createAccount_noteToSelf_sendMessage_and_logout() {
         hardResetForeground()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
@@ -128,18 +134,17 @@ class PikaUiTest {
         }
         compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertIsDisplayed()
 
-        val msg = "hello from ui test"
-        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).performTextInput(msg)
-        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertTextContains(msg)
-        // Ensure Compose state is updated before tapping Send (avoid dispatching an empty draft).
+        val imeMsg = "hello from ui test ime"
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).performTextInput(imeMsg)
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertTextContains(imeMsg)
         compose.waitForIdle()
-        compose.onNodeWithTag(TestTags.CHAT_SEND).performClick()
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).performImeAction()
 
         // Message should appear optimistically even if publishing fails.
-        dumpState("after Send click", ctx)
+        dumpState("after IME send", ctx)
         compose.waitUntil(30_000) {
             runOnMain {
-                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == msg }
+                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == imeMsg }
                     ?: false
             } && runCatching {
                 compose.onNodeWithTag(TestTags.CHAT_MESSAGE_LIST).assertIsDisplayed()
@@ -147,7 +152,29 @@ class PikaUiTest {
         }
         check(
             runOnMain {
-                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == msg }
+                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == imeMsg }
+                    ?: false
+            },
+        )
+
+        val hardwareEnterMsg = "hello from ui test enter"
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).performTextInput(hardwareEnterMsg)
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertTextContains(hardwareEnterMsg)
+        compose.waitForIdle()
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).performKeyInput {
+            pressKey(Key.Enter)
+        }
+
+        dumpState("after hardware enter send", ctx)
+        compose.waitUntil(30_000) {
+            runOnMain {
+                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == hardwareEnterMsg }
+                    ?: false
+            }
+        }
+        check(
+            runOnMain {
+                AppManager.getInstance(ctx).state.currentChat?.messages?.any { it.content == hardwareEnterMsg }
                     ?: false
             },
         )

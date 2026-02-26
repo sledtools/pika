@@ -44,7 +44,11 @@ info:
     @echo "    just desktop-check"
     @echo
     @echo "Agent demos"
-    @echo "  Fly demo:"
+    @echo "  Local backend (postgres + relay + server):"
+    @echo "    just run-server"
+    @echo "  Fly demo (against local backend):"
+    @echo "    just agent-fly-local"
+    @echo "  Fly demo (against deployed backend):"
     @echo "    just agent-fly"
     @echo "  MicroVM demo:"
     @echo "    just agent-microvm"
@@ -772,6 +776,27 @@ run-relay-dev:
 # Build pika-relay binary.
 relay-build:
     cd cmd/pika-relay && go build -o ../../target/pika-relay .
+
+# ── Local backend (postgres + relay + pika-server) ──────────────────────────
+# Start local backend (postgres, pika-relay, pika-server with agent control).
+
+# State persists in .local-backend/. Press Ctrl-C to stop all services.
+run-server:
+    ./scripts/local-backend.sh
+
+# Run agent-fly against local backend (requires `just run-server` in another terminal).
+agent-fly-local *ARGS="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    eval "$(./scripts/local-backend.sh --env 2>/dev/null)"
+    if [ ! -f .env ]; then
+      echo "error: missing .env in repo root"
+      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"
+      exit 1
+    fi
+    set -a; source .env; set +a
+    export PIKA_AGENT_CONTROL_SERVER_PUBKEY RELAY_EU RELAY_US
+    just agent-fly {{ ARGS }}
 
 # ── pikachat (Pika messaging CLI) ───────────────────────────────────────────
 

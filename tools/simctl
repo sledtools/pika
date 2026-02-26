@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-if [ -z "${DEV_DIR:-}" ]; then
-  echo "error: Xcode not found under /Applications (needed for simctl)" >&2
-  exit 1
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 
 exec "$DEV_DIR/usr/bin/simctl" "$@"

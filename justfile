@@ -722,7 +722,7 @@ desktop-check:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ "$(uname -s)" == "Darwin" ]]; then
-      CC=/usr/bin/clang CXX=/usr/bin/clang++ cargo check -p pika-desktop
+      ./tools/cargo-with-xcode check -p pika-desktop
     else
       cargo check -p pika-desktop
     fi
@@ -733,7 +733,13 @@ desktop-ui-test:
 
 # Run the desktop ICED app.
 run-desktop *ARGS:
-    cargo run -p pika-desktop {{ ARGS }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      ./tools/cargo-with-xcode run -p pika-desktop {{ ARGS }}
+    else
+      cargo run -p pika-desktop {{ ARGS }}
+    fi
 
 # Check iOS dev environment (Xcode, simulators, runtimes).
 doctor-ios:

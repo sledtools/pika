@@ -6,11 +6,8 @@ set -euo pipefail
 # This does NOT download iOS simulator runtimes. If no runtimes are installed, it prints
 # a clear error message and exits non-zero.
 
-DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-if [ -z "${DEV_DIR:-}" ]; then
-  echo "error: Xcode not found under /Applications" >&2
-  exit 1
-fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 export DEVELOPER_DIR="$DEV_DIR"
 
 SIMCTL="$DEV_DIR/usr/bin/simctl"

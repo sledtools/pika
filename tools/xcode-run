@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Run a command with a working Xcode toolchain env even inside Nix/direnv shells:
-# - chooses /Applications/Xcode*.app Developer dir
+# - resolves the pinned Xcode Developer dir
 # - unsets common Nix compiler env vars that break xcodebuild
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$("$TOOLS_DIR/xcode-dev-dir")"
-exec env -u LD -u CC -u CXX DEVELOPER_DIR="$DEV_DIR" "$@"
+exec env -u LD -u CC -u CXX -u AR -u RANLIB -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET DEVELOPER_DIR="$DEV_DIR" "$@"

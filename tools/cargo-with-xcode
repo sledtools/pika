@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  exec cargo "$@"
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
+TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+CLANG_BIN="$TOOLCHAIN_BIN/clang"
+
+exec env \
+  -u SDKROOT \
+  -u MACOSX_DEPLOYMENT_TARGET \
+  -u IPHONEOS_DEPLOYMENT_TARGET \
+  DEVELOPER_DIR="$DEV_DIR" \
+  CC="$CLANG_BIN" \
+  CXX="$TOOLCHAIN_BIN/clang++" \
+  AR="$TOOLCHAIN_BIN/ar" \
+  RANLIB="$TOOLCHAIN_BIN/ranlib" \
+  CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$CLANG_BIN" \
+  CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$CLANG_BIN" \
+  cargo "$@"

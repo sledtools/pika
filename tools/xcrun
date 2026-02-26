@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-if [ -n "${DEV_DIR:-}" ]; then
-  export DEVELOPER_DIR="$DEV_DIR"
-fi
-exec /usr/bin/xcrun "$@"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
+exec env DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun "$@"

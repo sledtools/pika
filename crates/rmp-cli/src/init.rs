@@ -730,9 +730,18 @@ fn tpl_flake_nix() -> String {
             export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 
             if [ "$(uname -s)" = "Darwin" ]; then
-              DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
-              if [ -n "$DEV_DIR" ]; then
+              if [ -n "''${DEVELOPER_DIR:-}" ] && [ -x "''${DEVELOPER_DIR}/usr/bin/simctl" ]; then
+                DEV_DIR="$DEVELOPER_DIR"
+              else
+                DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+              fi
+              if [ -n "$DEV_DIR" ] && [ -d "$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin" ]; then
                 export DEVELOPER_DIR="$DEV_DIR"
+                TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+                export CC="$TOOLCHAIN_BIN/clang"
+                export CXX="$TOOLCHAIN_BIN/clang++"
+                export AR="$TOOLCHAIN_BIN/ar"
+                export RANLIB="$TOOLCHAIN_BIN/ranlib"
               fi
             fi
 

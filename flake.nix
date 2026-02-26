@@ -441,6 +441,18 @@
                 fi
                 echo ""
               fi
+
+              # Ensure Cargo C/C++ build scripts use the pinned Xcode toolchain
+              # (not nix clang-wrapper), which avoids target-wrapper mismatches.
+              if [ -n "''${DEVELOPER_DIR:-}" ] && [ -d "''${DEVELOPER_DIR}/Toolchains/XcodeDefault.xctoolchain/usr/bin" ]; then
+                TOOLCHAIN_BIN="''${DEVELOPER_DIR}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+                export CC="$TOOLCHAIN_BIN/clang"
+                export CXX="$TOOLCHAIN_BIN/clang++"
+                export AR="$TOOLCHAIN_BIN/ar"
+                export RANLIB="$TOOLCHAIN_BIN/ranlib"
+                export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
+                export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
+              fi
             fi
 
             ${if hasAndroidSdk then ''

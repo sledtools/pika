@@ -1,13 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Print the most recent Xcode Developer directory under /Applications.
-# Errors if not found.
+# Resolve an Xcode Developer directory with deterministic precedence:
+# 1) Respect DEVELOPER_DIR if already set (flake shell pins this).
+# 2) Respect xcode-select (xcode-wrapper may pin this in nix shells).
+# 3) Fallback to latest /Applications/Xcode*.app for non-nix usage.
 
-DEV_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
-if [ -z "${DEV_DIR:-}" ]; then
-  echo "error: Xcode not found under /Applications" >&2
-  exit 1
+is_valid_dev_dir() {
+  local dir="${1:-}"
+  [ -n "$dir" ] \
+    && [ -x "$dir/usr/bin/simctl" ] \
+    && [ -x "$dir/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" ]
+}
+
+if is_valid_dev_dir "${DEVELOPER_DIR:-}"; then
+  echo "$DEVELOPER_DIR"
+  exit 0
 fi
-echo "$DEV_DIR"
 
+SELECTED_DIR="$(xcode-select -p 2>/dev/null || true)"
+if is_valid_dev_dir "$SELECTED_DIR"; then
+  echo "$SELECTED_DIR"
+  exit 0
+fi
+
+LATEST_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+if is_valid_dev_dir "$LATEST_DIR"; then
+  echo "$LATEST_DIR"
+  exit 0
+fi
+
+echo "error: no full Xcode install found (need .../Contents/Developer with simctl + clang)" >&2
+exit 1

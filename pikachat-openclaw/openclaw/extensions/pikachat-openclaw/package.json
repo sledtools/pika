@@ -6,8 +6,14 @@
   "publishConfig": {
     "access": "public"
   },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "bech32": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.2.26"

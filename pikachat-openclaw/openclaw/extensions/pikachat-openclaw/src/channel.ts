@@ -669,10 +669,10 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     isConfigured: (account) => account.configured,
     describeAccount: (account) => ({
       accountId: account.accountId,
-      name: account.name,
+      name: account.name ?? undefined,
       enabled: account.enabled,
       configured: account.configured,
-      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? null,
+      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? undefined,
     }),
     resolveAllowFrom: ({ cfg, accountId }) =>
       (resolvePikachatAccount({ cfg, accountId }).config.groupAllowFrom ?? []).map((x) => String(x)),
@@ -721,10 +721,10 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   status: {
     buildAccountSnapshot: ({ account }) => ({
       accountId: account.accountId,
-      name: account.name,
+      name: account.name ?? undefined,
       enabled: account.enabled,
       configured: account.configured,
-      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? null,
+      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? undefined,
     }),
   },
 
@@ -1460,14 +1460,14 @@ export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
         },
         required: ["content"],
       },
-      handler: async (params: { content: string; title?: string; state?: string }) => {
+      async execute(_id: string, params: { content: string; title?: string; state?: string }) {
         const target = resolveToolTarget(ctx);
-        if (!target) return "Sidecar not running or no target group.";
+        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
         target.handle.sidecar.sendHypernote(target.groupId, params.content, {
           title: params.title,
           state: params.state,
         });
-        return "Hypernote sent.";
+        return { content: [{ type: "text" as const, text: "Hypernote sent." }] };
       },
     };
   };
@@ -1486,11 +1486,11 @@ export function createSendReactionToolFactory(): (ctx: ToolContext) => any {
         },
         required: ["event_id", "emoji"],
       },
-      handler: async (params: { event_id: string; emoji: string }) => {
+      async execute(_id: string, params: { event_id: string; emoji: string }) {
         const target = resolveToolTarget(ctx);
-        if (!target) return "Sidecar not running or no target group.";
+        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
         target.handle.sidecar.sendReaction(target.groupId, params.event_id, params.emoji);
-        return "Reaction sent.";
+        return { content: [{ type: "text" as const, text: "Reaction sent." }] };
       },
     };
   };
@@ -1510,11 +1510,11 @@ export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => 
         },
         required: ["event_id", "action"],
       },
-      handler: async (params: { event_id: string; action: string; form?: Record<string, string> }) => {
+      async execute(_id: string, params: { event_id: string; action: string; form?: Record<string, string> }) {
         const target = resolveToolTarget(ctx);
-        if (!target) return "Sidecar not running or no target group.";
+        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
         target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
-        return "Hypernote action submitted.";
+        return { content: [{ type: "text" as const, text: "Hypernote action submitted." }] };
       },
     };
   };

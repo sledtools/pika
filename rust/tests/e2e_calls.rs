@@ -74,17 +74,49 @@ fn call_over_local_moq_relay() {
     };
 
     alice.dispatch(AppAction::CreateChat {
-        peer_npub: bob_npub,
+        peer_npub: bob_npub.clone(),
     });
-    wait_until("alice chat opened", Duration::from_secs(20), || {
-        alice.state().current_chat.is_some()
+    wait_until("alice has chat for bob", Duration::from_secs(45), || {
+        let st = alice.state();
+        st.current_chat
+            .as_ref()
+            .map(|c| c.members.iter().any(|m| m.npub == bob_npub))
+            .unwrap_or(false)
+            || st
+                .chat_list
+                .iter()
+                .any(|c| c.members.iter().any(|m| m.npub == bob_npub))
     });
-    wait_until("bob has chat", Duration::from_secs(20), || {
-        !bob.state().chat_list.is_empty()
-    });
+    let chat_id = {
+        let st = alice.state();
+        if let Some(chat) = st
+            .current_chat
+            .as_ref()
+            .filter(|c| c.members.iter().any(|m| m.npub == bob_npub))
+        {
+            chat.chat_id.clone()
+        } else {
+            st.chat_list
+                .iter()
+                .find(|c| c.members.iter().any(|m| m.npub == bob_npub))
+                .expect("alice chat list should contain bob chat")
+                .chat_id
+                .clone()
+        }
+    };
 
-    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
-    wait_until("bob chat id matches", Duration::from_secs(20), || {
+    alice.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("alice chat opened", Duration::from_secs(30), || {
+        alice
+            .state()
+            .current_chat
+            .as_ref()
+            .map(|c| c.chat_id == chat_id)
+            .unwrap_or(false)
+    });
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
         bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 

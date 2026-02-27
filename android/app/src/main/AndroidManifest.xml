@@ -42,6 +42,14 @@
                     android:scheme="pika"
                     android:host="nostrconnect-return" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="pika"
+                    android:host="chat" />
+            </intent-filter>
         </activity>
 
     </application>

@@ -586,6 +586,58 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[expect].waitForExistence(timeout: 180))
     }
 
+    /// Prove that a pika://chat/<npub> deep-link URL — the same content encoded
+    /// in the CLI QR code — is correctly normalised by the UniFFI bridge and
+    /// creates a working chat. This exercises the in-app scanner path: the QR
+    /// scanner hands the raw string to normalizePeerKey, which strips the
+    /// pika://chat/ prefix, and the result feeds into CreateChat.
+    func testChatDeepLink_opensChat() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
+        app.launch()
+
+        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+        if createAccount.waitForExistence(timeout: 2) {
+            createAccount.tap()
+        }
+
+        let chatsNavBar = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
+
+        // Read our own npub for a deterministic note-to-self deep link.
+        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
+        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
+        myNpubBtn.tap()
+
+        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
+        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
+        let myNpub = npubValue.label
+        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
+
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists { close.tap() }
+        else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
+
+        // Navigate to New Chat and paste the full deep-link URL (as if scanned
+        // from the QR code). normalizePeerKey strips the pika://chat/ prefix.
+        openNewChatFromChatList(app, timeout: 10)
+
+        let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: 10))
+        peer.tap()
+        peer.typeText("pika://chat/\(myNpub)")
+
+        let start = app.buttons.matching(identifier: "newchat_start").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertTrue(start.isEnabled, "Start button should be enabled after entering deep-link URL")
+        start.tap()
+
+        // Note-to-self is synchronous offline; we should land in a chat.
+        let composer = waitForChatComposer(app, timeout: 30)
+        XCTAssertTrue(composer.exists, "Deep link URL did not create a chat")
+    }
+
     func testInterop_nostrConnectLaunchesPrimal() throws {
         let app = XCUIApplication()
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"

@@ -122,6 +122,14 @@ enum Command {
   pikachat identity")]
     Identity,
 
+    /// Print a QR code for your identity that deep-links into the Pika app
+    #[command(after_help = "Example:
+  pikachat qr
+
+Prints a pika://chat/<npub> QR code to the terminal.
+When scanned with a phone camera, it opens Pika and starts a 1:1 chat.")]
+    Qr,
+
     /// Publish a key package (kind 443) so peers can invite you
     #[command(after_help = "Example:
   pikachat publish-kp
@@ -689,6 +697,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Init { nsec } => cmd_init(&cli, nsec.as_deref()).await,
         Command::Identity => cmd_identity(&cli),
+        Command::Qr => cmd_qr(&cli),
         Command::PublishKp => cmd_publish_kp(&cli).await,
         Command::Invite { peer, name } => cmd_invite(&cli, peer, name).await,
         Command::Welcomes => cmd_welcomes(&cli),
@@ -1050,6 +1059,18 @@ fn cmd_identity(cli: &Cli) -> anyhow::Result<()> {
         "pubkey": keys.public_key().to_hex(),
         "npub": keys.public_key().to_bech32().unwrap_or_default(),
     }));
+    Ok(())
+}
+
+fn cmd_qr(cli: &Cli) -> anyhow::Result<()> {
+    let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
+    let npub = keys.public_key().to_bech32().context("encode npub")?;
+    let deep_link = format!("pika://chat/{npub}");
+
+    qr2term::print_qr(&deep_link).context("render QR code")?;
+    eprintln!();
+    eprintln!("  npub: {npub}");
+    eprintln!("  link: {deep_link}");
     Ok(())
 }
 

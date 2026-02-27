@@ -1,8 +1,27 @@
 import XCTest
 @testable import Pika
 
+private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
+    AppState(
+        rev: rev,
+        router: Router(defaultScreen: .chatList, screenStack: []),
+        auth: .loggedOut,
+        myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
+        busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
+        chatList: [],
+        currentChat: nil,
+        followList: [],
+        peerProfile: nil,
+        activeCall: nil,
+        callTimeline: [],
+        toast: toast,
+        developerMode: false,
+        voiceRecording: nil
+    )
+}
+
 final class AppManagerTests: XCTestCase {
-    private func makeState(rev: UInt64, toast: String? = nil) -> AppState {
+    func makeState(rev: UInt64, toast: String? = nil) -> AppState {
         AppState(
             rev: rev,
             router: Router(defaultScreen: .chatList, screenStack: []),
@@ -86,6 +105,47 @@ final class AppManagerTests: XCTestCase {
         XCTAssertEqual(store.stored?.nsec, "nsec1stale")
         let observedRev = await MainActor.run { manager.state.rev }
         XCTAssertEqual(observedRev, 5)
+    }
+}
+
+final class ChatDeepLinkTests: XCTestCase {
+    // A valid 64-char hex pubkey (always passes isValidPeerKey).
+    private let validNpub = String(repeating: "a", count: 64)
+
+    func testParseChatDeepLink_validNpub() {
+        let url = URL(string: "pika://chat/\(validNpub)")!
+        XCTAssertEqual(AppManager.parseChatDeepLink(url), validNpub)
+    }
+
+    func testParseChatDeepLink_validNpubWithTrailingSlash() {
+        let url = URL(string: "pika://chat/\(validNpub)/")!
+        XCTAssertEqual(AppManager.parseChatDeepLink(url), validNpub)
+    }
+
+    func testParseChatDeepLink_wrongHost() {
+        let url = URL(string: "pika://nostrconnect-return/\(validNpub)")!
+        XCTAssertNil(AppManager.parseChatDeepLink(url))
+    }
+
+    func testParseChatDeepLink_invalidNpub() {
+        let url = URL(string: "pika://chat/garbage")!
+        XCTAssertNil(AppManager.parseChatDeepLink(url))
+    }
+
+    func testParseChatDeepLink_missingPath() {
+        let url = URL(string: "pika://chat")!
+        XCTAssertNil(AppManager.parseChatDeepLink(url))
+    }
+
+    func testOnOpenURL_dispatchesCreateChat() async {
+        let core = MockCore(state: makeTestState(rev: 1))
+        let store = MockAuthStore()
+        let manager = await MainActor.run { AppManager(core: core, authStore: store) }
+
+        let url = URL(string: "pika://chat/\(validNpub)")!
+        await MainActor.run { manager.onOpenURL(url) }
+
+        XCTAssertEqual(core.dispatchedActions, [.createChat(peerNpub: validNpub)])
     }
 }
 

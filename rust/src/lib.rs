@@ -63,6 +63,9 @@ pub fn normalize_peer_key(input: &str) -> String {
     if let Some(stripped) = normalized.strip_prefix("nostr:") {
         normalized = stripped.to_string();
     }
+    if let Some(rest) = normalized.strip_prefix("pika://chat/") {
+        normalized = rest.trim_matches('/').to_string();
+    }
     normalized
 }
 
@@ -76,6 +79,64 @@ pub fn is_valid_peer_key(input: &str) -> bool {
         return false;
     }
     nostr_sdk::prelude::PublicKey::parse(&normalized).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_peer_key_strips_nostr_prefix() {
+        assert_eq!(normalize_peer_key("nostr:npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_strips_pika_chat_deep_link() {
+        assert_eq!(normalize_peer_key("pika://chat/npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_strips_pika_chat_deep_link_with_trailing_slash() {
+        assert_eq!(normalize_peer_key("pika://chat/npub1abc/"), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_lowercases_and_trims() {
+        assert_eq!(normalize_peer_key("  NPUB1ABC  "), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_passthrough_plain_npub() {
+        assert_eq!(normalize_peer_key("npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn is_valid_peer_key_accepts_deep_link_hex() {
+        let hex = "a".repeat(64);
+        let deep_link = format!("pika://chat/{hex}");
+        assert!(is_valid_peer_key(&deep_link));
+    }
+
+    #[test]
+    fn is_valid_peer_key_accepts_deep_link_npub() {
+        use nostr_sdk::ToBech32;
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let npub = keys.public_key().to_bech32().unwrap();
+        let deep_link = format!("pika://chat/{npub}");
+        assert!(is_valid_peer_key(&deep_link));
+    }
+
+    #[test]
+    fn is_valid_peer_key_accepts_hex() {
+        let hex = "a".repeat(64);
+        assert!(is_valid_peer_key(&hex));
+    }
+
+    #[test]
+    fn is_valid_peer_key_rejects_garbage() {
+        assert!(!is_valid_peer_key("garbage"));
+        assert!(!is_valid_peer_key("pika://chat/garbage"));
+    }
 }
 
 uniffi::setup_scaffolding!();

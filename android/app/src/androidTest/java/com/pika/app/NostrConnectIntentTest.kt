@@ -70,6 +70,51 @@ class NostrConnectIntentTest {
         assertNull(AppManager.extractNostrConnectCallback(wrongAction))
     }
 
+    // ── Chat deep link intent tests ──
+
+    // A valid 64-char hex pubkey (always passes isValidPeerKey).
+    private val validHexPubkey = "a".repeat(64)
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNpubForValidChatIntent() {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("pika://chat/$validHexPubkey")
+        }
+        assertEquals(validHexPubkey, AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForWrongHost() {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("pika://nostrconnect-return/$validHexPubkey")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForInvalidNpub() {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("pika://chat/garbage")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForMissingPath() {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("pika://chat")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForWrongAction() {
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            data = Uri.parse("pika://chat/$validHexPubkey")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
     private fun String.countOccurrences(fragment: String): Int {
         if (fragment.isEmpty()) return 0
         var count = 0

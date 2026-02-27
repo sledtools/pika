@@ -301,12 +301,25 @@ final class AppManager: AppReconciler {
     }
 
     func onOpenURL(_ url: URL) {
+        if let npub = Self.parseChatDeepLink(url) {
+            NSLog("[PikaAppManager] onOpenURL dispatching CreateChat for: \(npub)")
+            dispatch(.createChat(peerNpub: npub))
+            return
+        }
+
         guard isExpectedNostrConnectCallback(url) else {
             NSLog("[PikaAppManager] onOpenURL ignored unexpected URL: \(url.absoluteString)")
             return
         }
         NSLog("[PikaAppManager] onOpenURL dispatching NostrConnectCallback: \(url.absoluteString)")
         dispatch(.nostrConnectCallback(url: url.absoluteString))
+    }
+
+    nonisolated static func parseChatDeepLink(_ url: URL) -> String? {
+        guard url.host?.lowercased() == "chat" else { return nil }
+        let npub = url.pathComponents.dropFirst().first ?? ""
+        guard isValidPeerKey(input: npub) else { return nil }
+        return npub
     }
 
     func refreshMyProfile() {

@@ -74,7 +74,8 @@ need python3
 
 # Build once, then invoke the binary directly to avoid `cargo run` overhead in the loop.
 cargo build -q -p pikachat
-CLI_BIN="${ROOT}/target/debug/pikachat"
+TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+CLI_BIN="${TARGET_ROOT}/debug/pikachat"
 if [ ! -x "$CLI_BIN" ]; then
   echo "error: expected pikachat at: $CLI_BIN" >&2
   exit 1

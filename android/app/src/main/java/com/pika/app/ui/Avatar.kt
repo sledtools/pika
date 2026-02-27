@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -14,7 +15,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.SubcomposeAsyncImage
-import com.pika.app.ui.theme.PikaBlue
 
 @Composable
 fun Avatar(
@@ -45,13 +45,13 @@ private fun InitialsCircle(name: String?, npub: String, size: Dp) {
         modifier = Modifier
             .size(size)
             .clip(CircleShape)
-            .background(PikaBlue.copy(alpha = 0.12f)),
+            .background(MaterialTheme.colorScheme.primaryContainer),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             initial,
             fontSize = (size.value * 0.4f).sp,
-            color = PikaBlue,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
         )
     }
 }

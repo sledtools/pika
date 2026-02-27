@@ -8,6 +8,8 @@ val appVersionMatch = Regex("""^(\d+)\.(\d+)\.(\d+)$""").matchEntire(appVersionN
     ?: throw GradleException("VERSION must be in x.y.z format (found: $appVersionName)")
 val (major, minor, patch) = appVersionMatch.destructured
 val appVersionCode = major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt()
+val debugApplicationIdSuffix =
+    providers.gradleProperty("PIKA_ANDROID_APPLICATION_ID_SUFFIX").orElse(".dev").get()
 
 android {
     namespace = "com.pika.app"
@@ -40,7 +42,7 @@ android {
         debug {
             // Avoid collisions with App Store / release builds (and signature mismatch failures)
             // when installing debug builds on real devices.
-            applicationIdSuffix = ".dev"
+            applicationIdSuffix = debugApplicationIdSuffix
             versionNameSuffix = "-dev"
         }
         release {

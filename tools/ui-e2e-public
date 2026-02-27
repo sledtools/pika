@@ -78,16 +78,20 @@ maybe_run_rust() {
 run_android() {
   # Default: run on an emulator to keep CI/dev machines consistent.
   # If a hardware device is desired, set PIKA_ANDROID_SERIAL=<serial>.
+  TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"
+  TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"
   if [ -z "${PIKA_ANDROID_SERIAL:-}" ]; then
     ./tools/android-emulator-ensure
   fi
   just gen-kotlin android-rust android-local-properties >/dev/null
 
   SERIAL="$(./tools/android-pick-serial)"
+  PIKA_ANDROID_APP_ID="${TEST_APP_ID}" ./tools/android-ensure-debug-installable >/dev/null
   if [[ "$SERIAL" != emulator-* ]]; then
     ./tools/android-ensure-unlocked "$SERIAL"
   fi
   (cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest \
+    -PPIKA_ANDROID_APPLICATION_ID_SUFFIX="$TEST_SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pika.app.PikaE2eUiTest \
     -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
     -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \

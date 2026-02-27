@@ -17,11 +17,14 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,20 +35,25 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,12 +67,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -74,17 +91,23 @@ import com.pika.app.rust.ChatMessage
 import com.pika.app.rust.MessageDeliveryState
 import com.pika.app.rust.MessageSegment
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Reply
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
+import kotlin.math.max
 import kotlin.math.roundToInt
 import com.pika.app.rust.Screen
-import com.pika.app.ui.theme.PikaBlue
+import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import kotlinx.coroutines.launch
@@ -93,6 +116,13 @@ import kotlinx.coroutines.launch
 private sealed class ChatListItem {
     data class Message(val message: ChatMessage) : ChatListItem()
     object NewMessagesDivider : ChatListItem()
+}
+
+private enum class GroupedBubblePosition {
+    Single,
+    Top,
+    Middle,
+    Bottom,
 }
 
 @Composable
@@ -127,6 +157,18 @@ fun ChatScreen(
     // Track new messages arriving while the user is scrolled up.
     var newMessageCount by remember(chat.chatId) { mutableIntStateOf(0) }
     var prevMessageCount by remember(chat.chatId) { mutableIntStateOf(chat.messages.size) }
+    var composerHeightPx by remember(chat.chatId) { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val keyboardOrNavBottomInset =
+        with(density) {
+            max(
+                WindowInsets.navigationBars.getBottom(this),
+                WindowInsets.ime.getBottom(this),
+            ).toDp()
+        }
+    val floatingComposerInset =
+        with(density) { composerHeightPx.toDp() }
+            .coerceAtLeast(52.dp) + keyboardOrNavBottomInset + 8.dp
 
     val myPubkey =
         when (val a = manager.state.auth) {
@@ -134,6 +176,12 @@ fun ChatScreen(
             else -> null
         }
     val title = chatTitle(chat, myPubkey)
+    val peer =
+        if (!chat.isGroup) {
+            chat.members.firstOrNull { it.pubkey != myPubkey } ?: chat.members.firstOrNull()
+        } else {
+            null
+        }
     val activeCall = manager.state.activeCall
     val callForChat = activeCall?.takeIf { it.chatId == chat.chatId }
     val hasLiveCallElsewhere = activeCall?.let { it.chatId != chat.chatId && it.isLive } ?: false
@@ -148,6 +196,19 @@ fun ChatScreen(
                 reversed.indexOfFirst { it.id == id }.takeIf { it >= 0 }
             } ?: return@remember null
         if (firstUnreadIndex in 0 until reversed.lastIndex) firstUnreadIndex + 1 else null
+    }
+    val bubblePositionByMessageId = remember(chat.messages, firstUnreadMessageId) {
+        buildBubblePositions(chat.messages, firstUnreadMessageId)
+    }
+
+    fun sendDraftMessage() {
+        val text = draft.trim()
+        if (text.isBlank()) return
+        draft = ""
+        manager.dispatch(
+            AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
+        )
+        replyDraft = null
     }
 
     // Build the display list, inserting the "NEW MESSAGES" divider between read and unread.
@@ -203,7 +264,7 @@ fun ChatScreen(
     }
 
     // When the keyboard appears, scroll to the newest message so it stays visible above the input.
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    val imeBottom = WindowInsets.ime.getBottom(density)
     LaunchedEffect(imeBottom) {
         if (imeBottom > 0 && shouldStickToBottom) {
             coroutineScope.launch {
@@ -212,16 +273,60 @@ fun ChatScreen(
         }
     }
 
+    val layoutDirection = LocalLayoutDirection.current
+    val chatScaffoldPadding =
+        PaddingValues(
+            start = padding.calculateStartPadding(layoutDirection),
+            top = padding.calculateTopPadding(),
+            end = padding.calculateEndPadding(layoutDirection),
+            bottom = 0.dp,
+        )
+
     Scaffold(
-        modifier = Modifier.padding(padding),
+        modifier = Modifier.padding(chatScaffoldPadding),
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0, 0, 0, 0),
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
                 title = {
-                    Text(
-                        text = title,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (chat.isGroup || peer == null) {
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .size(30.dp)
+                                        .clip(MaterialTheme.shapes.small)
+                                        .background(MaterialTheme.colorScheme.secondaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Group,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        } else {
+                            Avatar(
+                                name = peer.name,
+                                npub = peer.npub,
+                                pictureUrl = peer.pictureUrl,
+                                size = 30.dp,
+                            )
+                        }
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(
@@ -230,7 +335,7 @@ fun ChatScreen(
                             manager.dispatch(AppAction.UpdateScreenStack(stack.dropLast(1)))
                         },
                     ) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -258,9 +363,6 @@ fun ChatScreen(
                             Icon(Icons.Default.Info, contentDescription = "Group info")
                         }
                     } else {
-                        // 1:1 chat — show info button to open the contact's profile (and copy npub).
-                        val peer = chat.members.firstOrNull { it.pubkey != myPubkey }
-                            ?: chat.members.firstOrNull()
                         if (peer != null) {
                             IconButton(
                                 onClick = {
@@ -275,85 +377,92 @@ fun ChatScreen(
             )
         },
     ) { inner ->
-        Column(
+        Box(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .padding(inner)
-                    .padding(top = 8.dp),
+                    .padding(inner),
         ) {
-            // Wrap the message list in a Box so we can overlay the scroll-to-bottom button.
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize().testTag(TestTags.CHAT_MESSAGE_LIST),
-                    reverseLayout = true,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(
-                        items = listItems,
-                        key = { item ->
-                            when (item) {
-                                is ChatListItem.Message -> item.message.id
-                                is ChatListItem.NewMessagesDivider -> "new-messages-divider"
-                            }
-                        },
-                    ) { item ->
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().testTag(TestTags.CHAT_MESSAGE_LIST),
+                reverseLayout = true,
+                contentPadding =
+                    PaddingValues(
+                        start = 12.dp,
+                        top = 10.dp,
+                        end = 12.dp,
+                        bottom = floatingComposerInset,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                items(
+                    items = listItems,
+                    key = { item ->
                         when (item) {
-                            is ChatListItem.Message -> {
-                                val msg = item.message
-                                MessageBubble(
-                                    message = msg,
-                                    messagesById = messagesById,
-                                    onReplyTo = { replyMessage ->
-                                        replyDraft = replyMessage
-                                    },
-                                    onJumpToMessage = { targetId ->
-                                        val index = reversedIndexById[targetId] ?: return@MessageBubble
-                                        coroutineScope.launch {
-                                            listState.animateScrollToItem(index)
-                                        }
-                                    },
-                                )
-                            }
-                            is ChatListItem.NewMessagesDivider -> {
-                                NewMessagesDividerRow()
-                            }
+                            is ChatListItem.Message -> item.message.id
+                            is ChatListItem.NewMessagesDivider -> "new-messages-divider"
+                        }
+                    },
+                ) { item ->
+                    when (item) {
+                        is ChatListItem.Message -> {
+                            val msg = item.message
+                            MessageBubble(
+                                message = msg,
+                                position =
+                                    bubblePositionByMessageId[msg.id]
+                                        ?: GroupedBubblePosition.Single,
+                                showSender = chat.isGroup,
+                                messagesById = messagesById,
+                                onReplyTo = { replyMessage ->
+                                    replyDraft = replyMessage
+                                },
+                                onJumpToMessage = { targetId ->
+                                    val index = reversedIndexById[targetId] ?: return@MessageBubble
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(index)
+                                    }
+                                },
+                            )
+                        }
+                        is ChatListItem.NewMessagesDivider -> {
+                            NewMessagesDividerRow()
                         }
                     }
                 }
+            }
 
-                // Scroll-to-bottom button with new message count badge.
-                if (!isAtBottom) {
-                    Column(
-                        modifier = Modifier
+            // Scroll-to-bottom button with new message count badge.
+            if (!isAtBottom) {
+                Column(
+                    modifier =
+                        Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 12.dp),
-                        horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        if (newMessageCount > 0) {
-                            Badge(
-                                containerColor = PikaBlue,
-                            ) {
-                                Text(
-                                    text = "$newMessageCount new",
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
-                        }
-                        SmallFloatingActionButton(
-                            onClick = {
-                                shouldStickToBottom = true
-                                newMessageCount = 0
-                                coroutineScope.launch { listState.animateScrollToItem(0) }
-                            },
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            .padding(end = 16.dp, bottom = floatingComposerInset + 4.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (newMessageCount > 0) {
+                        Badge(
+                            containerColor = MaterialTheme.colorScheme.primary,
                         ) {
-                            Icon(Icons.Default.ArrowDownward, contentDescription = "Scroll to bottom")
+                            Text(
+                                text = "$newMessageCount new",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
+                    }
+                    SmallFloatingActionButton(
+                        onClick = {
+                            shouldStickToBottom = true
+                            newMessageCount = 0
+                            coroutineScope.launch { listState.animateScrollToItem(0) }
+                        },
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ) {
+                        Icon(Icons.Default.ArrowDownward, contentDescription = "Scroll to bottom")
                     }
                 }
             }
@@ -361,10 +470,17 @@ fun ChatScreen(
             Column(
                 modifier =
                     Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .imePadding()
-                        .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 16.dp),
+                        .padding(
+                            start = 10.dp,
+                            top = 6.dp,
+                            end = 10.dp,
+                            bottom = 0.dp,
+                        )
+                        .onSizeChanged { composerHeightPx = it.height },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 replyDraft?.let { replying ->
@@ -373,32 +489,74 @@ fun ChatScreen(
                         onClear = { replyDraft = null },
                     )
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
+                    tonalElevation = 1.dp,
+                    shadowElevation = 6.dp,
                 ) {
-                    OutlinedTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        modifier = Modifier.weight(1f).testTag(TestTags.CHAT_MESSAGE_INPUT),
-                        placeholder = { Text("Message") },
-                        singleLine = false,
-                        maxLines = 4,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Button(
-                        onClick = {
-                            val text = draft
-                            draft = ""
-                            manager.dispatch(
-                                AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
-                            )
-                            replyDraft = null
-                        },
-                        enabled = draft.isNotBlank(),
-                        modifier = Modifier.testTag(TestTags.CHAT_SEND),
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Send")
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .testTag(TestTags.CHAT_MESSAGE_INPUT)
+                                    .onPreviewKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyUp &&
+                                            (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                        ) {
+                                            sendDraftMessage()
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    },
+                            textStyle =
+                                MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            singleLine = true,
+                            keyboardOptions =
+                                KeyboardOptions(
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Send,
+                                ),
+                            keyboardActions =
+                                KeyboardActions(
+                                    onSend = { sendDraftMessage() },
+                                ),
+                            decorationBox = { innerTextField ->
+                                if (draft.isBlank()) {
+                                    Text(
+                                        text = "Message",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                innerTextField()
+                            },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilledIconButton(
+                            onClick = { sendDraftMessage() },
+                            enabled = draft.isNotBlank(),
+                            modifier = Modifier.size(40.dp).testTag(TestTags.CHAT_SEND),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                            )
+                        }
                     }
                 }
             }
@@ -421,6 +579,100 @@ private fun chatTitle(chat: com.pika.app.rust.ChatViewState, selfPubkey: String?
     return peer?.name?.trim().takeIf { !it.isNullOrBlank() } ?: peer?.npub ?: "Chat"
 }
 
+private fun buildBubblePositions(
+    messages: List<ChatMessage>,
+    firstUnreadMessageId: String?,
+): Map<String, GroupedBubblePosition> {
+    if (messages.isEmpty()) return emptyMap()
+
+    val positions = HashMap<String, GroupedBubblePosition>(messages.size)
+    for (index in messages.indices) {
+        val current = messages[index]
+        val previous = messages.getOrNull(index - 1)
+        val next = messages.getOrNull(index + 1)
+
+        val dividerBeforeCurrent = firstUnreadMessageId != null && current.id == firstUnreadMessageId
+        val dividerBeforeNext = firstUnreadMessageId != null && next?.id == firstUnreadMessageId
+
+        val samePreviousSender =
+            !dividerBeforeCurrent &&
+                previous != null &&
+                previous.senderPubkey == current.senderPubkey &&
+                previous.isMine == current.isMine
+        val sameNextSender =
+            !dividerBeforeNext &&
+                next != null &&
+                next.senderPubkey == current.senderPubkey &&
+                next.isMine == current.isMine
+
+        positions[current.id] =
+            when {
+                !samePreviousSender && !sameNextSender -> GroupedBubblePosition.Single
+                !samePreviousSender && sameNextSender -> GroupedBubblePosition.Top
+                samePreviousSender && sameNextSender -> GroupedBubblePosition.Middle
+                else -> GroupedBubblePosition.Bottom
+            }
+    }
+
+    return positions
+}
+
+private fun messageBubbleShape(position: GroupedBubblePosition, isMine: Boolean): RoundedCornerShape {
+    val large = 18.dp
+    val grouped = 6.dp
+    return when (position) {
+        GroupedBubblePosition.Single -> RoundedCornerShape(large)
+        GroupedBubblePosition.Top ->
+            if (isMine) {
+                RoundedCornerShape(topStart = large, topEnd = large, bottomStart = large, bottomEnd = grouped)
+            } else {
+                RoundedCornerShape(topStart = large, topEnd = large, bottomStart = grouped, bottomEnd = large)
+            }
+        GroupedBubblePosition.Middle ->
+            if (isMine) {
+                RoundedCornerShape(topStart = large, topEnd = grouped, bottomStart = large, bottomEnd = grouped)
+            } else {
+                RoundedCornerShape(topStart = grouped, topEnd = large, bottomStart = grouped, bottomEnd = large)
+            }
+        GroupedBubblePosition.Bottom ->
+            if (isMine) {
+                RoundedCornerShape(topStart = large, topEnd = grouped, bottomStart = large, bottomEnd = large)
+            } else {
+                RoundedCornerShape(topStart = grouped, topEnd = large, bottomStart = large, bottomEnd = large)
+            }
+    }
+}
+
+@Composable
+private fun DeliveryStateIcon(
+    delivery: MessageDeliveryState,
+    tint: androidx.compose.ui.graphics.Color,
+) {
+    when (delivery) {
+        is MessageDeliveryState.Pending ->
+            Icon(
+                imageVector = Icons.Default.Schedule,
+                contentDescription = "Pending",
+                tint = tint,
+                modifier = Modifier.size(13.dp),
+            )
+        is MessageDeliveryState.Sent ->
+            Icon(
+                imageVector = Icons.Default.Done,
+                contentDescription = "Sent",
+                tint = tint,
+                modifier = Modifier.size(13.dp),
+            )
+        is MessageDeliveryState.Failed ->
+            Icon(
+                imageVector = Icons.Default.ErrorOutline,
+                contentDescription = "Failed",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(13.dp),
+            )
+    }
+}
+
 @Composable
 private fun NewMessagesDividerRow() {
     Row(
@@ -432,16 +684,16 @@ private fun NewMessagesDividerRow() {
     ) {
         HorizontalDivider(
             modifier = Modifier.weight(1f),
-            color = PikaBlue.copy(alpha = 0.35f),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
         )
         Text(
             text = "NEW MESSAGES",
             style = MaterialTheme.typography.labelSmall,
-            color = PikaBlue.copy(alpha = 0.8f),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
         )
         HorizontalDivider(
             modifier = Modifier.weight(1f),
-            color = PikaBlue.copy(alpha = 0.35f),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
         )
     }
 }
@@ -450,13 +702,17 @@ private fun NewMessagesDividerRow() {
 @Composable
 private fun MessageBubble(
     message: ChatMessage,
+    position: GroupedBubblePosition,
+    showSender: Boolean,
     messagesById: Map<String, ChatMessage>,
     onReplyTo: (ChatMessage) -> Unit,
     onJumpToMessage: (String) -> Unit,
 ) {
     val isMine = message.isMine
-    val bubbleColor = if (isMine) PikaBlue else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isMine) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+    val bubbleColor =
+        if (isMine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val textColor =
+        if (isMine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     val align = if (isMine) Alignment.End else Alignment.Start
     val segments = remember(message.segments, message.displayContent) {
         if (message.segments.isNotEmpty()) {
@@ -475,12 +731,24 @@ private fun MessageBubble(
         message.replyToMessageId?.let { messagesById[it] }
     }
     val formattedTime = message.displayTimestamp
+    val showFooter = position == GroupedBubblePosition.Bottom || position == GroupedBubblePosition.Single
     // Swipe-to-reply state
     val swipeOffset = remember { Animatable(0f) }
     val swipeThreshold = 80f
     var replyTriggered by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = align) {
+        if (!isMine && showSender && (position == GroupedBubblePosition.Top || position == GroupedBubblePosition.Single)) {
+            val senderName =
+                message.senderName?.trim().takeUnless { it.isNullOrBlank() } ?: message.senderPubkey.take(8)
+            Text(
+                text = senderName,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
+            )
+        }
+
         message.replyToMessageId?.let { replyToMessageId ->
             ReplyReferencePreview(
                 replyToMessageId = replyToMessageId,
@@ -494,7 +762,6 @@ private fun MessageBubble(
         for (segment in segments) {
             when (segment) {
                 is MessageSegment.Markdown -> {
-                    var showTimestamp by remember { mutableStateOf(false) }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -521,9 +788,12 @@ private fun MessageBubble(
                         // Reply icon revealed behind the bubble as it swipes
                         if (swipeOffset.value > 8f) {
                             Icon(
-                                Icons.Default.Reply,
+                                Icons.AutoMirrored.Filled.Reply,
                                 contentDescription = "Reply",
-                                tint = PikaBlue.copy(alpha = (swipeOffset.value / swipeThreshold).coerceIn(0f, 1f)),
+                                tint =
+                                    MaterialTheme.colorScheme.primary.copy(
+                                        alpha = (swipeOffset.value / swipeThreshold).coerceIn(0f, 1f),
+                                    ),
                                 modifier = Modifier
                                     .align(Alignment.CenterStart)
                                     .padding(start = 8.dp)
@@ -543,10 +813,10 @@ private fun MessageBubble(
                                 Box(
                                     modifier =
                                         Modifier
-                                            .clip(RoundedCornerShape(18.dp))
+                                            .clip(messageBubbleShape(position = position, isMine = isMine))
                                             .background(bubbleColor)
                                             .combinedClickable(
-                                                onClick = { showTimestamp = !showTimestamp },
+                                                onClick = {},
                                                 onLongClick = {
                                                     showMenu = true
                                                 },
@@ -584,38 +854,14 @@ private fun MessageBubble(
                                     )
                                 }
                             }
-                            if (isMine) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text =
-                                        when (message.delivery) {
-                                            is MessageDeliveryState.Pending -> "…"
-                                            is MessageDeliveryState.Sent -> "✓"
-                                            is MessageDeliveryState.Failed -> "!"
-                                        },
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = MaterialTheme.typography.labelSmall,
-                                )
-                            }
                         }
-                    }
-                    if (showTimestamp) {
-                        Text(
-                            text = formattedTime,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = if (isMine) TextAlign.End else TextAlign.Start,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 2.dp),
-                        )
                     }
                 }
                 is MessageSegment.PikaHtml -> {
                     Box(
                         modifier =
                             Modifier
-                                .clip(RoundedCornerShape(16.dp))
+                                .clip(messageBubbleShape(position = position, isMine = isMine))
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                                 .padding(12.dp)
                                 .widthIn(max = 280.dp),
@@ -629,6 +875,27 @@ private fun MessageBubble(
                             },
                         )
                     }
+                }
+            }
+        }
+        if (showFooter) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp),
+                horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formattedTime,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = if (isMine) TextAlign.End else TextAlign.Start,
+                )
+                if (isMine) {
+                    Spacer(Modifier.width(4.dp))
+                    DeliveryStateIcon(
+                        delivery = message.delivery,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -664,8 +931,14 @@ private fun ReplyReferencePreview(
 
     val modifier =
         Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (isMine) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.08f))
+            .clip(MaterialTheme.shapes.medium)
+            .background(
+                if (isMine) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                },
+            )
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .widthIn(max = 280.dp)
 
@@ -680,19 +953,39 @@ private fun ReplyReferencePreview(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            modifier = Modifier.width(2.dp).height(28.dp).background(if (isMine) Color.White.copy(alpha = 0.8f) else PikaBlue),
+            modifier =
+                Modifier
+                    .width(2.dp)
+                    .height(28.dp)
+                    .background(
+                        if (isMine) {
+                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    ),
         )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = sender,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isMine) Color.White.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                color =
+                    if (isMine) {
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.86f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 maxLines = 1,
             )
             Text(
                 text = snippet,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (isMine) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                color =
+                    if (isMine) {
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -720,14 +1013,14 @@ private fun ReplyComposerPreview(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(MaterialTheme.shapes.medium)
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                 .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
-            modifier = Modifier.width(2.dp).height(28.dp).background(PikaBlue),
+            modifier = Modifier.width(2.dp).height(28.dp).background(MaterialTheme.colorScheme.primary),
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(

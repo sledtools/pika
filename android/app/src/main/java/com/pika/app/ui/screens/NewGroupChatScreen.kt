@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -57,7 +57,6 @@ import com.pika.app.rust.isValidPeerKey
 import com.pika.app.rust.normalizePeerKey
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
-import com.pika.app.ui.theme.PikaBlue
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -334,7 +333,7 @@ private fun SelectedChip(
     val displayName = followList.firstOrNull { it.npub == npub }?.name ?: truncatedNpub(npub)
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .clip(CircleShape)
             .background(MaterialTheme.colorScheme.secondaryContainer)
             .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -401,7 +400,7 @@ private fun FollowRow(
             Icon(
                 Icons.Default.Check,
                 contentDescription = "Selected",
-                tint = PikaBlue,
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
     }

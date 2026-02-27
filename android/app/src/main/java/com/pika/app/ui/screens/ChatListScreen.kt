@@ -13,12 +13,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
@@ -28,7 +28,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,12 +41,12 @@ import com.pika.app.ui.TestTags
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.GroupAdd
-import androidx.compose.material.icons.filled.Person
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     var showMyProfile by remember { mutableStateOf(false) }
+    val myProfile = manager.state.myProfile
     val myNpub =
         when (val a = manager.state.auth) {
             is AuthState.LoggedIn -> a.npub
@@ -57,11 +56,11 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     Scaffold(
         modifier = Modifier.padding(padding),
         topBar = {
-            TopAppBar(
+            CenterAlignedTopAppBar(
                 title = { Text("Chats") },
                 colors =
-                    TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
+                    TopAppBarDefaults.centerAlignedTopAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
                     ),
                 navigationIcon = {
                     if (myNpub != null) {
@@ -69,7 +68,12 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                             onClick = { showMyProfile = true },
                             modifier = Modifier.testTag(TestTags.CHATLIST_MY_PROFILE),
                         ) {
-                            Icon(Icons.Default.Person, contentDescription = "My profile")
+                            Avatar(
+                                name = myProfile.name.takeIf { it.isNotBlank() },
+                                npub = myNpub,
+                                pictureUrl = myProfile.pictureUrl,
+                                size = 28.dp,
+                            )
                         }
                     }
                 },

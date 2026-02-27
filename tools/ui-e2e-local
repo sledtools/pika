@@ -163,9 +163,13 @@ case "$platform" in
   android)
     # Default to the full class locally; allow CI or callers to narrow to a stable method.
     TEST_CLASS="${PIKA_ANDROID_E2E_TEST_CLASS:-com.pika.app.PikaE2eUiTest}"
+    TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"
+    TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"
     ./tools/android-emulator-ensure >/dev/null
     just gen-kotlin android-rust android-local-properties >/dev/null
+    PIKA_ANDROID_APP_ID="${TEST_APP_ID}" ./tools/android-ensure-debug-installable >/dev/null
     (cd android && ./gradlew :app:connectedDebugAndroidTest \
+      -PPIKA_ANDROID_APPLICATION_ID_SUFFIX="${TEST_SUFFIX}" \
       -Pandroid.testInstrumentationRunnerArguments.class="${TEST_CLASS}" \
       -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 \
       -Pandroid.testInstrumentationRunnerArguments.pika_disable_network=false \

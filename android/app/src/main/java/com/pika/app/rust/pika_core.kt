@@ -2124,6 +2124,8 @@ data class ChatMediaAttachment (
     , 
     var `filename`: kotlin.String
     , 
+    var `kind`: ChatMediaKind
+    , 
     var `width`: kotlin.UInt?
     , 
     var `height`: kotlin.UInt?
@@ -2154,6 +2156,7 @@ public object FfiConverterTypeChatMediaAttachment: FfiConverterRustBuffer<ChatMe
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterTypeChatMediaKind.read(buf),
             FfiConverterOptionalUInt.read(buf),
             FfiConverterOptionalUInt.read(buf),
             FfiConverterString.read(buf),
@@ -2168,6 +2171,7 @@ public object FfiConverterTypeChatMediaAttachment: FfiConverterRustBuffer<ChatMe
             FfiConverterString.allocationSize(value.`url`) +
             FfiConverterString.allocationSize(value.`mimeType`) +
             FfiConverterString.allocationSize(value.`filename`) +
+            FfiConverterTypeChatMediaKind.allocationSize(value.`kind`) +
             FfiConverterOptionalUInt.allocationSize(value.`width`) +
             FfiConverterOptionalUInt.allocationSize(value.`height`) +
             FfiConverterString.allocationSize(value.`nonceHex`) +
@@ -2181,6 +2185,7 @@ public object FfiConverterTypeChatMediaAttachment: FfiConverterRustBuffer<ChatMe
             FfiConverterString.write(value.`url`, buf)
             FfiConverterString.write(value.`mimeType`, buf)
             FfiConverterString.write(value.`filename`, buf)
+            FfiConverterTypeChatMediaKind.write(value.`kind`, buf)
             FfiConverterOptionalUInt.write(value.`width`, buf)
             FfiConverterOptionalUInt.write(value.`height`, buf)
             FfiConverterString.write(value.`nonceHex`, buf)
@@ -4901,6 +4906,41 @@ public object FfiConverterTypeCallStatus : FfiConverterRustBuffer<CallStatus>{
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class ChatMediaKind {
+    
+    IMAGE,
+    VOICE_NOTE,
+    FILE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeChatMediaKind: FfiConverterRustBuffer<ChatMediaKind> {
+    override fun read(buf: ByteBuffer) = try {
+        ChatMediaKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: ChatMediaKind) = 4UL
+
+    override fun write(value: ChatMediaKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
     }
 }
 

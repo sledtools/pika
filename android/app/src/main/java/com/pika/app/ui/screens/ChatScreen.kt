@@ -111,6 +111,7 @@ import androidx.compose.ui.unit.dp
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.ChatMediaAttachment
+import com.pika.app.rust.ChatMediaKind
 import com.pika.app.rust.ChatMessage
 import com.pika.app.rust.MessageDeliveryState
 import com.pika.app.rust.MessageSegment
@@ -507,6 +508,7 @@ fun ChatScreen(
 
     // When the keyboard appears, scroll to the newest message so it stays visible above the input.
     val imeBottom = WindowInsets.ime.getBottom(density)
+    val composerBottomPadding = if (imeBottom > 0) 6.dp else 4.dp
     LaunchedEffect(imeBottom) {
         if (imeBottom > 0 && shouldStickToBottom) {
             coroutineScope.launch {
@@ -776,7 +778,7 @@ fun ChatScreen(
                             start = 10.dp,
                             top = 6.dp,
                             end = 10.dp,
-                            bottom = 0.dp,
+                            bottom = composerBottomPadding,
                         )
                         .onSizeChanged { composerHeightPx = it.height },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1210,8 +1212,8 @@ private fun MediaAttachmentContent(
     onOpenImage: () -> Unit,
 ) {
     val hasLocalFile = attachment.localPath?.let { File(it).exists() } == true
-    val isImage = attachment.mimeType.startsWith("image/")
-    val isAudio = attachment.mimeType.startsWith("audio/")
+    val isImage = attachment.kind == ChatMediaKind.IMAGE
+    val isAudio = attachment.kind == ChatMediaKind.VOICE_NOTE
     val containerColor =
         when {
             isAudio && isMine -> MaterialTheme.colorScheme.primary

@@ -5,7 +5,7 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use nostr_blossom::client::BlossomClient;
 use sha2::{Digest, Sha256};
 
-use crate::state::ChatMediaAttachment;
+use crate::state::{ChatMediaAttachment, ChatMediaKind};
 
 use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
@@ -51,6 +51,41 @@ fn mime_type_for_extension(ext: &str) -> &'static str {
 fn mime_type_for_filename(filename: &str) -> String {
     let ext = filename.rsplit('.').next().unwrap_or("");
     mime_type_for_extension(ext).to_string()
+}
+
+fn normalized_mime_type(mime_type: &str) -> String {
+    mime_type.trim().to_ascii_lowercase()
+}
+
+fn is_voice_note_filename(filename: &str) -> bool {
+    let normalized = filename.trim().to_ascii_lowercase();
+    normalized.starts_with("voice_") && normalized.ends_with(".m4a")
+}
+
+fn infer_media_kind(mime_type: &str, filename: &str) -> ChatMediaKind {
+    let normalized_mime = normalized_mime_type(mime_type);
+    if normalized_mime.starts_with("image/") {
+        return ChatMediaKind::Image;
+    }
+    if normalized_mime.starts_with("audio/") {
+        return ChatMediaKind::VoiceNote;
+    }
+
+    if normalized_mime.is_empty() || normalized_mime == "application/octet-stream" {
+        let inferred_mime = mime_type_for_filename(filename);
+        if inferred_mime.starts_with("image/") {
+            return ChatMediaKind::Image;
+        }
+        if inferred_mime.starts_with("audio/") {
+            return ChatMediaKind::VoiceNote;
+        }
+    }
+
+    if is_voice_note_filename(filename) {
+        return ChatMediaKind::VoiceNote;
+    }
+
+    ChatMediaKind::File
 }
 
 fn sanitize_filename(filename: &str) -> String {
@@ -126,13 +161,20 @@ impl AppCore {
             .dimensions
             .map(|(w, h)| (Some(w), Some(h)))
             .unwrap_or((None, None));
+        let normalized_mime = if reference.mime_type.trim().is_empty() {
+            mime_type_for_filename(&reference.filename)
+        } else {
+            normalized_mime_type(&reference.mime_type)
+        };
+        let kind = infer_media_kind(&normalized_mime, &reference.filename);
 
         ChatMediaAttachment {
             original_hash_hex,
             encrypted_hash_hex,
             url: reference.url.clone(),
-            mime_type: reference.mime_type.clone(),
+            mime_type: normalized_mime,
             filename: reference.filename.clone(),
+            kind,
             width,
             height,
             nonce_hex: hex::encode(reference.nonce),
@@ -224,7 +266,7 @@ impl AppCore {
         let mime_type = if mime_type.trim().is_empty() {
             mime_type_for_filename(&filename)
         } else {
-            mime_type.trim().to_string()
+            normalized_mime_type(&mime_type)
         };
 
         let caption = caption.trim().to_string();
@@ -834,5 +876,42 @@ impl AppCore {
         }
 
         self.refresh_current_chat_if_open(&pending.chat_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_media_kind_accepts_audio_mime_case_insensitively() {
+        assert!(matches!(
+            infer_media_kind("Audio/MP4", "clip.m4a"),
+            ChatMediaKind::VoiceNote
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_treats_octet_stream_m4a_as_voice_note() {
+        assert!(matches!(
+            infer_media_kind("application/octet-stream", "voice_1700000000.m4a"),
+            ChatMediaKind::VoiceNote
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_treats_empty_mime_m4a_as_voice_note() {
+        assert!(matches!(
+            infer_media_kind("", "voice_1700000001.m4a"),
+            ChatMediaKind::VoiceNote
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_treats_unknown_pdf_as_file() {
+        assert!(matches!(
+            infer_media_kind("application/octet-stream", "doc.pdf"),
+            ChatMediaKind::File
+        ));
     }
 }

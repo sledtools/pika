@@ -247,6 +247,7 @@ impl State {
         chat: &'a ChatViewState,
         active_call: Option<&'a CallState>,
         avatar_cache: &mut super::avatar::AvatarCache,
+        overlay_open: bool,
     ) -> Element<'a, Message, Theme> {
         // ── Header bar ──────────────────────────────────────────────────
         let title = chat_title(chat);
@@ -259,9 +260,9 @@ impl State {
         let mut header_info = column![text(title.clone())
             .size(17)
             .font(icons::BOLD)
-            .color(theme::TEXT_PRIMARY),];
+            .color(theme::text_primary()),];
         if !subtitle.is_empty() {
-            header_info = header_info.push(text(subtitle).size(13).color(theme::TEXT_SECONDARY));
+            header_info = header_info.push(text(subtitle).size(13).color(theme::text_secondary()));
         }
 
         let picture_url = chat.members.first().and_then(|m| m.picture_url.as_deref());
@@ -290,7 +291,7 @@ impl State {
                 text(phone_icon)
                     .font(icons::LUCIDE_FONT)
                     .size(20)
-                    .color(theme::TEXT_PRIMARY)
+                    .color(theme::text_primary())
                     .center(),
             )
             .padding([8, 10])
@@ -310,7 +311,7 @@ impl State {
                     text(icons::VIDEO)
                         .font(icons::LUCIDE_FONT)
                         .size(20)
-                        .color(theme::TEXT_PRIMARY)
+                        .color(theme::text_primary())
                         .center(),
                 )
                 .padding([8, 10])
@@ -436,8 +437,8 @@ impl State {
         .height(36.0)
         .style(|_: &Theme, status: button::Status| {
             let (bg, fg) = match status {
-                button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
-                _ => (iced::Color::TRANSPARENT, theme::TEXT_FADED),
+                button::Status::Hovered => (theme::hover_bg(), theme::text_primary()),
+                _ => (iced::Color::TRANSPARENT, theme::text_faded()),
             };
             button::Style {
                 background: Some(iced::Background::Color(bg)),
@@ -459,8 +460,8 @@ impl State {
             .height(36.0)
             .style(|_: &Theme, status: button::Status| {
                 let bg = match status {
-                    button::Status::Hovered => theme::ACCENT_BLUE.scale_alpha(0.85),
-                    _ => theme::ACCENT_BLUE,
+                    button::Status::Hovered => theme::accent_blue().scale_alpha(0.85),
+                    _ => theme::accent_blue(),
                 };
                 button::Style {
                     background: Some(iced::Background::Color(bg)),
@@ -479,26 +480,30 @@ impl State {
             .width(36.0)
             .height(36.0)
             .style(|_: &Theme, _status: button::Status| button::Style {
-                background: Some(iced::Background::Color(theme::HOVER_BG)),
-                text_color: theme::TEXT_FADED,
+                background: Some(iced::Background::Color(theme::hover_bg())),
+                text_color: theme::text_faded(),
                 border: iced::border::rounded(9999),
                 ..Default::default()
             })
         };
 
-        let composer = row![
-            attach_button,
-            text_input("Message\u{2026}", &self.message_input)
+        let mut msg_input = text_input("Message\u{2026}", &self.message_input)
+            .padding(10)
+            .width(Fill)
+            .style(theme::dark_input_style);
+
+        // When an overlay (command palette / theme picker) is open, disable the
+        // conversation input so it cannot steal focus or intercept key events.
+        if !overlay_open {
+            msg_input = msg_input
                 .on_input(Message::MessageChanged)
-                .on_submit(Message::SendMessage)
-                .padding(10)
-                .width(Fill)
-                .style(theme::dark_input_style),
-            send_button,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .padding([10, 16]);
+                .on_submit(Message::SendMessage);
+        }
+
+        let composer = row![attach_button, msg_input, send_button,]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .padding([10, 16]);
 
         let mut input_column = column![].spacing(6);
         let replying_to = self
@@ -533,8 +538,8 @@ impl State {
                 column![
                     text(format!("Replying to {sender}"))
                         .size(13)
-                        .color(theme::TEXT_SECONDARY),
-                    text(snippet).size(13).color(theme::TEXT_FADED),
+                        .color(theme::text_secondary()),
+                    text(snippet).size(13).color(theme::text_faded()),
                 ]
                 .spacing(2)
                 .width(Fill),
@@ -572,7 +577,7 @@ impl State {
                     }
                 };
                 Some(
-                    container(text(label).size(13).color(theme::TEXT_SECONDARY))
+                    container(text(label).size(13).color(theme::text_secondary()))
                         .padding([4, 16])
                         .into(),
                 )
@@ -597,10 +602,10 @@ impl State {
                         text(icons::PAPERCLIP)
                             .font(icons::LUCIDE_FONT)
                             .size(32)
-                            .color(theme::ACCENT_BLUE),
+                            .color(theme::accent_blue()),
                         text("Drop file to send")
                             .size(16)
-                            .color(theme::TEXT_PRIMARY),
+                            .color(theme::text_primary()),
                     ]
                     .spacing(8)
                     .align_x(Alignment::Center),

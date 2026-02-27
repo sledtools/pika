@@ -32,6 +32,12 @@ pub struct State {
     pub show_call_screen: bool,
     profile_toast: Option<String>,
     video_pipeline: video::DesktopVideoPipeline,
+    /// Command palette overlay (Cmd+K).
+    command_palette: Option<views::command_palette::State>,
+    /// Theme picker overlay (Cmd+T).
+    theme_picker: Option<views::theme_picker::State>,
+    /// Index into `ALL_THEMES` of the theme being previewed (during picker navigation).
+    pub preview_theme_index: Option<usize>,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -49,6 +55,11 @@ pub enum Message {
     NewGroup(views::new_group_chat::Message),
     MyProfile(views::my_profile::Message),
     PeerProfile(views::peer_profile::Message),
+    CommandPalette(views::command_palette::Message),
+    ThemePicker(views::theme_picker::Message),
+    // Keyboard-triggered overlay openers
+    OpenCommandPalette,
+    OpenThemePicker,
     // Window drag (macOS transparent titlebar)
     DragWindow,
     // Call timer (no-op, triggers re-render)
@@ -64,6 +75,10 @@ pub enum Event {
     Logout,
     /// Perform an Iced task
     Task(Task<Message>),
+    /// The user selected a theme from the picker.
+    ThemeChanged { index: usize },
+    /// The user is previewing a theme (arrow-key navigation in picker).
+    ThemePreview { index: Option<usize> },
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -103,6 +118,9 @@ impl State {
             show_call_screen: false,
             profile_toast: None,
             video_pipeline: video::DesktopVideoPipeline::new(),
+            command_palette: None,
+            theme_picker: None,
+            preview_theme_index: None,
         }
     }
 
@@ -200,6 +218,132 @@ impl State {
         cached_profiles: &[FollowListEntry],
     ) -> Option<Event> {
         match message {
+            // ── Command palette ────────────────────────────────────────
+            Message::OpenCommandPalette => {
+                // Close theme picker if open.
+                self.theme_picker = None;
+                self.preview_theme_index = None;
+                let context = state
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| views::command_palette::ChatContext { chat });
+                let palette = views::command_palette::State::new(&state.chat_list, context);
+                let focus_task = palette.focus_input();
+                self.command_palette = Some(palette);
+                return Some(Event::Task(focus_task.map(Message::CommandPalette)));
+            }
+
+            Message::CommandPalette(msg) => {
+                if let Some(ref mut palette) = self.command_palette {
+                    let context = state
+                        .current_chat
+                        .as_ref()
+                        .map(|chat| views::command_palette::ChatContext { chat });
+                    let (event, scroll_task) = palette.update(msg, &state.chat_list, context);
+                    let scroll_task = scroll_task.map(Message::CommandPalette);
+                    if let Some(event) = event {
+                        match event {
+                            views::command_palette::Event::Dismissed => {
+                                self.command_palette = None;
+                            }
+                            views::command_palette::Event::OpenChat { chat_id } => {
+                                self.command_palette = None;
+                                self.optimistic_selected_chat_id = Some(chat_id.clone());
+                                self.conversation.emoji_picker_message_id = None;
+                                self.clear_pane();
+                                manager.dispatch(AppAction::OpenChat { chat_id });
+                            }
+                            views::command_palette::Event::StartNewChat => {
+                                self.command_palette = None;
+                                self.clear_pane();
+                                let source = follow_source(state, cached_profiles);
+                                self.pane = Pane::NewChat(views::new_chat::State::new(source));
+                                manager.dispatch(AppAction::RefreshFollowList);
+                            }
+                            views::command_palette::Event::StartNewGroup => {
+                                self.command_palette = None;
+                                self.clear_pane();
+                                let source = follow_source(state, cached_profiles);
+                                self.pane =
+                                    Pane::NewGroup(views::new_group_chat::State::new(source));
+                                manager.dispatch(AppAction::RefreshFollowList);
+                            }
+                            views::command_palette::Event::OpenMyProfile => {
+                                self.command_palette = None;
+                                self.pane = Pane::MyProfile(views::my_profile::State::new(
+                                    &state.my_profile,
+                                ));
+                                manager.dispatch(AppAction::RefreshMyProfile);
+                            }
+                            views::command_palette::Event::OpenThemePicker => {
+                                self.command_palette = None;
+                                // Fall through to open theme picker.
+                                return self.update(
+                                    Message::OpenThemePicker,
+                                    state,
+                                    manager,
+                                    cached_profiles,
+                                );
+                            }
+                            views::command_palette::Event::JumpToMessage { message_id } => {
+                                self.command_palette = None;
+                                if let Some(chat) = &state.current_chat {
+                                    if let Some(task) =
+                                        views::conversation::jump_to_message_task(chat, &message_id)
+                                    {
+                                        return Some(Event::Task(task.map(Message::Conversation)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Return scroll task when no higher-priority event was produced.
+                    return Some(Event::Task(scroll_task));
+                }
+                return None;
+            }
+
+            // ── Theme picker ──────────────────────────────────────────
+            Message::OpenThemePicker => {
+                // Close command palette if open.
+                self.command_palette = None;
+                let active_idx = self.preview_theme_index.unwrap_or(0);
+                let picker = views::theme_picker::State::new(active_idx);
+                let focus_task = picker.focus_input();
+                self.theme_picker = Some(picker);
+                return Some(Event::Task(focus_task.map(Message::ThemePicker)));
+            }
+
+            Message::ThemePicker(msg) => {
+                if let Some(ref mut picker) = self.theme_picker {
+                    let (event, scroll_task) = picker.update(msg);
+                    let scroll_task = scroll_task.map(Message::ThemePicker);
+                    if let Some(event) = event {
+                        match event {
+                            views::theme_picker::Event::PreviewTheme { index } => {
+                                self.preview_theme_index = Some(index);
+                                return Some(Event::ThemePreview { index: Some(index) });
+                            }
+                            views::theme_picker::Event::SelectTheme { index } => {
+                                self.theme_picker = None;
+                                self.preview_theme_index = Some(index);
+                                return Some(Event::ThemeChanged { index });
+                            }
+                            views::theme_picker::Event::Dismissed { original_index } => {
+                                self.theme_picker = None;
+                                self.preview_theme_index = Some(original_index);
+                                return Some(Event::ThemePreview {
+                                    index: Some(original_index),
+                                });
+                            }
+                        }
+                    }
+                    // Return scroll task when no higher-priority event was produced.
+                    return Some(Event::Task(scroll_task));
+                }
+                return None;
+            }
+
             // ── Window drag ───────────────────────────────────────────
             Message::DragWindow => {
                 return Some(Event::Task(iced::window::oldest().then(|id| {
@@ -655,6 +799,7 @@ impl State {
         state: &'a AppState,
         avatar_cache: &'a std::cell::RefCell<views::avatar::AvatarCache>,
         app_version_display: &'a str,
+        _active_theme_index: usize,
     ) -> Element<'a, Message, Theme> {
         let route = project_desktop(state);
 
@@ -762,8 +907,9 @@ impl State {
             }
         } else if route.selected_chat_id.is_some() {
             if let Some(chat) = &state.current_chat {
+                let overlay_open = self.command_palette.is_some() || self.theme_picker.is_some();
                 self.conversation
-                    .view(chat, state.active_call.as_ref(), cache)
+                    .view(chat, state.active_call.as_ref(), cache, overlay_open)
                     .map(Message::Conversation)
             } else {
                 views::empty_state::view()
@@ -807,10 +953,30 @@ impl State {
             stack = stack.push(toast);
         }
 
+        // ── Command palette overlay ─────────────────────────────────
+        if let Some(ref palette) = self.command_palette {
+            stack = stack.push(palette.view().map(Message::CommandPalette));
+        }
+
+        // ── Theme picker overlay ────────────────────────────────────
+        if let Some(ref picker) = self.theme_picker {
+            stack = stack.push(picker.view().map(Message::ThemePicker));
+        }
+
         stack.width(Fill).height(Fill).into()
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
+
+    /// Returns `true` when the command palette overlay is open.
+    pub fn has_command_palette(&self) -> bool {
+        self.command_palette.is_some()
+    }
+
+    /// Returns `true` when the theme picker overlay is open.
+    pub fn has_theme_picker(&self) -> bool {
+        self.theme_picker.is_some()
+    }
 
     fn clear_pane(&mut self) {
         self.pane = Pane::Empty;

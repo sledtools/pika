@@ -46,8 +46,8 @@ pub fn peer_profile_view<'a>(
                 text(icons::CHEVRON_LEFT)
                     .font(icons::LUCIDE_FONT)
                     .size(18)
-                    .color(theme::TEXT_SECONDARY),
-                text("Back").size(14).color(theme::TEXT_SECONDARY),
+                    .color(theme::text_secondary()),
+                text("Back").size(14).color(theme::text_secondary()),
             ]
             .spacing(4)
             .align_y(Alignment::Center),
@@ -76,7 +76,7 @@ pub fn peer_profile_view<'a>(
                 text(name)
                     .size(22)
                     .font(icons::BOLD)
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::text_primary()),
             )
             .width(Fill)
             .center_x(Fill),
@@ -87,7 +87,7 @@ pub fn peer_profile_view<'a>(
     if let Some(about) = &profile.about {
         if !about.trim().is_empty() {
             content = content.push(
-                container(text(about).size(14).color(theme::TEXT_SECONDARY))
+                container(text(about).size(14).color(theme::text_secondary()))
                     .width(Fill)
                     .center_x(Fill),
             );
@@ -102,12 +102,12 @@ pub fn peer_profile_view<'a>(
                 text(npub_display)
                     .size(14)
                     .font(icons::MONO)
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::text_secondary()),
                 button(
                     text(icons::COPY)
                         .font(icons::LUCIDE_FONT)
                         .size(16)
-                        .color(theme::TEXT_SECONDARY)
+                        .color(theme::text_secondary())
                         .center(),
                 )
                 .on_press(Message::CopyNpub)

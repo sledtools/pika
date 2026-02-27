@@ -3,14 +3,17 @@ mod design;
 mod icons;
 mod screen;
 mod theme;
+mod utils;
 mod video;
 mod video_shader;
 mod views;
 
 use app_manager::AppManager;
+use design::ALL_THEMES;
 use iced::widget::{column, container, text};
 use iced::{Element, Fill, Font, Size, Subscription, Task, Theme};
 use pika_core::{project_desktop, AppAction, AppState, AuthState, CallStatus, DesktopShellMode};
+use std::path::PathBuf;
 use std::time::Duration;
 
 pub fn app_version_display() -> String {
@@ -37,7 +40,7 @@ pub fn main() -> iced::Result {
     iced::application(DesktopApp::new, DesktopApp::update, DesktopApp::view)
         .title("Pika Desktop")
         .subscription(DesktopApp::subscription)
-        .theme(dark_theme)
+        .theme(active_theme)
         .window(window_settings)
         .default_font(Font::with_name("Geist"))
         .font(include_bytes!("../fonts/Geist-Regular.ttf").as_slice())
@@ -49,8 +52,58 @@ pub fn main() -> iced::Result {
         .run()
 }
 
-fn dark_theme(_state: &DesktopApp) -> Theme {
-    Theme::Dark
+// ── Theme persistence ───────────────────────────────────────────────────────
+
+/// Path to the file that stores the user's selected theme index.
+fn theme_persistence_path() -> Option<PathBuf> {
+    let dir = app_manager::resolve_data_dir().ok()?;
+    Some(dir.join("desktop_theme.txt"))
+}
+
+/// Load the persisted theme index from disk, falling back to `0` (Dark).
+fn load_persisted_theme_index() -> usize {
+    let path = match theme_persistence_path() {
+        Some(p) => p,
+        None => return 0,
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => contents
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(0)
+            .min(ALL_THEMES.len().saturating_sub(1)),
+        Err(_) => 0,
+    }
+}
+
+/// Save the active theme index to disk (best-effort, errors are ignored).
+fn save_persisted_theme_index(index: usize) {
+    if let Some(path) = theme_persistence_path() {
+        let _ = std::fs::write(path, index.to_string());
+    }
+}
+
+fn active_theme(state: &DesktopApp) -> Theme {
+    match state {
+        DesktopApp::BootError { .. } => Theme::Dark,
+        DesktopApp::Loaded {
+            active_theme_index,
+            screen,
+            ..
+        } => {
+            // If the theme picker is open and previewing, use the preview index;
+            // otherwise use the committed active index.
+            let effective_index = if let Screen::Home(ref home) = screen {
+                home.preview_theme_index.unwrap_or(*active_theme_index)
+            } else {
+                *active_theme_index
+            };
+
+            let entry = ALL_THEMES.get(effective_index).unwrap_or(&ALL_THEMES[0]);
+
+            iced::Theme::from(entry)
+        }
+    }
 }
 
 fn manager_update_stream(manager: &AppManager) -> impl iced::futures::Stream<Item = ()> {
@@ -88,6 +141,8 @@ enum DesktopApp {
         manager: AppManager,
         screen: Screen,
         state: AppState,
+        /// Index into `design::ALL_THEMES` for the currently active theme.
+        active_theme_index: usize,
     },
 }
 
@@ -116,6 +171,11 @@ impl DesktopApp {
                     manager,
                     screen,
                     state,
+                    active_theme_index: {
+                        let idx = load_persisted_theme_index();
+                        design::set_active(idx);
+                        idx
+                    },
                 }
             }
             Err(error) => Self::BootError {
@@ -169,7 +229,7 @@ impl DesktopApp {
                     }
                 }
 
-                // Listen for window file-drop events (drag-and-drop).
+                // Listen for window file-drop events (drag-and-drop) and keyboard events.
                 subs.push(iced::event::listen().map(Message::WindowEvent));
 
                 Subscription::batch(subs)
@@ -178,9 +238,17 @@ impl DesktopApp {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // ── Keyboard events (handled before destructuring to avoid borrow conflicts)
+        if let Message::WindowEvent(iced::Event::Keyboard(ref kb_event)) = message {
+            if let Some(task) = self.handle_keyboard_event(kb_event) {
+                return task;
+            }
+        }
+
         match self {
             DesktopApp::BootError { .. } => {}
             DesktopApp::Loaded {
+                active_theme_index,
                 avatar_cache,
                 cached_profiles,
                 manager,
@@ -207,6 +275,17 @@ impl DesktopApp {
                                 }
                                 screen::home::Event::Task(task) => {
                                     return task.map(Message::Home);
+                                }
+                                screen::home::Event::ThemeChanged { index } => {
+                                    *active_theme_index = index;
+                                    design::set_active(index);
+                                    save_persisted_theme_index(index);
+                                }
+                                screen::home::Event::ThemePreview { index } => {
+                                    // Update the global active theme so style
+                                    // functions immediately reflect the preview.
+                                    let effective = index.unwrap_or(*active_theme_index);
+                                    design::set_active(effective);
                                 }
                             }
                         }
@@ -237,10 +316,13 @@ impl DesktopApp {
                     self.retry_follow_list_if_needed();
                 }
                 Message::WindowEvent(event) => {
+                    // ── Window events (file drops, etc.) ────────────
+                    // (Keyboard events are handled at the top of update()
+                    //  before the destructuring match to avoid borrow conflicts.)
                     if let iced::Event::Window(window_event) = event {
-                        match window_event {
-                            iced::window::Event::FileDropped(path) => {
-                                if let Screen::Home(ref mut home_state) = screen {
+                        if let Screen::Home(ref mut home_state) = screen {
+                            match window_event {
+                                iced::window::Event::FileDropped(path) => {
                                     if let Some(event) = home_state.update(
                                         screen::home::Message::Conversation(
                                             views::conversation::Message::FilesDropped(vec![path]),
@@ -260,9 +342,7 @@ impl DesktopApp {
                                         }
                                     }
                                 }
-                            }
-                            iced::window::Event::FileHovered(_) => {
-                                if let Screen::Home(ref mut home_state) = screen {
+                                iced::window::Event::FileHovered(_) => {
                                     let _ = home_state.update(
                                         screen::home::Message::Conversation(
                                             views::conversation::Message::FileHovered,
@@ -272,9 +352,7 @@ impl DesktopApp {
                                         cached_profiles,
                                     );
                                 }
-                            }
-                            iced::window::Event::FilesHoveredLeft => {
-                                if let Screen::Home(ref mut home_state) = screen {
+                                iced::window::Event::FilesHoveredLeft => {
                                     let _ = home_state.update(
                                         screen::home::Message::Conversation(
                                             views::conversation::Message::FileHoverLeft,
@@ -284,8 +362,8 @@ impl DesktopApp {
                                         cached_profiles,
                                     );
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -299,8 +377,8 @@ impl DesktopApp {
         match self {
             DesktopApp::BootError { error } => container(
                 column![
-                    text("Pika Desktop").size(24).color(theme::TEXT_PRIMARY),
-                    text(error).color(theme::DANGER),
+                    text("Pika Desktop").size(24).color(theme::text_primary()),
+                    text(error).color(theme::danger()),
                 ]
                 .spacing(12),
             )
@@ -309,6 +387,7 @@ impl DesktopApp {
             .style(theme::surface_style)
             .into(),
             DesktopApp::Loaded {
+                active_theme_index,
                 app_version_display,
                 avatar_cache,
                 manager,
@@ -317,7 +396,12 @@ impl DesktopApp {
                 ..
             } => match screen {
                 Screen::Home(ref home) => home
-                    .view(&state, &avatar_cache, &app_version_display)
+                    .view(
+                        &state,
+                        &avatar_cache,
+                        &app_version_display,
+                        *active_theme_index,
+                    )
                     .map(Message::Home),
                 Screen::Login(ref login) => login.view(&state, &manager).map(Message::Login),
             },
@@ -392,6 +476,151 @@ impl DesktopApp {
                 {
                     manager.dispatch(AppAction::RefreshFollowList);
                 }
+            }
+        }
+    }
+
+    // ── Keyboard event handling ─────────────────────────────────────────────
+
+    fn handle_keyboard_event(&mut self, event: &iced::keyboard::Event) -> Option<Task<Message>> {
+        // We only care about key-press events.
+        let (key, modifiers) = match event {
+            iced::keyboard::Event::KeyPressed { key, modifiers, .. } => (key, modifiers),
+            _ => return None,
+        };
+
+        // Only process when on the Home screen.
+        let DesktopApp::Loaded {
+            screen: Screen::Home(ref mut home_state),
+            state,
+            manager,
+            cached_profiles,
+            active_theme_index,
+            ..
+        } = self
+        else {
+            return None;
+        };
+
+        let is_cmd = modifiers.command();
+
+        // ── Overlay-specific key routing ────────────────────────────
+        // When command palette is open, route Esc / ArrowUp / ArrowDown / Enter.
+        if home_state.has_command_palette() {
+            let msg = match key {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => Some(
+                    screen::home::Message::CommandPalette(views::command_palette::Message::Dismiss),
+                ),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => Some(
+                    screen::home::Message::CommandPalette(views::command_palette::Message::ArrowUp),
+                ),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                    Some(screen::home::Message::CommandPalette(
+                        views::command_palette::Message::ArrowDown,
+                    ))
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => Some(
+                    screen::home::Message::CommandPalette(views::command_palette::Message::Confirm),
+                ),
+                _ => None,
+            };
+
+            if let Some(msg) = msg {
+                if let Some(event) = home_state.update(msg, state, manager, cached_profiles) {
+                    return Some(Self::handle_home_event(event, manager, active_theme_index));
+                }
+                return Some(Task::none());
+            }
+            // Let other keys (typing) fall through to the text input naturally.
+            return None;
+        }
+
+        // When theme picker is open, route Esc / ArrowUp / ArrowDown / Enter.
+        if home_state.has_theme_picker() {
+            let msg = match key {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => Some(
+                    screen::home::Message::ThemePicker(views::theme_picker::Message::Dismiss),
+                ),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => Some(
+                    screen::home::Message::ThemePicker(views::theme_picker::Message::ArrowUp),
+                ),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => Some(
+                    screen::home::Message::ThemePicker(views::theme_picker::Message::ArrowDown),
+                ),
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => Some(
+                    screen::home::Message::ThemePicker(views::theme_picker::Message::Confirm),
+                ),
+                _ => None,
+            };
+
+            if let Some(msg) = msg {
+                if let Some(event) = home_state.update(msg, state, manager, cached_profiles) {
+                    return Some(Self::handle_home_event(event, manager, active_theme_index));
+                }
+                return Some(Task::none());
+            }
+            return None;
+        }
+
+        // ── Global shortcuts (no overlay open) ──────────────────────
+        if is_cmd {
+            match key {
+                // Cmd+K → open command palette
+                iced::keyboard::Key::Character(c) if c.as_str() == "k" => {
+                    let msg = screen::home::Message::OpenCommandPalette;
+                    if let Some(event) = home_state.update(msg, state, manager, cached_profiles) {
+                        return Some(Self::handle_home_event(event, manager, active_theme_index));
+                    }
+                    return Some(Task::none());
+                }
+                // Cmd+T → open theme picker
+                iced::keyboard::Key::Character(c) if c.as_str() == "t" => {
+                    // Store the current active theme index on the home state
+                    // so the picker knows what "original" means.
+                    home_state.preview_theme_index = Some(*active_theme_index);
+                    let msg = screen::home::Message::OpenThemePicker;
+                    if let Some(event) = home_state.update(msg, state, manager, cached_profiles) {
+                        return Some(Self::handle_home_event(event, manager, active_theme_index));
+                    }
+                    return Some(Task::none());
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    /// Convert a home screen event into an iced Task, mutating top-level state
+    /// as needed (theme index, logout, etc.).
+    fn handle_home_event(
+        event: screen::home::Event,
+        manager: &AppManager,
+        active_theme_index: &mut usize,
+    ) -> Task<Message> {
+        match event {
+            screen::home::Event::AppAction(action) => {
+                manager.dispatch(action);
+                Task::none()
+            }
+            screen::home::Event::Logout => {
+                // Logout is handled in the normal update path; shouldn't
+                // reach here from keyboard shortcuts, but handle gracefully.
+                Task::none()
+            }
+            screen::home::Event::Task(task) => task.map(Message::Home),
+            screen::home::Event::ThemeChanged { index } => {
+                *active_theme_index = index;
+                design::set_active(index);
+                save_persisted_theme_index(index);
+                Task::none()
+            }
+            screen::home::Event::ThemePreview { index } => {
+                // Update the global active theme so style functions
+                // immediately reflect the preview.
+                let effective = index.unwrap_or(*active_theme_index);
+                design::set_active(effective);
+                Task::none()
             }
         }
     }

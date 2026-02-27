@@ -110,7 +110,7 @@ impl State {
         let mut content = column![].spacing(16).padding([24, 32]).width(Fill);
 
         // ── Header ──────────────────────────────────────────────────────
-        content = content.push(text("New Group").size(22).color(theme::TEXT_PRIMARY));
+        content = content.push(text("New Group").size(22).color(theme::text_primary()));
 
         // ── Group name ──────────────────────────────────────────────────
         let mut group_name_field = text_input("Group name\u{2026}", &self.group_name)
@@ -123,7 +123,7 @@ impl State {
 
         // ── Selected members chips ──────────────────────────────────────
         if !self.selected_members.is_empty() {
-            let mut chips_row = row![text("Selected:").size(13).color(theme::TEXT_SECONDARY),]
+            let mut chips_row = row![text("Selected:").size(13).color(theme::text_secondary()),]
                 .spacing(6)
                 .align_y(Alignment::Center);
 
@@ -139,7 +139,7 @@ impl State {
                     text(format!("{label} \u{00d7}"))
                         .size(13)
                         .font(icons::MEDIUM)
-                        .color(theme::TEXT_PRIMARY),
+                        .color(theme::text_primary()),
                 )
                 .padding([6, 12])
                 .style(theme::secondary_button_style);
@@ -189,14 +189,14 @@ impl State {
 
         // ── Follow list ─────────────────────────────────────────────────
         let header_row = row![
-            text("Follows").size(14).color(theme::TEXT_SECONDARY),
+            text("Follows").size(14).color(theme::text_secondary()),
             Space::new().width(Fill),
             if fetching_follow_list {
-                text("Loading\u{2026}").size(12).color(theme::TEXT_FADED)
+                text("Loading\u{2026}").size(12).color(theme::text_faded())
             } else {
                 text(format!("{}", self.filtered_follows.len()))
                     .size(12)
-                    .color(theme::TEXT_FADED)
+                    .color(theme::text_faded())
             },
         ]
         .align_y(Alignment::Center);
@@ -207,7 +207,7 @@ impl State {
                 container(
                     text("No follows found")
                         .size(14)
-                        .color(theme::TEXT_FADED)
+                        .color(theme::text_faded())
                         .center(),
                 )
                 .width(Fill)
@@ -238,7 +238,7 @@ impl State {
                 text("Creating\u{2026}")
                     .size(14)
                     .font(icons::MEDIUM)
-                    .color(theme::TEXT_FADED)
+                    .color(theme::text_faded())
                     .width(Fill)
                     .center(),
             )
@@ -310,14 +310,14 @@ fn follow_row_selectable<'a>(
 
     let mut info = column![text(theme::truncate(&display_name, 30))
         .size(14)
-        .color(theme::TEXT_PRIMARY),]
+        .color(theme::text_primary()),]
     .spacing(2);
 
     if !name.is_empty() {
         info = info.push(
             text(theme::truncated_npub(&entry.npub))
                 .size(11)
-                .color(theme::TEXT_FADED),
+                .color(theme::text_faded()),
         );
     }
 
@@ -329,12 +329,12 @@ fn follow_row_selectable<'a>(
     let mut btn = button(row_content).width(Fill).padding([8, 12]).style(
         |_: &Theme, status: button::Status| {
             let bg = match status {
-                button::Status::Hovered => theme::HOVER_BG,
+                button::Status::Hovered => theme::hover_bg(),
                 _ => iced::Color::TRANSPARENT,
             };
             button::Style {
                 background: Some(iced::Background::Color(bg)),
-                text_color: theme::TEXT_PRIMARY,
+                text_color: theme::text_primary(),
                 border: iced::border::rounded(8),
                 ..Default::default()
             }

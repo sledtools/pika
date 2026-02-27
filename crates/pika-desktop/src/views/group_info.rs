@@ -94,8 +94,8 @@ impl State {
                         text(icons::CHEVRON_LEFT)
                             .font(icons::LUCIDE_FONT)
                             .size(18)
-                            .color(theme::TEXT_SECONDARY),
-                        text("Back").size(14).color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
+                        text("Back").size(14).color(theme::text_secondary()),
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center),
@@ -133,7 +133,7 @@ impl State {
                 text(format!("{} members", chat.members.len()))
                     .size(14)
                     .font(icons::BOLD)
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::text_primary()),
             )
             .padding([8, 24]),
         );
@@ -198,8 +198,8 @@ fn danger_action_row<'a>(
             text(icon_cp)
                 .font(icons::LUCIDE_FONT)
                 .size(18)
-                .color(theme::DANGER),
-            text(label).size(14).color(theme::DANGER),
+                .color(theme::danger()),
+            text(label).size(14).color(theme::danger()),
         ]
         .spacing(12)
         .align_y(Alignment::Center),
@@ -209,12 +209,12 @@ fn danger_action_row<'a>(
     .padding([12, 24])
     .style(|_: &Theme, status: button::Status| {
         let bg = match status {
-            button::Status::Hovered => theme::HOVER_BG,
+            button::Status::Hovered => theme::hover_bg(),
             _ => iced::Color::TRANSPARENT,
         };
         button::Style {
             background: Some(iced::Background::Color(bg)),
-            text_color: theme::DANGER,
+            text_color: theme::danger(),
             ..Default::default()
         }
     })
@@ -242,7 +242,7 @@ fn action_row_with_input<'a>(
             text(icon_cp)
                 .font(icons::LUCIDE_FONT)
                 .size(18)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
             text_input(placeholder, value)
                 .on_input(Message::NpubChanged)
                 .on_submit(Message::AddMember)
@@ -285,14 +285,14 @@ fn member_row<'a>(
         display_name
     };
 
-    let mut row_content = row![avatar, text(label).size(14).color(theme::TEXT_PRIMARY)]
+    let mut row_content = row![avatar, text(label).size(14).color(theme::text_primary())]
         .spacing(12)
         .align_y(Alignment::Center);
 
     row_content = row_content.push(Space::new().width(Fill));
 
     if member.is_admin {
-        row_content = row_content.push(text("Admin").size(12).color(theme::TEXT_FADED));
+        row_content = row_content.push(text("Admin").size(12).color(theme::text_faded()));
     }
 
     if !is_me && is_admin {
@@ -302,18 +302,18 @@ fn member_row<'a>(
                 text(icons::X)
                     .font(icons::LUCIDE_FONT)
                     .size(14)
-                    .color(theme::DANGER),
+                    .color(theme::danger()),
             )
             .on_press(Message::RemoveMember(pubkey))
             .padding([4, 6])
             .style(|_: &Theme, status: button::Status| {
                 let bg = match status {
-                    button::Status::Hovered => theme::HOVER_BG,
+                    button::Status::Hovered => theme::hover_bg(),
                     _ => iced::Color::TRANSPARENT,
                 };
                 button::Style {
                     background: Some(iced::Background::Color(bg)),
-                    text_color: theme::DANGER,
+                    text_color: theme::danger(),
                     border: iced::border::rounded(6),
                     ..Default::default()
                 }
@@ -332,12 +332,12 @@ fn member_row<'a>(
         .padding([10, 24])
         .style(|_: &Theme, status: button::Status| {
             let bg = match status {
-                button::Status::Hovered => theme::HOVER_BG,
+                button::Status::Hovered => theme::hover_bg(),
                 _ => iced::Color::TRANSPARENT,
             };
             button::Style {
                 background: Some(iced::Background::Color(bg)),
-                text_color: theme::TEXT_PRIMARY,
+                text_color: theme::text_primary(),
                 ..Default::default()
             }
         })

@@ -82,8 +82,8 @@ pub fn message_bubble<'a>(
             };
             let preview: Element<'a, Message, Theme> = container(
                 column![
-                    text(sender).size(12).color(theme::TEXT_SECONDARY),
-                    text(snippet).size(12).color(theme::TEXT_FADED),
+                    text(sender).size(12).color(theme::text_secondary()),
+                    text(snippet).size(12).color(theme::text_faded()),
                 ]
                 .spacing(2),
             )
@@ -119,7 +119,7 @@ pub fn message_bubble<'a>(
         let bubble = container(bubble_content)
             .padding([10, 14])
             .max_width(500)
-            .style(move |_theme: &Theme| design::DARK.bubble_sent_grouped(position));
+            .style(move |_theme: &Theme| design::current().bubble_sent_grouped(position));
 
         let mut bubble_row = row![Space::new().width(Fill)]
             .spacing(6)
@@ -157,12 +157,12 @@ pub fn message_bubble<'a>(
         if !sender_name.is_empty() {
             let sender_pk = msg.sender_pubkey.clone();
             bubble_content = bubble_content.push(
-                button(text(sender_name).size(13).color(theme::ACCENT_BLUE))
+                button(text(sender_name).size(13).color(theme::accent_blue()))
                     .on_press(Message::OpenPeerProfile(sender_pk))
                     .padding(0)
                     .style(|_: &Theme, _| button::Style {
                         background: Some(Background::Color(Color::TRANSPARENT)),
-                        text_color: theme::ACCENT_BLUE,
+                        text_color: theme::accent_blue(),
                         ..Default::default()
                     }),
             );
@@ -178,7 +178,7 @@ pub fn message_bubble<'a>(
             bubble_content = bubble_content.push(
                 text(&msg.display_content)
                     .size(15)
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::text_primary()),
             );
         }
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, false));
@@ -186,7 +186,7 @@ pub fn message_bubble<'a>(
         let bubble = container(bubble_content)
             .padding([10, 14])
             .max_width(500)
-            .style(move |_theme: &Theme| design::DARK.bubble_received_grouped(position));
+            .style(move |_theme: &Theme| design::current().bubble_received_grouped(position));
 
         let mut bubble_row = row![bubble]
             .spacing(6)
@@ -252,17 +252,17 @@ fn media_attachment_view<'a>(
     let text_color = if is_mine {
         Color::WHITE
     } else {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     };
     let secondary_color = if is_mine {
         Color::WHITE.scale_alpha(0.7)
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     let accent_color = if is_mine {
         Color::WHITE
     } else {
-        theme::ACCENT_BLUE
+        theme::accent_blue()
     };
 
     // Action icon: show "open/share" if downloaded, "download" if not.
@@ -308,7 +308,7 @@ fn media_attachment_view<'a>(
     .padding(0)
     .style(|_: &Theme, status: button::Status| {
         let bg = match status {
-            button::Status::Hovered => theme::HOVER_BG.scale_alpha(0.3),
+            button::Status::Hovered => theme::hover_bg().scale_alpha(0.3),
             _ => Color::TRANSPARENT,
         };
         button::Style {
@@ -344,8 +344,8 @@ fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Mess
     .on_press(Message::SetReplyTarget(reply_mid))
     .style(|_theme: &Theme, status: button::Status| {
         let (bg, text_color) = match status {
-            button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
-            _ => (Color::TRANSPARENT, theme::TEXT_FADED),
+            button::Status::Hovered => (theme::hover_bg(), theme::text_primary()),
+            _ => (Color::TRANSPARENT, theme::text_faded()),
         };
         button::Style {
             background: Some(Background::Color(bg)),
@@ -362,8 +362,8 @@ fn message_action_icons<'a>(msg_id: &str, picker_open: bool) -> Element<'a, Mess
         .on_press(Message::ToggleEmojiPicker(mid))
         .style(|_theme: &Theme, status: button::Status| {
             let (bg, text_color) = match status {
-                button::Status::Hovered => (theme::HOVER_BG, theme::TEXT_PRIMARY),
-                _ => (Color::TRANSPARENT, theme::TEXT_FADED),
+                button::Status::Hovered => (theme::hover_bg(), theme::text_primary()),
+                _ => (Color::TRANSPARENT, theme::text_faded()),
             };
             button::Style {
                 background: Some(Background::Color(bg)),
@@ -430,12 +430,12 @@ fn emoji_picker_bar<'a>(msg_id: &str) -> Element<'a, Message, Theme> {
             })
             .style(|_theme: &Theme, status: button::Status| {
                 let bg = match status {
-                    button::Status::Hovered => theme::HOVER_BG,
+                    button::Status::Hovered => theme::hover_bg(),
                     _ => Color::TRANSPARENT,
                 };
                 button::Style {
                     background: Some(Background::Color(bg)),
-                    text_color: theme::TEXT_PRIMARY,
+                    text_color: theme::text_primary(),
                     border: border::rounded(6),
                     ..Default::default()
                 }
@@ -446,9 +446,9 @@ fn emoji_picker_bar<'a>(msg_id: &str) -> Element<'a, Message, Theme> {
     container(picker_row)
         .padding([4, 8])
         .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(theme::RECEIVED_BUBBLE)),
+            background: Some(Background::Color(theme::received_bubble())),
             border: iced::Border {
-                color: theme::INPUT_BORDER,
+                color: theme::input_border(),
                 width: 1.0,
                 radius: border::radius(8),
             },
@@ -467,7 +467,7 @@ fn timestamp_row<'a>(
     let text_color = if is_mine {
         Color::WHITE.scale_alpha(0.6)
     } else {
-        theme::TEXT_FADED
+        theme::text_faded()
     };
 
     if !is_mine {
@@ -477,7 +477,7 @@ fn timestamp_row<'a>(
     let (icon_cp, icon_color) = match delivery {
         MessageDeliveryState::Pending => (icons::CLOCK, text_color),
         MessageDeliveryState::Sent => (icons::CHECK_CHECK, text_color),
-        MessageDeliveryState::Failed { .. } => (icons::X, theme::DANGER),
+        MessageDeliveryState::Failed { .. } => (icons::X, theme::danger()),
     };
 
     row![
@@ -499,25 +499,25 @@ fn reaction_chip_style(
 ) -> button::Style {
     let bg = if reacted_by_me {
         match status {
-            button::Status::Hovered => theme::ACCENT_BLUE.scale_alpha(0.4),
-            _ => theme::ACCENT_BLUE.scale_alpha(0.25),
+            button::Status::Hovered => theme::accent_blue().scale_alpha(0.4),
+            _ => theme::accent_blue().scale_alpha(0.25),
         }
     } else {
         match status {
-            button::Status::Hovered => theme::HOVER_BG,
-            _ => theme::RECEIVED_BUBBLE,
+            button::Status::Hovered => theme::hover_bg(),
+            _ => theme::received_bubble(),
         }
     };
 
     let border_color = if reacted_by_me {
-        theme::ACCENT_BLUE.scale_alpha(0.6)
+        theme::accent_blue().scale_alpha(0.6)
     } else {
-        theme::INPUT_BORDER
+        theme::input_border()
     };
 
     button::Style {
         background: Some(Background::Color(bg)),
-        text_color: theme::TEXT_PRIMARY,
+        text_color: theme::text_primary(),
         border: iced::Border {
             color: border_color,
             width: 1.0,

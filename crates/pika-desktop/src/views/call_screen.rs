@@ -2,8 +2,8 @@ use iced::widget::{button, center, column, container, row, shader, stack, text, 
 use iced::{Alignment, Element, Fill, Theme};
 use pika_core::{CallState, CallStatus};
 
-use crate::theme;
 use crate::video::DesktopVideoPipeline;
+use crate::{design, theme};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -178,20 +178,16 @@ fn build_video_call_layout<'a>(
     // Camera error banner
     if let Some(err) = camera_error {
         overlay = overlay.push(
-            container(
-                text(err)
-                    .size(12)
-                    .color(iced::Color::from_rgb(1.0, 0.6, 0.6)),
-            )
-            .padding([4, 12])
-            .center_x(Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(iced::Background::Color(iced::Color::from_rgba(
-                    0.0, 0.0, 0.0, 0.7,
-                ))),
-                border: iced::border::rounded(6),
-                ..Default::default()
-            }),
+            container(text(err).size(12).color(design::call_error_color()))
+                .padding([4, 12])
+                .center_x(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgba(
+                        0.0, 0.0, 0.0, 0.7,
+                    ))),
+                    border: iced::border::rounded(6),
+                    ..Default::default()
+                }),
         );
     }
 

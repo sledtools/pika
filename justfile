@@ -308,18 +308,17 @@ nightly:
     just nightly-pikachat
     @echo "nightly complete"
 
-# Nightly E2E (Rust): run all `#[ignore]` tests (intended for long/flaky network suites).
+# Nightly E2E (Rust): run all `#[ignore]` tests (local call tests + deployed bot call).
 nightly-pika-e2e:
     set -euo pipefail; \
     if [ -z "${PIKA_TEST_NSEC:-}" ]; then \
-      echo "note: PIKA_TEST_NSEC not set; e2e_deployed_bot_call will skip"; \
+      echo "note: PIKA_TEST_NSEC not set; call_deployed_bot will skip"; \
     fi; \
-    # Keep nightly meaningful but avoid the explicitly disabled flaky local-relay call test.
-    cargo test -p pika_core --tests -- --ignored --skip call_invite_accept_end_flow_over_local_relay --nocapture
+    cargo build -p pikachat; \
+    cargo test -p pika_core --tests -- --ignored --nocapture
 
-# Nightly lane: build pikachat + run the pikachat E2E suite (local Nostr relay + local MoQ relay).
+# Nightly lane: pikachat E2E suite (openclaw scenarios use pikahub for local relay).
 nightly-pikachat:
-    just e2e-local-pikachat-daemon
     just openclaw-pikachat-scenarios
 
 # Nightly lane: iOS interop smoke (nostrconnect:// route + Pika bridge emission).
@@ -367,24 +366,10 @@ e2e-local-relay:
 e2e-public-relays:
     ./tools/ui-e2e-public --platform all
 
-# Rust-level E2E smoke test against public relays (nondeterministic).
-e2e-public:
-    PIKA_E2E_PUBLIC=1 cargo test -p pika_core --test e2e_public_relays -- --ignored --nocapture
-
-# E2E call test over the real MOQ relay (nondeterministic; requires QUIC egress).
-e2e-real-moq:
-    cargo test -p pika_core --test e2e_real_moq_relay -- --ignored --nocapture
-
-# Local E2E: local Nostr relay + local pikachat daemon.
-
-# Builds pikachat from the workspace crate (`cli/`) so no external repos are required.
-e2e-local-pikachat-daemon:
-    set -euo pipefail; \
-    cargo build -p pikachat; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    PIKACHAT_BIN="$TARGET_ROOT/debug/pikachat" \
-      PIKA_E2E_LOCAL=1 \
-      cargo test -p pika_core --test e2e_local_pikachat_daemon_call -- --ignored --nocapture
+# E2E call test against the deployed bot (requires PIKA_TEST_NSEC).
+e2e-deployed-bot:
+    source .env 2>/dev/null || true; \
+    cargo test -p pika_core --test e2e_calls call_deployed_bot -- --ignored --nocapture
 
 # Build Rust core + NSE for the host platform.
 rust-build-host:

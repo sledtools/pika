@@ -1,7 +1,9 @@
 package com.pika.app.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,9 +20,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,6 +46,7 @@ import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.GroupAdd
 
 @Composable
@@ -93,9 +100,31 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
             contentPadding = PaddingValues(vertical = 6.dp),
         ) {
             items(manager.state.chatList, key = { it.chatId }) { chat ->
-                ChatRow(
-                    chat = chat,
-                    onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
+                val dismissState =
+                    rememberSwipeToDismissBoxState(
+                        positionalThreshold = { distance -> distance * 0.25f },
+                        confirmValueChange = { value ->
+                            if (value == SwipeToDismissBoxValue.EndToStart) {
+                                manager.dispatch(AppAction.ArchiveChat(chat.chatId))
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                    )
+                SwipeToDismissBox(
+                    state = dismissState,
+                    enableDismissFromStartToEnd = false,
+                    enableDismissFromEndToStart = true,
+                    backgroundContent = {
+                        ArchiveSwipeBackground()
+                    },
+                    content = {
+                        ChatRow(
+                            chat = chat,
+                            onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
+                        )
+                    },
                 )
             }
         }
@@ -107,6 +136,36 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
             npub = myNpub,
             onDismiss = { showMyProfile = false },
         )
+    }
+}
+
+@Composable
+private fun ArchiveSwipeBackground() {
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .clip(MaterialTheme.shapes.medium)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        Row(
+            modifier = Modifier.padding(end = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Archive,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Archive",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

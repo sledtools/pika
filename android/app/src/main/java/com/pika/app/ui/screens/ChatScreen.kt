@@ -2,6 +2,12 @@ package com.pika.app.ui.screens
 
 import android.widget.Toast
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,7 +45,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Badge
-import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -90,6 +96,8 @@ import com.pika.app.rust.AppAction
 import com.pika.app.rust.ChatMessage
 import com.pika.app.rust.MessageDeliveryState
 import com.pika.app.rust.MessageSegment
+import com.pika.app.rust.ReactionSummary
+import com.pika.app.rust.TypingMember
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
@@ -110,6 +118,7 @@ import com.pika.app.rust.Screen
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import dev.jeziellago.compose.markdowntext.MarkdownText
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // Represents an item in the chat timeline: either a message or the unread divider.
@@ -124,6 +133,8 @@ private enum class GroupedBubblePosition {
     Middle,
     Bottom,
 }
+
+private val QUICK_REACTIONS = listOf("❤️", "👍", "👎", "😂", "😮", "😢")
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -153,6 +164,10 @@ fun ChatScreen(
     }
 
     val firstUnreadMessageId = chat.firstUnreadMessageId
+    val oldestMessageId = chat.messages.firstOrNull()?.id
+    var loadOlderInFlight by remember(chat.chatId) { mutableStateOf(false) }
+    var requestedLoadOlderBeforeId by remember(chat.chatId) { mutableStateOf<String?>(null) }
+    var lastTypingStartedAtMs by remember(chat.chatId) { mutableStateOf(0L) }
 
     // Track new messages arriving while the user is scrolled up.
     var newMessageCount by remember(chat.chatId) { mutableIntStateOf(0) }
@@ -174,6 +189,10 @@ fun ChatScreen(
         when (val a = manager.state.auth) {
             is com.pika.app.rust.AuthState.LoggedIn -> a.pubkey
             else -> null
+        }
+    val typingMembers =
+        remember(chat.typingMembers, myPubkey) {
+            chat.typingMembers.filter { it.pubkey != myPubkey }
         }
     val title = chatTitle(chat, myPubkey)
     val peer =
@@ -209,6 +228,14 @@ fun ChatScreen(
             AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
         )
         replyDraft = null
+    }
+
+    fun maybeNotifyTyping(text: String) {
+        if (text.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (now - lastTypingStartedAtMs < 3_000L) return
+        lastTypingStartedAtMs = now
+        manager.dispatch(AppAction.TypingStarted(chat.chatId))
     }
 
     // Build the display list, inserting the "NEW MESSAGES" divider between read and unread.
@@ -261,6 +288,21 @@ fun ChatScreen(
             newMessageCount += current - prevMessageCount
         }
         prevMessageCount = current
+    }
+
+    LaunchedEffect(chat.chatId, oldestMessageId, chat.canLoadOlder, loadOlderInFlight) {
+        if (!loadOlderInFlight) return@LaunchedEffect
+        if (!chat.canLoadOlder || oldestMessageId != requestedLoadOlderBeforeId) {
+            loadOlderInFlight = false
+        }
+    }
+
+    LaunchedEffect(chat.chatId, loadOlderInFlight, oldestMessageId, requestedLoadOlderBeforeId) {
+        if (!loadOlderInFlight) return@LaunchedEffect
+        delay(4_000)
+        if (loadOlderInFlight && oldestMessageId == requestedLoadOlderBeforeId) {
+            loadOlderInFlight = false
+        }
     }
 
     // When the keyboard appears, scroll to the newest message so it stays visible above the input.
@@ -424,11 +466,45 @@ fun ChatScreen(
                                         listState.animateScrollToItem(index)
                                     }
                                 },
+                                onRetryMessage = { messageId ->
+                                    manager.dispatch(AppAction.RetryMessage(chat.chatId, messageId))
+                                },
+                                onReact = { messageId, emoji ->
+                                    manager.dispatch(AppAction.ReactToMessage(chat.chatId, messageId, emoji))
+                                },
                             )
                         }
                         is ChatListItem.NewMessagesDivider -> {
                             NewMessagesDividerRow()
                         }
+                    }
+                }
+
+                item(key = "load-older-trigger") {
+                    if (loadOlderInFlight) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
+                    LaunchedEffect(chat.chatId, chat.canLoadOlder, oldestMessageId, loadOlderInFlight) {
+                        if (!chat.canLoadOlder || loadOlderInFlight) return@LaunchedEffect
+                        val beforeMessageId = oldestMessageId ?: return@LaunchedEffect
+                        if (requestedLoadOlderBeforeId == beforeMessageId) return@LaunchedEffect
+                        requestedLoadOlderBeforeId = beforeMessageId
+                        loadOlderInFlight = true
+                        manager.dispatch(
+                            AppAction.LoadOlderMessages(
+                                chatId = chat.chatId,
+                                beforeMessageId = beforeMessageId,
+                                limit = 30u,
+                            ),
+                        )
                     }
                 }
             }
@@ -483,6 +559,13 @@ fun ChatScreen(
                         .onSizeChanged { composerHeightPx = it.height },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (typingMembers.isNotEmpty()) {
+                    TypingIndicatorRow(
+                        typingMembers = typingMembers,
+                        modifier = Modifier.padding(horizontal = 6.dp),
+                    )
+                }
+
                 replyDraft?.let { replying ->
                     ReplyComposerPreview(
                         message = replying,
@@ -505,7 +588,10 @@ fun ChatScreen(
                     ) {
                         BasicTextField(
                             value = draft,
-                            onValueChange = { draft = it },
+                            onValueChange = {
+                                draft = it
+                                maybeNotifyTyping(it.trim())
+                            },
                             modifier =
                                 Modifier
                                     .weight(1f)
@@ -647,28 +733,39 @@ private fun messageBubbleShape(position: GroupedBubblePosition, isMine: Boolean)
 private fun DeliveryStateIcon(
     delivery: MessageDeliveryState,
     tint: androidx.compose.ui.graphics.Color,
+    onClick: (() -> Unit)? = null,
 ) {
+    val iconModifier =
+        Modifier
+            .size(13.dp)
+            .let { modifier ->
+                if (onClick != null) {
+                    modifier.clickable { onClick() }
+                } else {
+                    modifier
+                }
+            }
     when (delivery) {
         is MessageDeliveryState.Pending ->
             Icon(
                 imageVector = Icons.Default.Schedule,
                 contentDescription = "Pending",
                 tint = tint,
-                modifier = Modifier.size(13.dp),
+                modifier = iconModifier,
             )
         is MessageDeliveryState.Sent ->
             Icon(
                 imageVector = Icons.Default.Done,
                 contentDescription = "Sent",
                 tint = tint,
-                modifier = Modifier.size(13.dp),
+                modifier = iconModifier,
             )
         is MessageDeliveryState.Failed ->
             Icon(
                 imageVector = Icons.Default.ErrorOutline,
                 contentDescription = "Failed",
                 tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(13.dp),
+                modifier = iconModifier,
             )
     }
 }
@@ -698,6 +795,107 @@ private fun NewMessagesDividerRow() {
     }
 }
 
+@Composable
+private fun TypingIndicatorRow(
+    typingMembers: List<TypingMember>,
+    modifier: Modifier = Modifier,
+) {
+    val dotProgress =
+        rememberInfiniteTransition(label = "typingDots").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec =
+                infiniteRepeatable(
+                    animation = tween(durationMillis = 900, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart,
+                ),
+            label = "typingDotsProgress",
+        )
+    val dotCount = 1 + ((dotProgress.value * 3f).toInt() % 3)
+    val dots = ".".repeat(dotCount)
+    val label = typingLabel(typingMembers)
+
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        tonalElevation = 1.dp,
+    ) {
+        Text(
+            text = "$label$dots",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun typingLabel(typingMembers: List<TypingMember>): String {
+    val names =
+        typingMembers.mapNotNull { member ->
+            member.name?.trim()?.takeIf { it.isNotEmpty() } ?: member.pubkey.take(8)
+        }
+    if (names.isEmpty()) return "Someone is typing"
+    return when (names.size) {
+        1 -> "${names[0]} is typing"
+        2 -> "${names[0]} and ${names[1]} are typing"
+        else -> "${names[0]} and ${names.size - 1} others are typing"
+    }
+}
+
+@Composable
+private fun ReactionChipsRow(
+    isMine: Boolean,
+    reactions: List<ReactionSummary>,
+    onToggleReaction: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 3.dp),
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (reaction in reactions) {
+                val chipColor =
+                    if (reaction.reactedByMe) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    }
+                val contentColor =
+                    if (reaction.reactedByMe) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                Row(
+                    modifier =
+                        Modifier
+                            .clip(MaterialTheme.shapes.small)
+                            .background(chipColor)
+                            .clickable { onToggleReaction(reaction.emoji) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = reaction.emoji,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    if (reaction.count > 1u) {
+                        Text(
+                            text = reaction.count.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
@@ -707,6 +905,8 @@ private fun MessageBubble(
     messagesById: Map<String, ChatMessage>,
     onReplyTo: (ChatMessage) -> Unit,
     onJumpToMessage: (String) -> Unit,
+    onRetryMessage: (String) -> Unit,
+    onReact: (String, String) -> Unit,
 ) {
     val isMine = message.isMine
     val bubbleColor =
@@ -837,6 +1037,15 @@ private fun MessageBubble(
                                     expanded = showMenu,
                                     onDismissRequest = { showMenu = false },
                                 ) {
+                                    for (emoji in QUICK_REACTIONS) {
+                                        DropdownMenuItem(
+                                            text = { Text("React $emoji") },
+                                            onClick = {
+                                                onReact(message.id, emoji)
+                                                showMenu = false
+                                            },
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text("Reply") },
                                         onClick = {
@@ -852,6 +1061,15 @@ private fun MessageBubble(
                                             showMenu = false
                                         },
                                     )
+                                    if (message.delivery is MessageDeliveryState.Failed) {
+                                        DropdownMenuItem(
+                                            text = { Text("Retry") },
+                                            onClick = {
+                                                onRetryMessage(message.id)
+                                                showMenu = false
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -878,6 +1096,15 @@ private fun MessageBubble(
                 }
             }
         }
+        if (message.reactions.isNotEmpty()) {
+            ReactionChipsRow(
+                isMine = isMine,
+                reactions = message.reactions,
+                onToggleReaction = { emoji ->
+                    onReact(message.id, emoji)
+                },
+            )
+        }
         if (showFooter) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp),
@@ -895,6 +1122,12 @@ private fun MessageBubble(
                     DeliveryStateIcon(
                         delivery = message.delivery,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        onClick =
+                            if (message.delivery is MessageDeliveryState.Failed) {
+                                { onRetryMessage(message.id) }
+                            } else {
+                                null
+                            },
                     )
                 }
             }

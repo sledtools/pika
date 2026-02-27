@@ -1,6 +1,8 @@
 package com.pika.app.ui.screens
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -53,6 +55,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Badge
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -73,6 +76,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -127,6 +131,7 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -134,9 +139,11 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
 import kotlin.math.max
 import kotlin.math.roundToInt
 import com.pika.app.rust.Screen
+import com.pika.app.rust.VoiceRecordingPhase
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import dev.jeziellago.compose.markdowntext.MarkdownText
@@ -245,6 +252,7 @@ fun ChatScreen(
         remember(chat.typingMembers, myPubkey) {
             chat.typingMembers.filter { it.pubkey != myPubkey }
         }
+    val activeVoiceRecording = manager.state.voiceRecording
     val title = chatTitle(chat, myPubkey)
     val peer =
         if (!chat.isGroup) {
@@ -316,6 +324,111 @@ fun ChatScreen(
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             sendMediaFromUri(uri)
         }
+
+    val voiceRecorder = remember(chat.chatId) { AndroidVoiceRecorder(ctx.applicationContext) }
+    val onVoiceLevel: (Float) -> Unit = { level ->
+        manager.dispatch(AppAction.VoiceRecordingAudioLevel(level))
+    }
+    val onVoiceTranscript: (String) -> Unit = { transcript ->
+        manager.dispatch(AppAction.VoiceRecordingTranscript(transcript))
+    }
+    DisposableEffect(chat.chatId) {
+        onDispose {
+            if (manager.state.voiceRecording != null) {
+                manager.dispatch(AppAction.VoiceRecordingCancel)
+            }
+            voiceRecorder.release()
+        }
+    }
+
+    fun startVoiceRecordingInternal() {
+        val started = voiceRecorder.start(onLevel = onVoiceLevel, onTranscript = onVoiceTranscript)
+        if (started) {
+            manager.dispatch(AppAction.VoiceRecordingStart)
+        } else {
+            Toast.makeText(ctx, "Unable to start voice recording", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val micPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startVoiceRecordingInternal()
+            } else {
+                Toast.makeText(ctx, "Microphone permission is required", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+    fun startVoiceRecording() {
+        if (activeVoiceRecording != null) return
+        val hasMicPermission =
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        if (hasMicPermission) {
+            startVoiceRecordingInternal()
+        } else {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        voiceRecorder.cancel()
+        manager.dispatch(AppAction.VoiceRecordingCancel)
+    }
+
+    fun toggleVoiceRecordingPause(phase: VoiceRecordingPhase) {
+        when (phase) {
+            VoiceRecordingPhase.PAUSED -> {
+                val resumed =
+                    voiceRecorder.resume(
+                        onLevel = onVoiceLevel,
+                        onTranscript = onVoiceTranscript,
+                    )
+                if (resumed) {
+                    manager.dispatch(AppAction.VoiceRecordingResume)
+                }
+            }
+            VoiceRecordingPhase.RECORDING -> {
+                if (voiceRecorder.pause()) {
+                    manager.dispatch(AppAction.VoiceRecordingPause)
+                }
+            }
+            VoiceRecordingPhase.IDLE, VoiceRecordingPhase.DONE -> Unit
+        }
+    }
+
+    fun sendVoiceRecording(recording: com.pika.app.rust.VoiceRecordingState) {
+        manager.dispatch(AppAction.VoiceRecordingStop)
+        coroutineScope.launch {
+            val file = withContext(Dispatchers.IO) { voiceRecorder.stop() }
+            if (file == null) {
+                manager.dispatch(AppAction.VoiceRecordingCancel)
+                Toast.makeText(ctx, "Unable to finalize voice recording", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val payload = withContext(Dispatchers.IO) { runCatching { file.readBytes() }.getOrNull() }
+            withContext(Dispatchers.IO) { file.delete() }
+            if (payload == null || payload.isEmpty()) {
+                manager.dispatch(AppAction.VoiceRecordingCancel)
+                Toast.makeText(ctx, "Voice recording was empty", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val timestamp = System.currentTimeMillis() / 1000L
+            val transcript = recording.transcript.trim()
+            val caption = if (transcript.isEmpty()) "" else "*$transcript*"
+            manager.dispatch(
+                AppAction.SendChatMedia(
+                    chatId = chat.chatId,
+                    dataBase64 = Base64.encodeToString(payload, Base64.NO_WRAP),
+                    mimeType = "audio/mp4",
+                    filename = "voice_${timestamp}.m4a",
+                    caption = caption,
+                ),
+            )
+            manager.dispatch(AppAction.VoiceRecordingCancel)
+            replyDraft = null
+        }
+    }
 
     fun maybeNotifyTyping(text: String) {
         if (text.isBlank()) return
@@ -665,95 +778,123 @@ fun ChatScreen(
                     )
                 }
 
-                replyDraft?.let { replying ->
-                    ReplyComposerPreview(
-                        message = replying,
-                        onClear = { replyDraft = null },
-                    )
-                }
+                if (activeVoiceRecording == null) {
+                    replyDraft?.let { replying ->
+                        ReplyComposerPreview(
+                            message = replying,
+                            onClear = { replyDraft = null },
+                        )
+                    }
 
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
-                    tonalElevation = 1.dp,
-                    shadowElevation = 6.dp,
-                ) {
-                    Row(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        tonalElevation = 1.dp,
+                        shadowElevation = 6.dp,
                     ) {
-                        Box {
-                            IconButton(
-                                onClick = { showAttachmentSheet = true },
-                                modifier = Modifier.size(40.dp),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Add,
-                                    contentDescription = "Attach",
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(4.dp))
-                        BasicTextField(
-                            value = draft,
-                            onValueChange = {
-                                draft = it
-                                maybeNotifyTyping(it.trim())
-                            },
+                        Row(
                             modifier =
                                 Modifier
-                                    .weight(1f)
-                                    .testTag(TestTags.CHAT_MESSAGE_INPUT)
-                                    .onPreviewKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyUp &&
-                                            (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
-                                        ) {
-                                            sendDraftMessage()
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    },
-                            textStyle =
-                                MaterialTheme.typography.bodyLarge.copy(
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                ),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            singleLine = true,
-                            keyboardOptions =
-                                KeyboardOptions(
-                                    keyboardType = KeyboardType.Text,
-                                    imeAction = ImeAction.Send,
-                                ),
-                            keyboardActions =
-                                KeyboardActions(
-                                    onSend = { sendDraftMessage() },
-                                ),
-                            decorationBox = { innerTextField ->
-                                if (draft.isBlank()) {
-                                    Text(
-                                        text = "Message",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box {
+                                IconButton(
+                                    onClick = { showAttachmentSheet = true },
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Attach",
                                     )
                                 }
-                                innerTextField()
-                            },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        FilledIconButton(
-                            onClick = { sendDraftMessage() },
-                            enabled = draft.isNotBlank(),
-                            modifier = Modifier.size(40.dp).testTag(TestTags.CHAT_SEND),
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send",
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            BasicTextField(
+                                value = draft,
+                                onValueChange = {
+                                    draft = it
+                                    maybeNotifyTyping(it.trim())
+                                },
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .testTag(TestTags.CHAT_MESSAGE_INPUT)
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.type == KeyEventType.KeyUp &&
+                                                (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                            ) {
+                                                sendDraftMessage()
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        },
+                                textStyle =
+                                    MaterialTheme.typography.bodyLarge.copy(
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                singleLine = true,
+                                keyboardOptions =
+                                    KeyboardOptions(
+                                        keyboardType = KeyboardType.Text,
+                                        imeAction = ImeAction.Send,
+                                    ),
+                                keyboardActions =
+                                    KeyboardActions(
+                                        onSend = { sendDraftMessage() },
+                                    ),
+                                decorationBox = { innerTextField ->
+                                    if (draft.isBlank()) {
+                                        Text(
+                                            text = "Message",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    innerTextField()
+                                },
                             )
+                            Spacer(Modifier.width(8.dp))
+                            if (draft.trim().isNotBlank()) {
+                                FilledIconButton(
+                                    onClick = { sendDraftMessage() },
+                                    enabled = draft.isNotBlank(),
+                                    modifier = Modifier.size(40.dp).testTag(TestTags.CHAT_SEND),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.Send,
+                                        contentDescription = "Send",
+                                    )
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = { startVoiceRecording() },
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Mic,
+                                        contentDescription = "Record voice message",
+                                    )
+                                }
+                            }
                         }
+                    }
+                } else {
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        tonalElevation = 1.dp,
+                        shadowElevation = 6.dp,
+                    ) {
+                        VoiceRecordingComposer(
+                            recording = activeVoiceRecording,
+                            onSend = { sendVoiceRecording(activeVoiceRecording) },
+                            onCancel = { cancelVoiceRecording() },
+                            onTogglePause = { toggleVoiceRecordingPause(activeVoiceRecording.phase) },
+                        )
                     }
                 }
             }
@@ -1060,11 +1201,25 @@ private fun MediaAttachmentContent(
 ) {
     val hasLocalFile = attachment.localPath?.let { File(it).exists() } == true
     val isImage = attachment.mimeType.startsWith("image/")
+    val isAudio = attachment.mimeType.startsWith("audio/")
     val containerColor =
-        if (isMine) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+        when {
+            isAudio && isMine -> MaterialTheme.colorScheme.primary
+            isAudio -> MaterialTheme.colorScheme.surfaceContainerHighest
+            isMine -> MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        }
+    val primaryContentColor =
+        if (isAudio && isMine) {
+            MaterialTheme.colorScheme.onPrimary
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+            MaterialTheme.colorScheme.onSurface
+        }
+    val secondaryContentColor =
+        if (isAudio && isMine) {
+            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f)
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
         }
 
     if (isImage) {
@@ -1121,6 +1276,60 @@ private fun MediaAttachmentContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     TextButton(onClick = onDownload) {
+                        Text("Download")
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    if (isAudio) {
+        Surface(
+            modifier = Modifier.widthIn(max = 280.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = containerColor,
+        ) {
+            if (hasLocalFile) {
+                VoiceAttachmentPlayerRow(
+                    localPath = attachment.localPath ?: "",
+                    isMine = isMine,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            } else {
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = secondaryContentColor,
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Voice message",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = primaryContentColor,
+                        )
+                        Text(
+                            text = attachment.mimeType.ifBlank { "audio/mp4" },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = secondaryContentColor,
+                        )
+                    }
+                    TextButton(
+                        onClick = onDownload,
+                        colors = ButtonDefaults.textButtonColors(contentColor = primaryContentColor),
+                    ) {
                         Text("Download")
                     }
                 }

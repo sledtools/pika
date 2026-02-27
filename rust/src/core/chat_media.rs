@@ -1,10 +1,8 @@
-use std::error::Error as _;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use nostr_blossom::client::BlossomClient;
-use nostr_blossom::error::Error as BlossomError;
 use sha2::{Digest, Sha256};
 
 use crate::state::ChatMediaAttachment;
@@ -13,25 +11,6 @@ use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
-
-fn format_blossom_error(server: &str, err: &BlossomError) -> String {
-    match err {
-        BlossomError::Reqwest(req_err) => {
-            let mut causes = Vec::new();
-            let mut source = req_err.source();
-            while let Some(next) = source {
-                causes.push(next.to_string());
-                source = next.source();
-            }
-            if causes.is_empty() {
-                format!("{server}: {req_err}")
-            } else {
-                format!("{server}: {req_err}; caused by: {}", causes.join(" -> "))
-            }
-        }
-        _ => format!("{server}: {err}"),
-    }
-}
 
 /// Map file extension to a MIME type that MDK's encrypted-media allowlist
 /// accepts.  Types not on MDK's `SUPPORTED_MIME_TYPES` list must map to
@@ -337,12 +316,12 @@ impl AppCore {
                 return;
             }
 
-            let mut errors: Vec<String> = Vec::new();
+            let mut last_error: Option<String> = None;
             for server in &blossom_servers {
                 let base_url = match Url::parse(server) {
                     Ok(url) => url,
                     Err(e) => {
-                        errors.push(format!("{server}: {e}"));
+                        last_error = Some(format!("{server}: {e}"));
                         continue;
                     }
                 };
@@ -359,15 +338,14 @@ impl AppCore {
                 {
                     Ok(descriptor) => descriptor,
                     Err(e) => {
-                        tracing::warn!(server = %server, error = ?e, "chat media blossom upload failed");
-                        errors.push(format_blossom_error(server, &e));
+                        last_error = Some(format!("{server}: {e}"));
                         continue;
                     }
                 };
 
                 let descriptor_hash_hex = descriptor.sha256.to_string();
                 if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
-                    errors.push(format!(
+                    last_error = Some(format!(
                         "{server}: uploaded hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
                     ));
                     continue;
@@ -389,11 +367,9 @@ impl AppCore {
                     request_id,
                     uploaded_url: None,
                     descriptor_sha256_hex: None,
-                    error: Some(if errors.is_empty() {
-                        "Blossom upload failed".to_string()
-                    } else {
-                        errors.join(" | ")
-                    }),
+                    error: Some(
+                        last_error.unwrap_or_else(|| "Blossom upload failed".to_string()),
+                    ),
                 },
             )));
         });

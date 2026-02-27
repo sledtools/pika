@@ -1,34 +1,13 @@
-use std::error::Error as _;
 use std::time::Duration;
 
 use base64::Engine;
 use nostr_blossom::client::BlossomClient;
-use nostr_blossom::error::Error as BlossomError;
 
 use crate::state::MyProfileState;
 
 use super::*;
 
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-
-fn format_blossom_error(server: &str, err: &BlossomError) -> String {
-    match err {
-        BlossomError::Reqwest(req_err) => {
-            let mut causes = Vec::new();
-            let mut source = req_err.source();
-            while let Some(next) = source {
-                causes.push(next.to_string());
-                source = next.source();
-            }
-            if causes.is_empty() {
-                format!("{server}: {req_err}")
-            } else {
-                format!("{server}: {req_err}; caused by: {}", causes.join(" -> "))
-            }
-        }
-        _ => format!("{server}: {err}"),
-    }
-}
 
 impl AppCore {
     pub(super) fn refresh_my_profile(&mut self, toast_on_error: bool) {
@@ -170,13 +149,13 @@ impl AppCore {
                 return;
             }
 
-            let mut errors: Vec<String> = Vec::new();
+            let mut last_error: Option<String> = None;
 
             for server in &blossom_servers {
                 let base_url = match Url::parse(server) {
                     Ok(url) => url,
                     Err(e) => {
-                        errors.push(format!("{server}: {e}"));
+                        last_error = Some(format!("{server}: {e}"));
                         continue;
                     }
                 };
@@ -194,8 +173,7 @@ impl AppCore {
                 let descriptor = match upload {
                     Ok(d) => d,
                     Err(e) => {
-                        tracing::warn!(server = %server, error = ?e, "profile blossom upload failed");
-                        errors.push(format_blossom_error(server, &e));
+                        last_error = Some(format!("{server}: {e}"));
                         continue;
                     }
                 };
@@ -237,12 +215,9 @@ impl AppCore {
                 }
             }
 
-            let detail = if errors.is_empty() {
-                "unknown".to_string()
-            } else {
-                errors.join(" | ")
-            };
-            let message = format!("Blossom upload failed: {detail}");
+            let message = last_error
+                .map(|e| format!("Blossom upload failed: {e}"))
+                .unwrap_or_else(|| "Blossom upload failed".to_string());
             let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::MyProfileError {
                 message,
                 toast: true,

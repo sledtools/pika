@@ -29,7 +29,7 @@ pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
 pika-tls = { path = "../crates/pika-tls" }
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 rusqlite = "0.32"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }

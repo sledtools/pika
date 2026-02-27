@@ -70,8 +70,10 @@ AGENTS.private.md
 
 # pika-relay local dev data
 .pika-relay/
+cmd/pika-relay/pika-relay
 
 # Local backend state (just run-server)
 .pikahub/
-
+.local-backend/
+.pika-fixture/
 

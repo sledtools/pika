@@ -68,36 +68,39 @@ class PikaE2eUiTest {
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.OpenChat(chatId)) }
         waitUntilState(60_000, ctx, "chat opened") { it.currentChat?.chatId == chatId }
 
-        // Send deterministic probe.
-        val nonce = java.util.UUID.randomUUID().toString().replace("-", "").lowercase()
-        val probe = "ping:$nonce"
-        val expect = "pong:$nonce"
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.SendMessage(chatId, probe, null, null)) }
+        // Send deterministic probe. Use a fresh nonce per retry to avoid duplicate suppression.
+        val expectedPongs = linkedSetOf<String>()
+        fun sendProbe(): String {
+            val nonce = java.util.UUID.randomUUID().toString().replace("-", "").lowercase()
+            val probe = "ping:$nonce"
+            val expect = "pong:$nonce"
+            expectedPongs.add(expect)
+            runOnMain {
+                val app = AppManager.getInstance(ctx)
+                app.dispatch(AppAction.OpenChat(chatId))
+                app.dispatch(AppAction.SendMessage(chatId, probe, null, null))
+            }
+            return probe
+        }
+        var lastProbe = sendProbe()
 
         dumpState("after probe", ctx)
 
         // Ensure the outbound message actually made it into Rust-owned state (guards against UI flake).
-        compose.waitUntil(30_000) {
-            runOnMain {
-                AppManager.getInstance(ctx).state.currentChat?.messages?.any {
-                    it.content.trim() == probe
-                }
-                    ?: false
-            }
+        waitUntilState(30_000, ctx, "probe persisted") { st ->
+            hasChatMessage(st, chatId, lastProbe)
         }
 
-        // Wait for deterministic ack from the bot. 3 attempts x 60s; re-send ping before each retry.
+        // Wait for deterministic ack from the bot. 4 attempts x 90s to absorb relay jitter in nightly.
         retryOnTimeout(
-            maxAttempts = 3,
-            beforeRetry = { runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.SendMessage(chatId, probe, null, null)) } },
+            maxAttempts = 4,
+            beforeRetry = {
+                lastProbe = sendProbe()
+                dumpState("retry ping", ctx)
+            },
         ) {
-            compose.waitUntil(60_000) {
-                runOnMain {
-                    AppManager.getInstance(ctx).state.currentChat?.messages?.any {
-                        it.content.trim() == expect
-                    }
-                        ?: false
-                }
+            waitUntilState(90_000, ctx, "pong received") { st ->
+                expectedPongs.any { expect -> hasChatMessage(st, chatId, expect) }
             }
         }
     }
@@ -213,6 +216,19 @@ class PikaE2eUiTest {
                 Thread.sleep(2000)
             }
         }
+    }
+
+    private fun hasChatMessage(st: com.pika.app.rust.AppState, chatId: String, message: String): Boolean {
+        val expected = message.trim()
+        val currentHas =
+            st.currentChat
+                ?.takeIf { it.chatId == chatId }
+                ?.messages
+                ?.any { it.content.trim() == expected }
+                ?: false
+        if (currentHas) return true
+        val summary = st.chatList.firstOrNull { it.chatId == chatId } ?: return false
+        return summary.lastMessage?.trim() == expected || summary.lastMessagePreview.trim() == expected
     }
 
     private fun waitUntilState(

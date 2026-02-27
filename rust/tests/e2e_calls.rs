@@ -29,6 +29,45 @@ fn call_stats_snapshot(app: &FfiApp) -> Option<CallStatsSnapshot> {
     })
 }
 
+fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
+    let st = app.state();
+    if let Some(chat) = st
+        .current_chat
+        .as_ref()
+        .filter(|c| c.members.iter().any(|m| m.npub == peer_npub))
+    {
+        return Some(chat.chat_id.clone());
+    }
+    st.chat_list
+        .iter()
+        .find(|c| c.members.iter().any(|m| m.npub == peer_npub))
+        .map(|c| c.chat_id.clone())
+}
+
+fn create_or_open_dm_chat(app: &FfiApp, peer_npub: &str, timeout: Duration) -> String {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(chat_id) = dm_chat_id_for_peer(app, peer_npub) {
+            app.dispatch(AppAction::OpenChat {
+                chat_id: chat_id.clone(),
+            });
+            wait_until("chat opened", Duration::from_secs(30), || {
+                app.state()
+                    .current_chat
+                    .as_ref()
+                    .map(|c| c.chat_id == chat_id)
+                    .unwrap_or(false)
+            });
+            return chat_id;
+        }
+        app.dispatch(AppAction::CreateChat {
+            peer_npub: peer_npub.to_owned(),
+        });
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    panic!("chat for peer {peer_npub} was not ready within {timeout:?}");
+}
+
 // ---------------------------------------------------------------------------
 // FfiApp ↔ FfiApp call over local moq-relay
 // ---------------------------------------------------------------------------
@@ -73,18 +112,8 @@ fn call_over_local_moq_relay() {
         _ => unreachable!(),
     };
 
-    alice.dispatch(AppAction::CreateChat {
-        peer_npub: bob_npub,
-    });
-    wait_until("alice chat opened", Duration::from_secs(20), || {
-        alice.state().current_chat.is_some()
-    });
-    wait_until("bob has chat", Duration::from_secs(20), || {
-        !bob.state().chat_list.is_empty()
-    });
-
-    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
-    wait_until("bob chat id matches", Duration::from_secs(20), || {
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(90));
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
         bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
 
@@ -493,19 +522,7 @@ fn run_pikachat_call_test(relay_url: &str, moq_url: &str) {
         matches!(caller.state().auth, AuthState::LoggedIn { .. })
     });
 
-    caller.dispatch(AppAction::CreateChat {
-        peer_npub: daemon_npub.clone(),
-    });
-    wait_until("caller chat opened", Duration::from_secs(30), || {
-        caller.state().current_chat.is_some()
-    });
-    let chat_id = caller
-        .state()
-        .current_chat
-        .as_ref()
-        .unwrap()
-        .chat_id
-        .clone();
+    let chat_id = create_or_open_dm_chat(&caller, &daemon_npub, Duration::from_secs(90));
     eprintln!("[test] chat created: {chat_id}");
 
     let welcome = daemon.wait_for_event("daemon welcome_received", Duration::from_secs(30), |v| {

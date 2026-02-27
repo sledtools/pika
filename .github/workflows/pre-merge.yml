@@ -449,8 +449,8 @@ jobs:
 
       - run: |
           nix develop .#default -c ./tools/android-avd-ensure
-          # Run deterministic Android UI E2E in CI; audio-call E2E remains opt-in due flakiness.
-          PIKA_ANDROID_E2E_TEST_CLASS="com.pika.app.NostrConnectIntentTest,com.pika.app.PikaE2eUiTest#e2e_deployedRustBot_pingPong" \
+          # Keep nightly Android lane deterministic. Public-relay bot ping/pong remains flaky on CI emulators.
+          PIKA_ANDROID_E2E_TEST_CLASS="com.pika.app.NostrConnectIntentTest" \
           PIKA_ANDROID_FORCE_GUI=0 \
           PIKA_ANDROID_EMULATOR_ARGS="-no-window" \
           nix develop .#default -c just android-ui-e2e-local

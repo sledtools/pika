@@ -22,13 +22,17 @@ use pika_agent_control_plane::{
     RuntimeLifecyclePhase, TeardownCommand,
 };
 use pika_agent_microvm::microvm_params_provided;
-use pika_relay_profiles::{
-    default_key_package_relays, default_message_relays, default_primary_blossom_server,
-};
+use pika_relay_profiles::{default_key_package_relays, default_primary_blossom_server};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::agent::harness::AgentProtocol;
+
+const DEFAULT_RELAY_URLS: &[&str] = &[
+    "wss://relay.damus.io",
+    "wss://relay.primal.net",
+    "wss://nos.lol",
+];
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -63,7 +67,7 @@ struct Cli {
     #[arg(long, global = true, default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
-    /// Relay websocket URLs (default: us-east.nostr.pikachat.org, eu.nostr.pikachat.org)
+    /// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol)
     #[arg(long, global = true)]
     relay: Vec<String>,
 
@@ -723,7 +727,7 @@ fn open(cli: &Cli) -> anyhow::Result<(Keys, mdk_util::PikaMdk)> {
 /// Resolve message relay URLs: use --relay if provided, otherwise defaults.
 fn resolve_relays(cli: &Cli) -> Vec<String> {
     if cli.relay.is_empty() {
-        default_message_relays()
+        DEFAULT_RELAY_URLS.iter().map(|s| s.to_string()).collect()
     } else {
         cli.relay.clone()
     }

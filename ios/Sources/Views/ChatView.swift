@@ -404,6 +404,11 @@ struct ChatView: View {
                         scrollToBottom(using: proxy, animated: false)
                     }
                 }
+                .onChange(of: isInputFocused) { _, focused in
+                    guard focused else { return }
+                    guard shouldStickToBottom else { return }
+                    scrollToBottom(using: proxy, animated: false)
+                }
                 .overlay(alignment: .bottomTrailing) {
                     if !isAtBottom {
                         Button {
@@ -1160,25 +1165,9 @@ private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
     @ViewBuilder var content: Bar
 
     func body(content view: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            view.safeAreaBar(edge: .bottom) { content }
-        } else {
-            view.safeAreaInset(edge: .bottom) {
-                VStack(spacing: 0) {
-                    Divider()
-                    content
-                }
-            }
+        view.safeAreaInset(edge: .bottom, spacing: 0) {
+            content
         }
-        #else
-        view.safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-                Divider()
-                content
-            }
-        }
-        #endif
     }
 }
 

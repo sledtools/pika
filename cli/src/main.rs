@@ -32,6 +32,8 @@ const DEFAULT_RELAY_URLS: &[&str] = &[
     "wss://relay.damus.io",
     "wss://relay.primal.net",
     "wss://nos.lol",
+    "wss://us-east.nostr.pikachat.org",
+    "wss://eu.nostr.pikachat.org",
 ];
 
 fn default_state_dir() -> PathBuf {
@@ -67,7 +69,7 @@ struct Cli {
     #[arg(long, global = true, default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
-    /// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol)
+    /// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol, us-east.nostr.pikachat.org, eu.nostr.pikachat.org)
     #[arg(long, global = true)]
     relay: Vec<String>,
 

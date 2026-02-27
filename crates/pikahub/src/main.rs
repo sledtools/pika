@@ -1,13 +1,8 @@
-mod component;
-mod config;
-mod fixture;
-mod health;
-mod manifest;
-
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use pikahub::{config, fixture};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]

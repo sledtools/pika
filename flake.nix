@@ -64,6 +64,7 @@
           outputHashes = {
             "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };
         };
         cargoBuildFlags = [ "-p" "pika-server" ];
@@ -91,9 +92,10 @@
           outputHashes = {
             "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };
         };
-        cargoBuildFlags = [ "-p" "vm-spawner" "-p" "marmotd" ];
+        cargoBuildFlags = [ "-p" "vm-spawner" ];
         doCheck = false;
         nativeBuildInputs = [ serverPkgs.pkg-config ];
         buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];

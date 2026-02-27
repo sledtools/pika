@@ -3245,8 +3245,8 @@ dependencies = [
 
 [[package]]
 name = "hypernote-mdx"
-version = "0.2.0"
-source = "git+https://github.com/futurepaul/hypernote-mdx?rev=041ea6ea3d217813933f96275d2a2be35ecfe854#041ea6ea3d217813933f96275d2a2be35ecfe854"
+version = "0.3.0"
+source = "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f"
 dependencies = [
  "serde_json",
 ]

@@ -5910,6 +5910,7 @@ dependencies = [
  "pika-media",
  "pika-relay-profiles",
  "pika-tls",
+ "pikahub",
  "rand 0.8.5",
  "regex",
  "reqwest",

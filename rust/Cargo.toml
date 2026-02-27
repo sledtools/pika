@@ -63,7 +63,9 @@ paranoid-android = "0.2"
 [dev-dependencies]
 futures-util = "0.3"
 nostr-connect = "0.44.0"
+pikahub = { path = "../crates/pikahub" }
 tempfile = "3"
+tokio = { version = "1.47", features = ["rt-multi-thread"] }
 tokio-tungstenite = "0.27"
 
 [target.'cfg(target_os = "ios")'.dependencies]

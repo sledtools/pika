@@ -277,6 +277,28 @@ pub async fn down(state_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn down_sync(state_dir: &Path) -> Result<()> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let state_dir = state_dir.to_path_buf();
+        let join = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(down(&state_dir))
+        })
+        .join();
+        match join {
+            Ok(result) => result,
+            Err(_) => bail!("down_sync worker thread panicked"),
+        }
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(down(state_dir))
+    }
+}
+
 pub async fn status(state_dir: &Path, json: bool) -> Result<()> {
     let Some(m) = Manifest::load(state_dir)? else {
         if json {

@@ -5,6 +5,7 @@ use base64::Engine as _;
 use mdk_core::MDK;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
+use pika_relay_profiles::app_default_message_relays;
 
 fn looks_like_hex(s: &str) -> bool {
     let s = s.trim();
@@ -26,11 +27,10 @@ fn main() -> Result<()> {
 
     let peer_pubkey = PublicKey::parse(&peer).context("parse peer pubkey")?;
     let relays: Vec<RelayUrl> = if relays.is_empty() {
-        vec![
-            RelayUrl::parse("wss://relay.primal.net")?,
-            RelayUrl::parse("wss://relay.damus.io")?,
-            RelayUrl::parse("wss://nos.lol")?,
-        ]
+        app_default_message_relays()
+            .into_iter()
+            .map(|url| RelayUrl::parse(&url))
+            .collect::<std::result::Result<Vec<_>, _>>()?
     } else {
         relays
             .into_iter()

@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use nostr_sdk::prelude::RelayUrl;
-use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
+use pika_relay_profiles::{
+    app_default_key_package_relays, app_default_message_relays, LEGACY_APP_DEFAULT_MESSAGE_RELAYS,
+};
 use serde::Deserialize;
 
 use super::AppCore;
@@ -76,6 +78,26 @@ fn blossom_servers_or_default(values: Option<&[String]>) -> Vec<String> {
     pika_relay_profiles::app_blossom_servers_or_default(values.unwrap_or(&[]))
 }
 
+fn is_legacy_app_default_message_relays(values: &[String]) -> bool {
+    let normalized: Option<BTreeSet<String>> = values
+        .iter()
+        .map(|raw| {
+            let trimmed = raw.trim();
+            RelayUrl::parse(trimmed)
+                .ok()
+                .map(|u| u.as_str_without_trailing_slash().to_string())
+        })
+        .collect();
+    let Some(normalized) = normalized else {
+        return false;
+    };
+    let legacy: BTreeSet<String> = LEGACY_APP_DEFAULT_MESSAGE_RELAYS
+        .iter()
+        .map(|u| (*u).to_string())
+        .collect();
+    normalized == legacy
+}
+
 impl AppCore {
     pub(super) fn network_enabled(&self) -> bool {
         // Used to keep Rust tests deterministic and offline.
@@ -87,6 +109,12 @@ impl AppCore {
 
     pub(super) fn default_relays(&self) -> Vec<RelayUrl> {
         if let Some(urls) = &self.config.relay_urls {
+            if is_legacy_app_default_message_relays(urls) {
+                return app_default_message_relays()
+                    .iter()
+                    .filter_map(|u| RelayUrl::parse(u).ok())
+                    .collect();
+            }
             let parsed: Vec<RelayUrl> = urls
                 .iter()
                 .filter_map(|u| RelayUrl::parse(u).ok())
@@ -149,7 +177,9 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pika_relay_profiles::app_default_blossom_servers;
+    use pika_relay_profiles::{
+        app_default_blossom_servers, legacy_app_default_message_relays, RELAY_PIKACHAT_US_EAST,
+    };
 
     #[test]
     fn default_app_config_json_uses_shared_profile_defaults() {
@@ -225,5 +255,20 @@ mod tests {
             blossom_servers_or_default(Some(&values)),
             vec!["https://blossom.example.com".to_string()]
         );
+    }
+
+    #[test]
+    fn detects_legacy_default_message_relays() {
+        let mut urls = legacy_app_default_message_relays();
+        urls[0].push('/');
+        assert!(is_legacy_app_default_message_relays(&urls));
+    }
+
+    #[test]
+    fn ignores_non_legacy_or_custom_relay_lists() {
+        let mut urls = legacy_app_default_message_relays();
+        urls.pop();
+        urls.push(RELAY_PIKACHAT_US_EAST.to_string());
+        assert!(!is_legacy_app_default_message_relays(&urls));
     }
 }

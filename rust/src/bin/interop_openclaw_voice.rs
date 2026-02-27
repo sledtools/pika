@@ -24,21 +24,7 @@ use std::time::{Duration, Instant};
 
 use nostr_sdk::prelude::{Client, Filter, Keys, Kind, PublicKey, RelayPoolNotification};
 use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp};
-
-const DEFAULT_RELAYS: &[&str] = &[
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.damus.io",
-];
-
-// Match rust/src/core/config.rs defaults. Historically, key packages (kind 443) were NIP-70 protected
-// in MDK, so these were relays known to accept protected events. MDK now supports unprotected key
-// packages (see mdk#168), but we keep this list for compatibility / debugging.
-const DEFAULT_KEY_PACKAGE_RELAYS: &[&str] = &[
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-01.yakihonne.com",
-    "wss://nostr-02.yakihonne.com",
-];
+use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
 
 const DEFAULT_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_BROADCAST_PREFIX: &str = "pika/calls";
@@ -96,21 +82,15 @@ fn relays() -> Vec<String> {
         // For Step 3 debugging, it's often useful to include both "popular" relays and the
         // protected-kind-friendly set to avoid relay split-brain during group creation.
         dedup_preserve_order(
-            DEFAULT_RELAYS
-                .iter()
-                .chain(DEFAULT_KEY_PACKAGE_RELAYS.iter())
-                .map(|s| s.to_string()),
+            app_default_message_relays()
+                .into_iter()
+                .chain(app_default_key_package_relays()),
         )
     })
 }
 
 fn kp_relays() -> Vec<String> {
-    parse_csv_env("PIKA_E2E_KP_RELAYS").unwrap_or_else(|| {
-        DEFAULT_KEY_PACKAGE_RELAYS
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    })
+    parse_csv_env("PIKA_E2E_KP_RELAYS").unwrap_or_else(app_default_key_package_relays)
 }
 
 fn call_moq_url() -> String {

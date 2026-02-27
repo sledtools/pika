@@ -7,9 +7,8 @@ struct LoadingView: View {
     private static let statusLines = [
         "Initializing MLS state...",
         "Loading identity keys...",
-        "Connecting to relay.primal.net...",
-        "Connecting to nos.lol...",
-        "Connecting to relay.damus.io...",
+        "Connecting to message relays...",
+        "Syncing relay subscriptions...",
         "Restoring session...",
         "Fetching key packages...",
         "Decrypting message history...",

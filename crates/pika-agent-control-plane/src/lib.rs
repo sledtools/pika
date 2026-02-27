@@ -268,7 +268,7 @@ mod tests {
                 protocol: ProtocolKind::Acp,
                 name: Some("agent".to_string()),
                 runtime_class: Some("fly-us-east".to_string()),
-                relay_urls: vec!["wss://us-east.nostr.pikachat.org".to_string()],
+                relay_urls: vec!["wss://relay.example.com".to_string()],
                 keep: false,
                 bot_secret_key_hex: None,
                 microvm: None,

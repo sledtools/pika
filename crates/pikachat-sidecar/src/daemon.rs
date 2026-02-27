@@ -4346,6 +4346,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_call_accept_signal() {
+        let content = serde_json::json!({
+            "v": 1,
+            "ns": "pika.call",
+            "type": "call.accept",
+            "call_id": "550e8400-e29b-41d4-a716-446655440001",
+            "ts_ms": 1730000000000i64,
+            "body": {
+                "moq_url": "https://moq.local/anon",
+                "broadcast_base": "pika/calls/550e8400-e29b-41d4-a716-446655440001",
+                "tracks": [{
+                    "name": "audio0",
+                    "codec": "opus",
+                    "sample_rate": 48000,
+                    "channels": 1,
+                    "frame_ms": 20
+                }]
+            }
+        })
+        .to_string();
+        let parsed = parse_call_signal(&content).expect("parse call.accept");
+        match parsed {
+            ParsedCallSignal::Accept { call_id, session } => {
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440001");
+                assert_eq!(session.moq_url, "https://moq.local/anon");
+            }
+            other => panic!("expected accept signal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_call_reject_and_end_signal_variants() {
+        let reject = serde_json::json!({
+            "v": 1,
+            "ns": "pika.call",
+            "type": "call.reject",
+            "call_id": "550e8400-e29b-41d4-a716-446655440002",
+            "ts_ms": 1730000000000i64,
+            "body": { "reason": "busy" }
+        })
+        .to_string();
+        match parse_call_signal(&reject).expect("parse call.reject") {
+            ParsedCallSignal::Reject { call_id, reason } => {
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440002");
+                assert_eq!(reason, "busy");
+            }
+            other => panic!("expected reject signal, got {other:?}"),
+        }
+
+        let end_inner = serde_json::json!({
+            "v": 1,
+            "ns": "pika.call",
+            "type": "call.end",
+            "call_id": "550e8400-e29b-41d4-a716-446655440003",
+            "ts_ms": 1730000000000i64,
+            "body": {}
+        })
+        .to_string();
+        let end_wrapped = serde_json::json!({
+            "rumor": { "content": end_inner }
+        })
+        .to_string();
+        match parse_call_signal(&end_wrapped).expect("parse wrapped call.end") {
+            ParsedCallSignal::End { call_id, reason } => {
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440003");
+                assert_eq!(reason, "remote_end");
+            }
+            other => panic!("expected end signal, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn echo_worker_republishes_frames() {
         let stats = run_audio_echo_smoke(10).await.expect("audio echo smoke");
@@ -4671,6 +4743,57 @@ mod tests {
                 assert_eq!(form.get("note").map(String::as_str), Some("ship it"));
             }
             other => panic!("expected SubmitHypernoteAction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_send_audio_response_cmd() {
+        let json = r#"{
+            "cmd": "send_audio_response",
+            "request_id": "r5",
+            "call_id": "550e8400-e29b-41d4-a716-446655440010",
+            "tts_text": "hello from sidecar"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize send_audio_response");
+        match cmd {
+            InCmd::SendAudioResponse {
+                request_id,
+                call_id,
+                tts_text,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r5"));
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440010");
+                assert_eq!(tts_text, "hello from sidecar");
+            }
+            other => panic!("expected SendAudioResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_send_audio_file_cmd_defaults_channels() {
+        let json = r#"{
+            "cmd": "send_audio_file",
+            "request_id": "r6",
+            "call_id": "550e8400-e29b-41d4-a716-446655440011",
+            "audio_path": "/tmp/reply.pcm",
+            "sample_rate": 24000
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize send_audio_file");
+        match cmd {
+            InCmd::SendAudioFile {
+                request_id,
+                call_id,
+                audio_path,
+                sample_rate,
+                channels,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r6"));
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440011");
+                assert_eq!(audio_path, "/tmp/reply.pcm");
+                assert_eq!(sample_rate, 24_000);
+                assert_eq!(channels, 1);
+            }
+            other => panic!("expected SendAudioFile, got {other:?}"),
         }
     }
 

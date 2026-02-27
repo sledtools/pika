@@ -91,6 +91,14 @@ const activeSidecars = new Map<string, PikachatSidecarHandle>();
 // Map session keys to group/account context so tool factories can resolve targets.
 const sessionGroupMap = new Map<string, { groupId: string; accountId: string }>();
 
+/** Find the most recently mapped group ID for a given account (used by message actions). */
+function findGroupIdForAccount(accountId: string): string | null {
+  for (const entry of sessionGroupMap.values()) {
+    if (entry.accountId === accountId) return entry.groupId;
+  }
+  return null;
+}
+
 // Per-account hypernote catalog text fetched from sidecar at startup.
 const hypernoteCatalogs = new Map<string, string>();
 
@@ -652,6 +660,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   capabilities: {
     chatTypes: ["dm", "group"],
     media: true,
+    reactions: true,
     nativeCommands: false,
   },
   reload: { configPrefixes: ["channels.pikachat-openclaw", "plugins.entries.pikachat-openclaw"] },
@@ -709,11 +718,29 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     },
   },
 
+  actions: {
+    listActions: () => ["react"] as any[],
+    handleAction: async ({ action, params, accountId }): Promise<any> => {
+      if (action === "react") {
+        const messageId = typeof params.messageId === "string" ? params.messageId : "";
+        const emoji = typeof params.emoji === "string" ? params.emoji : "";
+        if (!messageId) return { content: [{ type: "text", text: "messageId is required." }] };
+        if (!emoji) return { content: [{ type: "text", text: "emoji is required." }] };
+        const handle = activeSidecars.get(accountId ?? DEFAULT_ACCOUNT_ID);
+        if (!handle) return { content: [{ type: "text", text: "Sidecar not running." }] };
+        const groupId = findGroupIdForAccount(accountId ?? DEFAULT_ACCOUNT_ID);
+        if (!groupId) return { content: [{ type: "text", text: "No target group." }] };
+        handle.sidecar.sendReaction(groupId, messageId, emoji);
+        return { content: [{ type: "text", text: "Reaction sent." }] };
+      }
+      return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
+    },
+  },
+
   agentPrompt: {
     messageToolHints: () => [
       "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
-      "- Use `send_reaction` to react to messages with emoji. Requires the event_id of the message.",
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
     ],
   },
@@ -1468,29 +1495,6 @@ export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
           state: params.state,
         });
         return { content: [{ type: "text" as const, text: "Hypernote sent." }] };
-      },
-    };
-  };
-}
-
-export function createSendReactionToolFactory(): (ctx: ToolContext) => any {
-  return (ctx) => {
-    return {
-      name: "send_reaction",
-      description: "Send an emoji reaction to a message. Requires the event_id of the message to react to.",
-      parameters: {
-        type: "object",
-        properties: {
-          event_id: { type: "string", description: "Nostr event ID of the message to react to" },
-          emoji: { type: "string", description: 'Emoji to react with (e.g. "❤️", "👍", "🔥")' },
-        },
-        required: ["event_id", "emoji"],
-      },
-      async execute(_id: string, params: { event_id: string; emoji: string }) {
-        const target = resolveToolTarget(ctx);
-        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
-        target.handle.sidecar.sendReaction(target.groupId, params.event_id, params.emoji);
-        return { content: [{ type: "text" as const, text: "Reaction sent." }] };
       },
     };
   };

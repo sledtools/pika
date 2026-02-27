@@ -684,6 +684,16 @@ fun ChatScreen(
                                 onOpenImage = { attachment ->
                                     fullscreenImageAttachment = attachment
                                 },
+                                onHypernoteAction = { messageId, actionName, form ->
+                                    manager.dispatch(
+                                        AppAction.HypernoteAction(
+                                            chatId = chat.chatId,
+                                            messageId = messageId,
+                                            actionName = actionName,
+                                            form = form,
+                                        ),
+                                    )
+                                },
                             )
                         }
                         is ChatListItem.NewMessagesDivider -> {
@@ -1451,6 +1461,7 @@ private fun MessageBubble(
     onReact: (String, String) -> Unit,
     onDownloadMedia: (String, String) -> Unit,
     onOpenImage: (ChatMediaAttachment) -> Unit,
+    onHypernoteAction: (messageId: String, actionName: String, form: Map<String, String>) -> Unit,
 ) {
     val isMine = message.isMine
     val bubbleColor =
@@ -1503,151 +1514,162 @@ private fun MessageBubble(
             Spacer(Modifier.height(4.dp))
         }
 
-        if (message.media.isNotEmpty()) {
-            for (attachment in message.media) {
-                MediaAttachmentContent(
-                    attachment = attachment,
-                    isMine = isMine,
-                    onDownload = { onDownloadMedia(message.id, attachment.originalHashHex) },
-                    onOpenImage = { onOpenImage(attachment) },
-                )
-                Spacer(Modifier.height(3.dp))
+        val hypernote = message.hypernote
+        if (hypernote != null) {
+            HypernoteRenderer(
+                messageId = message.id,
+                hypernote = hypernote,
+                onAction = { actionName, messageId, form ->
+                    onHypernoteAction(messageId, actionName, form)
+                },
+            )
+        } else {
+            if (message.media.isNotEmpty()) {
+                for (attachment in message.media) {
+                    MediaAttachmentContent(
+                        attachment = attachment,
+                        isMine = isMine,
+                        onDownload = { onDownloadMedia(message.id, attachment.originalHashHex) },
+                        onOpenImage = { onOpenImage(attachment) },
+                    )
+                    Spacer(Modifier.height(3.dp))
+                }
             }
-        }
 
-        for (segment in segments) {
-            when (segment) {
-                is MessageSegment.Markdown -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .draggable(
-                                orientation = Orientation.Horizontal,
-                                state = rememberDraggableState { delta ->
-                                    // Only allow rightward swipe up to threshold + a bit of resistance
-                                    val newOffset = (swipeOffset.value + delta).coerceIn(0f, swipeThreshold * 1.2f)
-                                    coroutineScope.launch { swipeOffset.snapTo(newOffset) }
-                                    if (swipeOffset.value >= swipeThreshold && !replyTriggered) {
-                                        replyTriggered = true
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    }
-                                },
-                                onDragStopped = {
-                                    if (replyTriggered) {
-                                        onReplyTo(message)
-                                        replyTriggered = false
-                                    }
-                                    coroutineScope.launch { swipeOffset.animateTo(0f) }
-                                },
-                            ),
-                    ) {
-                        // Reply icon revealed behind the bubble as it swipes
-                        if (swipeOffset.value > 8f) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Reply,
-                                contentDescription = "Reply",
-                                tint =
-                                    MaterialTheme.colorScheme.primary.copy(
-                                        alpha = (swipeOffset.value / swipeThreshold).coerceIn(0f, 1f),
-                                    ),
-                                modifier = Modifier
-                                    .align(Alignment.CenterStart)
-                                    .padding(start = 8.dp)
-                                    .size(20.dp),
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.Bottom,
+            for (segment in segments) {
+                when (segment) {
+                    is MessageSegment.Markdown -> {
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .offset { IntOffset(swipeOffset.value.roundToInt(), 0) },
-                            horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+                                .draggable(
+                                    orientation = Orientation.Horizontal,
+                                    state = rememberDraggableState { delta ->
+                                        // Only allow rightward swipe up to threshold + a bit of resistance
+                                        val newOffset = (swipeOffset.value + delta).coerceIn(0f, swipeThreshold * 1.2f)
+                                        coroutineScope.launch { swipeOffset.snapTo(newOffset) }
+                                        if (swipeOffset.value >= swipeThreshold && !replyTriggered) {
+                                            replyTriggered = true
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        }
+                                    },
+                                    onDragStopped = {
+                                        if (replyTriggered) {
+                                            onReplyTo(message)
+                                            replyTriggered = false
+                                        }
+                                        coroutineScope.launch { swipeOffset.animateTo(0f) }
+                                    },
+                                ),
                         ) {
-                            // Use a Box to anchor the DropdownMenu to the bubble.
-                            var showMenu by remember { mutableStateOf(false) }
-                            Box {
-                                Box(
-                                    modifier =
-                                        Modifier
-                                            .clip(messageBubbleShape(position = position, isMine = isMine))
-                                            .background(bubbleColor)
-                                            .combinedClickable(
-                                                onClick = {},
-                                                onLongClick = {
-                                                    showMenu = true
-                                                },
-                                            )
-                                            .padding(horizontal = 12.dp, vertical = 9.dp)
-                                            .widthIn(max = 280.dp),
-                                ) {
-                                    MarkdownText(
-                                        markdown = segment.text.trim(),
-                                        style = MaterialTheme.typography.bodyLarge.copy(color = textColor),
-                                        enableSoftBreakAddsNewLine = true,
-                                        afterSetMarkdown = { textView ->
-                                            textView.includeFontPadding = false
-                                        },
-                                    )
-                                }
-                                DropdownMenu(
-                                    expanded = showMenu,
-                                    onDismissRequest = { showMenu = false },
-                                ) {
-                                    for (emoji in QUICK_REACTIONS) {
-                                        DropdownMenuItem(
-                                            text = { Text("React $emoji") },
-                                            onClick = {
-                                                onReact(message.id, emoji)
-                                                showMenu = false
+                            // Reply icon revealed behind the bubble as it swipes
+                            if (swipeOffset.value > 8f) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Reply,
+                                    contentDescription = "Reply",
+                                    tint =
+                                        MaterialTheme.colorScheme.primary.copy(
+                                            alpha = (swipeOffset.value / swipeThreshold).coerceIn(0f, 1f),
+                                        ),
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.Bottom,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .offset { IntOffset(swipeOffset.value.roundToInt(), 0) },
+                                horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+                            ) {
+                                // Use a Box to anchor the DropdownMenu to the bubble.
+                                var showMenu by remember { mutableStateOf(false) }
+                                Box {
+                                    Box(
+                                        modifier =
+                                            Modifier
+                                                .clip(messageBubbleShape(position = position, isMine = isMine))
+                                                .background(bubbleColor)
+                                                .combinedClickable(
+                                                    onClick = {},
+                                                    onLongClick = {
+                                                        showMenu = true
+                                                    },
+                                                )
+                                                .padding(horizontal = 12.dp, vertical = 9.dp)
+                                                .widthIn(max = 280.dp),
+                                    ) {
+                                        MarkdownText(
+                                            markdown = segment.text.trim(),
+                                            style = MaterialTheme.typography.bodyLarge.copy(color = textColor),
+                                            enableSoftBreakAddsNewLine = true,
+                                            afterSetMarkdown = { textView ->
+                                                textView.includeFontPadding = false
                                             },
                                         )
                                     }
-                                    DropdownMenuItem(
-                                        text = { Text("Reply") },
-                                        onClick = {
-                                            onReplyTo(message)
-                                            showMenu = false
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy text") },
-                                        onClick = {
-                                            clipboardManager.setText(AnnotatedString(message.displayContent))
-                                            Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
-                                            showMenu = false
-                                        },
-                                    )
-                                    if (message.delivery is MessageDeliveryState.Failed) {
+                                    DropdownMenu(
+                                        expanded = showMenu,
+                                        onDismissRequest = { showMenu = false },
+                                    ) {
+                                        for (emoji in QUICK_REACTIONS) {
+                                            DropdownMenuItem(
+                                                text = { Text("React $emoji") },
+                                                onClick = {
+                                                    onReact(message.id, emoji)
+                                                    showMenu = false
+                                                },
+                                            )
+                                        }
                                         DropdownMenuItem(
-                                            text = { Text("Retry") },
+                                            text = { Text("Reply") },
                                             onClick = {
-                                                onRetryMessage(message.id)
+                                                onReplyTo(message)
                                                 showMenu = false
                                             },
                                         )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy text") },
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(message.displayContent))
+                                                Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
+                                                showMenu = false
+                                            },
+                                        )
+                                        if (message.delivery is MessageDeliveryState.Failed) {
+                                            DropdownMenuItem(
+                                                text = { Text("Retry") },
+                                                onClick = {
+                                                    onRetryMessage(message.id)
+                                                    showMenu = false
+                                                },
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                is MessageSegment.PikaHtml -> {
-                    Box(
-                        modifier =
-                            Modifier
-                                .clip(messageBubbleShape(position = position, isMine = isMine))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                .padding(12.dp)
-                                .widthIn(max = 280.dp),
-                    ) {
-                        MarkdownText(
-                            markdown = segment.html,
-                            style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
-                            enableSoftBreakAddsNewLine = true,
-                            afterSetMarkdown = { textView ->
-                                textView.includeFontPadding = false
-                            },
-                        )
+                    is MessageSegment.PikaHtml -> {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .clip(messageBubbleShape(position = position, isMine = isMine))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    .padding(12.dp)
+                                    .widthIn(max = 280.dp),
+                        ) {
+                            MarkdownText(
+                                markdown = segment.html,
+                                style = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
+                                enableSoftBreakAddsNewLine = true,
+                                afterSetMarkdown = { textView ->
+                                    textView.includeFontPadding = false
+                                },
+                            )
+                        }
                     }
                 }
             }

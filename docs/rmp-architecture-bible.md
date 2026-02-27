@@ -1653,6 +1653,124 @@ rm -rf staging
 cd ios && xcodegen generate
 ```
 
+### 5.2.1 Xcode Toolchain Management (Nix + macOS)
+
+When using a Nix flake for reproducible development, Xcode integration requires careful orchestration. Nix provides Rust, the Android toolchain, and general CLI tools, but Xcode is installed imperatively on the macOS host. The two systems fight over compiler and SDK paths. This section documents the patterns that resolve the conflict.
+
+**Pin a specific Xcode version in the flake.**
+
+Every team member and CI runner should use the same Xcode. The flake declares the expected version and constructs a wrapper:
+
+```nix
+xcodeVersion = "16.2";  # pin for the team
+xcodeBaseDir = "/Applications/Xcode-${xcodeVersion}.0.app";
+
+xcodeWrapper = pkgs.xcodeenv.composeXcodeWrapper {
+  versions = [ xcodeVersion ];
+  inherit xcodeBaseDir;
+};
+```
+
+The shell hook sets `DEVELOPER_DIR` to the pinned Xcode and offers to install it interactively if missing:
+
+```bash
+if [ -d "${xcodeBaseDir}/Contents/Developer" ]; then
+  export DEVELOPER_DIR="${xcodeBaseDir}/Contents/Developer"
+else
+  echo "Xcode ${xcodeVersion} not found at ${xcodeBaseDir}"
+  echo "Install it with: xcodes install ${xcodeVersion}"
+fi
+```
+
+The shell hook also overrides `CC`, `CXX`, `AR`, `RANLIB` to the pinned Xcode's toolchain binaries. This ensures `cargo build` for macOS host targets (binding generation, desktop builds) uses Xcode's clang rather than Nix's clang-wrapper, avoiding target-wrapper mismatches:
+
+```bash
+TOOLCHAIN_BIN="${DEVELOPER_DIR}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+export CC="$TOOLCHAIN_BIN/clang"
+export CXX="$TOOLCHAIN_BIN/clang++"
+export AR="$TOOLCHAIN_BIN/ar"
+export RANLIB="$TOOLCHAIN_BIN/ranlib"
+export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
+export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
+```
+
+**The wrapper script pattern.**
+
+Even with the shell hook, different build steps need different environment configurations. Rather than inlining `env -u ...` in every justfile recipe, create three small wrapper scripts in `tools/`:
+
+**`tools/xcode-dev-dir`** -- Resolves the Xcode Developer directory with a deterministic fallback chain:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+is_valid_dev_dir() {
+  local dir="${1:-}"
+  [ -n "$dir" ] \
+    && [ -x "$dir/usr/bin/simctl" ] \
+    && [ -x "$dir/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" ]
+}
+
+# 1) Respect DEVELOPER_DIR if set (flake pins this)
+if is_valid_dev_dir "${DEVELOPER_DIR:-}"; then echo "$DEVELOPER_DIR"; exit 0; fi
+# 2) Respect xcode-select
+SELECTED="$(xcode-select -p 2>/dev/null || true)"
+if is_valid_dev_dir "$SELECTED"; then echo "$SELECTED"; exit 0; fi
+# 3) Fallback to latest /Applications/Xcode*.app
+LATEST="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+if is_valid_dev_dir "$LATEST"; then echo "$LATEST"; exit 0; fi
+
+echo "error: no Xcode install found with simctl + clang" >&2; exit 1
+```
+
+**`tools/xcode-run`** -- Runs any command (mainly `xcodebuild`) with Nix env vars stripped:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+DEV_DIR="$("$(dirname "$0")/xcode-dev-dir")"
+exec env -u LD -u CC -u CXX -u AR -u RANLIB \
+  -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET \
+  DEVELOPER_DIR="$DEV_DIR" "$@"
+```
+
+Use it everywhere you call `xcodebuild`:
+```bash
+./tools/xcode-run xcodebuild -create-xcframework ...
+./tools/xcode-run xcodebuild build -project ios/App.xcodeproj ...
+```
+
+**`tools/cargo-with-xcode`** -- Runs `cargo` with the Xcode toolchain forced. This is for **macOS host builds** (desktop iced, binding generation) where you need Xcode's clang but the macOS SDK, not the iOS SDK:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$(uname -s)" != "Darwin" ] && exec cargo "$@"
+
+DEV_DIR="$("$(dirname "$0")/../tools/xcode-dev-dir")"
+TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+exec env \
+  -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u IPHONEOS_DEPLOYMENT_TARGET \
+  DEVELOPER_DIR="$DEV_DIR" \
+  CC="$TOOLCHAIN_BIN/clang" CXX="$TOOLCHAIN_BIN/clang++" \
+  AR="$TOOLCHAIN_BIN/ar" RANLIB="$TOOLCHAIN_BIN/ranlib" \
+  cargo "$@"
+```
+
+Use it for desktop builds inside Nix: `./tools/cargo-with-xcode run -p my-desktop`.
+
+**Why three scripts?**
+
+| Script | Strips Nix vars? | Sets SDK? | Use case |
+|--------|-----------------|-----------|----------|
+| `xcode-dev-dir` | No | No | Pure resolver -- returns a path |
+| `xcode-run` | Yes | macOS (via DEVELOPER_DIR) | `xcodebuild`, `simctl`, `xcrun` |
+| `cargo-with-xcode` | Partial | macOS (via DEVELOPER_DIR) | Desktop cargo builds on macOS |
+
+The iOS cross-compilation recipe (`ios-rust`) does its own full isolation (see Section 5.2 step 3) because it needs to set iOS-specific `SDKROOT` and `RUSTFLAGS` per target. The wrapper scripts handle the simpler cases.
+
+**Pika example:** The justfile's `ios-rust` recipe calls `./tools/xcode-dev-dir` once, resolves both SDK roots via `xcrun`, builds a `base_env` array with all the correct vars, then loops over targets. The `ios-xcframework` and `ios-build-sim` recipes use `./tools/xcode-run xcodebuild ...` to avoid Nix linker flag pollution. The `run-desktop` recipe uses `./tools/cargo-with-xcode run -p pika-desktop`.
+
 ### 5.3 Android Build Pipeline
 
 **1. Build for host** (same as iOS step 1)

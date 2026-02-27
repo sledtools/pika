@@ -21,7 +21,9 @@ export function listPikachatAccountIds(cfg: OpenClawConfig): string[] {
       .map((k) => normalizeAccountId(k))
       .filter(Boolean);
     if (ids.length > 0) {
-      return ids.toSorted();
+      // Include default account alongside named accounts
+      const set = new Set([DEFAULT_ACCOUNT_ID, ...ids]);
+      return [...set].toSorted();
     }
   }
   return [DEFAULT_ACCOUNT_ID];

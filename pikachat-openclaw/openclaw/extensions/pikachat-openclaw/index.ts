@@ -1,5 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { pikachatPlugin } from "./src/channel.js";
+import {
+  pikachatPlugin,
+  createSendHypernoteToolFactory,
+  createSendReactionToolFactory,
+  createSubmitHypernoteActionToolFactory,
+} from "./src/channel.js";
 import { pikachatPluginConfigSchema } from "./src/config-schema.js";
 import { setPikachatRuntime } from "./src/runtime.js";
 
@@ -11,6 +16,9 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     setPikachatRuntime(api.runtime);
     api.registerChannel({ plugin: pikachatPlugin });
+    api.registerTool(createSendHypernoteToolFactory() as any);
+    api.registerTool(createSendReactionToolFactory() as any);
+    api.registerTool(createSubmitHypernoteActionToolFactory() as any);
   },
 };
 

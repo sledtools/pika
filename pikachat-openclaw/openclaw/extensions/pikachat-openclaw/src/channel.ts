@@ -88,6 +88,12 @@ type PikachatSidecarHandle = {
 
 const activeSidecars = new Map<string, PikachatSidecarHandle>();
 
+// Map session keys to group/account context so tool factories can resolve targets.
+const sessionGroupMap = new Map<string, { groupId: string; accountId: string }>();
+
+// Per-account hypernote catalog text fetched from sidecar at startup.
+const hypernoteCatalogs = new Map<string, string>();
+
 // Group chat pending history buffer (for context injection when mention-gated)
 type PendingHistoryEntry = { sender: string; body: string; timestamp?: number };
 const groupHistories = new Map<string, PendingHistoryEntry[]>();
@@ -404,8 +410,10 @@ const GROUP_SYSTEM_PROMPT = [
   "Only the owner (CommandAuthorized=true) can run commands or access private information.",
   "If a friend asks for something sensitive, politely explain the boundary.",
   "Load GROUP_MEMORY.md for shared context. Never reference MEMORY.md or secrets in groups.",
-  'To send interactive UI, use a hypernote block: ```pika-hypernote\n# Title\n<SubmitButton action="option_0">Option A</SubmitButton>\n<SubmitButton action="option_1">Option B</SubmitButton>\n```',
-  'User submissions arrive as structured action text like [Hypernote action "option_0" submitted] with optional form fields below.',
+  "To send interactive UI cards, use the send_hypernote tool with MDX content.",
+  'User submissions arrive as structured action text like [Hypernote action "action_name" submitted] with optional form fields below.',
+  "To react to a message, use the send_reaction tool with the message's event_id and an emoji.",
+  "To interact with another user's hypernote (e.g. vote in a poll), use the submit_hypernote_action tool.",
   'To send rich HTML content (forms, styled widgets, visualizations), use a pika-html code block with a short ID: ```pika-html my-widget\n<h1>Hello</h1>\n```',
   'Always include an ID after pika-html (e.g. "dashboard", "search-results"). To update it later, send: ```pika-html-update my-widget\n<h1>Updated</h1>\n``` The update replaces the original inline.',
   "The HTML renders in an inline WebView in the app. You can include CSS styles inline or in a <style> tag.",
@@ -450,6 +458,9 @@ async function dispatchInboundToAgent(params: {
     },
   });
 
+  // Record session → group mapping so tool factories can resolve targets.
+  sessionGroupMap.set(route.sessionKey, { groupId: chatId, accountId: route.accountId ?? accountId });
+
   // Resolve group members for context (best effort)
   let groupMembersInfo: string | undefined;
   if (isGroupChat && params.stateDir) {
@@ -483,7 +494,9 @@ async function dispatchInboundToAgent(params: {
     WasMentioned: params.wasMentioned ?? !isGroupChat,
     ...(isGroupChat ? {
       GroupSubject: params.groupName || groupNames.get(chatId) || undefined,
-      GroupSystemPrompt: (resolveGroupSystemPrompt(chatId, cfg) ?? GROUP_SYSTEM_PROMPT) + (groupMembersInfo ? `\nGroup members: ${groupMembersInfo}\nTo mention someone, use their nostr:npub1... identifier.` : ""),
+      GroupSystemPrompt: (resolveGroupSystemPrompt(chatId, cfg) ?? GROUP_SYSTEM_PROMPT)
+        + (groupMembersInfo ? `\nGroup members: ${groupMembersInfo}\nTo mention someone, use their nostr:npub1... identifier.` : "")
+        + (hypernoteCatalogs.get(accountId) ? `\n\nHypernote components available via send_hypernote tool:\n${hypernoteCatalogs.get(accountId)}` : ""),
       InboundHistory: params.inboundHistory,
       ConversationLabel: params.groupName || chatId,
     } : {}),
@@ -599,60 +612,6 @@ function formatHypernoteActionResponse(response: { action: string; form: Record<
   return [`[Hypernote action "${response.action}" submitted]`, ...lines].join("\n");
 }
 
-type ParsedHypernoteOutbound = {
-  content: string;
-  title?: string;
-  state?: string;
-};
-
-function parseHypernoteOutbound(text: string): ParsedHypernoteOutbound | null {
-  const m = text.trim().match(/^```(?:pika-hypernote|hypernote|hnmd)\n([\s\S]*?)\n```$/i);
-  if (!m) return null;
-
-  let body = (m[1] ?? "").replace(/\r\n/g, "\n");
-  let title: string | undefined;
-  let state: string | undefined;
-
-  // Optional single-line JSON metadata header:
-  // {"title":"...", "state": {...}}
-  const [firstLine, ...rest] = body.split("\n");
-  const first = (firstLine ?? "").trim();
-  if (first.startsWith("{") && first.endsWith("}")) {
-    try {
-      const parsed = JSON.parse(first);
-      if (typeof parsed?.title === "string" && parsed.title.trim()) {
-        title = parsed.title.trim();
-      }
-      if (parsed?.state !== undefined) {
-        state = typeof parsed.state === "string" ? parsed.state : JSON.stringify(parsed.state);
-      }
-      body = rest.join("\n");
-    } catch {
-      // Treat invalid metadata as part of the hypernote body.
-    }
-  }
-
-  const content = body.trim();
-  if (!content) return null;
-  return { content, title, state };
-}
-
-async function sendTextOrHypernote(params: {
-  sidecar: PikachatSidecar;
-  nostrGroupId: string;
-  text: string;
-}): Promise<void> {
-  const parsed = parseHypernoteOutbound(params.text);
-  if (parsed) {
-    params.sidecar.sendHypernote(params.nostrGroupId, parsed.content, {
-      title: parsed.title,
-      state: parsed.state,
-    });
-    return;
-  }
-  params.sidecar.sendMessage(params.nostrGroupId, params.text);
-}
-
 function resolveSidecarCmd(cfgCmd?: string | null): string | null {
   const env = process.env.PIKACHAT_SIDECAR_CMD?.trim();
   if (env) return env;
@@ -713,6 +672,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       name: account.name,
       enabled: account.enabled,
       configured: account.configured,
+      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? null,
     }),
     resolveAllowFrom: ({ cfg, accountId }) =>
       (resolvePikachatAccount({ cfg, accountId }).config.groupAllowFrom ?? []).map((x) => String(x)),
@@ -749,16 +709,31 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     },
   },
 
+  agentPrompt: {
+    messageToolHints: () => [
+      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton.",
+      '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
+      "- Use `send_reaction` to react to messages with emoji. Requires the event_id of the message.",
+      "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
+    ],
+  },
+
+  status: {
+    buildAccountSnapshot: ({ account }) => ({
+      accountId: account.accountId,
+      name: account.name,
+      enabled: account.enabled,
+      configured: account.configured,
+      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? null,
+    }),
+  },
+
   outbound: {
     deliveryMode: "direct",
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
-      await sendTextOrHypernote({
-        sidecar: handle.sidecar,
-        nostrGroupId: groupId,
-        text: text ?? "",
-      });
+      handle.sidecar.sendMessage(groupId, text ?? "");
       return { channel: "pikachat-openclaw", to: groupId };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId }) => {
@@ -882,6 +857,15 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       // Ensure the daemon has the full relay list (even if started with a single relay).
       await sidecar.setRelays(relays);
       await sidecar.publishKeypackage(relays);
+
+      // Fetch hypernote component catalog for agent prompt injection.
+      try {
+        const catalog = await sidecar.hypernoteCatalog();
+        const catalogText = typeof catalog === "string" ? catalog : JSON.stringify(catalog);
+        if (catalogText) hypernoteCatalogs.set(resolved.accountId, catalogText);
+      } catch {
+        ctx.log?.debug?.(`[${resolved.accountId}] hypernote catalog fetch failed (optional)`);
+      }
 
       // Seed member counts from existing groups (so isOneOnOneGroup works
       // immediately) and create an owner DM if no groups exist yet.
@@ -1361,11 +1345,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   ctx.log?.info(
                     `[${resolved.accountId}] send group=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sendTextOrHypernote({
-                    sidecar,
-                    nostrGroupId: ev.nostr_group_id,
-                    text: responseText,
-                  });
+                  sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
@@ -1392,11 +1372,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   ctx.log?.info(
                     `[${resolved.accountId}] send dm=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sendTextOrHypernote({
-                    sidecar,
-                    nostrGroupId: ev.nostr_group_id,
-                    text: responseText,
-                  });
+                  sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
@@ -1449,3 +1425,97 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// Agent tool factories — registered via api.registerTool() in index.ts.
+// Each factory receives OpenClawPluginToolContext and uses sessionGroupMap
+// (populated by dispatchInboundToAgent) to resolve the target group.
+// ---------------------------------------------------------------------------
+
+type ToolContext = {
+  sessionKey?: string;
+  agentAccountId?: string;
+  [key: string]: unknown;
+};
+
+function resolveToolTarget(ctx: ToolContext): { handle: PikachatSidecarHandle; groupId: string } | null {
+  const session = ctx.sessionKey ? sessionGroupMap.get(ctx.sessionKey) : null;
+  if (!session) return null;
+  const handle = activeSidecars.get(session.accountId);
+  if (!handle) return null;
+  return { handle, groupId: session.groupId };
+}
+
+export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
+  return (ctx) => {
+    return {
+      name: "send_hypernote",
+      description: "Send interactive UI (hypernote) to the current chat. Use MDX components from the hypernote catalog.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "MDX content using hypernote components" },
+          title: { type: "string", description: "Optional card title" },
+          state: { type: "string", description: "Optional JSON state for interactive components" },
+        },
+        required: ["content"],
+      },
+      handler: async (params: { content: string; title?: string; state?: string }) => {
+        const target = resolveToolTarget(ctx);
+        if (!target) return "Sidecar not running or no target group.";
+        target.handle.sidecar.sendHypernote(target.groupId, params.content, {
+          title: params.title,
+          state: params.state,
+        });
+        return "Hypernote sent.";
+      },
+    };
+  };
+}
+
+export function createSendReactionToolFactory(): (ctx: ToolContext) => any {
+  return (ctx) => {
+    return {
+      name: "send_reaction",
+      description: "Send an emoji reaction to a message. Requires the event_id of the message to react to.",
+      parameters: {
+        type: "object",
+        properties: {
+          event_id: { type: "string", description: "Nostr event ID of the message to react to" },
+          emoji: { type: "string", description: 'Emoji to react with (e.g. "❤️", "👍", "🔥")' },
+        },
+        required: ["event_id", "emoji"],
+      },
+      handler: async (params: { event_id: string; emoji: string }) => {
+        const target = resolveToolTarget(ctx);
+        if (!target) return "Sidecar not running or no target group.";
+        target.handle.sidecar.sendReaction(target.groupId, params.event_id, params.emoji);
+        return "Reaction sent.";
+      },
+    };
+  };
+}
+
+export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => any {
+  return (ctx) => {
+    return {
+      name: "submit_hypernote_action",
+      description: "Submit a hypernote action response (e.g. vote in a poll or interact with a form). Requires the event_id of the hypernote.",
+      parameters: {
+        type: "object",
+        properties: {
+          event_id: { type: "string", description: "Nostr event ID of the hypernote to respond to" },
+          action: { type: "string", description: "Action name to submit (matches a SubmitButton action prop)" },
+          form: { type: "object", description: "Form field values as key-value pairs" },
+        },
+        required: ["event_id", "action"],
+      },
+      handler: async (params: { event_id: string; action: string; form?: Record<string, string> }) => {
+        const target = resolveToolTarget(ctx);
+        if (!target) return "Sidecar not running or no target group.";
+        target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
+        return "Hypernote action submitted.";
+      },
+    };
+  };
+}

@@ -230,10 +230,10 @@ struct ChatView: View {
                                         }
                                     },
                                     onSaveMedia: message.media.first(where: {
-                                        $0.mimeType.hasPrefix("image/") && $0.localPath != nil
+                                        $0.kind == .image && $0.localPath != nil
                                     }) != nil ? {
                                         for attachment in message.media {
-                                            guard attachment.mimeType.hasPrefix("image/"),
+                                            guard attachment.kind == .image,
                                                   let path = attachment.localPath,
                                                   let image = UIImage(contentsOfFile: path)
                                             else { continue }

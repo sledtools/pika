@@ -1,6 +1,6 @@
 use iced::widget::{button, column, container, image, mouse_area, row, text, Space};
 use iced::{border, Alignment, Background, Color, Element, Fill, Font, Theme};
-use pika_core::{ChatMediaAttachment, ChatMessage, MessageDeliveryState};
+use pika_core::{ChatMediaAttachment, ChatMediaKind, ChatMessage, MessageDeliveryState};
 
 use super::conversation::Message;
 use crate::design::{self, BubblePosition};
@@ -220,16 +220,16 @@ pub fn message_bubble<'a>(
 
 /// Renders a media attachment inside a message bubble.
 ///
-/// Dispatches based on MIME type (matching the iOS `MediaAttachmentView`):
-/// - `image/*` with a local path → inline image
-/// - Any file with a local path → file chip with "open" action
-/// - Any file without a local path → file chip with "download" action
+/// Dispatches based on Rust attachment kind:
+/// - `Image` with a local path → inline image
+/// - `VoiceNote` and `File` render as chips (open/download depending on local cache)
 fn media_attachment_view<'a>(
     attachment: &'a ChatMediaAttachment,
     msg_id: &str,
     is_mine: bool,
 ) -> Element<'a, Message, Theme> {
-    let is_image = attachment.mime_type.starts_with("image/");
+    let is_image = matches!(attachment.kind, ChatMediaKind::Image);
+    let is_voice_note = matches!(attachment.kind, ChatMediaKind::VoiceNote);
     let has_local = attachment
         .local_path
         .as_ref()
@@ -272,16 +272,25 @@ fn media_attachment_view<'a>(
         icons::DOWNLOAD
     };
 
+    let title = if is_voice_note {
+        "Voice message".to_string()
+    } else {
+        theme::truncate(&attachment.filename, 40)
+    };
+    let mime_label = if is_voice_note && attachment.mime_type.trim().is_empty() {
+        "audio/mp4".to_string()
+    } else {
+        attachment.mime_type.clone()
+    };
+
     let chip_content = row![
         text(icons::FILE)
             .font(icons::LUCIDE_FONT)
             .size(18)
             .color(secondary_color),
         column![
-            text(theme::truncate(&attachment.filename, 40))
-                .size(13)
-                .color(text_color),
-            text(&attachment.mime_type).size(11).color(secondary_color),
+            text(title).size(13).color(text_color),
+            text(mime_label).size(11).color(secondary_color),
         ]
         .spacing(1)
         .width(Fill),

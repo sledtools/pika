@@ -228,11 +228,11 @@ struct MediaAttachmentView: View {
     var onTapImage: (() -> Void)? = nil
 
     private var isImage: Bool {
-        attachment.mimeType.hasPrefix("image/")
+        attachment.kind == .image
     }
 
     private var isAudio: Bool {
-        attachment.mimeType.hasPrefix("audio/")
+        attachment.kind == .voiceNote
     }
 
     private var aspectRatio: CGFloat {
@@ -435,14 +435,14 @@ private struct MessageBubble: View {
     }
 
     private var hasFileAttachment: Bool {
-        message.media.contains { !$0.mimeType.hasPrefix("image/") && !$0.mimeType.hasPrefix("audio/") }
+        message.media.contains { $0.kind == .file }
     }
 
     @ViewBuilder
     private func mediaBubble(segments: [MessageSegment]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(message.media, id: \.originalHashHex) { attachment in
-                let isImageAttachment = attachment.mimeType.hasPrefix("image/")
+                let isImageAttachment = attachment.kind == .image
                 MediaAttachmentView(
                     attachment: attachment,
                     isMine: message.isMine,

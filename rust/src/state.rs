@@ -386,11 +386,19 @@ pub struct ChatMediaAttachment {
     pub url: String,
     pub mime_type: String,
     pub filename: String,
+    pub kind: ChatMediaKind,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub nonce_hex: String,
     pub scheme_version: String,
     pub local_path: Option<String>,
+}
+
+#[derive(uniffi::Enum, Clone, Debug)]
+pub enum ChatMediaKind {
+    Image,
+    VoiceNote,
+    File,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

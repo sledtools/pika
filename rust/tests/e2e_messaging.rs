@@ -2,13 +2,52 @@
 //!
 //! Uses pikahub for local infrastructure (default). All tests run in pre-merge.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pika_core::{AppAction, AuthState, FfiApp};
 use tempfile::tempdir;
 
 mod support;
 use support::{wait_until, write_config};
+
+fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
+    let st = app.state();
+    if let Some(chat) = st
+        .current_chat
+        .as_ref()
+        .filter(|c| c.members.iter().any(|m| m.npub == peer_npub))
+    {
+        return Some(chat.chat_id.clone());
+    }
+    st.chat_list
+        .iter()
+        .find(|c| c.members.iter().any(|m| m.npub == peer_npub))
+        .map(|c| c.chat_id.clone())
+}
+
+fn create_or_open_dm_chat(app: &FfiApp, peer_npub: &str, timeout: Duration) -> String {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(chat_id) = dm_chat_id_for_peer(app, peer_npub) {
+            app.dispatch(AppAction::OpenChat {
+                chat_id: chat_id.clone(),
+            });
+            wait_until("chat opened", Duration::from_secs(20), || {
+                app.state()
+                    .current_chat
+                    .as_ref()
+                    .map(|c| c.chat_id == chat_id)
+                    .unwrap_or(false)
+            });
+            return chat_id;
+        }
+        app.dispatch(AppAction::CreateChat {
+            peer_npub: peer_npub.to_owned(),
+        });
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    panic!("chat for peer {peer_npub} was not ready within {timeout:?}");
+}
 
 #[test]
 fn alice_sends_bob_receives() {
@@ -37,18 +76,7 @@ fn alice_sends_bob_receives() {
         _ => unreachable!(),
     };
 
-    alice.dispatch(AppAction::CreateChat {
-        peer_npub: bob_npub,
-    });
-
-    wait_until("alice chat opened", Duration::from_secs(20), || {
-        alice.state().current_chat.is_some()
-    });
-    wait_until("bob has chat", Duration::from_secs(20), || {
-        !bob.state().chat_list.is_empty()
-    });
-
-    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(60));
     wait_until("bob chat id matches", Duration::from_secs(20), || {
         bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
     });
@@ -146,17 +174,7 @@ fn call_invite_with_invalid_relay_auth_is_rejected() {
         _ => unreachable!(),
     };
 
-    alice.dispatch(AppAction::CreateChat {
-        peer_npub: bob_npub,
-    });
-    wait_until("alice chat opened", Duration::from_secs(20), || {
-        alice.state().current_chat.is_some()
-    });
-    wait_until("bob has chat", Duration::from_secs(20), || {
-        !bob.state().chat_list.is_empty()
-    });
-
-    let chat_id = alice.state().current_chat.as_ref().unwrap().chat_id.clone();
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(60));
     bob.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });

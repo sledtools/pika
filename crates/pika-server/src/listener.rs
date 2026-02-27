@@ -57,15 +57,26 @@ pub async fn start_listener(
         );
         debug!("Group IDs: {:?}", filter.group_ids);
 
+        let mut added = 0usize;
         for relay in relays.iter() {
             if relay.is_empty() || relay.contains("localhost") {
                 continue;
             }
             debug!(relay = %relay, "Adding relay");
             client.add_relay(relay.as_str()).await?;
+            added += 1;
         }
+
+        if added == 0 {
+            info!("No remote relays configured, listener idle");
+            // Park until the relay list could change (it won't in practice,
+            // but this avoids a busy-loop).
+            std::future::pending::<()>().await;
+            unreachable!();
+        }
+
         client.connect().await;
-        info!(relay_count = relays.len(), "Connected to relays");
+        info!(relay_count = added, "Connected to relays");
 
         let group_filter = Filter::new()
             .kind(Kind::MlsGroupMessage)

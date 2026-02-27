@@ -751,6 +751,10 @@ relay-build:
 run-server:
     cargo run -p pikahub -- up --profile backend
 
+# TUI: pikahub + component logs + interactive shell via mprocs.
+pikahut:
+    mprocs
+
 # Run agent-fly against local backend (requires `just run-server` in another terminal).
 agent-fly-local *ARGS="":
     #!/usr/bin/env bash

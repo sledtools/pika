@@ -1,0 +1,13 @@
+procs:
+  pikahub:
+    cmd: ["cargo", "run", "-p", "pikahub", "--", "up", "--profile", "backend"]
+  relay:
+    cmd: ["tail", "-f", ".pikahub/relay.log"]
+  moq:
+    cmd: ["tail", "-f", ".pikahub/moq.log"]
+  server:
+    cmd: ["tail", "-f", ".pikahub/server.log"]
+  postgres:
+    cmd: ["tail", "-f", ".pikahub/pgdata/postgres.log"]
+  shell:
+    shell: "eval $(cargo run -q -p pikahub -- env) && exec $SHELL"

@@ -45,7 +45,7 @@ info:
     @echo
     @echo "Agent demos"
     @echo "  Local backend (postgres + relay + server):"
-    @echo "    just run-server"
+    @echo "    just pikahub"
     @echo "  Fly demo (against local backend):"
     @echo "    just agent-fly-local"
     @echo "  Fly demo (against deployed backend):"
@@ -748,14 +748,14 @@ relay-build:
 # Start local backend (postgres, pika-relay, pika-server with agent control).
 
 # State persists in .pikahub/. Press Ctrl-C to stop all services.
-run-server:
+pikahub:
     cargo run -p pikahub -- up --profile backend
 
 # TUI: pikahub + component logs + interactive shell via mprocs.
 pikahut:
     mprocs
 
-# Run agent-fly against local backend (requires `just run-server` in another terminal).
+# Run agent-fly against local backend (requires `just pikahub` in another terminal).
 agent-fly-local *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail

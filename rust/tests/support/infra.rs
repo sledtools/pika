@@ -37,15 +37,17 @@ impl TestInfra {
         )
         .unwrap_or_else(|e| panic!("resolve pikahub config failed: {e:#}"));
 
-        let startup: Result<Manifest> = run_async(async {
-            fixture::up_background(&resolved).await?;
-            let manifest = Manifest::load(&state_dir)?.ok_or_else(|| {
+        let startup_resolved = resolved.clone();
+        let startup_state_dir = state_dir.clone();
+        let startup: Result<Manifest> = run_async(async move {
+            fixture::up_background(&startup_resolved).await?;
+            let manifest = Manifest::load(&startup_state_dir)?.ok_or_else(|| {
                 anyhow!(
                     "manifest missing after pikahub startup at {}",
-                    state_dir.display()
+                    startup_state_dir.display()
                 )
             })?;
-            fixture::wait(&state_dir, 30).await?;
+            fixture::wait(&startup_state_dir, 30).await?;
             Ok(manifest)
         });
         let manifest = startup.unwrap_or_else(|e| panic!("start pikahub fixture failed: {e:#}"));
@@ -101,11 +103,27 @@ impl Drop for TestInfra {
 
 fn run_async<F, T>(future: F) -> T
 where
-    F: Future<Output = T>,
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("create tokio runtime for TestInfra");
-    runtime.block_on(future)
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let join = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("create tokio runtime for TestInfra worker");
+            runtime.block_on(future)
+        })
+        .join();
+        match join {
+            Ok(output) => output,
+            Err(_) => panic!("tokio startup worker thread panicked"),
+        }
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime for TestInfra");
+        runtime.block_on(future)
+    }
 }

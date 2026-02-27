@@ -17,3 +17,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+pika-relay-profiles = { path = "../pika-relay-profiles" }

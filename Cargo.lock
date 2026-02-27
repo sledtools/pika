@@ -5772,6 +5772,7 @@ dependencies = [
  "nokhwa",
  "openh264",
  "pika-media",
+ "pika-relay-profiles",
  "pika_core",
  "rfd",
  "tempfile",

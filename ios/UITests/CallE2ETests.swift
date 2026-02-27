@@ -116,18 +116,20 @@ final class CallE2ETests: XCTestCase {
             return
         }
 
-        let relays = buildEnv["PIKA_RELAY_URLS"] ?? dotenv["PIKA_RELAY_URLS"]
-            ?? "wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
-        let kpRelays = buildEnv["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? dotenv["PIKA_KEY_PACKAGE_RELAY_URLS"]
-            ?? "wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com"
+        let relays = buildEnv["PIKA_RELAY_URLS"] ?? dotenv["PIKA_RELAY_URLS"] ?? ""
+        let kpRelays = buildEnv["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? dotenv["PIKA_KEY_PACKAGE_RELAY_URLS"] ?? ""
         let moqUrl = buildEnv["PIKA_CALL_MOQ_URL"] ?? dotenv["PIKA_CALL_MOQ_URL"]
             ?? "https://us-east.moq.logos.surf/anon"
 
         // --- Launch app ---
         let app = XCUIApplication()
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
-        app.launchEnvironment["PIKA_RELAY_URLS"] = relays
-        app.launchEnvironment["PIKA_KEY_PACKAGE_RELAY_URLS"] = kpRelays
+        if !relays.isEmpty {
+            app.launchEnvironment["PIKA_RELAY_URLS"] = relays
+        }
+        if !kpRelays.isEmpty {
+            app.launchEnvironment["PIKA_KEY_PACKAGE_RELAY_URLS"] = kpRelays
+        }
         app.launchEnvironment["PIKA_CALL_MOQ_URL"] = moqUrl
         app.launch()
 

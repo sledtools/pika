@@ -33,25 +33,37 @@ impl RelayProfile {
     }
 }
 
+pub const RELAY_PRIMAL: &str = "wss://relay.primal.net";
+pub const RELAY_NOS_LOL: &str = "wss://nos.lol";
+pub const RELAY_DAMUS: &str = "wss://relay.damus.io";
+pub const RELAY_PIKACHAT_US_EAST: &str = "wss://us-east.nostr.pikachat.org";
+pub const RELAY_PIKACHAT_EU: &str = "wss://eu.nostr.pikachat.org";
+
+pub const BLOSSOM_PIKACHAT_US_EAST: &str = "https://us-east.nostr.pikachat.org";
+pub const BLOSSOM_PIKACHAT_EU: &str = "https://eu.nostr.pikachat.org";
+
+pub const LEGACY_APP_DEFAULT_MESSAGE_RELAYS: &[&str] = &[RELAY_PRIMAL, RELAY_NOS_LOL, RELAY_DAMUS];
+pub const PIKACHAT_PRODUCTION_MESSAGE_RELAYS: &[&str] = &[
+    RELAY_PRIMAL,
+    RELAY_NOS_LOL,
+    RELAY_DAMUS,
+    RELAY_PIKACHAT_US_EAST,
+    RELAY_PIKACHAT_EU,
+];
+pub const PIKACHAT_PRODUCTION_KEY_PACKAGE_RELAYS: &[&str] = &[
+    "wss://nostr-pub.wellorder.net",
+    "wss://nostr-01.yakihonne.com",
+    "wss://nostr-02.yakihonne.com",
+];
+pub const PIKACHAT_PRODUCTION_BLOSSOM_SERVERS: &[&str] =
+    &[BLOSSOM_PIKACHAT_US_EAST, BLOSSOM_PIKACHAT_EU];
+
 pub const PIKACHAT_PRODUCTION: RelayProfile = RelayProfile {
     id: RelayProfileId::PikachatProduction,
     name: "pikachat-production",
-    message_relays: &[
-        "wss://relay.primal.net",
-        "wss://nos.lol",
-        "wss://relay.damus.io",
-        "wss://us-east.nostr.pikachat.org",
-        "wss://eu.nostr.pikachat.org",
-    ],
-    key_package_relays: &[
-        "wss://nostr-pub.wellorder.net",
-        "wss://nostr-01.yakihonne.com",
-        "wss://nostr-02.yakihonne.com",
-    ],
-    blossom_servers: &[
-        "https://us-east.nostr.pikachat.org",
-        "https://eu.nostr.pikachat.org",
-    ],
+    message_relays: PIKACHAT_PRODUCTION_MESSAGE_RELAYS,
+    key_package_relays: PIKACHAT_PRODUCTION_KEY_PACKAGE_RELAYS,
+    blossom_servers: PIKACHAT_PRODUCTION_BLOSSOM_SERVERS,
 };
 
 pub const PUBLIC_NOSTR_APP: RelayProfile = RelayProfile {
@@ -98,6 +110,13 @@ pub fn app_default_blossom_servers() -> Vec<String> {
         .collect()
 }
 
+pub fn legacy_app_default_message_relays() -> Vec<String> {
+    LEGACY_APP_DEFAULT_MESSAGE_RELAYS
+        .iter()
+        .map(|v| (*v).to_string())
+        .collect()
+}
+
 /// Filter valid URLs from user-provided values, falling back to given defaults.
 pub fn resolve_blossom_servers(values: &[String], defaults: &[&str]) -> Vec<String> {
     let parsed: Vec<String> = values
@@ -138,28 +157,12 @@ mod tests {
         let profile = default_profile();
         assert_eq!(profile.id, RelayProfileId::PikachatProduction);
         assert_eq!(profile.name, "pikachat-production");
-        assert_eq!(
-            profile.message_relays,
-            &[
-                "wss://relay.primal.net",
-                "wss://nos.lol",
-                "wss://relay.damus.io",
-                "wss://us-east.nostr.pikachat.org",
-                "wss://eu.nostr.pikachat.org",
-            ]
-        );
+        assert_eq!(profile.message_relays, PIKACHAT_PRODUCTION_MESSAGE_RELAYS);
         assert_eq!(
             profile.key_package_relays,
-            &[
-                "wss://nostr-pub.wellorder.net",
-                "wss://nostr-01.yakihonne.com",
-                "wss://nostr-02.yakihonne.com",
-            ]
+            PIKACHAT_PRODUCTION_KEY_PACKAGE_RELAYS
         );
-        assert_eq!(
-            profile.primary_blossom_server(),
-            "https://us-east.nostr.pikachat.org"
-        );
+        assert_eq!(profile.primary_blossom_server(), BLOSSOM_PIKACHAT_US_EAST);
     }
 
     #[test]
@@ -172,10 +175,7 @@ mod tests {
             profile.key_package_relays,
             PIKACHAT_PRODUCTION.key_package_relays
         );
-        assert_eq!(
-            profile.primary_blossom_server(),
-            "https://us-east.nostr.pikachat.org"
-        );
+        assert_eq!(profile.primary_blossom_server(), BLOSSOM_PIKACHAT_US_EAST);
     }
 
     #[test]
@@ -200,6 +200,13 @@ mod tests {
         assert_eq!(
             app_default_blossom_servers(),
             app.blossom_servers
+                .iter()
+                .map(|v| (*v).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            legacy_app_default_message_relays(),
+            LEGACY_APP_DEFAULT_MESSAGE_RELAYS
                 .iter()
                 .map(|v| (*v).to_string())
                 .collect::<Vec<_>>()

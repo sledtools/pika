@@ -63,7 +63,7 @@ struct Cli {
     #[arg(long, global = true, default_value_os_t = default_state_dir())]
     state_dir: PathBuf,
 
-    /// Relay websocket URLs (default: relay.damus.io, relay.primal.net, nos.lol, us-east.nostr.pikachat.org, eu.nostr.pikachat.org)
+    /// Relay websocket URLs (default: shared app/CLI profile from pika-relay-profiles)
     #[arg(long, global = true)]
     relay: Vec<String>,
 
@@ -199,7 +199,7 @@ server, and --content becomes the caption (optional).")]
         #[arg(long, requires = "media")]
         filename: Option<String>,
 
-        /// Blossom server URL (repeatable; defaults to https://us-east.nostr.pikachat.org)
+        /// Blossom server URL (repeatable; defaults to shared profile blossom servers)
         #[arg(long = "blossom", requires = "media")]
         blossom_servers: Vec<String>,
     },

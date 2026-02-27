@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
+use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
 use tempfile::tempdir;
 
 mod support;
@@ -792,16 +793,6 @@ fn call_with_pikachat_daemon() {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BOT_NPUB: &str = "npub1z6ujr8rad5zp9sr9w22rkxm0truulf2jntrks6rlwskhdmqsawpqmnjlcp";
-const DEFAULT_RELAYS: &[&str] = &[
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.damus.io",
-];
-const DEFAULT_KP_RELAYS: &[&str] = &[
-    "wss://nostr-pub.wellorder.net",
-    "wss://nostr-01.yakihonne.com",
-    "wss://nostr-02.yakihonne.com",
-];
 const DEFAULT_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 
 fn env_or(key: &str, default: &str) -> String {
@@ -811,7 +802,7 @@ fn env_or(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-fn env_csv_or(key: &str, defaults: &[&str]) -> Vec<String> {
+fn env_csv_or_default_fn(key: &str, defaults: impl FnOnce() -> Vec<String>) -> Vec<String> {
     if let Ok(s) = std::env::var(key) {
         let v: Vec<String> = s
             .split(',')
@@ -822,7 +813,7 @@ fn env_csv_or(key: &str, defaults: &[&str]) -> Vec<String> {
             return v;
         }
     }
-    defaults.iter().map(|s| s.to_string()).collect()
+    defaults()
 }
 
 #[test]
@@ -841,8 +832,8 @@ fn call_deployed_bot() {
         }
     };
     let bot_npub = env_or("PIKA_BOT_NPUB", DEFAULT_BOT_NPUB);
-    let relays = env_csv_or("PIKA_E2E_RELAYS", DEFAULT_RELAYS);
-    let kp_relays = env_csv_or("PIKA_E2E_KP_RELAYS", DEFAULT_KP_RELAYS);
+    let relays = env_csv_or_default_fn("PIKA_E2E_RELAYS", app_default_message_relays);
+    let kp_relays = env_csv_or_default_fn("PIKA_E2E_KP_RELAYS", app_default_key_package_relays);
     let moq_url = env_or("PIKA_CALL_MOQ_URL", DEFAULT_MOQ_URL);
 
     if std::env::var("PIKA_AUDIO_FIXTURE").is_err() {

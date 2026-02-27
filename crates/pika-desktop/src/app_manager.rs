@@ -517,10 +517,13 @@ mod tests {
         manager.reset_relay_config_to_defaults();
         let config =
             std::fs::read_to_string(data_dir.join("pika_config.json")).expect("read config");
+        let expected_relays = pika_relay_profiles::app_default_message_relays();
+        let expected_kp_relays = pika_relay_profiles::app_default_key_package_relays();
         assert!(
-            config.contains("relay.damus.io")
-                && config.contains("us-east.nostr.pikachat.org")
-                && config.contains("nostr-pub.wellorder.net"),
+            expected_relays.iter().all(|relay| config.contains(relay))
+                && expected_kp_relays
+                    .iter()
+                    .all(|relay| config.contains(relay)),
             "default relay lists must be present in rewritten config"
         );
         assert!(

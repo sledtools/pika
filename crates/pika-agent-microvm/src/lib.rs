@@ -708,8 +708,8 @@ mod tests {
             &resolved,
             &keys.public_key(),
             &[
-                "wss://us-east.nostr.pikachat.org".to_string(),
-                "wss://eu.nostr.pikachat.org".to_string(),
+                "wss://relay-a.example.com".to_string(),
+                "wss://relay-b.example.com".to_string(),
             ],
             &bot_keys.secret_key().to_secret_hex(),
             &bot_keys.public_key().to_hex(),
@@ -724,7 +724,7 @@ mod tests {
         );
         assert_eq!(
             value["guest_autostart"]["env"]["PIKA_RELAY_URLS"],
-            "wss://us-east.nostr.pikachat.org,wss://eu.nostr.pikachat.org"
+            "wss://relay-a.example.com,wss://relay-b.example.com"
         );
         assert!(value["guest_autostart"]["files"][AUTOSTART_SCRIPT_PATH]
             .as_str()

@@ -12,6 +12,8 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/tools/lib/dotenv.sh"
 load_dotenv_no_override "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/relay-defaults.sh"
 
 # If the user isn't in the devShell, re-exec under Nix for a consistent toolchain.
 if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_ANDROID_NO_NIX:-0}" != "1" ]; then
@@ -258,10 +260,10 @@ maybe_write_config() {
 
   # Defaults aimed at quick-start interop with the deployed Rust bot.
   if [ -z "${relays:-}" ]; then
-    relays="wss://relay.primal.net,wss://nos.lol,wss://relay.damus.io"
+    relays="$(default_message_relays_csv)"
   fi
   if [ -z "${kp_relays:-}" ]; then
-    kp_relays="wss://nostr-pub.wellorder.net,wss://nostr-01.yakihonne.com,wss://nostr-02.yakihonne.com"
+    kp_relays="$(default_key_package_relays_csv)"
   fi
 
   # Comma-separated list -> JSON array.

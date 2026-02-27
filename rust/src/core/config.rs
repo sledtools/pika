@@ -2,18 +2,15 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use nostr_sdk::prelude::RelayUrl;
-use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
+use pika_relay_profiles::{
+    app_default_key_package_relays, app_default_message_relays, LEGACY_APP_DEFAULT_MESSAGE_RELAYS,
+};
 use serde::Deserialize;
 
 use super::AppCore;
 
 const DEFAULT_CALL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
-const LEGACY_APP_DEFAULT_MESSAGE_RELAYS: &[&str] = &[
-    "wss://relay.primal.net",
-    "wss://nos.lol",
-    "wss://relay.damus.io",
-];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -180,7 +177,9 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pika_relay_profiles::app_default_blossom_servers;
+    use pika_relay_profiles::{
+        app_default_blossom_servers, legacy_app_default_message_relays, RELAY_PIKACHAT_US_EAST,
+    };
 
     #[test]
     fn default_app_config_json_uses_shared_profile_defaults() {
@@ -260,21 +259,16 @@ mod tests {
 
     #[test]
     fn detects_legacy_default_message_relays() {
-        let urls = vec![
-            "wss://nos.lol/".to_string(),
-            "wss://relay.damus.io".to_string(),
-            "wss://relay.primal.net".to_string(),
-        ];
+        let mut urls = legacy_app_default_message_relays();
+        urls[0].push('/');
         assert!(is_legacy_app_default_message_relays(&urls));
     }
 
     #[test]
     fn ignores_non_legacy_or_custom_relay_lists() {
-        let urls = vec![
-            "wss://relay.primal.net".to_string(),
-            "wss://nos.lol".to_string(),
-            "wss://us-east.nostr.pikachat.org".to_string(),
-        ];
+        let mut urls = legacy_app_default_message_relays();
+        urls.pop();
+        urls.push(RELAY_PIKACHAT_US_EAST.to_string());
         assert!(!is_legacy_app_default_message_relays(&urls));
     }
 }

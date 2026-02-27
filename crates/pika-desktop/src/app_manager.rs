@@ -518,7 +518,9 @@ mod tests {
         let config =
             std::fs::read_to_string(data_dir.join("pika_config.json")).expect("read config");
         assert!(
-            config.contains("relay.damus.io") && config.contains("nostr-pub.wellorder.net"),
+            config.contains("relay.damus.io")
+                && config.contains("us-east.nostr.pikachat.org")
+                && config.contains("nostr-pub.wellorder.net"),
             "default relay lists must be present in rewritten config"
         );
         assert!(

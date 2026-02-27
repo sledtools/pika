@@ -58,6 +58,8 @@ pub const PUBLIC_NOSTR_APP: RelayProfile = RelayProfile {
         "wss://relay.primal.net",
         "wss://nos.lol",
         "wss://relay.damus.io",
+        "wss://us-east.nostr.pikachat.org",
+        "wss://eu.nostr.pikachat.org",
     ],
     key_package_relays: &[
         "wss://nostr-pub.wellorder.net",
@@ -178,6 +180,8 @@ mod tests {
                 "wss://relay.primal.net",
                 "wss://nos.lol",
                 "wss://relay.damus.io",
+                "wss://us-east.nostr.pikachat.org",
+                "wss://eu.nostr.pikachat.org",
             ]
         );
         assert_eq!(

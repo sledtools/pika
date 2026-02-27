@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// Provides relay + moq URLs for E2E tests.
 ///
@@ -133,18 +134,46 @@ impl Drop for TestInfra {
 }
 
 fn pikahub_binary() -> String {
+    static PIKAHUB_BIN: OnceLock<String> = OnceLock::new();
+    PIKAHUB_BIN.get_or_init(resolve_pikahub_binary).clone()
+}
+
+fn resolve_pikahub_binary() -> String {
     // CARGO_BIN_EXE_pikahub is set by cargo when the workspace has a [[bin]] target
     // named "pikahub" and the test depends on that crate. This handles non-default
     // target dirs and release profiles correctly.
     if let Ok(bin) = std::env::var("CARGO_BIN_EXE_pikahub") {
-        return bin;
+        if Path::new(&bin).exists() {
+            return bin;
+        }
+        eprintln!(
+            "[TestInfra] WARNING: CARGO_BIN_EXE_pikahub points to missing path: {bin}; falling back"
+        );
     }
+
     // Fallback: look relative to the workspace root.
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bin = repo_root.join("target/debug/pikahub");
+
+    let build = Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("pikahub")
+        .current_dir(&repo_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run cargo build -p pikahub: {e}"));
+
+    if !build.status.success() {
+        let stdout = String::from_utf8_lossy(&build.stdout);
+        let stderr = String::from_utf8_lossy(&build.stderr);
+        panic!("cargo build -p pikahub failed:\nstdout: {stdout}\nstderr: {stderr}");
+    }
+
     assert!(
         bin.exists(),
-        "pikahub binary not found at {}. Build it with: cargo build -p pikahub",
+        "pikahub binary not found at {} after build. Build it with: cargo build -p pikahub",
         bin.display()
     );
     bin.to_string_lossy().to_string()

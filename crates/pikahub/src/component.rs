@@ -249,11 +249,12 @@ fn find_or_build_relay(workspace_root: &Path) -> Result<PathBuf> {
     }
 
     info!("[relay] Building pika-relay binary (go build)...");
+    let relay_dir = workspace_root.join("cmd/pika-relay");
     let out = std::process::Command::new("go")
         .args(["build", "-o"])
         .arg(&target_bin)
-        .arg("./cmd/pika-relay")
-        .current_dir(workspace_root)
+        .arg(".")
+        .current_dir(&relay_dir)
         .output()
         .context("go build pika-relay")?;
 

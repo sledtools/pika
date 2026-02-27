@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,10 +27,23 @@ func main() {
 	port := envOr("PORT", "3334")
 	dataDir := envOr("DATA_DIR", "./data")
 	mediaDir := envOr("MEDIA_DIR", "./media")
-	serviceURL := envOr("SERVICE_URL", "http://localhost:"+port)
+	// serviceURL is resolved after binding (see below) when PORT=0.
+	serviceURLOverride := os.Getenv("SERVICE_URL")
 
 	os.MkdirAll(dataDir, 0755)
 	os.MkdirAll(mediaDir, 0755)
+
+	// Bind early so we know the actual port before configuring Blossom.
+	ln, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		log.Fatalf("failed to listen on :%s: %v", port, err)
+	}
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+
+	serviceURL := serviceURLOverride
+	if serviceURL == "" {
+		serviceURL = fmt.Sprintf("http://localhost:%d", actualPort)
+	}
 
 	relay := khatru.NewRelay()
 
@@ -97,14 +112,12 @@ func main() {
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: relay,
-	}
+	srv := &http.Server{Handler: relay}
 
 	go func() {
-		log.Printf("pika-relay running on :%s (service_url=%s)", port, serviceURL)
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Printf("pika-relay running on :%d (service_url=%s)", actualPort, serviceURL)
+		fmt.Fprintf(os.Stderr, "PIKA_RELAY_PORT=%d\n", actualPort)
+		if err := srv.Serve(ln); err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}
 	}()

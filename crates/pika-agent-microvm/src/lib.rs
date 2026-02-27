@@ -662,92 +662,8 @@ fn create_vm_timeout() -> Duration {
 mod tests {
     use super::*;
     use nostr_sdk::prelude::Keys;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::thread;
+    use pika_test_utils::spawn_one_shot_server;
     use std::time::Duration as StdDuration;
-
-    #[derive(Debug)]
-    struct CapturedRequest {
-        method: String,
-        path: String,
-        body: String,
-    }
-
-    fn spawn_one_shot_server(
-        status_line: &str,
-        response_body: &str,
-    ) -> (String, mpsc::Receiver<CapturedRequest>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let addr = listener.local_addr().expect("read mock server addr");
-        let (tx, rx) = mpsc::channel();
-        let status_line = status_line.to_string();
-        let response_body = response_body.to_string();
-
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept mock request");
-            let req = read_http_request(&mut stream);
-            tx.send(req).expect("send captured request");
-
-            let response = format!(
-                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write mock response");
-        });
-
-        (format!("http://{addr}"), rx)
-    }
-
-    fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
-        let mut buf = Vec::new();
-        let mut header_end = None;
-        let mut content_length = 0usize;
-
-        loop {
-            let mut chunk = [0u8; 4096];
-            let n = stream.read(&mut chunk).expect("read request bytes");
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            if header_end.is_none() {
-                header_end = buf
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .map(|idx| idx + 4);
-                if let Some(end) = header_end {
-                    let headers = String::from_utf8_lossy(&buf[..end]);
-                    for line in headers.lines() {
-                        if let Some((key, value)) = line.split_once(':') {
-                            if key.eq_ignore_ascii_case("content-length") {
-                                content_length = value.trim().parse::<usize>().unwrap_or(0);
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(end) = header_end {
-                if buf.len() >= end + content_length {
-                    break;
-                }
-            }
-        }
-
-        let end = header_end.expect("request headers must be present");
-        let headers_raw = String::from_utf8_lossy(&buf[..end]);
-        let request_line = headers_raw.lines().next().expect("request line");
-        let mut parts = request_line.split_whitespace();
-        let method = parts.next().expect("method").to_string();
-        let path = parts.next().expect("path").to_string();
-        let body = String::from_utf8(buf[end..end + content_length].to_vec()).expect("utf8 body");
-
-        CapturedRequest { method, path, body }
-    }
 
     #[test]
     fn resolve_params_applies_defaults_and_overrides() {
@@ -927,5 +843,44 @@ mod tests {
         assert!(msg.contains("failed to create vm"));
         assert!(msg.contains("503 Service Unavailable"));
         assert!(msg.contains("spawner down"));
+    }
+
+    #[tokio::test]
+    async fn delete_vm_surfaces_error_body() {
+        let (base_url, _rx) =
+            spawn_one_shot_server("500 Internal Server Error", "vm stuck in cleanup");
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let err = client
+            .delete_vm("vm-stuck")
+            .await
+            .expect_err("expected delete_vm failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to delete vm vm-stuck"));
+        assert!(msg.contains("500 Internal Server Error"));
+        assert!(msg.contains("vm stuck in cleanup"));
+    }
+
+    #[test]
+    fn resolve_params_trims_whitespace_and_ignores_empty() {
+        let params = MicrovmProvisionParams {
+            spawner_url: Some("  ".to_string()),
+            spawn_variant: Some("  prebuilt  ".to_string()),
+            flake_ref: Some("".to_string()),
+            dev_shell: None,
+            cpu: None,
+            memory_mb: None,
+            ttl_seconds: None,
+        };
+        let resolved = resolve_params(&params, false);
+        assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);
+        assert_eq!(resolved.spawn_variant, "prebuilt");
+        assert_eq!(resolved.flake_ref, DEFAULT_FLAKE_REF);
+    }
+
+    #[test]
+    fn spawner_client_strips_trailing_slashes() {
+        let client = MicrovmSpawnerClient::new("http://localhost:8080///");
+        assert_eq!(client.base_url(), "http://localhost:8080");
     }
 }

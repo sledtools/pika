@@ -25,7 +25,7 @@ jobs:
       agent_contracts: ${{ steps.filter.outputs.agent_contracts || 'true' }}
       rmp: ${{ steps.filter.outputs.rmp || 'true' }}
       notifications: ${{ steps.filter.outputs.notifications || 'true' }}
-      workers: ${{ steps.filter.outputs.workers || 'true' }}
+      fixture: ${{ steps.filter.outputs.fixture || 'true' }}
     steps:
       - uses: dorny/paths-filter@v3
         if: github.event_name == 'pull_request'
@@ -44,7 +44,9 @@ jobs:
               - 'cli/**'
               - 'crates/pika-desktop/**'
               - 'crates/pika-media/**'
+              - 'crates/pika-marmot-runtime/**'
               - 'crates/pika-nse/**'
+              - 'crates/pika-relay-profiles/**'
               - 'crates/pika-tls/**'
               - 'uniffi-bindgen/**'
               - 'android/**'
@@ -62,6 +64,8 @@ jobs:
               - '.github/workflows/pre-merge.yml'
               - 'cli/**'
               - 'crates/pikachat-sidecar/**'
+              - 'crates/pika-marmot-runtime/**'
+              - 'crates/pika-relay-profiles/**'
               - 'pikachat-openclaw/**'
               - 'crates/pika-media/**'
               - 'crates/pika-tls/**'
@@ -75,8 +79,13 @@ jobs:
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
               - 'cli/src/fly_machines.rs'
-              - 'cli/src/microvm_spawner.rs'
-              - 'cli/src/agent/microvm.rs'
+              - 'crates/pika-agent-microvm/**'
+              - 'crates/pika-agent-control-plane/**'
+              - 'crates/pika-agent-protocol/**'
+              - 'crates/pika-server/src/agent_clients/**'
+              - 'crates/pika-server/src/agent_control.rs'
+              - 'crates/pika-marmot-runtime/**'
+              - 'crates/pika-relay-profiles/**'
               - 'docs/agent-ci.md'
             rmp:
               - 'Cargo.toml'
@@ -97,7 +106,7 @@ jobs:
               - '.github/workflows/pre-merge.yml'
               - 'crates/pika-notifications/**'
               - 'crates/pika-server/**'
-            workers:
+            fixture:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'flake.nix'
@@ -105,10 +114,9 @@ jobs:
               - 'nix/**'
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
-              - 'workers/**'
-              - 'crates/pikachat-wasm/**'
-              - 'cli/**'
-              - 'docs/cloudflare-workers-agent-contract.md'
+              - 'crates/pikahub/**'
+              - 'crates/pika-marmot-runtime/**'
+              - 'cmd/pika-relay/**'
 
   check-pika:
     needs: [detect-changes]
@@ -257,9 +265,9 @@ jobs:
 
       - run: nix develop .#default -c just pre-merge-notifications
 
-  check-workers:
+  check-fixture:
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.workers == 'true'
+    if: needs.detect-changes.outputs.fixture == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -284,19 +292,11 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - name: Run workers lane (non-blocking)
-        run: |
-          set +e
-          nix develop .#worker-wasm -c just pre-merge-workers
-          code=$?
-          if [ "$code" -ne 0 ]; then
-            echo "::warning::check-workers failed (non-blocking); see logs above."
-            exit 0
-          fi
+      - run: nix develop .#default -c just pre-merge-fixture
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [detect-changes, check-pika, check-pikachat, check-agent-contracts, check-rmp, check-notifications, check-workers]
+    needs: [detect-changes, check-pika, check-pikachat, check-agent-contracts, check-rmp, check-notifications, check-fixture]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate lane results
@@ -306,20 +306,20 @@ jobs:
           echo "  pika=${{ needs.detect-changes.outputs.pika }}"
           echo "  pikachat=${{ needs.detect-changes.outputs.pikachat }}"
           echo "  agent_contracts=${{ needs.detect-changes.outputs.agent_contracts }}"
-          echo "  workers=${{ needs.detect-changes.outputs.workers }}"
           echo "  rmp=${{ needs.detect-changes.outputs.rmp }}"
           echo "  notifications=${{ needs.detect-changes.outputs.notifications }}"
+          echo "  fixture=${{ needs.detect-changes.outputs.fixture }}"
 
           echo "Blocking deterministic lanes:"
-          for lane in pika pikachat agent-contracts workers rmp notifications; do
+          for lane in pika pikachat agent-contracts rmp notifications fixture; do
             result=""
             case "$lane" in
               pika)          result="${{ needs.check-pika.result }}" ;;
               pikachat)      result="${{ needs.check-pikachat.result }}" ;;
               agent-contracts) result="${{ needs.check-agent-contracts.result }}" ;;
-              workers)       result="${{ needs.check-workers.result }}" ;;
               rmp)           result="${{ needs.check-rmp.result }}" ;;
               notifications) result="${{ needs.check-notifications.result }}" ;;
+              fixture)       result="${{ needs.check-fixture.result }}" ;;
             esac
             if [[ "$result" == "success" || "$result" == "skipped" ]]; then
               echo "check-$lane: $result (ok)"

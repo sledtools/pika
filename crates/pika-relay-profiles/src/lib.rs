@@ -106,6 +106,37 @@ pub fn app_default_blossom_servers() -> Vec<String> {
         .collect()
 }
 
+/// Filter valid URLs from user-provided values, falling back to given defaults.
+pub fn resolve_blossom_servers(values: &[String], defaults: &[&str]) -> Vec<String> {
+    let parsed: Vec<String> = values
+        .iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            url::Url::parse(trimmed).ok().map(|_| trimmed.to_string())
+        })
+        .collect();
+    if !parsed.is_empty() {
+        return parsed;
+    }
+    defaults
+        .iter()
+        .filter_map(|u| url::Url::parse(u).ok().map(|_| (*u).to_string()))
+        .collect()
+}
+
+/// Resolve blossom servers using the pikachat production profile defaults.
+pub fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
+    resolve_blossom_servers(values, default_profile().blossom_servers)
+}
+
+/// Resolve blossom servers using the app (public nostr) profile defaults.
+pub fn app_blossom_servers_or_default(values: &[String]) -> Vec<String> {
+    resolve_blossom_servers(values, app_profile().blossom_servers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +220,43 @@ mod tests {
                 .map(|v| (*v).to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn blossom_servers_or_default_uses_provided() {
+        let servers = vec!["https://example.com".to_string()];
+        let result = blossom_servers_or_default(&servers);
+        assert_eq!(result, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn blossom_servers_or_default_falls_back() {
+        let result = blossom_servers_or_default(&[]);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
+    }
+
+    #[test]
+    fn blossom_servers_or_default_skips_empty_and_invalid() {
+        let servers = vec!["".to_string(), "not-a-url".to_string()];
+        let result = blossom_servers_or_default(&servers);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
+    }
+
+    #[test]
+    fn blossom_servers_or_default_filters_invalid_keeps_valid() {
+        let servers = vec![
+            "not-a-url".to_string(),
+            "https://valid.example.com".to_string(),
+        ];
+        let result = blossom_servers_or_default(&servers);
+        assert_eq!(result, vec!["https://valid.example.com"]);
+    }
+
+    #[test]
+    fn app_blossom_servers_or_default_falls_back_to_app_profile() {
+        let result = app_blossom_servers_or_default(&[]);
+        assert_eq!(result, app_default_blossom_servers());
     }
 }

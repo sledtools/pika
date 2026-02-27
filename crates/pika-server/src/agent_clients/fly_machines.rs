@@ -196,110 +196,9 @@ fn optional_non_empty_env(key: &str, default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_test_utils::spawn_one_shot_server;
     use serde_json::Value;
-    use std::collections::HashMap;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::thread;
     use std::time::Duration;
-
-    #[derive(Debug)]
-    struct CapturedRequest {
-        method: String,
-        path: String,
-        headers: HashMap<String, String>,
-        body: String,
-    }
-
-    fn spawn_one_shot_server(
-        status_line: &str,
-        response_body: &str,
-    ) -> (String, mpsc::Receiver<CapturedRequest>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let addr = listener.local_addr().expect("read mock server addr");
-        let (tx, rx) = mpsc::channel();
-        let status_line = status_line.to_string();
-        let response_body = response_body.to_string();
-
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept mock request");
-            let req = read_http_request(&mut stream);
-            tx.send(req).expect("send captured request");
-
-            let response = format!(
-                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write mock response");
-        });
-
-        (format!("http://{addr}"), rx)
-    }
-
-    fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
-        let mut buf = Vec::new();
-        let mut header_end = None;
-        let mut content_length = 0usize;
-
-        loop {
-            let mut chunk = [0u8; 4096];
-            let n = stream.read(&mut chunk).expect("read request bytes");
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            if header_end.is_none() {
-                header_end = buf
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .map(|idx| idx + 4);
-                if let Some(end) = header_end {
-                    let headers = String::from_utf8_lossy(&buf[..end]);
-                    for line in headers.lines() {
-                        if let Some((key, value)) = line.split_once(':') {
-                            if key.eq_ignore_ascii_case("content-length") {
-                                content_length = value.trim().parse::<usize>().unwrap_or(0);
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(end) = header_end {
-                if buf.len() >= end + content_length {
-                    break;
-                }
-            }
-        }
-
-        let end = header_end.expect("request headers must be present");
-        let headers_raw = String::from_utf8_lossy(&buf[..end]);
-        let mut lines = headers_raw.lines();
-        let request_line = lines.next().expect("request line");
-        let mut parts = request_line.split_whitespace();
-        let method = parts.next().expect("method").to_string();
-        let path = parts.next().expect("path").to_string();
-        let mut headers = HashMap::new();
-        for line in lines {
-            if line.trim().is_empty() {
-                break;
-            }
-            if let Some((key, value)) = line.split_once(':') {
-                headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-            }
-        }
-        let body = String::from_utf8(buf[end..end + content_length].to_vec()).expect("utf8 body");
-
-        CapturedRequest {
-            method,
-            path,
-            headers,
-            body,
-        }
-    }
 
     fn test_client(base_url: String) -> FlyClient {
         FlyClient {
@@ -378,6 +277,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_machine_contract_request_shape() {
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"machine-xyz","state":"stopped"}"#);
+        let fly = test_client(base_url);
+
+        let machine = fly
+            .get_machine("machine-xyz")
+            .await
+            .expect("get machine succeeds");
+        assert_eq!(machine.id, "machine-xyz");
+        assert_eq!(machine.state, "stopped");
+
+        let req = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/v1/apps/pika-test/machines/machine-xyz");
+        assert_eq!(
+            req.headers.get("authorization").map(String::as_str),
+            Some("Bearer fly-token")
+        );
+        assert!(req.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn create_volume_surfaces_error_body() {
         let (base_url, _rx) = spawn_one_shot_server("500 Internal Server Error", "no quota");
         let fly = test_client(base_url);
@@ -390,5 +314,35 @@ mod tests {
         assert!(msg.contains("failed to create volume"));
         assert!(msg.contains("500 Internal Server Error"));
         assert!(msg.contains("no quota"));
+    }
+
+    #[tokio::test]
+    async fn create_machine_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("422 Unprocessable Entity", "invalid config");
+        let fly = test_client(base_url);
+
+        let err = fly
+            .create_machine("bot-machine", "vol-bad", HashMap::new())
+            .await
+            .expect_err("expected create_machine failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to create machine"));
+        assert!(msg.contains("422 Unprocessable Entity"));
+        assert!(msg.contains("invalid config"));
+    }
+
+    #[tokio::test]
+    async fn get_machine_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("404 Not Found", "machine not found");
+        let fly = test_client(base_url);
+
+        let err = fly
+            .get_machine("machine-missing")
+            .await
+            .expect_err("expected get_machine failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to get machine"));
+        assert!(msg.contains("404 Not Found"));
+        assert!(msg.contains("machine not found"));
     }
 }

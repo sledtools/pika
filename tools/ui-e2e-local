@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Deterministic local E2E UI runner:
-# - starts a local nostr-rs-relay (nix develop: nostr-rs-relay on PATH)
-# - starts a local Rust "bot" (tools/pika-e2e-bot; implemented via pikachat in this repo)
+# - starts a local pika-relay + Rust bot via pikahub
 # - runs platform UI E2E tests against that relay+bot
 #
 # Usage:
@@ -17,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-source "$ROOT/tools/lib/local-e2e-fixture.sh"
+. tools/lib/pikahub.sh
 
 platform=""
 KEEP="${KEEP:-0}"
@@ -54,8 +53,6 @@ if [ -z "${platform:-}" ]; then
 fi
 
 # CI determinism: the nightly Android UI E2E lane requires an emulator + a specific AVD.
-# Some CI runners do not have an AVD pre-created; in that case, skip with a clear note
-# rather than failing the whole nightly workflow.
 if [ "$platform" = "android" ]; then
   ADB_BIN="${ADB:-adb}"
   EMULATOR_BIN="${EMULATOR:-emulator}"
@@ -83,85 +80,78 @@ if [ "$platform" = "android" ]; then
   fi
 fi
 
-pika_fixture_need nostr-rs-relay
-pika_fixture_need cargo
-pika_fixture_need python3
-
 STATE_DIR="$(mktemp -d /tmp/pika-ui-e2e-local.XXXXXX)"
-BOT_LOG="${STATE_DIR}/rustbot.log"
 
 cleanup() {
-  if [ -n "${BOT_PID:-}" ]; then
-    kill "${BOT_PID}" >/dev/null 2>&1 || true
-    wait "${BOT_PID}" >/dev/null 2>&1 || true
-  fi
-  if [ -n "${RELAY_PID:-}" ]; then
-    kill "${RELAY_PID}" >/dev/null 2>&1 || true
-    wait "${RELAY_PID}" >/dev/null 2>&1 || true
-  fi
   if [ "${KEEP}" != "1" ]; then
-    rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
+    pikahub_down "$STATE_DIR"
   else
+    pikahub_stop "$STATE_DIR"
     echo "note: keeping state dir: ${STATE_DIR}" >&2
   fi
 }
 trap cleanup EXIT
 
-RELAY_PORT="$(pika_fixture_pick_free_port)"
+# ── Start relay + bot via pikahub ───────────────────────────────────────
 
-RELAY_DB_DIR="${STATE_DIR}/relay-db"
-mkdir -p "$RELAY_DB_DIR"
-RELAY_CONFIG="${ROOT}/tools/nostr-rs-relay-config.toml"
-if [ ! -f "$RELAY_CONFIG" ]; then
-  echo "error: missing relay config: $RELAY_CONFIG" >&2
-  exit 1
-fi
+FIXTURE_CONFIG="$STATE_DIR/fixture-config.toml"
+cat > "$FIXTURE_CONFIG" <<EOF
+[bot]
+timeout_secs = ${BOT_TIMEOUT_SEC}
+EOF
 
-RELAY_CONFIG_TMP="${STATE_DIR}/relay-config.toml"
-pika_fixture_rewrite_relay_config "${RELAY_CONFIG}" "${RELAY_CONFIG_TMP}" "${RELAY_PORT}" "${RELAY_DB_DIR}"
+pikahub_up relay-bot "$STATE_DIR" --config "$FIXTURE_CONFIG"
+BOT_NPUB="$(pikahub_manifest_field bot_npub)"
 
-RELAY_LOG="${STATE_DIR}/relay.log"
-echo "starting local relay (nostr-rs-relay) port=$RELAY_PORT state_dir=$STATE_DIR"
-pika_fixture_start_relay "${RELAY_DB_DIR}" "${RELAY_CONFIG_TMP}" "${RELAY_LOG}"
-RELAY_PID="${PIKA_FIXTURE_RELAY_PID}"
-if ! pika_fixture_wait_for_tcp "127.0.0.1" "${RELAY_PORT}" 200 0.05; then
-  echo "error: local relay did not become reachable on port ${RELAY_PORT}" >&2
-  exit 1
-fi
-
-RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 
 echo "relay_url=${RELAY_URL}"
 echo "android_relay_url=${ANDROID_RELAY_URL}"
-
-echo "starting rust bot (logs at: $BOT_LOG)"
-if ! pika_fixture_start_bot_and_wait \
-  "${BOT_LOG}" \
-  "\\[pika_e2e_bot\\] ready pubkey=" \
-  1200 \
-  0.5 \
-  ./tools/pika-e2e-bot --relay "${RELAY_URL}" --state-dir "${STATE_DIR}/bot" --timeout-sec "${BOT_TIMEOUT_SEC}"; then
-  exit 1
-fi
-BOT_PID="${PIKA_FIXTURE_BOT_PID}"
-BOT_NPUB="${PIKA_FIXTURE_BOT_NPUB}"
-
 echo "bot_npub=${BOT_NPUB}"
 
+# ── Client identity ─────────────────────────────────────────────────────────
+
 # Deterministic local test identity. This is NOT used for public relays.
-generated_nsec=0
-if [ -z "${PIKA_UI_E2E_NSEC:-}" ] && [ ! -f "${ROOT}/.pikachat-test-nsec" ]; then
-  generated_nsec=1
-fi
-CLIENT_NSEC="$(pika_fixture_client_nsec "${ROOT}")"
-if [ "${generated_nsec}" = "1" ]; then
+if [ -n "${PIKA_UI_E2E_NSEC:-}" ]; then
+  CLIENT_NSEC="${PIKA_UI_E2E_NSEC}"
+elif [ -f "${ROOT}/.pikachat-test-nsec" ]; then
+  CLIENT_NSEC="$(tr -d '\n\r' < "${ROOT}/.pikachat-test-nsec")"
+else
+  CLIENT_NSEC="$(python3 -c "
+import secrets
+CHARSET='qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+def bech32_polymod(values):
+  GEN=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3]
+  chk=1
+  for v in values:
+    b=chk>>25;chk=((chk&0x1ffffff)<<5)^v
+    for i in range(5): chk^=GEN[i] if((b>>i)&1)else 0
+  return chk
+def bech32_hrp_expand(hrp):
+  return [ord(x)>>5 for x in hrp]+[0]+[ord(x)&31 for x in hrp]
+def bech32_create_checksum(hrp,data):
+  values=bech32_hrp_expand(hrp)+data
+  polymod=bech32_polymod(values+[0,0,0,0,0,0])^1
+  return [(polymod>>5*(5-i))&31 for i in range(6)]
+def convertbits(data,frombits,tobits,pad=True):
+  acc=0;bits=0;ret=[];maxv=(1<<tobits)-1
+  for b in data:
+    acc=(acc<<frombits)|b;bits+=frombits
+    while bits>=tobits: bits-=tobits;ret.append((acc>>bits)&maxv)
+  if pad and bits: ret.append((acc<<(tobits-bits))&maxv)
+  return ret
+sk=secrets.token_bytes(32)
+data5=convertbits(list(sk),8,5,True)
+combined=data5+bech32_create_checksum('nsec',data5)
+print('nsec'+'1'+''.join([CHARSET[d] for d in combined]))
+")"
   echo "note: generated ephemeral local e2e nsec (set PIKA_UI_E2E_NSEC or .pikachat-test-nsec to override)" >&2
 fi
 
+# ── Run platform tests ──────────────────────────────────────────────────────
+
 case "$platform" in
   android)
-    # Default to the full class locally; allow CI or callers to narrow to a stable method.
     TEST_CLASS="${PIKA_ANDROID_E2E_TEST_CLASS:-com.pika.app.PikaE2eUiTest}"
     TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"
     TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"

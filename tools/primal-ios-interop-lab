@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. tools/lib/pikahub.sh
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "error: tools/primal-ios-interop-lab requires macOS" >&2
@@ -31,7 +32,7 @@ need xcrun
 need python3
 need sed
 need cargo
-need nostr-rs-relay
+need go
 
 usage() {
   cat >&2 <<EOF
@@ -248,16 +249,6 @@ build_install_primal() {
   xcrun simctl terminate "$udid" "$PRIMAL_BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
-pick_open_port() {
-  python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
-PY
-}
-
 set_sim_env() {
   local udid="$1"
   local key="$2"
@@ -272,31 +263,16 @@ run_lab() {
 
   run_id="$(date +%Y%m%d-%H%M%S)"
   run_dir="$STATE_ROOT/runs/$run_id"
+  LAST_RUN_DIR="$run_dir"
   mkdir -p "$run_dir"
 
-  relay_port="$(pick_open_port)"
-  relay_url="ws://127.0.0.1:$relay_port"
-  relay_db="$run_dir/relay-db"
-  relay_cfg="$run_dir/relay-config.toml"
   relay_log="$run_dir/relay.log"
   tap_log="$run_dir/nostr_connect_tap.log"
   sim_log="$run_dir/sim.log"
-  mkdir -p "$relay_db"
 
-  sed -E \
-    -e "s|^relay_url = \\\".*\\\"|relay_url = \\\"$relay_url\\\"|g" \
-    -e "s|^port = [0-9]+|port = $relay_port|g" \
-    -e "s|^data_directory = \\\".*\\\"|data_directory = \\\"$relay_db\\\"|g" \
-    "$ROOT/tools/nostr-rs-relay-config.toml" >"$relay_cfg"
-
-  nostr-rs-relay --db "$relay_db" --config "$relay_cfg" >"$relay_log" 2>&1 &
-  RELAY_PID="$!"
-  for _ in $(seq 1 200); do
-    if (echo >"/dev/tcp/127.0.0.1/$relay_port") >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.05
-  done
+  pikahub_up relay "$run_dir"
+  relay_url="$RELAY_URL"
+  relay_port="$RELAY_PORT"
 
   cargo run -q -p pika_core --bin nostr_connect_tap -- \
     --relay "$relay_url" >"$tap_log" 2>&1 &
@@ -444,9 +420,8 @@ cleanup() {
     kill "$TAP_PID" >/dev/null 2>&1 || true
     wait "$TAP_PID" >/dev/null 2>&1 || true
   fi
-  if [ -n "${RELAY_PID:-}" ]; then
-    kill "$RELAY_PID" >/dev/null 2>&1 || true
-    wait "$RELAY_PID" >/dev/null 2>&1 || true
+  if [ -n "${LAST_RUN_DIR:-}" ]; then
+    pikahub_stop "$LAST_RUN_DIR"
   fi
 }
 trap cleanup EXIT

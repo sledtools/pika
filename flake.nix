@@ -167,11 +167,6 @@
           ];
         };
 
-        rustToolchainWorkerWasm = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
-          targets = [ "wasm32-unknown-unknown" ];
-        };
-
         hasAndroidSdk = builtins.hasAttr system android-nixpkgs.sdk;
         hasMoqRelay = builtins.hasAttr system moq.packages;
 
@@ -312,7 +307,6 @@
             pkgs.nodejs_22
             pkgs.python3
             pkgs.curl
-            pkgs.cloudflared
             pkgs.git
             pkgs.gh
             pkgs.actionlint
@@ -321,7 +315,6 @@
             pkgs.gnugrep
             pkgs.gnused
             cargoDinghy
-            pkgs.nostr-rs-relay
             pkgs.age
             pkgs.age-plugin-yubikey
             pkgs.sops
@@ -464,7 +457,7 @@ EOF
             '' else ""}
 
             # PostgreSQL defaults for pika-server.
-            # Database startup is explicit via `just postgres-ensure`.
+            # Database startup is explicit via `pikahub up --profile postgres`.
             export PGDATA="''${PGDATA:-$PWD/crates/pika-server/.pgdata}"
             export PGHOST="''${PGHOST:-$PGDATA}"
             export DATABASE_URL="''${DATABASE_URL:-postgresql:///pika_server?host=$PGDATA}"
@@ -480,7 +473,7 @@ EOF
             echo "  NDK:          $ANDROID_NDK_HOME"
             '' else ""}
             echo "  DATABASE_URL: $DATABASE_URL"
-            echo "  Postgres:     run 'just postgres-ensure' when needed"
+            echo "  Postgres:     run 'cargo run -p pikahub -- up --profile postgres' when needed"
             if [ "$(uname -s)" = "Darwin" ]; then
               echo "  Xcode:        ''${DEVELOPER_DIR:-not found}"
             fi
@@ -512,28 +505,6 @@ EOF
           '';
         };
 
-        devShells.worker-wasm = pkgs.mkShell {
-          packages = [
-            rustToolchainWorkerWasm
-            pkgs.nodejs_22
-            pkgs.wasm-pack
-            pkgs.binaryen
-            pkgs.just
-            pkgs.curl
-            pkgs.git
-          ];
-
-          shellHook = ''
-            export IN_NIX_SHELL=1
-            export PATH=$PWD/tools:$PATH
-            echo ""
-            echo "Worker+Wasm dev environment ready"
-            echo "  Rust: $(rustc --version)"
-            echo "  Node: $(node --version)"
-            echo "  Run wrangler via: npx wrangler ..."
-            echo ""
-          '';
-        };
 
         devShells.infra = pkgs.mkShell {
           packages = with pkgs; [

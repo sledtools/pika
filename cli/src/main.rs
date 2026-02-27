@@ -19,7 +19,7 @@ use pika_agent_control_plane::{
     AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
     CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
     ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
-    RuntimeLifecyclePhase,
+    RuntimeLifecyclePhase, TeardownCommand,
 };
 use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
@@ -337,7 +337,7 @@ If --output is omitted, the original filename from the sender is used.")]
         exec: Option<String>,
     },
 
-    /// Manage AI agents (`fly`, `workers`, or `microvm`)
+    /// Manage AI agents (`fly` or `microvm`)
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
@@ -363,6 +363,14 @@ enum AgentCommand {
         /// Deprecated: provisioning is ACP-only; `--brain` no longer changes behavior.
         #[arg(long, hide = true)]
         brain: Option<String>,
+
+        /// Print provision result as JSON and exit (no interactive chat)
+        #[arg(long)]
+        json: bool,
+
+        /// Keep runtime alive after CLI exit (skip auto-teardown)
+        #[arg(long)]
+        keep: bool,
 
         #[command(flatten)]
         control: AgentControlArgs,
@@ -406,12 +414,21 @@ enum AgentCommand {
         #[command(flatten)]
         control: AgentControlArgs,
     },
+
+    /// Tear down a runtime by id
+    Teardown {
+        /// Runtime id to tear down
+        #[arg(long)]
+        runtime_id: String,
+
+        #[command(flatten)]
+        control: AgentControlArgs,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum AgentProvider {
     Fly,
-    Workers,
     Microvm,
 }
 
@@ -469,10 +486,6 @@ struct AgentNewMicrovmArgs {
     /// VM time-to-live in seconds
     #[arg(long)]
     ttl_seconds: Option<u64>,
-
-    /// Keep VM running after CLI exit (skip auto-delete)
-    #[arg(long)]
-    keep: bool,
 }
 
 impl AgentNewMicrovmArgs {
@@ -498,9 +511,6 @@ impl AgentNewMicrovmArgs {
         }
         if self.ttl_seconds.is_some() {
             out.push("--ttl-seconds");
-        }
-        if self.keep {
-            out.push("--keep");
         }
         out
     }
@@ -655,6 +665,8 @@ async fn main() -> anyhow::Result<()> {
                 provider,
                 runtime_class,
                 brain,
+                json,
+                keep,
                 control,
                 microvm,
             } => {
@@ -663,6 +675,8 @@ async fn main() -> anyhow::Result<()> {
                     provider: *provider,
                     runtime_class: runtime_class.as_deref(),
                     brain: brain.as_deref(),
+                    json: *json,
+                    keep: *keep,
                     microvm,
                 };
                 cmd_agent_new(&cli, control, request).await
@@ -690,6 +704,10 @@ async fn main() -> anyhow::Result<()> {
                 runtime_id,
                 control,
             } => cmd_agent_get_runtime(&cli, runtime_id, control).await,
+            AgentCommand::Teardown {
+                runtime_id,
+                control,
+            } => cmd_agent_teardown(&cli, runtime_id, control).await,
         },
     }
 }
@@ -763,8 +781,8 @@ fn print(v: serde_json::Value) {
 }
 
 /// Fetch recent group messages from the relay and feed them through
-/// `mdk.process_message` so the local MLS epoch is up-to-date before we
-/// attempt to create a new message.
+/// `ingest_application_message` so the local MLS epoch is up-to-date
+/// before we attempt to create a new message.
 async fn ingest_group_backlog(
     mdk: &mdk_util::PikaMdk,
     client: &Client,
@@ -772,70 +790,24 @@ async fn ingest_group_backlog(
     nostr_group_id_hex: &str,
     seen_mls_event_ids: &mut HashSet<EventId>,
 ) -> anyhow::Result<()> {
-    let filter = Filter::new()
-        .kind(Kind::MlsGroupMessage)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
-        .limit(200);
-
-    let events = client
-        .fetch_events_from(relay_urls.to_vec(), filter, Duration::from_secs(10))
-        .await
-        .context("fetch group backlog")?;
-
-    for ev in events.iter() {
-        if !seen_mls_event_ids.insert(ev.id) {
-            continue;
-        }
-        // Errors are expected (own messages bouncing back, already-processed
-        // events, etc.) — the important thing is that commits get applied.
-        let _ = mdk.process_message(ev);
-    }
-
+    pika_marmot_runtime::ingest_group_backlog(
+        mdk,
+        client,
+        relay_urls,
+        nostr_group_id_hex,
+        seen_mls_event_ids,
+        200,
+    )
+    .await?;
     Ok(())
 }
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
-fn is_imeta_tag(tag: &Tag) -> bool {
-    matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
-}
-
-fn mime_from_extension(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "heic" => Some("image/heic"),
-        "svg" => Some("image/svg+xml"),
-        "mp4" => Some("video/mp4"),
-        "mov" => Some("video/quicktime"),
-        "webm" => Some("video/webm"),
-        "mp3" => Some("audio/mpeg"),
-        "ogg" => Some("audio/ogg"),
-        "wav" => Some("audio/wav"),
-        "pdf" => Some("application/pdf"),
-        "txt" | "md" => Some("text/plain"),
-        _ => None,
-    }
-}
+use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
-    let parsed: Vec<String> = values
-        .iter()
-        .filter_map(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
-        })
-        .collect();
-    if !parsed.is_empty() {
-        return parsed;
-    }
-    vec![default_primary_blossom_server().to_string()]
+    pika_relay_profiles::blossom_servers_or_default(values)
 }
 
 fn message_media_refs(
@@ -1649,15 +1621,7 @@ async fn cmd_agent_new(
     if control.control_mode != AgentControlMode::Remote {
         anyhow::bail!("--control-mode remote is required; local provisioning has been removed");
     }
-    cmd_agent_new_remote(
-        cli,
-        request.name,
-        request.provider,
-        request.runtime_class,
-        control,
-        request.microvm,
-    )
-    .await
+    cmd_agent_new_remote(cli, control, &request).await
 }
 
 struct AgentNewRequest<'a> {
@@ -1665,6 +1629,8 @@ struct AgentNewRequest<'a> {
     provider: AgentProvider,
     runtime_class: Option<&'a str>,
     brain: Option<&'a str>,
+    json: bool,
+    keep: bool,
     microvm: &'a AgentNewMicrovmArgs,
 }
 
@@ -1673,11 +1639,6 @@ fn validate_agent_new_request(
     brain: Option<&str>,
     microvm: &AgentNewMicrovmArgs,
 ) -> anyhow::Result<()> {
-    if provider == AgentProvider::Workers {
-        anyhow::bail!(
-            "provider 'workers' is temporarily disabled during the marmot refactor; use --provider fly or --provider microvm"
-        );
-    }
     if let Some(value) = brain.map(str::trim).filter(|v| !v.is_empty()) {
         anyhow::bail!(
             "--brain is no longer supported: provisioning is ACP-only. Remove --brain (received: {value})"
@@ -1926,7 +1887,6 @@ fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<P
 fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
     match provider {
         AgentProvider::Fly => ProviderKind::Fly,
-        AgentProvider::Workers => ProviderKind::Workers,
         AgentProvider::Microvm => ProviderKind::Microvm,
     }
 }
@@ -1966,15 +1926,20 @@ fn new_control_request_id(prefix: &str) -> String {
 
 async fn cmd_agent_new_remote(
     cli: &Cli,
-    name: Option<&str>,
-    provider: AgentProvider,
-    runtime_class: Option<&str>,
     control: &AgentControlArgs,
-    microvm: &AgentNewMicrovmArgs,
+    request: &AgentNewRequest<'_>,
 ) -> anyhow::Result<()> {
+    let name = request.name;
+    let provider = request.provider;
+    let runtime_class = request.runtime_class;
+    let json_mode = request.json;
+    let keep = request.keep;
+    let microvm = request.microvm;
+
     let server_pubkey = resolve_control_server_pubkey(control)?;
     let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
+    let kp_relay_urls = resolve_kp_relays(cli);
+    let (keys, mdk) = open(cli)?;
     eprintln!("Your pubkey: {}", keys.public_key().to_hex());
 
     let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
@@ -1988,7 +1953,7 @@ async fn cmd_agent_new_remote(
                 .filter(|v| !v.is_empty())
                 .map(str::to_string),
             relay_urls: relay_urls.clone(),
-            keep: microvm.keep,
+            keep,
             bot_secret_key_hex: None,
             microvm: if provider == AgentProvider::Microvm {
                 map_microvm_control_params(microvm)
@@ -1998,21 +1963,146 @@ async fn cmd_agent_new_remote(
         }))
         .await?;
     let runtime = provision_result.runtime;
+    let runtime_id = runtime.runtime_id.clone();
+
+    // --json mode: print provision result and exit (no interactive chat, no teardown)
+    if json_mode {
+        control_client.client.unsubscribe_all().await;
+        control_client.client.shutdown().await;
+        print(json!({
+            "provider": match provider {
+                AgentProvider::Fly => "fly",
+                AgentProvider::Microvm => "microvm",
+            },
+            "protocol": "acp",
+            "runtime_id": runtime.runtime_id,
+            "runtime_class": runtime.runtime_class,
+            "runtime": runtime,
+            "payload": provision_result.payload,
+        }));
+        return Ok(());
+    }
+
+    // Interactive mode: setup chat, run loop, teardown on exit or setup failure.
+    // All fallible steps after provisioning are wrapped so teardown always runs.
+    let session_result = run_interactive_session(
+        &keys,
+        &mdk,
+        &control_client,
+        &relay_urls,
+        &kp_relay_urls,
+        &runtime,
+    )
+    .await;
+
+    // Best-effort teardown unless --keep (runs on success, chat exit, AND setup failures)
+    if keep {
+        eprintln!("\n--keep: runtime {runtime_id} left alive.");
+    } else {
+        eprintln!("\nTearing down runtime {runtime_id}...");
+        match control_client
+            .send_command(AgentControlCommand::Teardown(TeardownCommand {
+                runtime_id: runtime_id.clone(),
+            }))
+            .await
+        {
+            Ok(_) => eprintln!("Runtime {runtime_id} torn down."),
+            Err(err) => {
+                eprintln!("Teardown failed: {err:#}");
+                eprintln!("Manual cleanup: pikachat agent teardown --runtime-id {runtime_id}");
+            }
+        }
+    }
+
     control_client.client.unsubscribe_all().await;
     control_client.client.shutdown().await;
-    print(json!({
-        "provider": match provider {
-            AgentProvider::Fly => "fly",
-            AgentProvider::Workers => "workers",
-            AgentProvider::Microvm => "microvm",
-        },
-        "protocol": "acp",
-        "runtime_id": runtime.runtime_id,
-        "runtime_class": runtime.runtime_class,
-        "runtime": runtime,
-        "payload": provision_result.payload,
-    }));
-    Ok(())
+
+    session_result
+}
+
+async fn run_interactive_session(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    control_client: &RemoteControlClient,
+    relay_urls: &[String],
+    kp_relay_urls: &[String],
+    runtime: &pika_agent_control_plane::RuntimeDescriptor,
+) -> anyhow::Result<()> {
+    let bot_pubkey_hex = runtime
+        .bot_pubkey
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime did not return a bot_pubkey; cannot open chat"))?;
+    let bot_pubkey =
+        PublicKey::parse(bot_pubkey_hex).context("parse bot pubkey from provision result")?;
+
+    eprintln!(
+        "Runtime {} provisioned. Connecting to chat...",
+        runtime.runtime_id
+    );
+
+    let relays = relay_util::parse_relay_urls(relay_urls)?;
+    let kp_relays = relay_util::parse_relay_urls(kp_relay_urls)?;
+
+    let kp_plan = agent::provider::KeyPackageWaitPlan {
+        progress_message: "Waiting for bot key package...",
+        timeout: Duration::from_secs(120),
+        fetch_timeout: Duration::from_secs(5),
+        retry_delay: Duration::from_secs(2),
+    };
+    let bot_kp = tokio::select! {
+        result = agent::session::wait_for_latest_key_package(
+            &control_client.client,
+            bot_pubkey,
+            &kp_relays,
+            kp_plan,
+        ) => result?,
+        _ = tokio::signal::ctrl_c() => {
+            anyhow::bail!("interrupted during key package wait");
+        }
+    };
+
+    let group_plan = agent::provider::GroupCreatePlan {
+        progress_message: "Creating MLS group...",
+        create_group_context: "create MLS group for agent chat",
+        build_welcome_context: "build welcome message",
+        welcome_publish_label: "agent welcome",
+    };
+    let group = tokio::select! {
+        result = agent::session::create_group_and_publish_welcomes(
+            keys,
+            mdk,
+            &control_client.client,
+            &relays,
+            bot_kp,
+            bot_pubkey,
+            group_plan,
+        ) => result?,
+        _ = tokio::signal::ctrl_c() => {
+            anyhow::bail!("interrupted during group creation");
+        }
+    };
+
+    eprintln!("Chat ready. Type a message and press Enter. Ctrl-C to exit.");
+
+    let chat_plan = agent::provider::ChatLoopPlan {
+        outbound_publish_label: "agent chat msg",
+        wait_for_pending_replies_on_eof: false,
+        eof_reply_timeout: Duration::from_secs(30),
+        projection_mode: pika_agent_protocol::projection::ProjectionMode::Chat,
+    };
+    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
+        keys,
+        mdk,
+        send_client: &control_client.client,
+        listen_client: &control_client.client,
+        relays: &relays,
+        bot_pubkey,
+        mls_group_id: &group.mls_group_id,
+        nostr_group_id_hex: &group.nostr_group_id_hex,
+        plan: chat_plan,
+        seen_mls_event_ids: None,
+    })
+    .await
 }
 
 fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
@@ -2078,6 +2168,30 @@ async fn cmd_agent_get_runtime(
     control_client.client.shutdown().await;
     print(json!({
         "operation": "get_runtime",
+        "runtime": result.runtime,
+        "payload": result.payload,
+    }));
+    Ok(())
+}
+
+async fn cmd_agent_teardown(
+    cli: &Cli,
+    runtime_id: &str,
+    control: &AgentControlArgs,
+) -> anyhow::Result<()> {
+    let server_pubkey = resolve_control_server_pubkey(control)?;
+    let relay_urls = resolve_relays(cli);
+    let (keys, _mdk) = open(cli)?;
+    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
+    let result = control_client
+        .send_command(AgentControlCommand::Teardown(TeardownCommand {
+            runtime_id: runtime_id.to_string(),
+        }))
+        .await?;
+    control_client.client.unsubscribe_all().await;
+    control_client.client.shutdown().await;
+    print(json!({
+        "operation": "teardown",
         "runtime": result.runtime,
         "payload": result.payload,
     }));
@@ -2382,7 +2496,15 @@ mod tests {
         limit: Option<usize>,
     }
 
-    fn parse_agent_new(args: &[&str]) -> (AgentProvider, Option<String>, AgentNewMicrovmArgs) {
+    struct AgentNewParse {
+        provider: AgentProvider,
+        runtime_class: Option<String>,
+        json: bool,
+        keep: bool,
+        microvm: AgentNewMicrovmArgs,
+    }
+
+    fn parse_agent_new(args: &[&str]) -> AgentNewParse {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
@@ -2390,10 +2512,18 @@ mod tests {
                     AgentCommand::New {
                         provider,
                         runtime_class,
+                        json,
+                        keep,
                         microvm,
                         ..
                     },
-            } => (provider, runtime_class, microvm),
+            } => AgentNewParse {
+                provider,
+                runtime_class,
+                json,
+                keep,
+                microvm,
+            },
             _ => panic!("expected agent new command"),
         }
     }
@@ -2460,7 +2590,7 @@ mod tests {
 
     #[test]
     fn agent_new_microvm_flags_parse() {
-        let (provider, runtime_class, microvm) = parse_agent_new(&[
+        let parsed = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
@@ -2482,42 +2612,45 @@ mod tests {
             "600",
             "--keep",
         ]);
-        assert_eq!(provider, AgentProvider::Microvm);
-        assert_eq!(runtime_class, None);
+        assert_eq!(parsed.provider, AgentProvider::Microvm);
+        assert_eq!(parsed.runtime_class, None);
+        assert!(parsed.keep);
+        assert!(!parsed.json);
         assert_eq!(
-            microvm.spawner_url.as_deref(),
+            parsed.microvm.spawner_url.as_deref(),
             Some("http://127.0.0.1:8080")
         );
         assert_eq!(
-            microvm.spawn_variant,
+            parsed.microvm.spawn_variant,
             Some(MicrovmSpawnVariant::PrebuiltCow)
         );
-        assert_eq!(microvm.flake_ref.as_deref(), Some(".#nixpi"));
-        assert_eq!(microvm.dev_shell.as_deref(), Some("default"));
-        assert_eq!(microvm.cpu, Some(1));
-        assert_eq!(microvm.memory_mb, Some(1024));
-        assert_eq!(microvm.ttl_seconds, Some(600));
-        assert!(microvm.keep);
+        assert_eq!(parsed.microvm.flake_ref.as_deref(), Some(".#nixpi"));
+        assert_eq!(parsed.microvm.dev_shell.as_deref(), Some("default"));
+        assert_eq!(parsed.microvm.cpu, Some(1));
+        assert_eq!(parsed.microvm.memory_mb, Some(1024));
+        assert_eq!(parsed.microvm.ttl_seconds, Some(600));
     }
 
     #[test]
-    fn agent_new_existing_fly_and_workers_parse_unchanged() {
-        let (fly_provider, fly_runtime_class, fly_microvm) =
-            parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
-        assert_eq!(fly_provider, AgentProvider::Fly);
-        assert_eq!(fly_runtime_class, None);
-        assert!(fly_microvm.provided_flag_names().is_empty());
+    fn agent_new_existing_fly_parse_unchanged() {
+        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
+        assert_eq!(parsed.provider, AgentProvider::Fly);
+        assert_eq!(parsed.runtime_class, None);
+        assert!(!parsed.keep);
+        assert!(!parsed.json);
+        assert!(parsed.microvm.provided_flag_names().is_empty());
+    }
 
-        let (workers_provider, workers_runtime_class, workers_microvm) =
-            parse_agent_new(&["pikachat", "agent", "new", "--provider", "workers"]);
-        assert_eq!(workers_provider, AgentProvider::Workers);
-        assert_eq!(workers_runtime_class, None);
-        assert!(workers_microvm.provided_flag_names().is_empty());
+    #[test]
+    fn agent_new_json_flag_parse() {
+        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly", "--json"]);
+        assert!(parsed.json);
+        assert!(!parsed.keep);
     }
 
     #[test]
     fn microvm_flags_rejected_for_non_microvm_provider() {
-        let (provider, _runtime_class, microvm) = parse_agent_new(&[
+        let parsed = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
@@ -2526,7 +2659,8 @@ mod tests {
             "--spawner-url",
             "http://127.0.0.1:8080",
         ]);
-        let err = validate_agent_new_request(provider, None, &microvm).expect_err("should fail");
+        let err = validate_agent_new_request(parsed.provider, None, &parsed.microvm)
+            .expect_err("should fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("--spawner-url"));
         assert!(msg.contains("--provider microvm"));
@@ -2544,16 +2678,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_workers_provider_is_temporarily_disabled() {
-        let err = validate_agent_new_args(&["pikachat", "agent", "new", "--provider", "workers"])
-            .expect_err("workers provider should be rejected");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("temporarily disabled"));
-        assert!(msg.contains("--provider fly"));
-        assert!(msg.contains("--provider microvm"));
-    }
-
-    #[test]
     fn agent_new_control_mode_is_strict_remote_only() {
         let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
         assert_eq!(mode, AgentControlMode::Remote);
@@ -2568,16 +2692,16 @@ mod tests {
 
     #[test]
     fn agent_new_runtime_class_parse() {
-        let (_provider, runtime_class, _microvm) = parse_agent_new(&[
+        let parsed = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
             "--provider",
-            "workers",
+            "fly",
             "--runtime-class",
-            "workers-us-east",
+            "fly-us-east",
         ]);
-        assert_eq!(runtime_class.as_deref(), Some("workers-us-east"));
+        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
     }
 
     #[test]
@@ -2587,20 +2711,20 @@ mod tests {
             "agent",
             "list-runtimes",
             "--provider",
-            "workers",
+            "fly",
             "--protocol",
             "acp",
             "--phase",
             "ready",
             "--runtime-class",
-            "workers-us-east",
+            "fly-us-east",
             "--limit",
             "5",
         ]);
-        assert_eq!(parsed.provider, Some(AgentProvider::Workers));
+        assert_eq!(parsed.provider, Some(AgentProvider::Fly));
         assert_eq!(parsed.protocol, Some(AgentProtocol::Acp));
         assert_eq!(parsed.phase, Some(AgentRuntimePhase::Ready));
-        assert_eq!(parsed.runtime_class.as_deref(), Some("workers-us-east"));
+        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
         assert_eq!(parsed.limit, Some(5));
     }
 
@@ -2614,5 +2738,23 @@ mod tests {
             "runtime-123",
         ]);
         assert_eq!(runtime_id, "runtime-123");
+    }
+
+    #[test]
+    fn agent_teardown_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "teardown",
+            "--runtime-id",
+            "fly-abc123",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::Teardown { runtime_id, .. },
+            } => assert_eq!(runtime_id, "fly-abc123"),
+            _ => panic!("expected agent teardown command"),
+        }
     }
 }

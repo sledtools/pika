@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use pika_agent_protocol::projection::ProjectionMode;
+
 #[derive(Clone, Copy, Debug)]
 pub struct KeyPackageWaitPlan {
     pub progress_message: &'static str,
@@ -21,4 +23,5 @@ pub struct ChatLoopPlan {
     pub outbound_publish_label: &'static str,
     pub wait_for_pending_replies_on_eof: bool,
     pub eof_reply_timeout: Duration,
+    pub projection_mode: ProjectionMode,
 }

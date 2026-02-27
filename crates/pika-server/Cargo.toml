@@ -32,3 +32,6 @@ tokio = { version = "1.12.0", features = ["full"] }
 a2 = "0.10"
 base64 = "0.22"
 fcm-rs = "0.2"
+
+[dev-dependencies]
+pika-test-utils = { path = "../pika-test-utils" }

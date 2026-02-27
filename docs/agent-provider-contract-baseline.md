@@ -1,5 +1,5 @@
 ---
-summary: Baseline scope lock for the unified agent provider workstream (fly, workers, microvm)
+summary: Baseline scope lock for the unified agent provider workstream (fly, microvm)
 read_when:
   - changing provider contract constants or relay domain defaults
   - reviewing baseline before adding new provider behavior
@@ -11,7 +11,7 @@ This document locks scope for the unified provider workstream before behavior ch
 
 ## Scope
 
-- Providers in scope: `fly`, `workers`, `microvm`
+- Providers in scope: `fly`, `microvm`
 - Default relay domain rule: only `*.nostr.pikachat.org` defaults
 
 ## Baseline Constants
@@ -22,7 +22,7 @@ Canonical machine-readable baseline lives in:
 
 Current locked targets:
 
-- Providers: `fly`, `workers`, `microvm`
+- Providers: `fly`, `microvm`
 - Relay defaults:
   - `wss://us-east.nostr.pikachat.org`
   - `wss://eu.nostr.pikachat.org`

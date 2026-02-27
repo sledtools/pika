@@ -123,13 +123,20 @@ function sanitizePathSegment(value: string): string {
   return cleaned || "default";
 }
 
+function expandTilde(p: string): string {
+  if (p === "~" || p.startsWith("~/")) {
+    return path.join(os.homedir(), p.slice(1));
+  }
+  return p;
+}
+
 export function resolveAccountStateDir(params: {
   accountId: string;
   stateDirOverride?: string | undefined;
   env?: NodeJS.ProcessEnv;
 }): string {
   if (params.stateDirOverride && params.stateDirOverride.trim()) {
-    return path.resolve(params.stateDirOverride.trim());
+    return path.resolve(expandTilde(params.stateDirOverride.trim()));
   }
   const env = params.env ?? process.env;
   const stateDir = getPikachatRuntime().state.resolveStateDir(env, os.homedir);

@@ -1,15 +1,21 @@
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nostr_sdk::prelude::{Keys, NostrSigner, Url};
 use nostr_sdk::ToBech32;
 use pika_core::{
-    AppAction, AppReconciler, AppUpdate, AuthMode, AuthState, BunkerConnectError,
-    BunkerConnectErrorKind, BunkerConnectOutput, BunkerSignerConnector, CallStatus,
-    ExternalSignerBridge, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
-    ExternalSignerResult, FfiApp, Screen,
+    AppAction, AppUpdate, AuthMode, AuthState, BunkerConnectError, BunkerConnectErrorKind,
+    BunkerConnectOutput, BunkerSignerConnector, CallStatus, ExternalSignerBridge,
+    ExternalSignerErrorKind, ExternalSignerHandshakeResult, ExternalSignerResult, FfiApp, Screen,
 };
 use tempfile::tempdir;
+
+mod support;
+use support::{wait_until_with_poll, Collector};
+
+fn wait_until(what: &str, timeout: Duration, f: impl FnMut() -> bool) {
+    wait_until_with_poll(what, timeout, Duration::from_millis(20), f);
+}
 
 fn write_config(data_dir: &str, disable_network: bool) {
     write_config_with_external_signer(data_dir, disable_network, None);
@@ -33,17 +39,6 @@ fn write_config_with_external_signer(
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
 
-fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("{what}: condition not met within {timeout:?}");
-}
-
 fn query_param(url: &str, key: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     parsed
@@ -60,28 +55,6 @@ fn nostrconnect_client_pubkey(url: &str) -> Option<String> {
 fn nostrconnect_metadata(url: &str) -> Option<serde_json::Value> {
     let raw = query_param(url, "metadata")?;
     serde_json::from_str(&raw).ok()
-}
-
-struct TestReconciler {
-    updates: Arc<Mutex<Vec<AppUpdate>>>,
-}
-
-impl TestReconciler {
-    fn new() -> (Self, Arc<Mutex<Vec<AppUpdate>>>) {
-        let updates = Arc::new(Mutex::new(vec![]));
-        (
-            Self {
-                updates: updates.clone(),
-            },
-            updates,
-        )
-    }
-}
-
-impl AppReconciler for TestReconciler {
-    fn reconcile(&self, update: AppUpdate) {
-        self.updates.lock().unwrap().push(update);
-    }
 }
 
 #[derive(Clone)]
@@ -359,8 +332,8 @@ fn create_account_navigates_to_chat_list() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
-    let (reconciler, updates) = TestReconciler::new();
-    app.listen_for_updates(Box::new(reconciler));
+    let collector = Collector::new();
+    app.listen_for_updates(Box::new(collector.clone()));
 
     assert_eq!(app.state().router.default_screen, Screen::Login);
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
@@ -378,10 +351,10 @@ fn create_account_navigates_to_chat_list() {
     assert_eq!(s.router.default_screen, Screen::ChatList);
 
     wait_until("updates emitted", Duration::from_secs(2), || {
-        !updates.lock().unwrap().is_empty()
+        !collector.0.lock().unwrap().is_empty()
     });
 
-    let up = updates.lock().unwrap();
+    let up = collector.0.lock().unwrap();
     // Revs must be strictly increasing by 1.
     for w in up.windows(2) {
         assert_eq!(w[0].rev() + 1, w[1].rev());
@@ -717,8 +690,8 @@ fn restore_session_recovers_chat_history() {
     write_config(&data_dir, true);
 
     let app = FfiApp::new(data_dir.clone(), String::new());
-    let (reconciler, updates) = TestReconciler::new();
-    app.listen_for_updates(Box::new(reconciler));
+    let collector = Collector::new();
+    app.listen_for_updates(Box::new(collector.clone()));
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -752,13 +725,14 @@ fn restore_session_recovers_chat_history() {
     // Grab the generated nsec from the update stream (spec-v2 requirement).
     let nsec = {
         wait_until("AccountCreated update", Duration::from_secs(2), || {
-            updates
+            collector
+                .0
                 .lock()
                 .unwrap()
                 .iter()
                 .any(|u| matches!(u, AppUpdate::AccountCreated { .. }))
         });
-        let up = updates.lock().unwrap();
+        let up = collector.0.lock().unwrap();
         up.iter()
             .find_map(|u| match u {
                 AppUpdate::AccountCreated { nsec: s, .. } => Some(s.clone()),
@@ -1103,8 +1077,8 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
     write_config_with_external_signer(&data_dir, true, Some(true));
 
     let app = FfiApp::new(data_dir, String::new());
-    let (reconciler, updates) = TestReconciler::new();
-    app.listen_for_updates(Box::new(reconciler));
+    let collector = Collector::new();
+    app.listen_for_updates(Box::new(collector.clone()));
 
     let canonical_bunker_uri =
         "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
@@ -1143,13 +1117,14 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
     );
 
     wait_until("bunker descriptor update", Duration::from_secs(2), || {
-        updates
+        collector
+            .0
             .lock()
             .unwrap()
             .iter()
             .any(|u| matches!(u, AppUpdate::BunkerSessionDescriptor { .. }))
     });
-    let descriptor = updates.lock().unwrap().iter().find_map(|u| match u {
+    let descriptor = collector.0.lock().unwrap().iter().find_map(|u| match u {
         AppUpdate::BunkerSessionDescriptor {
             bunker_uri,
             client_nsec,
@@ -1809,8 +1784,8 @@ fn react_to_message_shows_reaction_on_message() {
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config(&data_dir, true);
     let app = FfiApp::new(data_dir.clone(), String::new());
-    let (reconciler, updates) = TestReconciler::new();
-    app.listen_for_updates(Box::new(reconciler));
+    let collector = Collector::new();
+    app.listen_for_updates(Box::new(collector.clone()));
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(2), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -1928,13 +1903,14 @@ fn react_to_message_shows_reaction_on_message() {
     //     or the same user on a new device loading chat history from storage) ---
     let nsec = {
         wait_until("AccountCreated update", Duration::from_secs(2), || {
-            updates
+            collector
+                .0
                 .lock()
                 .unwrap()
                 .iter()
                 .any(|u| matches!(u, AppUpdate::AccountCreated { .. }))
         });
-        let up = updates.lock().unwrap();
+        let up = collector.0.lock().unwrap();
         up.iter()
             .find_map(|u| match u {
                 AppUpdate::AccountCreated { nsec: s, .. } => Some(s.clone()),

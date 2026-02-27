@@ -1,10 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use nostr_sdk::prelude::{RelayUrl, Url};
-use pika_relay_profiles::{
-    app_default_blossom_servers, app_default_key_package_relays, app_default_message_relays,
-};
+use nostr_sdk::prelude::RelayUrl;
+use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
 use serde::Deserialize;
 
 use super::AppCore;
@@ -75,26 +73,7 @@ pub(super) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
 }
 
 fn blossom_servers_or_default(values: Option<&[String]>) -> Vec<String> {
-    if let Some(urls) = values {
-        let parsed: Vec<String> = urls
-            .iter()
-            .filter_map(|u| {
-                let t = u.trim();
-                if t.is_empty() {
-                    return None;
-                }
-                Url::parse(t).ok().map(|_| t.to_string())
-            })
-            .collect();
-        if !parsed.is_empty() {
-            return parsed;
-        }
-    }
-
-    app_default_blossom_servers()
-        .iter()
-        .filter_map(|u| Url::parse(u).ok().map(|_| (*u).to_string()))
-        .collect()
+    pika_relay_profiles::app_blossom_servers_or_default(values.unwrap_or(&[]))
 }
 
 impl AppCore {
@@ -170,6 +149,7 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_relay_profiles::app_default_blossom_servers;
 
     #[test]
     fn default_app_config_json_uses_shared_profile_defaults() {

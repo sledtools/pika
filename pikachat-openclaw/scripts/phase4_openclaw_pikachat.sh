@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ROOT_DIR="$(pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+. "${REPO_ROOT}/tools/lib/pikahub.sh"
 
 AUTO_STATE_DIR=0
 if [[ -z "${STATE_DIR:-}" ]]; then
@@ -22,62 +24,27 @@ if [[ ! -f "${OPENCLAW_DIR}/package.json" && -f "../openclaw/package.json" ]]; t
   OPENCLAW_DIR="../openclaw"
 fi
 
-if [[ -z "${RELAY_URL}" ]]; then
-  # Start a local relay (no Docker) with an ephemeral port.
-  RELAY_PORT="$(
-    python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
-PY
-  )"
-
-  RELAY_DB_DIR="${STATE_DIR_ABS}/relay/db"
-  RELAY_CONFIG_TEMPLATE="${ROOT_DIR}/relay/nostr-rs-relay-config.toml"
-  RELAY_CONFIG_PATH="${STATE_DIR_ABS}/relay/config.toml"
-  RELAY_LOG="${STATE_DIR_ABS}/relay/relay.log"
-
-  mkdir -p "${STATE_DIR_ABS}/relay"
-  mkdir -p "${RELAY_DB_DIR}"
-
-  sed -E \
-    -e "s|^relay_url = \\\".*\\\"|relay_url = \\\"ws://127.0.0.1:${RELAY_PORT}\\\"|g" \
-    -e "s|^port = [0-9]+|port = ${RELAY_PORT}|g" \
-    -e "s|^data_directory = \\\".*\\\"|data_directory = \\\"${RELAY_DB_DIR}\\\"|g" \
-    "${RELAY_CONFIG_TEMPLATE}" > "${RELAY_CONFIG_PATH}"
-
-  nostr-rs-relay --db "${RELAY_DB_DIR}" --config "${RELAY_CONFIG_PATH}" >"${RELAY_LOG}" 2>&1 &
-  RELAY_PID="$!"
-
-  for _ in $(seq 1 200); do
-    if (echo >"/dev/tcp/127.0.0.1/${RELAY_PORT}") >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.05
-  done
-
-  RELAY_URL="ws://127.0.0.1:${RELAY_PORT}"
-fi
-
 cleanup() {
   if [[ -n "${OPENCLAW_PID:-}" ]]; then
     kill "${OPENCLAW_PID}" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${RELAY_PID:-}" ]]; then
-    kill "${RELAY_PID}" >/dev/null 2>&1 || true
-    wait "${RELAY_PID}" >/dev/null 2>&1 || true
-  fi
-  if [[ "${AUTO_STATE_DIR}" == "1" ]]; then
+  if [[ -z "${RELAY_URL_WAS_SET:-}" ]]; then
+    pikahub_down "${STATE_DIR_ABS}"
+  elif [[ "${AUTO_STATE_DIR}" == "1" ]]; then
     rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
+if [[ -z "${RELAY_URL}" ]]; then
+  pikahub_up relay "${STATE_DIR_ABS}"
+else
+  RELAY_URL_WAS_SET=1
+fi
+
 # Build Rust sidecar.
-cargo build -p pikachat
-SIDECAR_CMD="$(pwd)/target/debug/pikachat"
+cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" -p pikachat
+SIDECAR_CMD="${REPO_ROOT}/target/debug/pikachat"
 
 # Ensure OpenClaw deps exist.
 pnpm_cmd=(pnpm)
@@ -184,7 +151,7 @@ with open("${IDENTITY_PATH}", "r", encoding="utf-8") as f:
 PY
 )"
 
-cargo run -p pikachat -- scenario invite-and-chat-peer \
+cargo run --manifest-path "${REPO_ROOT}/Cargo.toml" -p pikachat -- scenario invite-and-chat-peer \
   --relay "${RELAY_URL}" \
   --state-dir "${STATE_DIR_ABS}" \
   --peer-pubkey "${PEER_PUBKEY}"

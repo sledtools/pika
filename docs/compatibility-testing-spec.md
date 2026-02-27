@@ -255,7 +255,7 @@ Harness responsibilities:
   - White Noise HEAD (initial)
   - optional White Noise release tags (later)
 - Relay backend:
-  - `nostr-rs-relay`
+  - `pika-relay`
   - optional `strfry` lane
 - Mode:
   - deterministic smoke

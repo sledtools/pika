@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { SendThrottle } from "./sidecar.js";
+import os from "node:os";
+import path from "node:path";
+import { SendThrottle, resolveAccountStateDir } from "./sidecar.js";
 
 // We can't import the PikachatSidecar class directly (it spawns a process),
 // but we can test the type shapes and serde contracts by constructing the
@@ -298,5 +300,40 @@ describe("SendThrottle", () => {
     await drain(throttle);
     const delay = executedAt - enqueuedAt;
     assert.ok(delay < INTERVAL, `should not have delayed, took ${delay}ms`);
+  });
+});
+
+describe("resolveAccountStateDir", () => {
+  it("expands ~ in stateDirOverride", () => {
+    const result = resolveAccountStateDir({
+      accountId: "test-account",
+      stateDirOverride: "~/.openclaw/.pikachat-state",
+    });
+    const expected = path.resolve(path.join(os.homedir(), ".openclaw/.pikachat-state"));
+    assert.equal(result, expected);
+  });
+
+  it("expands bare ~ in stateDirOverride", () => {
+    const result = resolveAccountStateDir({
+      accountId: "test-account",
+      stateDirOverride: "~",
+    });
+    assert.equal(result, os.homedir());
+  });
+
+  it("does not expand ~ in the middle of path", () => {
+    const result = resolveAccountStateDir({
+      accountId: "test-account",
+      stateDirOverride: "/some/path/~stuff",
+    });
+    assert.equal(result, path.resolve("/some/path/~stuff"));
+  });
+
+  it("resolves absolute path without tilde unchanged", () => {
+    const result = resolveAccountStateDir({
+      accountId: "test-account",
+      stateDirOverride: "/absolute/path/to/state",
+    });
+    assert.equal(result, "/absolute/path/to/state");
   });
 });

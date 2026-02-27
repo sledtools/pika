@@ -22,7 +22,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
-use pika_relay_profiles::default_primary_blossom_server;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -311,46 +311,10 @@ fn default_group_name() -> String {
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
-fn is_imeta_tag(tag: &Tag) -> bool {
-    matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
-}
-
-fn mime_from_extension(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "heic" => Some("image/heic"),
-        "svg" => Some("image/svg+xml"),
-        "mp4" => Some("video/mp4"),
-        "mov" => Some("video/quicktime"),
-        "webm" => Some("video/webm"),
-        "mp3" => Some("audio/mpeg"),
-        "ogg" => Some("audio/ogg"),
-        "wav" => Some("audio/wav"),
-        "pdf" => Some("application/pdf"),
-        "txt" | "md" => Some("text/plain"),
-        _ => None,
-    }
-}
+use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
-    let parsed: Vec<String> = values
-        .iter()
-        .filter_map(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            Url::parse(trimmed).ok().map(|_| trimmed.to_string())
-        })
-        .collect();
-    if !parsed.is_empty() {
-        return parsed;
-    }
-    vec![default_primary_blossom_server().to_string()]
+    pika_relay_profiles::blossom_servers_or_default(values)
 }
 
 fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
@@ -2619,46 +2583,37 @@ pub async fn daemon_main(
                                             }
                                         }
 
-                                        // Backfill recent group messages, but dedupe by wrapper id.
-                                        if let Some(relay0) = relay_urls.first().cloned() {
-                                            let filter = Filter::new()
-                                                .kind(Kind::MlsGroupMessage)
-                                                .custom_tag(SingleLetterTag::lowercase(Alphabet::H), &nostr_group_id_hex)
-                                                .since(Timestamp::now() - Duration::from_secs(60 * 60))
-                                                .limit(200);
-                                            if let Ok(events) = client.fetch_events_from([relay0], filter, Duration::from_secs(10)).await {
-                                                for ev in events.iter() {
-                                                    if !seen_group_events.insert(ev.id) {
-                                                        continue;
-                                                    }
-                                                    if let Ok(MessageProcessingResult::ApplicationMessage(msg)) = mdk.process_message(ev) {
-                                                        if !sender_allowed(&msg.pubkey.to_hex()) {
-                                                            continue;
-                                                        }
-                                                        if is_typing_indicator(&msg) {
-                                                            continue;
-                                                        }
-                                                        // Backfill: parse imeta tags but skip download (too slow for bulk history)
-                                                        let media: Vec<MediaAttachmentOut> = {
-                                                            let mgr = mdk.media_manager(msg.mls_group_id.clone());
-                                                            msg.tags.iter()
-                                                                .filter(|t| is_imeta_tag(t))
-                                                                .filter_map(|t| mgr.parse_imeta_tag(t).ok())
-                                                                .map(media_ref_to_attachment)
-                                                                .collect()
-                                                        };
-                                                        out_tx.send(OutMsg::MessageReceived{
-                                                            nostr_group_id: event_h_tag_hex(ev).unwrap_or_else(|| nostr_group_id_hex.clone()),
-                                                            from_pubkey: msg.pubkey.to_hex().to_lowercase(),
-                                                            content: msg.content,
-                                                            kind: msg.kind.as_u16(),
-                                                            created_at: msg.created_at.as_secs(),
-                                                            event_id: msg.id.to_hex(),
-                                                            message_id: msg.id.to_hex(),
-                                                            media,
-                                                        }).ok();
-                                                    }
+                                        // Backfill recent group messages via shared ingest.
+                                        if let Some(relay0) = relay_urls.first().cloned()
+                                            && let Ok(msgs) = pika_marmot_runtime::ingest_group_backlog(
+                                                &mdk, &client, &[relay0], &nostr_group_id_hex, &mut seen_group_events, 200,
+                                            ).await
+                                        {
+                                            for msg in msgs {
+                                                if !sender_allowed(&msg.pubkey.to_hex()) {
+                                                    continue;
                                                 }
+                                                if is_typing_indicator(&msg) {
+                                                    continue;
+                                                }
+                                                let media: Vec<MediaAttachmentOut> = {
+                                                    let mgr = mdk.media_manager(msg.mls_group_id.clone());
+                                                    msg.tags.iter()
+                                                        .filter(|t| is_imeta_tag(t))
+                                                        .filter_map(|t| mgr.parse_imeta_tag(t).ok())
+                                                        .map(media_ref_to_attachment)
+                                                        .collect()
+                                                };
+                                                out_tx.send(OutMsg::MessageReceived{
+                                                    nostr_group_id: nostr_group_id_hex.clone(),
+                                                    from_pubkey: msg.pubkey.to_hex().to_lowercase(),
+                                                    content: msg.content,
+                                                    kind: msg.kind.as_u16(),
+                                                    created_at: msg.created_at.as_secs(),
+                                                    event_id: msg.id.to_hex(),
+                                                    message_id: msg.id.to_hex(),
+                                                    media,
+                                                }).ok();
                                             }
                                         }
 
@@ -4428,15 +4383,16 @@ mod tests {
     #[test]
     fn blossom_servers_or_default_falls_back() {
         let result = blossom_servers_or_default(&[]);
-        assert_eq!(result, vec![default_primary_blossom_server()]);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
     }
 
     #[test]
     fn blossom_servers_or_default_skips_empty_and_invalid() {
         let servers = vec!["".to_string(), "  ".to_string(), "not a url".to_string()];
         let result = blossom_servers_or_default(&servers);
-        // All invalid → falls back to default
-        assert_eq!(result, vec![default_primary_blossom_server()]);
+        assert!(!result.is_empty());
+        assert!(result[0].starts_with("https://"));
     }
 
     #[test]

@@ -106,7 +106,9 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                         confirmValueChange = { value ->
                             if (value == SwipeToDismissBoxValue.EndToStart) {
                                 manager.dispatch(AppAction.ArchiveChat(chat.chatId))
-                                true
+                                // Keep the row from getting visually "stuck" in a dismissed offset.
+                                // The row will disappear when Rust state removes it from chatList.
+                                false
                             } else {
                                 false
                             }

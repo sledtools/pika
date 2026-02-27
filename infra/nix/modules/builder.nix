@@ -79,7 +79,7 @@ in
 
   # ── Nix settings ──────────────────────────────────────────────────────
   nix.settings = {
-    trusted-users = [ "root" "justin" "ben" ];
+    trusted-users = [ "root" "justin" "ben" "paul" ];
     auto-optimise-store = true;
   };
 
@@ -130,6 +130,13 @@ in
     isNormalUser = true;
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKuWEkTPjRZTq4AH+bw4+vL4KXx1R3GeMfS8SDna0r5f ben@ben-x1"
+    ];
+  };
+
+  users.users.paul = {
+    isNormalUser = true;
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHqbHvWlrXRkTc0403ubkqNE/Ge4YbPvKwWuRBoLPVAW paul@paul.lol"
     ];
   };
 

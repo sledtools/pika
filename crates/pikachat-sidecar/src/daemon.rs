@@ -39,7 +39,7 @@ const RELAY_AUTH_HEX_LEN: usize = 64;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
-enum InCmd {
+pub enum InCmd {
     PublishKeypackage {
         #[serde(default)]
         request_id: Option<String>,
@@ -185,15 +185,22 @@ enum InCmd {
         #[serde(default = "default_group_name")]
         group_name: String,
     },
+    GetMessages {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        #[serde(default = "default_get_messages_limit")]
+        limit: usize,
+    },
     Shutdown {
         #[serde(default)]
         request_id: Option<String>,
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum OutMsg {
+pub enum OutMsg {
     Ready {
         protocol_version: u32,
         pubkey: String,
@@ -276,8 +283,8 @@ enum OutMsg {
     },
 }
 
-#[derive(Debug, Serialize)]
-struct MediaAttachmentOut {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MediaAttachmentOut {
     url: String,
     mime_type: String,
     filename: String,
@@ -303,6 +310,17 @@ fn default_reject_reason() -> String {
 
 fn default_end_reason() -> String {
     "user_hangup".to_string()
+}
+
+/// Wrapper that optionally carries a per-command response sender for socket connections.
+pub struct DaemonCmd {
+    pub cmd: InCmd,
+    /// If Some, route Ok/Error responses to this sender instead of the main out_tx.
+    pub response_tx: Option<mpsc::UnboundedSender<OutMsg>>,
+}
+
+fn default_get_messages_limit() -> usize {
+    50
 }
 
 fn default_group_name() -> String {
@@ -2381,7 +2399,7 @@ pub async fn daemon_main(
     }
 
     // command reader (stdin or child process stdout)
-    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<InCmd>();
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<DaemonCmd>();
     let cmd_tx_for_auto = cmd_tx.clone();
 
     if let Some(exec_cmd) = exec_cmd {
@@ -2417,7 +2435,12 @@ pub async fn daemon_main(
                 }
                 match serde_json::from_str::<InCmd>(trimmed) {
                     Ok(cmd) => {
-                        cmd_tx_clone.send(cmd).ok();
+                        cmd_tx_clone
+                            .send(DaemonCmd {
+                                cmd,
+                                response_tx: None,
+                            })
+                            .ok();
                     }
                     Err(err) => {
                         eprintln!("[pikachat] invalid cmd from child: {err} line={trimmed}");
@@ -2447,7 +2470,12 @@ pub async fn daemon_main(
                 }
                 match serde_json::from_str::<InCmd>(trimmed) {
                     Ok(cmd) => {
-                        cmd_tx.send(cmd).ok();
+                        cmd_tx
+                            .send(DaemonCmd {
+                                cmd,
+                                response_tx: None,
+                            })
+                            .ok();
                     }
                     Err(err) => {
                         eprintln!("[pikachat] invalid cmd json: {err} line={trimmed}");
@@ -2457,17 +2485,90 @@ pub async fn daemon_main(
         });
     }
 
+    // Unix domain socket for --remote CLI connections
+    let sock_path = state_dir.join("daemon.sock");
+    // Clean up stale socket
+    let _ = std::fs::remove_file(&sock_path);
+    let unix_listener = tokio::net::UnixListener::bind(&sock_path)
+        .with_context(|| format!("bind unix socket {}", sock_path.display()))?;
+    eprintln!("[pikachat] listening on {}", sock_path.display());
+
+    // Spawn socket acceptor
+    let cmd_tx_for_sock = cmd_tx_for_auto.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match unix_listener.accept().await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[pikachat] unix accept error: {e:#}");
+                    continue;
+                }
+            };
+            let cmd_tx = cmd_tx_for_sock.clone();
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = tokio::io::BufReader::new(reader).lines();
+                let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<OutMsg>();
+
+                // Writer task: send responses back to the client
+                let write_handle = tokio::spawn(async move {
+                    while let Some(msg) = resp_rx.recv().await {
+                        let mut line = serde_json::to_string(&msg).unwrap_or_default();
+                        line.push('\n');
+                        if writer.write_all(line.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                // Read commands from the client
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<InCmd>(trimmed) {
+                        Ok(cmd) => {
+                            cmd_tx
+                                .send(DaemonCmd {
+                                    cmd,
+                                    response_tx: Some(resp_tx.clone()),
+                                })
+                                .ok();
+                        }
+                        Err(err) => {
+                            let err_msg = OutMsg::Error {
+                                request_id: None,
+                                code: "parse_error".to_string(),
+                                message: format!("{err}"),
+                            };
+                            let mut line = serde_json::to_string(&err_msg).unwrap_or_default();
+                            line.push('\n');
+                            // Can't write directly, send through resp_tx
+                            resp_tx.send(err_msg).ok();
+                        }
+                    }
+                }
+                drop(resp_tx);
+                let _ = write_handle.await;
+            });
+        }
+    });
+
     let mut shutdown = false;
     while !shutdown {
         tokio::select! {
-            cmd = cmd_rx.recv() => {
-                let Some(cmd) = cmd else { break; };
+            daemon_cmd = cmd_rx.recv() => {
+                let Some(daemon_cmd) = daemon_cmd else { break; };
+                let DaemonCmd { cmd, response_tx: per_cmd_tx } = daemon_cmd;
+                // For Ok/Error responses, use per-connection sender if provided, else main out_tx
+                let reply_tx = per_cmd_tx.as_ref().unwrap_or(&out_tx);
                 match cmd {
                     InCmd::PublishKeypackage { request_id, relays } => {
                         let selected = match parse_relay_list(primary_relay, &relays) {
                             Ok(v) => v,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_relays", e.to_string())).ok();
+                                reply_tx.send(out_error(request_id, "bad_relays", e.to_string())).ok();
                                 continue;
                             }
                         };
@@ -2483,7 +2584,7 @@ pub async fn daemon_main(
                         {
                             Ok(v) => v,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -2500,7 +2601,7 @@ pub async fn daemon_main(
                         {
                             Ok(v) => v,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "sign_failed", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "sign_failed", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -2509,11 +2610,11 @@ pub async fn daemon_main(
                             .await
                         {
                             Ok(_relay_confirmed) => {
-                                out_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()})))).ok();
+                                reply_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()})))).ok();
                                 out_tx.send(OutMsg::KeypackagePublished { event_id: ev.id.to_hex() }).ok();
                             }
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}"))).ok();
                             }
                         };
                     }
@@ -2525,10 +2626,10 @@ pub async fn daemon_main(
                                     let _ = client.add_relay(r.clone()).await;
                                 }
                                 client.connect().await;
-                                out_tx.send(out_ok(request_id, Some(json!({"relays": v.iter().map(|r| r.to_string()).collect::<Vec<_>>()})))).ok();
+                                reply_tx.send(out_ok(request_id, Some(json!({"relays": v.iter().map(|r| r.to_string()).collect::<Vec<_>>()})))).ok();
                             }
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_relays", e.to_string())).ok();
+                                reply_tx.send(out_error(request_id, "bad_relays", e.to_string())).ok();
                             }
                         }
                     }
@@ -2547,10 +2648,10 @@ pub async fn daemon_main(
                                     })
                                     })
                                     .collect::<Vec<_>>();
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({ "welcomes": out }))));
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({ "welcomes": out }))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
                             }
                         }
                     }
@@ -2558,7 +2659,7 @@ pub async fn daemon_main(
                         let wrapper = match EventId::from_hex(&wrapper_event_id) {
                             Ok(id) => id,
                             Err(_) => {
-                                out_tx.send(out_error(request_id, "bad_event_id", "wrapper_event_id must be hex")).ok();
+                                reply_tx.send(out_error(request_id, "bad_event_id", "wrapper_event_id must be hex")).ok();
                                 continue;
                             }
                         };
@@ -2566,7 +2667,7 @@ pub async fn daemon_main(
                             Ok(list) => {
                                 let found = list.into_iter().find(|w| w.wrapper_event_id == wrapper);
                                 let Some(w) = found else {
-                                    out_tx.send(out_error(request_id, "not_found", "pending welcome not found")).ok();
+                                    reply_tx.send(out_error(request_id, "not_found", "pending welcome not found")).ok();
                                     continue;
                                 };
                                 let nostr_group_id_hex = hex::encode(w.nostr_group_id);
@@ -2617,7 +2718,7 @@ pub async fn daemon_main(
                                             }
                                         }
 
-                                        out_tx.send(out_ok(request_id, Some(json!({
+                                        reply_tx.send(out_ok(request_id, Some(json!({
                                             "nostr_group_id": nostr_group_id_hex,
                                             "mls_group_id": mls_group_id_hex,
                                         })))).ok();
@@ -2625,12 +2726,12 @@ pub async fn daemon_main(
                                         out_tx.send(OutMsg::GroupJoined { nostr_group_id: nostr_group_id_hex, mls_group_id: mls_group_id_hex, member_count }).ok();
                                     }
                                     Err(e) => {
-                                        out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                        reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
                                     }
                                 }
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
                             }
                         }
                     }
@@ -2647,15 +2748,41 @@ pub async fn daemon_main(
                                         "member_count": member_count,
                                     })
                                 }).collect::<Vec<_>>();
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({"groups": out}))));
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"groups": out}))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                            }
+                        }
+                    }
+                    InCmd::GetMessages { request_id, nostr_group_id, limit } => {
+                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                continue;
+                            }
+                        };
+                        let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
+                        match mdk.get_messages(&mls_group_id, Some(pagination)) {
+                            Ok(msgs) => {
+                                let out: Vec<serde_json::Value> = msgs.iter().map(|m| {
+                                    json!({
+                                        "message_id": m.id.to_hex(),
+                                        "from_pubkey": m.pubkey.to_hex(),
+                                        "content": m.content,
+                                        "created_at": m.created_at.as_secs(),
+                                    })
+                                }).collect();
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"messages": out}))));
+                            }
+                            Err(e) => {
+                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
                             }
                         }
                     }
                     InCmd::HypernoteCatalog { request_id } => {
-                        let _ = out_tx.send(out_ok(request_id, Some(json!({
+                        let _ = reply_tx.send(out_ok(request_id, Some(json!({
                             "catalog": hn::hypernote_catalog_value(),
                         }))));
                     }
@@ -2663,17 +2790,17 @@ pub async fn daemon_main(
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
                         let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send").await {
                             Ok(ev) => {
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -2687,7 +2814,7 @@ pub async fn daemon_main(
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -2703,10 +2830,10 @@ pub async fn daemon_main(
                             .build(keys.public_key());
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_hypernote").await {
                             Ok(ev) => {
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -2760,14 +2887,14 @@ pub async fn daemon_main(
                         .await
                         {
                             Ok(ev) => {
-                                let _ = out_tx.send(out_ok(
+                                let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({"event_id": ev.id.to_hex()})),
                                 ));
                             }
                             Err(e) => {
                                 let _ =
-                                    out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                    reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -2830,14 +2957,14 @@ pub async fn daemon_main(
                         .await
                         {
                             Ok(ev) => {
-                                let _ = out_tx.send(out_ok(
+                                let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({"event_id": ev.id.to_hex()})),
                                 ));
                             }
                             Err(e) => {
                                 let _ =
-                                    out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                    reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -2853,7 +2980,7 @@ pub async fn daemon_main(
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -2863,16 +2990,16 @@ pub async fn daemon_main(
                         let bytes = match std::fs::read(path) {
                             Ok(b) => b,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "file_error", format!("read {file_path}: {e}"))).ok();
+                                reply_tx.send(out_error(request_id, "file_error", format!("read {file_path}: {e}"))).ok();
                                 continue;
                             }
                         };
                         if bytes.is_empty() {
-                            out_tx.send(out_error(request_id, "file_error", "file is empty")).ok();
+                            reply_tx.send(out_error(request_id, "file_error", "file is empty")).ok();
                             continue;
                         }
                         if bytes.len() > MAX_CHAT_MEDIA_BYTES {
-                            out_tx.send(out_error(request_id, "file_error", "file too large (max 32 MB)")).ok();
+                            reply_tx.send(out_error(request_id, "file_error", "file too large (max 32 MB)")).ok();
                             continue;
                         }
 
@@ -2906,7 +3033,7 @@ pub async fn daemon_main(
                         ) {
                             Ok(u) => u,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "encrypt_error", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "encrypt_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -2952,7 +3079,7 @@ pub async fn daemon_main(
                             break;
                         }
                         let Some(uploaded_url) = uploaded_url else {
-                            out_tx.send(out_error(
+                            reply_tx.send(out_error(
                                 request_id,
                                 "upload_failed",
                                 format!("blossom upload failed: {}", last_error.unwrap_or_else(|| "unknown".into())),
@@ -2967,14 +3094,14 @@ pub async fn daemon_main(
                             .build(keys.public_key());
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media").await {
                             Ok(ev) => {
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
                                     "uploaded_url": uploaded_url,
                                     "original_hash_hex": hex::encode(upload.original_hash),
                                 }))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -2982,7 +3109,7 @@ pub async fn daemon_main(
                         let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -3002,13 +3129,13 @@ pub async fn daemon_main(
                         let wrapper = match mdk.create_message(&mls_group_id, rumor) {
                             Ok(ev) => ev,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
 
                         if relay_urls.is_empty() {
-                            out_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
+                            reply_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
                             continue;
                         }
                         // Fire-and-forget: typing indicators are best-effort
@@ -3038,13 +3165,13 @@ pub async fn daemon_main(
                         relay_auth,
                     } => {
                         if active_call.is_some() {
-                            let _ = out_tx.send(out_error(request_id, "busy", "call already active"));
+                            let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
                         let peer_pubkey = match PublicKey::parse(peer_pubkey.trim()) {
                             Ok(pk) => pk,
                             Err(e) => {
-                                let _ = out_tx.send(out_error(
+                                let _ = reply_tx.send(out_error(
                                     request_id,
                                     "bad_pubkey",
                                     format!("invalid peer_pubkey: {e}"),
@@ -3096,7 +3223,7 @@ pub async fn daemon_main(
                                     session.relay_auth = token;
                                 }
                                 Err(e) => {
-                                    let _ = out_tx.send(out_error(
+                                    let _ = reply_tx.send(out_error(
                                         request_id,
                                         "runtime_error",
                                         format!("derive relay auth token failed: {e:#}"),
@@ -3125,7 +3252,7 @@ pub async fn daemon_main(
                                         nostr_group_id: nostr_group_id.clone(),
                                     },
                                 );
-                                let _ = out_tx.send(out_ok(
+                                let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({
                                         "call_id": call_id,
@@ -3136,17 +3263,17 @@ pub async fn daemon_main(
                             }
                             Err(e) => {
                                 let _ =
-                                    out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                    reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
                     InCmd::AcceptCall { request_id, call_id } => {
                         if active_call.is_some() {
-                            let _ = out_tx.send(out_error(request_id, "busy", "call already active"));
+                            let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
                         if let Err(err) = validate_relay_auth_token(
@@ -3168,7 +3295,7 @@ pub async fn daemon_main(
                                 "call_reject_auth_failed",
                             )
                             .await;
-                            let _ = out_tx.send(out_error(request_id, "auth_failed", format!("{err:#}")));
+                            let _ = reply_tx.send(out_error(request_id, "auth_failed", format!("{err:#}")));
                             continue;
                         }
                         let media_crypto = match derive_mls_media_crypto_context(
@@ -3181,7 +3308,7 @@ pub async fn daemon_main(
                         ) {
                             Ok(v) => v,
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "runtime_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "runtime_error", format!("{e:#}")));
                                 continue;
                             }
                         };
@@ -3198,7 +3325,7 @@ pub async fn daemon_main(
                         ).await {
                             Ok(()) => {}
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                                 continue;
                             }
                         }
@@ -3215,7 +3342,7 @@ pub async fn daemon_main(
                                     ) {
                                         Ok(v) => v,
                                         Err(e) => {
-                                            let _ = out_tx.send(out_error(
+                                            let _ = reply_tx.send(out_error(
                                                 request_id,
                                                 "runtime_error",
                                                 format!("{e:#}"),
@@ -3233,7 +3360,7 @@ pub async fn daemon_main(
                                     ) {
                                         Ok(v) => v,
                                         Err(e) => {
-                                            let _ = out_tx.send(out_error(
+                                            let _ = reply_tx.send(out_error(
                                                 request_id,
                                                 "runtime_error",
                                                 format!("{e:#}"),
@@ -3251,7 +3378,7 @@ pub async fn daemon_main(
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    let _ = out_tx.send(out_error(
+                                    let _ = reply_tx.send(out_error(
                                         request_id,
                                         "runtime_error",
                                         format!("{e:#}"),
@@ -3282,7 +3409,7 @@ pub async fn daemon_main(
                                 call.media_crypto.peer_participant_label
                             );
                         }
-                        let _ = out_tx.send(out_ok(request_id, Some(json!({
+                        let _ = reply_tx.send(out_ok(request_id, Some(json!({
                             "call_id": invite.call_id,
                             "nostr_group_id": invite.nostr_group_id,
                         }))));
@@ -3298,7 +3425,7 @@ pub async fn daemon_main(
                         reason,
                     } => {
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
                         match send_call_signal(
@@ -3312,10 +3439,10 @@ pub async fn daemon_main(
                             "call_reject",
                         ).await {
                             Ok(()) => {
-                                let _ = out_tx.send(out_ok(request_id, Some(json!({ "call_id": invite.call_id }))));
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": invite.call_id }))));
                             }
                             Err(e) => {
-                                let _ = out_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
                             }
                         }
                     }
@@ -3325,12 +3452,12 @@ pub async fn daemon_main(
                         reason,
                     } => {
                         let Some(current) = active_call.take() else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
                         };
                         if current.call_id != call_id {
                             active_call = Some(current);
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
                             continue;
                         }
 
@@ -3346,7 +3473,7 @@ pub async fn daemon_main(
                         )
                         .await;
                         current.worker.stop().await;
-                        let _ = out_tx.send(out_ok(request_id, Some(json!({ "call_id": call_id }))));
+                        let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": call_id }))));
                         let _ = out_tx.send(OutMsg::CallSessionEnded {
                             call_id,
                             reason,
@@ -3358,15 +3485,15 @@ pub async fn daemon_main(
                         tts_text,
                     } => {
                         let Some(current) = active_call.as_mut() else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
                         };
                         if current.call_id != call_id {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
                             continue;
                         }
                         if current.mode != ActiveCallMode::Audio {
-                            let _ = out_tx.send(out_error(
+                            let _ = reply_tx.send(out_error(
                                 request_id,
                                 "bad_request",
                                 "active call is not an audio call",
@@ -3374,7 +3501,7 @@ pub async fn daemon_main(
                             continue;
                         }
                         if tts_text.trim().is_empty() {
-                            let _ = out_tx.send(out_error(request_id, "bad_request", "tts_text must not be empty"));
+                            let _ = reply_tx.send(out_error(request_id, "bad_request", "tts_text must not be empty"));
                             continue;
                         }
                         tracing::info!(
@@ -3409,7 +3536,7 @@ pub async fn daemon_main(
                                 let track_name = call_audio_track_spec(&current.session)
                                     .map(|t| t.name.clone())
                                     .unwrap_or_default();
-                                let _ = out_tx.send(out_ok(
+                                let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({
                                         "call_id": call_id,
@@ -3427,7 +3554,7 @@ pub async fn daemon_main(
                                     "[pikachat] send_audio_response failed call_id={} err={err:#}",
                                     call_id
                                 );
-                                let _ = out_tx.send(out_error(
+                                let _ = reply_tx.send(out_error(
                                     request_id,
                                     "runtime_error",
                                     format!("tts publish failed: {err:#}"),
@@ -3443,15 +3570,15 @@ pub async fn daemon_main(
                         channels,
                     } => {
                         let Some(current) = active_call.as_mut() else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
                         };
                         if current.call_id != call_id {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
                             continue;
                         }
                         if current.mode != ActiveCallMode::Audio {
-                            let _ = out_tx.send(out_error(
+                            let _ = reply_tx.send(out_error(
                                 request_id,
                                 "bad_request",
                                 "active call is not an audio call",
@@ -3465,7 +3592,7 @@ pub async fn daemon_main(
                         let raw_bytes = match std::fs::read(&audio_path) {
                             Ok(b) => b,
                             Err(err) => {
-                                let _ = out_tx.send(out_error(
+                                let _ = reply_tx.send(out_error(
                                     request_id,
                                     "io_error",
                                     format!("failed to read audio file {audio_path}: {err}"),
@@ -3523,15 +3650,15 @@ pub async fn daemon_main(
                         track_name,
                     } => {
                         let Some(current) = active_call.as_mut() else {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call not found"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
                         };
                         if current.call_id != call_id {
-                            let _ = out_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
+                            let _ = reply_tx.send(out_error(request_id, "not_found", "active call id mismatch"));
                             continue;
                         }
                         if current.mode != ActiveCallMode::Data {
-                            let _ = out_tx.send(out_error(
+                            let _ = reply_tx.send(out_error(
                                 request_id,
                                 "bad_request",
                                 "active call is not a data call",
@@ -3541,7 +3668,7 @@ pub async fn daemon_main(
                         let payload = match hex::decode(payload_hex.trim()) {
                             Ok(v) => v,
                             Err(_) => {
-                                let _ = out_tx.send(out_error(
+                                let _ = reply_tx.send(out_error(
                                     request_id,
                                     "bad_request",
                                     "payload_hex must be valid hex",
@@ -3554,7 +3681,7 @@ pub async fn daemon_main(
                             _ => match call_primary_track_name(&current.session) {
                                 Ok(name) => name.to_string(),
                                 Err(err) => {
-                                    let _ = out_tx.send(out_error(
+                                    let _ = reply_tx.send(out_error(
                                         request_id,
                                         "runtime_error",
                                         format!("{err:#}"),
@@ -3572,10 +3699,10 @@ pub async fn daemon_main(
                         ) {
                             Ok(next_seq) => {
                                 current.next_data_seq = next_seq;
-                                let _ = out_tx.send(out_ok(request_id, None));
+                                let _ = reply_tx.send(out_ok(request_id, None));
                             }
                             Err(err) => {
-                                let _ = out_tx.send(out_error(
+                                let _ = reply_tx.send(out_error(
                                     request_id,
                                     "runtime_error",
                                     format!("publish call data failed: {err:#}"),
@@ -3587,13 +3714,13 @@ pub async fn daemon_main(
                         let peer_pubkey = match PublicKey::parse(&peer_str) {
                             Ok(pk) => pk,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "bad_pubkey", format!("invalid peer_pubkey: {e}"))).ok();
+                                reply_tx.send(out_error(request_id, "bad_pubkey", format!("invalid peer_pubkey: {e}"))).ok();
                                 continue;
                             }
                         };
 
                         if relay_urls.is_empty() {
-                            out_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
+                            reply_tx.send(out_error(request_id, "bad_relays", "no relays configured")).ok();
                             continue;
                         }
 
@@ -3608,7 +3735,7 @@ pub async fn daemon_main(
                         {
                             Ok(evs) => evs,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "fetch_failed", format!("fetch key package: {e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "fetch_failed", format!("fetch key package: {e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -3616,7 +3743,7 @@ pub async fn daemon_main(
                         let peer_kp = match kp_events.into_iter().next() {
                             Some(ev) => ev,
                             None => {
-                                out_tx.send(out_error(request_id, "no_key_packages", "no key package found for peer")).ok();
+                                reply_tx.send(out_error(request_id, "no_key_packages", "no key package found for peer")).ok();
                                 continue;
                             }
                         };
@@ -3635,7 +3762,7 @@ pub async fn daemon_main(
                         let group_result = match mdk.create_group(&keys.public_key(), vec![peer_kp], config) {
                             Ok(r) => r,
                             Err(e) => {
-                                out_tx.send(out_error(request_id, "mdk_error", format!("create_group: {e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "mdk_error", format!("create_group: {e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -3657,13 +3784,13 @@ pub async fn daemon_main(
                             {
                                 Ok(gw) => gw,
                                 Err(e) => {
-                                    out_tx.send(out_error(request_id.clone(), "gift_wrap_failed", format!("{e:#}"))).ok();
+                                    reply_tx.send(out_error(request_id.clone(), "gift_wrap_failed", format!("{e:#}"))).ok();
                                     publish_failed = true;
                                     break;
                                 }
                             };
                             if let Err(e) = publish_and_confirm_multi(&client, &relay_urls, &giftwrap, "init_group_welcome").await {
-                                out_tx.send(out_error(request_id.clone(), "publish_failed", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id.clone(), "publish_failed", format!("{e:#}"))).ok();
                                 publish_failed = true;
                                 break;
                             }
@@ -3682,7 +3809,7 @@ pub async fn daemon_main(
                             }
                         }
 
-                        out_tx.send(out_ok(request_id, Some(json!({
+                        reply_tx.send(out_ok(request_id, Some(json!({
                             "nostr_group_id": nostr_group_id_hex,
                             "mls_group_id": mls_group_id_hex,
                             "peer_pubkey": peer_pubkey.to_hex(),
@@ -3696,7 +3823,7 @@ pub async fn daemon_main(
                         }).ok();
                     }
                     InCmd::Shutdown { request_id } => {
-                        out_tx.send(out_ok(request_id, None)).ok();
+                        reply_tx.send(out_ok(request_id, None)).ok();
                         shutdown = true;
                     }
                 }
@@ -3827,9 +3954,12 @@ pub async fn daemon_main(
                     if auto_accept_welcomes {
                         eprintln!("[pikachat] auto-accepting welcome wrapper_id={wid_hex}");
                         cmd_tx_for_auto
-                            .send(InCmd::AcceptWelcome {
-                                request_id: Some("auto-accept".into()),
-                                wrapper_event_id: wid_hex,
+                            .send(DaemonCmd {
+                                cmd: InCmd::AcceptWelcome {
+                                    request_id: Some("auto-accept".into()),
+                                    wrapper_event_id: wid_hex,
+                                },
+                                response_tx: None,
                             })
                             .ok();
                     }
@@ -4101,6 +4231,8 @@ pub async fn daemon_main(
     let _ = client.unsubscribe(&gift_sub.val).await;
     client.unsubscribe_all().await;
     client.shutdown().await;
+    // Clean up Unix socket
+    let _ = std::fs::remove_file(&sock_path);
     Ok(())
 }
 

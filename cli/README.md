@@ -47,6 +47,40 @@ That's it. No relay flags needed — sensible defaults are built in.
 
 Run `pikachat <command> --help` for details and examples.
 
+## Remote mode (`--remote`)
+
+When the `daemon` is running, you can use `--remote` to execute CLI commands through the daemon's live connections instead of spinning up a separate MLS/relay process each time. This is faster and avoids the heavyweight initialization for one-off commands.
+
+```sh
+# Start the daemon (long-running, keeps MLS state + relay connections alive)
+pikachat daemon &
+
+# Now use any supported command with --remote
+pikachat --remote groups
+pikachat --remote messages --group <hex-id>
+pikachat --remote send --group <hex-id> --content "hello from remote!"
+pikachat --remote send --group <hex-id> --media photo.jpg
+pikachat --remote welcomes
+pikachat --remote accept-welcome --wrapper-event-id <hex>
+pikachat --remote invite --peer npub1xyz... --name "Book Club"
+pikachat --remote send-hypernote --group <hex-id> --content "# Hello"
+pikachat --remote publish-kp
+```
+
+The daemon listens on a Unix socket at `$state_dir/daemon.sock`. The CLI connects, sends the command as JSONL, and prints the response.
+
+**Supported commands**: `groups`, `messages`, `send`, `send-hypernote`, `welcomes`, `accept-welcome`, `invite`, `publish-kp`
+
+**Not yet supported**: `send --to` (auto-create DM), `profile`, `update-profile`, `listen`, `download-media`, `identity`
+
+### Adding new remote commands
+
+Remote mode maps CLI commands to daemon `InCmd` variants. To add a new command:
+
+1. Ensure the daemon has a corresponding `InCmd` variant in `crates/pikachat-sidecar/src/daemon.rs`
+2. Add a match arm in `handle_remote()` in `cli/src/main.rs` that builds the JSON
+3. That's it — the socket transport and response handling are shared
+
 ## Relay defaults
 
 pikachat uses the same default relays as the Pika app:

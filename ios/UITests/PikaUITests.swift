@@ -99,6 +99,32 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(nav.waitForExistence(timeout: timeout))
     }
 
+    private func waitForChatComposer(_ app: XCUIApplication, timeout: TimeInterval = 10) -> XCUIElement {
+        let textView = app.textViews.matching(identifier: "chat_message_input").firstMatch
+        let textField = app.textFields.matching(identifier: "chat_message_input").firstMatch
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if textView.exists { return textView }
+            if textField.exists { return textField }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return textView
+    }
+
+    private func isElementVisibleInViewport(
+        _ element: XCUIElement,
+        app: XCUIApplication,
+        minVisibleHeight: CGFloat = 20
+    ) -> Bool {
+        guard element.exists else { return false }
+        let frame = element.frame
+        guard !frame.isEmpty, !frame.isNull else { return false }
+        let viewport = app.windows.element(boundBy: 0).frame
+        let visible = frame.intersection(viewport)
+        guard !visible.isNull else { return false }
+        return visible.height >= minVisibleHeight && visible.width >= 20
+    }
+
     func testCreateAccount_noteToSelf_sendMessage_and_logout() throws {
         let app = XCUIApplication()
         // Keep this test deterministic/offline.
@@ -288,6 +314,90 @@ final class PikaUITests: XCTestCase {
         let chatCell = app.staticTexts["persist-test"]
         XCTAssertTrue(chatCell.waitForExistence(timeout: 10),
                        "Chat with 'persist-test' message not found after relaunch")
+    }
+
+    func testChatLayout_reopenAndFocusComposer_keepsLatestMessageVisible() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
+        app.launch()
+
+        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+        if createAccount.waitForExistence(timeout: 2) {
+            createAccount.tap()
+        }
+
+        let chatsNavBar = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
+
+        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
+        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
+        myNpubBtn.tap()
+
+        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
+        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
+        let myNpub = npubValue.label
+        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
+
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists { close.tap() }
+        else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
+
+        openNewChatFromChatList(app, timeout: 10)
+
+        let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: 10))
+        peer.tap()
+        peer.typeText(myNpub)
+
+        let start = app.buttons.matching(identifier: "newchat_start").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+
+        let composer = waitForChatComposer(app, timeout: 10)
+        XCTAssertTrue(composer.exists, "Composer missing after opening chat")
+
+        let nonce = UUID().uuidString.prefix(6)
+        let messages = (0..<4).map { "layout-\(nonce)-\($0)" }
+        let send = app.buttons.matching(identifier: "chat_send").firstMatch
+
+        for msg in messages {
+            composer.tap()
+            composer.typeText(msg)
+            XCTAssertTrue(send.waitForExistence(timeout: 5))
+            send.tap()
+            XCTAssertTrue(app.staticTexts[msg].waitForExistence(timeout: 10))
+        }
+
+        guard let latestMessage = messages.last else {
+            XCTFail("Missing test message")
+            return
+        }
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 10))
+
+        let chatCell = app.staticTexts[latestMessage].firstMatch
+        XCTAssertTrue(chatCell.waitForExistence(timeout: 10), "Expected chat preview in list")
+        chatCell.tap()
+
+        let reopenedComposer = waitForChatComposer(app, timeout: 10)
+        XCTAssertTrue(reopenedComposer.exists, "Composer missing after reopening chat")
+
+        let latestBubble = app.staticTexts[latestMessage].firstMatch
+        XCTAssertTrue(latestBubble.waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            isElementVisibleInViewport(latestBubble, app: app),
+            "Latest message is off-screen right after navigating to chat"
+        )
+
+        reopenedComposer.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        XCTAssertTrue(
+            isElementVisibleInViewport(latestBubble, app: app),
+            "Latest message jumped off-screen after focusing the composer"
+        )
     }
 
     func testLongPressMessage_showsActionsAndDismisses() throws {

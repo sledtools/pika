@@ -198,4 +198,9 @@ pub enum InternalEvent {
     VideoFrameFromPlatform {
         payload: Vec<u8>,
     },
+
+    // Audio frame sent from platform (native mic capture → PCM i16 mono 48kHz).
+    AudioFrameFromPlatform {
+        pcm_i16: Vec<i16>,
+    },
 }

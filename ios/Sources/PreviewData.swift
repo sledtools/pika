@@ -80,6 +80,10 @@ final class PreviewCore: AppCore, @unchecked Sendable {
     func setVideoFrameReceiver(receiver: VideoFrameReceiver) {}
 
     func sendVideoFrame(payload: Data) {}
+
+    func setAudioPlayoutReceiver(receiver: AudioPlayoutReceiver) {}
+
+    func sendAudioCaptureFrame(pcmI16: [Int16]) {}
 }
 
 final class PreviewAuthStore: AuthStore {

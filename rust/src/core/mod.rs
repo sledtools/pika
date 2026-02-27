@@ -708,6 +708,15 @@ impl AppCore {
         self.call_runtime.set_video_frame_receiver(receiver);
     }
 
+    pub fn set_audio_playout_receiver(
+        &mut self,
+        receiver: std::sync::Arc<
+            std::sync::RwLock<Option<std::sync::Arc<dyn crate::AudioPlayoutReceiver>>>,
+        >,
+    ) {
+        self.call_runtime.set_audio_playout_receiver(receiver);
+    }
+
     fn archived_chats_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("archived_chats.json")
     }
@@ -2621,6 +2630,12 @@ impl AppCore {
             }
             InternalEvent::VideoFrameFromPlatform { payload } => {
                 self.handle_video_frame_from_platform(payload)
+            }
+            InternalEvent::AudioFrameFromPlatform { pcm_i16 } => {
+                if let Some(call) = self.state.active_call.as_ref() {
+                    self.call_runtime
+                        .push_audio_capture_frame(&call.call_id, pcm_i16);
+                }
             }
             InternalEvent::KeyPackagePublished { ok, error } => {
                 self.handle_key_package_published(ok, error)

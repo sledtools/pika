@@ -50,14 +50,17 @@ struct CallWorker {
     camera_enabled: Arc<AtomicBool>,
     video_stop: Option<Arc<AtomicBool>>,
     video_frame_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    audio_capture_tx: Option<Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>>,
 }
 
 type SharedVideoFrameReceiver = Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>>;
+type SharedAudioPlayoutReceiver = Arc<RwLock<Option<Arc<dyn crate::AudioPlayoutReceiver>>>>;
 
 #[derive(Default)]
 pub(super) struct CallRuntime {
     workers: HashMap<String, CallWorker>, // call_id -> worker
     video_frame_receiver: Option<SharedVideoFrameReceiver>,
+    audio_playout_receiver: Option<SharedAudioPlayoutReceiver>,
 }
 
 impl std::fmt::Debug for CallRuntime {
@@ -156,6 +159,26 @@ impl MediaTransport {
 impl CallRuntime {
     pub(super) fn set_video_frame_receiver(&mut self, receiver: SharedVideoFrameReceiver) {
         self.video_frame_receiver = Some(receiver);
+    }
+
+    pub(super) fn set_audio_playout_receiver(
+        &mut self,
+        receiver: SharedAudioPlayoutReceiver,
+    ) {
+        self.audio_playout_receiver = Some(receiver);
+    }
+
+    pub(super) fn push_audio_capture_frame(&self, call_id: &str, pcm_i16: Vec<i16>) {
+        if let Some(worker) = self.workers.get(call_id) {
+            if let Some(ref tx) = worker.audio_capture_tx {
+                let mut q = tx.lock().expect("audio capture queue lock poisoned");
+                q.push_back(pcm_i16);
+                // Cap at ~2 seconds of frames to prevent unbounded growth
+                while q.len() > 100 {
+                    q.pop_front();
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -337,14 +360,55 @@ impl CallRuntime {
         let tx_for_thread = tx.clone();
         let audio_backend_mode: Option<String> = audio_backend_mode.map(|s| s.to_owned());
         let video_stats_for_audio = video_stats_shared.clone();
+
+        // For platform backend: create shared capture queue and clone playout receiver
+        let resolved_mode = audio_backend_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(default_backend_mode())
+            .to_ascii_lowercase();
+        let is_platform = resolved_mode == "platform";
+        let platform_capture_queue: Option<Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>> =
+            if is_platform {
+                Some(Arc::new(Mutex::new(std::collections::VecDeque::new())))
+            } else {
+                None
+            };
+        let platform_capture_for_thread = platform_capture_queue.clone();
+        let platform_playout_for_thread = if is_platform {
+            self.audio_playout_receiver.clone()
+        } else {
+            None
+        };
+        let call_id_for_platform = call_id.to_string();
+
         thread::spawn(move || {
-            let mut audio_backend = match AudioBackend::try_new(audio_backend_mode.as_deref()) {
-                Ok(v) => v,
-                Err(err) => {
-                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                        format!("Audio backend fallback: {err}"),
-                    ))));
-                    AudioBackend::synthetic()
+            let mut audio_backend = if is_platform {
+                match (platform_capture_for_thread, platform_playout_for_thread) {
+                    (Some(capture_rx), Some(playout_rx)) => AudioBackend::Platform(
+                        PlatformAudio::new(capture_rx, playout_rx, call_id_for_platform),
+                    ),
+                    _ => {
+                        let _ =
+                            tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                                "Native audio not wired; falling back".to_string(),
+                            ))));
+                        match AudioBackend::try_new(Some("cpal")) {
+                            Ok(v) => v,
+                            Err(_) => AudioBackend::synthetic(),
+                        }
+                    }
+                }
+            } else {
+                match AudioBackend::try_new(audio_backend_mode.as_deref()) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::Toast(format!("Audio backend fallback: {err}")),
+                        )));
+                        AudioBackend::synthetic()
+                    }
                 }
             };
             let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
@@ -527,6 +591,7 @@ impl CallRuntime {
                 camera_enabled,
                 video_stop,
                 video_frame_tx: video_sender,
+                audio_capture_tx: platform_capture_queue,
             },
         );
         Ok(())
@@ -589,6 +654,7 @@ pub(super) struct CallMediaCryptoContext {
 enum AudioBackend {
     Synthetic(SyntheticAudio),
     Cpal(CpalAudio),
+    Platform(PlatformAudio),
 }
 
 impl AudioBackend {
@@ -605,6 +671,10 @@ impl AudioBackend {
         match normalized.as_str() {
             "synthetic" => Ok(Self::synthetic()),
             "cpal" => CpalAudio::new().map(Self::Cpal),
+            "platform" => Err(
+                "platform backend requires explicit construction via PlatformAudio::new()"
+                    .to_string(),
+            ),
             other => Err(format!(
                 "unknown call audio backend '{other}'; using synthetic"
             )),
@@ -615,6 +685,7 @@ impl AudioBackend {
         match self {
             Self::Synthetic(v) => v.capture_pcm_frame(),
             Self::Cpal(v) => v.capture_pcm_frame(),
+            Self::Platform(v) => v.capture_pcm_frame(),
         }
     }
 
@@ -622,12 +693,67 @@ impl AudioBackend {
         match self {
             Self::Synthetic(v) => v.play_pcm_frame(pcm),
             Self::Cpal(v) => v.play_pcm_frame(pcm),
+            Self::Platform(v) => v.play_pcm_frame(pcm),
+        }
+    }
+}
+
+/// Native platform audio backend. Capture frames arrive from the platform (iOS/Android)
+/// via a shared queue. Playout frames are pushed to the platform via a callback interface.
+/// The Rust audio thread still owns the 20ms tick, codec, crypto, jitter, and transport.
+struct PlatformAudio {
+    capture_rx: Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>,
+    playout_receiver: SharedAudioPlayoutReceiver,
+    call_id: String,
+}
+
+impl std::fmt::Debug for PlatformAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlatformAudio")
+            .field("call_id", &self.call_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlatformAudio {
+    fn new(
+        capture_rx: Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>,
+        playout_receiver: SharedAudioPlayoutReceiver,
+        call_id: String,
+    ) -> Self {
+        Self {
+            capture_rx,
+            playout_receiver,
+            call_id,
+        }
+    }
+
+    fn capture_pcm_frame(&mut self) -> Vec<i16> {
+        let mut q = self
+            .capture_rx
+            .lock()
+            .expect("platform capture queue lock poisoned");
+        q.pop_front().unwrap_or_else(|| vec![0i16; FRAME_SAMPLES])
+    }
+
+    fn play_pcm_frame(&mut self, pcm: &[i16]) {
+        if let Ok(guard) = self.playout_receiver.read() {
+            if let Some(ref receiver) = *guard {
+                receiver.on_playout_frame(self.call_id.clone(), pcm.to_vec());
+            }
         }
     }
 }
 
 fn default_backend_mode() -> &'static str {
-    "cpal"
+    #[cfg(target_os = "ios")]
+    {
+        "platform"
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        "cpal"
+    }
 }
 
 #[derive(Debug)]

@@ -60,7 +60,9 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
@@ -69,6 +71,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -115,6 +118,7 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -123,6 +127,7 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -198,7 +203,7 @@ fun ChatScreen(
     val ctx = LocalContext.current
     var draft by remember { mutableStateOf("") }
     var replyDraft by remember(chat.chatId) { mutableStateOf<ChatMessage?>(null) }
-    var showAttachmentMenu by remember(chat.chatId) { mutableStateOf(false) }
+    var showAttachmentSheet by remember(chat.chatId) { mutableStateOf(false) }
     var fullscreenImageAttachment by remember(chat.chatId) { mutableStateOf<ChatMediaAttachment?>(null) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -682,31 +687,12 @@ fun ChatScreen(
                     ) {
                         Box {
                             IconButton(
-                                onClick = { showAttachmentMenu = true },
+                                onClick = { showAttachmentSheet = true },
                                 modifier = Modifier.size(40.dp),
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = "Attach",
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showAttachmentMenu,
-                                onDismissRequest = { showAttachmentMenu = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Photos & Videos") },
-                                    onClick = {
-                                        showAttachmentMenu = false
-                                        pickPhotoOrVideoLauncher.launch(arrayOf("image/*", "video/*"))
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("File") },
-                                    onClick = {
-                                        showAttachmentMenu = false
-                                        pickFileLauncher.launch(arrayOf("*/*"))
-                                    },
                                 )
                             }
                         }
@@ -779,6 +765,43 @@ fun ChatScreen(
             attachment = attachment,
             onDismiss = { fullscreenImageAttachment = null },
         )
+    }
+
+    if (showAttachmentSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showAttachmentSheet = false },
+            sheetState = sheetState,
+        ) {
+            ListItem(
+                headlineContent = { Text("Photos & Videos") },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.PhotoLibrary,
+                        contentDescription = null,
+                    )
+                },
+                modifier = Modifier.clickable {
+                    showAttachmentSheet = false
+                    pickPhotoOrVideoLauncher.launch(arrayOf("image/*", "video/*"))
+                },
+            )
+            ListItem(
+                headlineContent = { Text("File") },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.AttachFile,
+                        contentDescription = null,
+                    )
+                },
+                modifier = Modifier
+                    .clickable {
+                        showAttachmentSheet = false
+                        pickFileLauncher.launch(arrayOf("*/*"))
+                    }
+                    .padding(bottom = 16.dp),
+            )
+        }
     }
 }
 

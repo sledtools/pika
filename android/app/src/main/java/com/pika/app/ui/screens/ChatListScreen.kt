@@ -119,13 +119,21 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                     enableDismissFromStartToEnd = false,
                     enableDismissFromEndToStart = true,
                     backgroundContent = {
-                        ArchiveSwipeBackground()
+                        if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                            ArchiveSwipeBackground()
+                        }
                     },
                     content = {
-                        ChatRow(
-                            chat = chat,
-                            onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface),
+                        ) {
+                            ChatRow(
+                                chat = chat,
+                                onClick = { manager.dispatch(AppAction.OpenChat(chat.chatId)) },
+                            )
+                        }
                     },
                 )
             }

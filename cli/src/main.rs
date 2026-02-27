@@ -2,6 +2,7 @@ mod agent;
 mod harness;
 mod mdk_util;
 mod relay_util;
+mod remote;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -70,6 +71,10 @@ struct Cli {
     /// Key-package relay URLs (default: wellorder.net, yakihonne x2)
     #[arg(long, global = true)]
     kp_relay: Vec<String>,
+
+    /// Connect to a running daemon instead of opening MLS state directly
+    #[arg(long, global = true)]
+    remote: bool,
 
     #[command(subcommand)]
     cmd: Command,
@@ -537,6 +542,102 @@ enum MicrovmSpawnVariant {
     PrebuiltCow,
 }
 
+async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
+    let cmd_json = match &cli.cmd {
+        Command::Groups => {
+            serde_json::json!({"cmd": "list_groups"})
+        }
+        Command::Welcomes => {
+            serde_json::json!({"cmd": "list_pending_welcomes"})
+        }
+        Command::AcceptWelcome { wrapper_event_id } => {
+            serde_json::json!({"cmd": "accept_welcome", "wrapper_event_id": wrapper_event_id})
+        }
+        Command::Messages { group, limit } => {
+            serde_json::json!({"cmd": "get_messages", "nostr_group_id": group, "limit": limit})
+        }
+        Command::Send {
+            group,
+            to,
+            content,
+            media,
+            mime_type,
+            filename,
+            blossom_servers,
+        } => {
+            if to.is_some() {
+                anyhow::bail!("--remote --to not yet supported; use --group with the hex group id");
+            }
+            let group = group
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--group is required in --remote mode"))?;
+            if let Some(media_path) = media {
+                serde_json::json!({
+                    "cmd": "send_media",
+                    "nostr_group_id": group,
+                    "file_path": media_path.display().to_string(),
+                    "caption": content,
+                    "mime_type": mime_type,
+                    "filename": filename,
+                    "blossom_servers": blossom_servers,
+                })
+            } else {
+                serde_json::json!({
+                    "cmd": "send_message",
+                    "nostr_group_id": group,
+                    "content": content,
+                })
+            }
+        }
+        Command::SendHypernote {
+            group,
+            to,
+            content,
+            file,
+            title,
+            state,
+        } => {
+            if to.is_some() {
+                anyhow::bail!("--remote --to not yet supported; use --group with the hex group id");
+            }
+            let group = group
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--group is required in --remote mode"))?;
+            let (body, file_title, file_state): HnmdParts = match (&content, &file) {
+                (Some(c), None) => (c.clone(), None, None),
+                (None, Some(path)) => parse_hnmd_file(path)?,
+                (None, None) => anyhow::bail!("either --content or --file is required"),
+                _ => unreachable!(),
+            };
+            serde_json::json!({
+                "cmd": "send_hypernote",
+                "nostr_group_id": group,
+                "content": body,
+                "title": title.as_deref().or(file_title.as_deref()),
+                "state": state.as_deref().or(file_state.as_deref()),
+            })
+        }
+        Command::Invite { peer, name } => {
+            serde_json::json!({
+                "cmd": "init_group",
+                "peer_pubkey": peer,
+                "group_name": name,
+            })
+        }
+        Command::PublishKp => {
+            serde_json::json!({"cmd": "publish_keypackage"})
+        }
+        _ => {
+            anyhow::bail!(
+                "command not supported in --remote mode; supported: groups, welcomes, accept-welcome, messages, send, send-hypernote, invite, publish-kp"
+            );
+        }
+    };
+    let result = remote::remote_call(&cli.state_dir, cmd_json).await?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Both `ring` and `aws-lc-rs` are in the dep tree (nostr-sdk uses ring,
@@ -566,6 +667,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
     std::fs::create_dir_all(&cli.state_dir)
         .with_context(|| format!("create state dir {}", cli.state_dir.display()))?;
+
+    if cli.remote {
+        return handle_remote(&cli).await;
+    }
 
     match &cli.cmd {
         Command::Scenario { scenario } => harness::cmd_scenario(&cli, scenario).await,

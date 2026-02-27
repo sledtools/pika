@@ -5,6 +5,7 @@ mod call_tts;
 pub mod daemon;
 mod relay;
 
+pub use daemon::{DaemonCmd, InCmd, OutMsg};
 pub use pika_marmot_runtime::{
     IdentityFile, PikaMdk, ingest_application_message, ingest_welcome_from_giftwrap,
     load_or_create_keys, new_mdk, open_mdk,

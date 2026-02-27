@@ -4,8 +4,10 @@ use std::str::FromStr;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_RELAY_PORT: u16 = 3334;
-pub const DEFAULT_SERVER_PORT: u16 = 8080;
+pub const DEFAULT_PORT_BASE: u16 = 19_400;
+pub const DEFAULT_RELAY_PORT: u16 = DEFAULT_PORT_BASE; // 19400
+pub const DEFAULT_SERVER_PORT: u16 = DEFAULT_PORT_BASE + 1; // 19401
+pub const DEFAULT_MOQ_PORT: u16 = DEFAULT_PORT_BASE + 2; // 19402
 pub const DEFAULT_STATE_DIR: &str = ".pikahub";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,24 +133,34 @@ impl ResolvedConfig {
 
         // relay_port=0 is passed through to the Go relay which binds :0 natively;
         // pikahub discovers the actual port from the relay's log output.
-        let relay_port = relay_port_cli
+        // For non-zero ports, verify availability and fall back to 0 (Go native :0) on conflict.
+        let relay_port_pref = relay_port_cli
             .or(overlay.relay.as_ref().and_then(|r| r.port))
             .unwrap_or(DEFAULT_RELAY_PORT);
+        let relay_port = if relay_port_pref != 0 {
+            if std::net::TcpListener::bind(("127.0.0.1", relay_port_pref)).is_ok() {
+                relay_port_pref
+            } else {
+                tracing::warn!(
+                    "relay port {relay_port_pref} is busy, falling back to OS-assigned port"
+                );
+                0
+            }
+        } else {
+            0
+        };
 
-        // moq-relay always gets a free UDP port (default 0) since it uses QUIC.
+        // moq-relay uses QUIC/UDP but we still give it a deterministic default.
         let moq_port = moq_port_cli
             .or(overlay.moq.as_ref().and_then(|m| m.port))
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_MOQ_PORT);
+        let moq_port = resolve_port(moq_port)?;
 
-        // pika-server doesn't support port 0 natively, so pre-pick a free port.
+        // pika-server doesn't support port 0 natively, so resolve to a concrete port.
         let server_port = server_port_cli
             .or(overlay.server.as_ref().and_then(|s| s.port))
             .unwrap_or(DEFAULT_SERVER_PORT);
-        let server_port = if server_port == 0 {
-            pick_free_port()?
-        } else {
-            server_port
-        };
+        let server_port = resolve_port(server_port)?;
 
         let open_provisioning = overlay
             .server
@@ -212,7 +224,16 @@ impl ResolvedConfig {
     }
 }
 
-fn pick_free_port() -> Result<u16> {
+/// Try to bind the preferred port; if it's taken, fall back to an OS-assigned random port.
+/// Port 0 always goes straight to random.
+fn resolve_port(preferred: u16) -> Result<u16> {
+    if preferred != 0 {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", preferred)) {
+            drop(listener);
+            return Ok(preferred);
+        }
+        tracing::warn!("port {preferred} is busy, picking a random free port instead");
+    }
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
 }

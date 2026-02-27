@@ -181,7 +181,7 @@ Pika is used throughout this document as the primary example. It is a real app s
 
 But Pika is also alpha software. It does not perfectly follow its own stated philosophy everywhere. **This bible is the stricter standard.** Where Pika deviates, this document calls it out as a known drift, not as the correct approach.
 
-**Known deviations (as of the `android-design-pass` branch):**
+**Known deviations (as of February 2026):**
 
 - **Duplicated formatting logic.** Timestamp formatting, chat summary display strings, and peer key validation were implemented independently in both Swift and Kotlin instead of living in Rust. As of this draft, timestamp/chat-preview formatting is still native on both mobile platforms; lowering it to Rust fields (e.g., `display_timestamp`, `last_message_preview`) remains an active migration target.
 - **Business logic in ViewState derivation.** Some iOS `ViewState` mapping functions contain conditional logic that should be computed in Rust and exposed as state fields.
@@ -217,8 +217,11 @@ my-app/
 │   └── src/main.rs         # calls uniffi::uniffi_bindgen_main()
 ├── ios/                    # iOS app (SwiftUI)
 ├── android/                # Android app (Jetpack Compose)
-└── desktop/iced/           # Desktop app (iced, optional)
+├── desktop/iced/           # Desktop app (iced, default rmp init scaffold)
+└── crates/my-app-desktop/  # Desktop app in monorepo layout (Pika-style)
 ```
+
+Both desktop layouts are valid. `rmp init --iced` scaffolds `desktop/iced/`; larger monorepos often relocate the app into `crates/<name>-desktop/` and wire it through the workspace.
 
 The three library types serve different consumers:
 - **`cdylib`** -- C-compatible dynamic library. Used by `uniffi-bindgen` to generate Swift and Kotlin bindings on the host, and as the `.so` loaded by JNA on Android.
@@ -801,6 +804,8 @@ In the app entry point, `AppManager` is stored with `@State` to ensure it lives 
 }
 ```
 
+When passing the manager into child views, use `@Bindable var manager: AppManager` in the receiving view so Observation bindings work correctly with `@Observable`.
+
 #### 4.1.4 Navigation: Rust-Driven NavigationStack
 
 SwiftUI's `NavigationStack` is driven by Rust's `Router.screenStack`:
@@ -1136,6 +1141,33 @@ The **outer loop** is iced's: `DesktopApp` implements `new()`, `update()`, `view
 
 The `AppManager` wraps `FfiApp` and exposes `subscribe_updates() -> flume::Receiver<()>`. iced polls this via `Subscription::run_with()`. When `Message::CoreUpdated` arrives, `sync_from_manager()` reads the latest `AppState` snapshot and stores it, triggering a re-render.
 
+#### 4.3.2.1 Desktop AppManager internals (production pattern)
+
+In production desktop apps, `AppManager` is typically more than a thin proxy. Pika uses an explicit inner model + subscriber fan-out pattern:
+
+```rust
+struct Inner {
+    core: Arc<FfiApp>,
+    model: RwLock<ManagerModel>,
+    subscribers: Mutex<Vec<Sender<()>>>,
+    // data_dir, credential store, ...
+}
+
+struct ManagerModel {
+    state: AppState,
+    last_rev_applied: u64,
+    is_restoring_session: bool,
+    pending_login_nsec: Option<String>,
+}
+```
+
+Key behavior:
+- A reconciler callback receives `AppUpdate` values and forwards them into a channel.
+- A background thread applies updates into `ManagerModel` with `rev` stale guards.
+- Secret-bearing side effects (`AccountCreated`) are persisted **before** stale checks.
+- On change, `notify_subscribers()` emits `()` to all active update subscribers.
+- Desktop credential persistence uses file storage with strict permissions (`0600` on Unix).
+
 **Boot state as a top-level enum.** Instead of wrapping the manager in `Option<AppManager>` and scattering `if let Some(manager)` checks everywhere, model boot failure as a variant of the top-level app:
 
 ```rust
@@ -1154,10 +1186,10 @@ Every method (`update`, `view`, `subscription`) matches on the variant first. `B
 
 #### 4.3.3 The State / Message / Event Module Pattern
 
-This is the canonical pattern for structuring iced view and screen modules. It was designed by an iced contributor and is documented in `crates/pika-desktop/iced-view-pattern.md`. Every module that owns interactive UI follows the same shape:
+This is the canonical pattern for structuring **stateful** iced view and screen modules. It was designed by an iced contributor and is documented in `crates/pika-desktop/iced-view-pattern.md`. In practice, this is the primary pattern, with lightweight variants for simpler modules.
 
 ```rust
-// Every module defines these three types.
+// Stateful modules define these three types.
 // No prefixing needed -- use scoping rules at call sites (e.g. chat_rail::Message).
 
 pub struct State {
@@ -1189,9 +1221,21 @@ impl State {
 }
 ```
 
+When a module needs to kick off an async UI operation (for example, an iced file picker), return an optional `Task` alongside the `Event`:
+
+```rust
+pub fn update(&mut self, message: Message) -> (Option<Event>, Option<Task<Message>>)
+```
+
+Valid module variants in a real iced app:
+- **Full triad (`State` + `Message` + `Event`)**: `conversation`, `my_profile`, `new_chat`, `new_group_chat`, `group_info`
+- **`Message` + `Event` (no local state)**: `peer_profile`
+- **Message-only stateless view modules**: `chat_rail`, `toast`, `call_banner`, `call_screen`
+- **Pure render helpers**: `avatar`, `message_bubble`, `empty_state`
+
 **Key principles:**
 
-1. **Messages go down, Events bubble up.** The parent calls `child.update(msg)` and inspects the returned `Option<Event>` to decide what to do. The child never reaches up to mutate parent state or call `manager.dispatch()` directly.
+1. **Messages go down, Events (and optional Tasks) bubble up.** The parent calls `child.update(msg)` and inspects the returned `Event`/`Task` to decide what to do. The child never reaches up to mutate parent state or call `manager.dispatch()` directly.
 
 2. **Scoped naming.** Every module uses the names `State`, `Message`, `Event` without prefixes. At call sites, Rust's module system provides the namespace: `conversation::Message`, `chat_rail::Message`, `login::Event`. This eliminates naming stutters like `ConversationMessage` or `ChatRailState`.
 
@@ -1317,7 +1361,7 @@ Its `update()` method is a large match that delegates to child modules and trans
 
 ```rust
 Message::Conversation(msg) => {
-    let (event, task) = self.conversation.update(msg);
+    let (event, conv_task) = self.conversation.update(msg);
     if let Some(event) = event {
         match event {
             conversation::Event::SendMessage { content, reply_to_message_id } => {
@@ -1330,6 +1374,10 @@ Message::Conversation(msg) => {
             // ... 10+ other event variants
         }
     }
+
+    if let Some(task) = conv_task {
+        return Some(Event::Task(task.map(Message::Conversation)));
+    }
 }
 ```
 
@@ -1339,7 +1387,29 @@ The home screen also receives a `sync_from_update()` call whenever the core stat
 - Auto-dismiss the call screen when a call ends
 - Refilter follow lists for open overlays
 
+In practice, this sync method should diff previous and latest core snapshots explicitly:
+
+```rust
+pub fn sync_from_update(
+    &mut self,
+    old_state: &AppState,
+    new_state: &AppState,
+    manager: &AppManager,
+    cached_profiles: &[FollowListEntry],
+)
+```
+
 This is the desktop equivalent of the mobile `AppManager` reconciliation, but structured as explicit Rust state machine transitions rather than reactive UI framework bindings.
+
+#### 4.3.6.1 Task Propagation and Window Event Routing
+
+Top-level iced `update()` returns `Task<Message>`. Child tasks must be mapped upward through each message namespace:
+
+- `conversation::State::update()` may return `Task<conversation::Message>`
+- `home::State::update()` maps it to `Task<home::Message>` via `.map(Message::Conversation)`
+- `DesktopApp::update()` maps it again to `Task<crate::Message>` via `.map(Message::Home)` and returns it to iced
+
+Desktop apps should also route window-level events into the message tree. Pika subscribes via `iced::event::listen()`, maps to `Message::WindowEvent`, and translates file-hover/file-drop events into conversation messages (`FileHovered`, `FilesDropped`, `FilesHoveredLeft`).
 
 #### 4.3.7 Contrast with Mobile Platform Layers
 
@@ -1347,7 +1417,7 @@ The desktop pattern differs from iOS and Android in a fundamental way:
 
 | Aspect | Mobile (iOS/Android) | Desktop (iced) |
 |--------|---------------------|----------------|
-| Core integration | UniFFI bridge (cross-process serialization) | Direct Rust dependency (zero-cost) |
+| Core integration | UniFFI bridge (cross-language FFI serialization) | Direct Rust dependency (zero-cost) |
 | State observation | Callback interface (`AppReconciler`) pushes state | Subscription polls `flume::Receiver` |
 | UI state | Derived in the native layer (`ViewState`) | Modules own local state alongside `AppState` |
 | Component model | SwiftUI/Compose declarative views | iced State/Message/Event modules |
@@ -1508,7 +1578,7 @@ The `justfile` (using [just](https://github.com/casey/just)) is the central entr
 
 Composite recipes chain dependencies: `android-assemble: gen-kotlin android-rust android-local-properties`.
 
-**Pika scale:** ~60 recipes across 12 categories in 1,300 lines.
+**Pika scale:** dozens of recipes in a ~1,300-line justfile.
 
 ### 5.6 Nix Flake: Reproducible Dev Environment
 
@@ -1560,6 +1630,8 @@ avd_name = "my_app_api35"
 # [desktop.iced]
 # package = "my_app_desktop_iced"
 ```
+
+Pika currently keeps desktop outside `rmp.toml` (`crates/pika-desktop`, wired by workspace + justfile). Fresh `rmp init --iced` scaffolds should include the `[desktop]` section above.
 
 The `rmp` CLI discovers this file by walking up from the current directory. Every subcommand except `init` requires it. It maps the project name to crate names, platform identifiers, and build targets.
 
@@ -1934,6 +2006,8 @@ my-app/
 └── desktop/iced/           # (only with --iced)
     └── src/main.rs         # iced app using core directly
 ```
+
+As projects mature, many teams move the desktop app to `crates/<name>-desktop/` to match monorepo conventions; the architecture and data flow stay the same.
 
 **The starter `rust/src/lib.rs`** includes a fully working implementation with:
 - `AppState { rev, greeting }` -- a single string field

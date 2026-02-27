@@ -9,6 +9,11 @@ use super::AppCore;
 
 const DEFAULT_CALL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
+const LEGACY_APP_DEFAULT_MESSAGE_RELAYS: &[&str] = &[
+    "wss://relay.primal.net",
+    "wss://nos.lol",
+    "wss://relay.damus.io",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -76,6 +81,26 @@ fn blossom_servers_or_default(values: Option<&[String]>) -> Vec<String> {
     pika_relay_profiles::app_blossom_servers_or_default(values.unwrap_or(&[]))
 }
 
+fn is_legacy_app_default_message_relays(values: &[String]) -> bool {
+    let normalized: Option<BTreeSet<String>> = values
+        .iter()
+        .map(|raw| {
+            let trimmed = raw.trim();
+            RelayUrl::parse(trimmed)
+                .ok()
+                .map(|u| u.as_str_without_trailing_slash().to_string())
+        })
+        .collect();
+    let Some(normalized) = normalized else {
+        return false;
+    };
+    let legacy: BTreeSet<String> = LEGACY_APP_DEFAULT_MESSAGE_RELAYS
+        .iter()
+        .map(|u| (*u).to_string())
+        .collect();
+    normalized == legacy
+}
+
 impl AppCore {
     pub(super) fn network_enabled(&self) -> bool {
         // Used to keep Rust tests deterministic and offline.
@@ -87,6 +112,12 @@ impl AppCore {
 
     pub(super) fn default_relays(&self) -> Vec<RelayUrl> {
         if let Some(urls) = &self.config.relay_urls {
+            if is_legacy_app_default_message_relays(urls) {
+                return app_default_message_relays()
+                    .iter()
+                    .filter_map(|u| RelayUrl::parse(u).ok())
+                    .collect();
+            }
             let parsed: Vec<RelayUrl> = urls
                 .iter()
                 .filter_map(|u| RelayUrl::parse(u).ok())
@@ -225,5 +256,25 @@ mod tests {
             blossom_servers_or_default(Some(&values)),
             vec!["https://blossom.example.com".to_string()]
         );
+    }
+
+    #[test]
+    fn detects_legacy_default_message_relays() {
+        let urls = vec![
+            "wss://nos.lol/".to_string(),
+            "wss://relay.damus.io".to_string(),
+            "wss://relay.primal.net".to_string(),
+        ];
+        assert!(is_legacy_app_default_message_relays(&urls));
+    }
+
+    #[test]
+    fn ignores_non_legacy_or_custom_relay_lists() {
+        let urls = vec![
+            "wss://relay.primal.net".to_string(),
+            "wss://nos.lol".to_string(),
+            "wss://us-east.nostr.pikachat.org".to_string(),
+        ];
+        assert!(!is_legacy_app_default_message_relays(&urls));
     }
 }

@@ -37,6 +37,9 @@ pub const PIKACHAT_PRODUCTION: RelayProfile = RelayProfile {
     id: RelayProfileId::PikachatProduction,
     name: "pikachat-production",
     message_relays: &[
+        "wss://relay.primal.net",
+        "wss://nos.lol",
+        "wss://relay.damus.io",
         "wss://us-east.nostr.pikachat.org",
         "wss://eu.nostr.pikachat.org",
     ],
@@ -54,22 +57,9 @@ pub const PIKACHAT_PRODUCTION: RelayProfile = RelayProfile {
 pub const PUBLIC_NOSTR_APP: RelayProfile = RelayProfile {
     id: RelayProfileId::PublicNostrApp,
     name: "public-nostr-app",
-    message_relays: &[
-        "wss://relay.primal.net",
-        "wss://nos.lol",
-        "wss://relay.damus.io",
-        "wss://us-east.nostr.pikachat.org",
-        "wss://eu.nostr.pikachat.org",
-    ],
-    key_package_relays: &[
-        "wss://nostr-pub.wellorder.net",
-        "wss://nostr-01.yakihonne.com",
-        "wss://nostr-02.yakihonne.com",
-    ],
-    blossom_servers: &[
-        "https://us-east.nostr.pikachat.org",
-        "https://eu.nostr.pikachat.org",
-    ],
+    message_relays: PIKACHAT_PRODUCTION.message_relays,
+    key_package_relays: PIKACHAT_PRODUCTION.key_package_relays,
+    blossom_servers: PIKACHAT_PRODUCTION.blossom_servers,
 };
 
 pub fn default_profile() -> RelayProfile {
@@ -151,6 +141,9 @@ mod tests {
         assert_eq!(
             profile.message_relays,
             &[
+                "wss://relay.primal.net",
+                "wss://nos.lol",
+                "wss://relay.damus.io",
                 "wss://us-east.nostr.pikachat.org",
                 "wss://eu.nostr.pikachat.org",
             ]
@@ -174,23 +167,10 @@ mod tests {
         let profile = app_profile();
         assert_eq!(profile.id, RelayProfileId::PublicNostrApp);
         assert_eq!(profile.name, "public-nostr-app");
-        assert_eq!(
-            profile.message_relays,
-            &[
-                "wss://relay.primal.net",
-                "wss://nos.lol",
-                "wss://relay.damus.io",
-                "wss://us-east.nostr.pikachat.org",
-                "wss://eu.nostr.pikachat.org",
-            ]
-        );
+        assert_eq!(profile.message_relays, PIKACHAT_PRODUCTION.message_relays);
         assert_eq!(
             profile.key_package_relays,
-            &[
-                "wss://nostr-pub.wellorder.net",
-                "wss://nostr-01.yakihonne.com",
-                "wss://nostr-02.yakihonne.com",
-            ]
+            PIKACHAT_PRODUCTION.key_package_relays
         );
         assert_eq!(
             profile.primary_blossom_server(),

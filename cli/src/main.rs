@@ -23,7 +23,7 @@ use pika_agent_control_plane::{
 };
 use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
-    app_default_message_relays, default_key_package_relays, default_primary_blossom_server,
+    default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -723,7 +723,7 @@ fn open(cli: &Cli) -> anyhow::Result<(Keys, mdk_util::PikaMdk)> {
 /// Resolve message relay URLs: use --relay if provided, otherwise defaults.
 fn resolve_relays(cli: &Cli) -> Vec<String> {
     if cli.relay.is_empty() {
-        app_default_message_relays()
+        default_message_relays()
     } else {
         cli.relay.clone()
     }

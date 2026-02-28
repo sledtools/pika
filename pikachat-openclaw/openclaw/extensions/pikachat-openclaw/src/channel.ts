@@ -1318,10 +1318,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 return;
               }
 
-              // Mentioned (or mention not required) — fire typing indicator
-              // eagerly before the expensive profile fetch + agent dispatch.
-              // Brief delay so it doesn't feel instantaneous / robotic.
-              setTimeout(() => { sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); }, 500);
+              // Mentioned (or mention not required) — fire typing indicator once.
+              // We limit to a single fire to avoid notification spam on Apple
+              // (encrypted MLS messages are indistinguishable from real messages).
+              let groupTypingSent = false;
+              setTimeout(() => { if (!groupTypingSent) { groupTypingSent = true; sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
 
               const pendingHistory = flushPendingHistory(historyKey);
               ctx.log?.info(
@@ -1348,6 +1349,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
+                  if (groupTypingSent) return; // only fire once per inbound message
+                  groupTypingSent = true;
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
                     ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed group=${ev.nostr_group_id}: ${err}`);
                   });
@@ -1356,9 +1359,9 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               });
             } else {
               // DM / OWNER FLOW — route to main session (existing behavior)
-              // Fire typing eagerly before the expensive profile fetch + agent dispatch.
-              // Brief delay so it doesn't feel instantaneous / robotic.
-              setTimeout(() => { sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); }, 500);
+              // Fire typing indicator once (avoid notification spam on Apple).
+              let dmTypingSent = false;
+              setTimeout(() => { if (!dmTypingSent) { dmTypingSent = true; sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
               await dispatchInboundToAgent({
                 runtime,
                 accountId: resolved.accountId,
@@ -1375,6 +1378,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
+                  if (dmTypingSent) return; // only fire once per inbound message
+                  dmTypingSent = true;
                   await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
                     ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed dm=${ev.nostr_group_id}: ${err}`);
                   });

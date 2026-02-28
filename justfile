@@ -348,16 +348,16 @@ primal-ios-lab-dump-debug:
 
 # openclaw pikachat deterministic contract suite (local relay + scenarios + focused tests).
 openclaw-pikachat-deterministic:
-    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat
-    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat-rust-bot
-    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat-daemon
-    ./pikachat-openclaw/scripts/phase3_audio.sh
+    cargo run -q -p pikahut -- test scenario invite-and-chat
+    cargo run -q -p pikahut -- test scenario invite-and-chat-rust-bot
+    cargo run -q -p pikahut -- test scenario invite-and-chat-daemon
+    cargo run -q -p pikahut -- test scenario audio-echo
     PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
     npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
 
 # Full OpenClaw integration lane (nightly/manual).
 openclaw-pikachat-e2e:
-    ./pikachat-openclaw/scripts/run-openclaw-e2e.sh
+    cargo run -q -p pikahut -- test openclaw-e2e
 
 # Backwards-compatible alias for older docs/scripts.
 openclaw-pikachat-scenarios:
@@ -494,11 +494,11 @@ android-ui-test: gen-kotlin android-rust android-local-properties
 
 # Android E2E: local Nostr relay + local Rust bot. Requires emulator.
 android-ui-e2e-local:
-    ./tools/ui-e2e-local --platform android
+    cargo run -q -p pikahut -- test ui-e2e-local --platform android
 
 # Desktop E2E: local Nostr relay + local Rust bot.
 desktop-e2e-local:
-    ./tools/ui-e2e-local --platform desktop
+    cargo run -q -p pikahut -- test ui-e2e-local --platform desktop
 
 # Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
 android-ui-e2e:
@@ -669,7 +669,7 @@ ios-ui-test: ios-xcframework ios-xcodeproj
 
 # iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:
-    ./tools/ui-e2e-local --platform ios
+    cargo run -q -p pikahut -- test ui-e2e-local --platform ios
 
 # iOS E2E: public relays + deployed bot (nondeterministic). Requires PIKA_UI_E2E=1.
 ios-ui-e2e:
@@ -727,11 +727,11 @@ doctor-ios:
 
 # Interop baseline: local Rust bot. Requires ~/code/marmot-interop-lab-rust.
 interop-rust-baseline:
-    ./tools/interop-rust-baseline
+    cargo run -q -p pikahut -- test interop-rust-baseline
 
 # Interactive interop test (manual send/receive with local bot).
 interop-rust-manual:
-    ./tools/interop-rust-baseline --manual
+    cargo run -q -p pikahut -- test interop-rust-baseline --manual
 
 # ── pika-relay (local Nostr relay + Blossom server) ─────────────────────────
 
@@ -801,13 +801,13 @@ cli-identity STATE_DIR=".pikachat" RELAY="ws://127.0.0.1:7777":
 
 # Starts its own pika-relay automatically.
 cli-smoke:
-    ./tools/cli-smoke
+    cargo run -q -p pikahut -- test cli-smoke
 
 # Quick smoke test including encrypted media upload/download over Blossom.
 
 # Starts its own relay automatically. Requires internet for the default Blossom server.
 cli-smoke-media:
-    ./tools/cli-smoke --with-media
+    cargo run -q -p pikahut -- test cli-smoke --with-media
 
 # Run `pikachat agent new --provider fly` with interactive chat (loads .env).
 # Pass --json for non-interactive, --keep to skip teardown.

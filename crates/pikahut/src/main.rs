@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pikahut::{config, fixture};
+use pikahut::{config, fixture, test_harness};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -94,6 +94,11 @@ enum Command {
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
+    /// Integration test harness commands.
+    Test {
+        #[command(subcommand)]
+        command: test_harness::TestCommand,
+    },
 }
 
 #[tokio::main]
@@ -179,5 +184,6 @@ async fn main() -> Result<()> {
             let dir = config::resolve_state_dir(state_dir)?;
             fixture::nuke(&dir).await
         }
+        Command::Test { command } => test_harness::run(command).await,
     }
 }

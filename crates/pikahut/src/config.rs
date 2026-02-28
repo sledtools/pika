@@ -239,7 +239,7 @@ fn resolve_port(preferred: u16) -> Result<u16> {
 }
 
 /// Walk up from CWD looking for the workspace Cargo.toml (contains [workspace]).
-fn find_workspace_root() -> Result<PathBuf> {
+pub fn find_workspace_root() -> Result<PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
         let candidate = dir.join("Cargo.toml");

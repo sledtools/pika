@@ -6,35 +6,23 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-
 SCENARIO="$1"
 shift || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-. "${REPO_ROOT}/tools/lib/pikahut.sh"
+cd "$REPO_ROOT"
 
-AUTO_STATE_DIR=0
-if [[ -z "${STATE_DIR:-}" ]]; then
-  AUTO_STATE_DIR=1
-  STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pikachat-openclaw.${SCENARIO}.XXXXXX")"
+cmd=(cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -q -p pikahut -- test scenario "$SCENARIO")
+
+if [[ -n "${STATE_DIR:-}" ]]; then
+  cmd+=(--state-dir "$STATE_DIR")
 fi
-RELAY_URL="${RELAY_URL:-}"
-
-cleanup() {
-  if [[ -z "${RELAY_URL_WAS_SET:-}" ]]; then
-    pikahut_down "${STATE_DIR}"
-  elif [[ "${AUTO_STATE_DIR}" == "1" ]]; then
-    rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
-  fi
-}
-
-trap cleanup EXIT
-
-if [[ -z "${RELAY_URL}" ]]; then
-  pikahut_up relay "${STATE_DIR}"
-else
-  RELAY_URL_WAS_SET=1
+if [[ -n "${RELAY_URL:-}" ]]; then
+  cmd+=(--relay "$RELAY_URL")
 fi
 
-cargo run --manifest-path "${REPO_ROOT}/Cargo.toml" -p pikachat -- scenario "${SCENARIO}" --relay "${RELAY_URL}" --state-dir "${STATE_DIR}" "$@"
+if [[ $# -gt 0 ]]; then
+  cmd+=(-- "$@")
+fi
+
+exec "${cmd[@]}"

@@ -63,8 +63,10 @@ pub fn normalize_peer_key(input: &str) -> String {
     if let Some(stripped) = normalized.strip_prefix("nostr:") {
         normalized = stripped.to_string();
     }
-    if let Some(rest) = normalized.strip_prefix("pika://chat/") {
-        normalized = rest.trim_matches('/').to_string();
+    if let Some(idx) = normalized.find("://chat/") {
+        normalized = normalized[idx + "://chat/".len()..]
+            .trim_matches('/')
+            .to_string();
     }
     normalized
 }
@@ -93,6 +95,16 @@ mod tests {
     #[test]
     fn normalize_peer_key_strips_pika_chat_deep_link() {
         assert_eq!(normalize_peer_key("pika://chat/npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_strips_pika_test_scheme() {
+        assert_eq!(normalize_peer_key("pikatest://chat/npub1abc"), "npub1abc");
+    }
+
+    #[test]
+    fn normalize_peer_key_strips_pikadev_scheme() {
+        assert_eq!(normalize_peer_key("pikadev://chat/npub1abc"), "npub1abc");
     }
 
     #[test]

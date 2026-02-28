@@ -1,0 +1,23 @@
+{
+  "default_channel": "prod",
+  "channels": [
+    {
+      "id": "prod",
+      "url_scheme": "pika",
+      "ios_bundle_id": "org.pikachat.pika",
+      "android_application_id": "org.pikachat.pika"
+    },
+    {
+      "id": "dev",
+      "url_scheme": "pikadev",
+      "ios_bundle_id": "org.pikachat.pika.dev",
+      "android_application_id": "org.pikachat.pika.dev"
+    },
+    {
+      "id": "test",
+      "url_scheme": "pikatest",
+      "ios_bundle_id": "org.pikachat.pikatest",
+      "android_application_id": "org.pikachat.pika.test"
+    }
+  ]
+}

@@ -415,10 +415,7 @@ final class AppManager: AppReconciler {
     private func isExpectedNostrConnectCallback(_ url: URL) -> Bool {
         guard url.host?.lowercased() == "nostrconnect-return" else { return false }
         guard let scheme = url.scheme?.lowercased() else { return false }
-        let expectedScheme =
-            IOSExternalSignerBridge
-                .callbackScheme(forBundleIdentifier: Bundle.main.bundleIdentifier)
-                .lowercased()
+        let expectedScheme = IOSExternalSignerBridge.callbackScheme().lowercased()
         return scheme == expectedScheme
     }
 }

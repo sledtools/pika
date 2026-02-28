@@ -12,7 +12,7 @@ settings:
     PIKA_APP_BUNDLE_ID: org.pikachat.pika
     PRODUCT_BUNDLE_IDENTIFIER: $(PIKA_APP_BUNDLE_ID)
     # Default callback URL scheme for non-run-ios builds (Xcode/archive). run-ios
-    # overrides this per bundle id (pika, pika-dev, pika-test).
+    # overrides this per bundle id (pika, pikadev, pikatest).
     PIKA_IOS_URL_SCHEME: pika
     # PIKA_APP_GROUP: derived from bundle ID. Override via xcodebuild if needed.
     PIKA_APP_GROUP: "group.$(PIKA_APP_BUNDLE_ID)"

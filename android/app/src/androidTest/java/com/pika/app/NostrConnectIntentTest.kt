@@ -11,6 +11,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NostrConnectIntentTest {
+    private val scheme = AppManager.NOSTR_CONNECT_CALLBACK_SCHEME
+
     @Test
     fun withNostrConnectCallback_addsCallbackToNostrConnectUrls() {
         val raw =
@@ -25,8 +27,9 @@ class NostrConnectIntentTest {
 
     @Test
     fun withNostrConnectCallback_isIdempotentWhenCallbackExists() {
+        val encodedCallback = Uri.encode(AppManager.NOSTR_CONNECT_CALLBACK_URL)
         val raw =
-            "nostrconnect://abc123?relay=wss%3A%2F%2Frelay.example.com&callback=pika%3A%2F%2Fnostrconnect-return"
+            "nostrconnect://abc123?relay=wss%3A%2F%2Frelay.example.com&callback=$encodedCallback"
 
         val out = AppManager.withNostrConnectCallback(raw)
 
@@ -47,23 +50,23 @@ class NostrConnectIntentTest {
     fun extractNostrConnectCallback_returnsCallbackUrlForMatchingIntent() {
         val intent =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("pika://nostrconnect-return?result=ok")
+                data = Uri.parse("$scheme://nostrconnect-return?result=ok")
             }
 
         val callback = AppManager.extractNostrConnectCallback(intent)
 
-        assertEquals("pika://nostrconnect-return?result=ok", callback)
+        assertEquals("$scheme://nostrconnect-return?result=ok", callback)
     }
 
     @Test
     fun extractNostrConnectCallback_rejectsNonCallbackIntents() {
         val wrongHost =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("pika://other-host?result=ok")
+                data = Uri.parse("$scheme://other-host?result=ok")
             }
         val wrongAction =
             Intent(Intent.ACTION_MAIN).apply {
-                data = Uri.parse("pika://nostrconnect-return?result=ok")
+                data = Uri.parse("$scheme://nostrconnect-return?result=ok")
             }
 
         assertNull(AppManager.extractNostrConnectCallback(wrongHost))
@@ -78,7 +81,7 @@ class NostrConnectIntentTest {
     @Test
     fun extractChatDeepLinkNpub_returnsNpubForValidChatIntent() {
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("pika://chat/$validHexPubkey")
+            data = Uri.parse("$scheme://chat/$validHexPubkey")
         }
         assertEquals(validHexPubkey, AppManager.extractChatDeepLinkNpub(intent))
     }
@@ -86,7 +89,7 @@ class NostrConnectIntentTest {
     @Test
     fun extractChatDeepLinkNpub_returnsNullForWrongHost() {
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("pika://nostrconnect-return/$validHexPubkey")
+            data = Uri.parse("$scheme://nostrconnect-return/$validHexPubkey")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
@@ -94,7 +97,7 @@ class NostrConnectIntentTest {
     @Test
     fun extractChatDeepLinkNpub_returnsNullForInvalidNpub() {
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("pika://chat/garbage")
+            data = Uri.parse("$scheme://chat/garbage")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
@@ -102,7 +105,7 @@ class NostrConnectIntentTest {
     @Test
     fun extractChatDeepLinkNpub_returnsNullForMissingPath() {
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("pika://chat")
+            data = Uri.parse("$scheme://chat")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
@@ -110,7 +113,7 @@ class NostrConnectIntentTest {
     @Test
     fun extractChatDeepLinkNpub_returnsNullForWrongAction() {
         val intent = Intent(Intent.ACTION_MAIN).apply {
-            data = Uri.parse("pika://chat/$validHexPubkey")
+            data = Uri.parse("$scheme://chat/$validHexPubkey")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }

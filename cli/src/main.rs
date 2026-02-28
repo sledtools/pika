@@ -26,10 +26,13 @@ use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::agent::harness::AgentProtocol;
+
+const CHANNELS_MANIFEST_JSON: &str = include_str!("../../config/channels.json");
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -125,10 +128,19 @@ enum Command {
     /// Print a QR code for your identity that deep-links into the Pika app
     #[command(after_help = "Example:
   pikachat qr
+  pikachat qr --channel test
+  pikachat qr --channel dev --scheme customscheme
 
-Prints a pika://chat/<npub> QR code to the terminal.
-When scanned with a phone camera, it opens Pika and starts a 1:1 chat.")]
-    Qr,
+Prints a QR code to the terminal. When scanned, it opens Pika and starts a 1:1 chat.")]
+    Qr {
+        /// Channel id used to resolve deep-link scheme from config/channels.json.
+        #[arg(long, value_enum, default_value_t = QrChannel::Prod, env = "PIKA_CHANNEL")]
+        channel: QrChannel,
+
+        /// Explicit URL scheme override (bypasses channel mapping).
+        #[arg(long)]
+        scheme: Option<String>,
+    },
 
     /// Publish a key package (kind 443) so peers can invite you
     #[command(after_help = "Example:
@@ -459,6 +471,34 @@ enum AgentControlMode {
     Remote,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum QrChannel {
+    Prod,
+    Dev,
+    Test,
+}
+
+impl QrChannel {
+    fn as_id(self) -> &'static str {
+        match self {
+            Self::Prod => "prod",
+            Self::Dev => "dev",
+            Self::Test => "test",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelManifest {
+    channels: Vec<ChannelConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelConfig {
+    id: String,
+    url_scheme: String,
+}
+
 #[derive(Clone, Debug, Args)]
 struct AgentControlArgs {
     /// Provider control-plane mode (`remote` only; local provisioning is removed)
@@ -697,7 +737,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Init { nsec } => cmd_init(&cli, nsec.as_deref()).await,
         Command::Identity => cmd_identity(&cli),
-        Command::Qr => cmd_qr(&cli),
+        Command::Qr { channel, scheme } => cmd_qr(&cli, *channel, scheme.as_deref()),
         Command::PublishKp => cmd_publish_kp(&cli).await,
         Command::Invite { peer, name } => cmd_invite(&cli, peer, name).await,
         Command::Welcomes => cmd_welcomes(&cli),
@@ -1062,16 +1102,38 @@ fn cmd_identity(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_qr(cli: &Cli) -> anyhow::Result<()> {
+fn cmd_qr(cli: &Cli, channel: QrChannel, scheme_override: Option<&str>) -> anyhow::Result<()> {
     let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
     let npub = keys.public_key().to_bech32().context("encode npub")?;
-    let deep_link = format!("pika://chat/{npub}");
+    let scheme = resolve_qr_scheme(channel, scheme_override)?;
+    let deep_link = format!("{scheme}://chat/{npub}");
 
     qr2term::print_qr(&deep_link).context("render QR code")?;
     eprintln!();
     eprintln!("  npub: {npub}");
     eprintln!("  link: {deep_link}");
     Ok(())
+}
+
+fn resolve_qr_scheme(channel: QrChannel, scheme_override: Option<&str>) -> anyhow::Result<String> {
+    if let Some(raw) = scheme_override {
+        let scheme = raw.trim().to_ascii_lowercase();
+        if scheme.is_empty() {
+            anyhow::bail!("--scheme must not be empty");
+        }
+        return Ok(scheme);
+    }
+
+    let manifest: ChannelManifest =
+        serde_json::from_str(CHANNELS_MANIFEST_JSON).context("parse config/channels.json")?;
+    let channel_id = channel.as_id();
+    let scheme = manifest
+        .channels
+        .iter()
+        .find(|entry| entry.id == channel_id)
+        .map(|entry| entry.url_scheme.as_str())
+        .with_context(|| format!("missing channel {channel_id} in config/channels.json"))?;
+    Ok(scheme.to_string())
 }
 
 async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {

@@ -454,9 +454,9 @@ class AppManager private constructor(context: Context) : AppReconciler {
     }
 
     companion object {
-        internal const val NOSTR_CONNECT_CALLBACK_SCHEME = "pika"
+        internal val NOSTR_CONNECT_CALLBACK_SCHEME = BuildConfig.PIKA_URL_SCHEME.lowercase()
         internal const val NOSTR_CONNECT_CALLBACK_HOST = "nostrconnect-return"
-        internal const val NOSTR_CONNECT_CALLBACK_URL =
+        internal val NOSTR_CONNECT_CALLBACK_URL =
             "$NOSTR_CONNECT_CALLBACK_SCHEME://$NOSTR_CONNECT_CALLBACK_HOST"
 
         private val CALLBACK_QUERY_REGEX = Regex("(^|[?&])callback=", RegexOption.IGNORE_CASE)

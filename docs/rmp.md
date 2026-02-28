@@ -107,9 +107,10 @@ Preference order:
 - Push/NSE split:
   - Rust crypto/decrypt logic in `crates/pika-nse`
   - iOS Notification Service Extension hosts Apple notification lifecycle
-- Call audio migration (planned):
-  - native owns audio callback graph and voice-processing primitives
-  - Rust keeps call state machine, media transport, crypto, jitter/codec policy
+- Call audio migration (in progress):
+  - Rust contract now includes platform capture ingress, playout receiver callbacks, and route/interruption signals.
+  - Runtime backend selection supports `platform|cpal|synthetic` (`PIKA_CALL_AUDIO_BACKEND`), with mobile defaulting to `platform` and non-mobile defaulting to `cpal`.
+  - Native iOS/Android audio adapters are intentionally scoped as operational bridges (callbacks + OS session hooks), while Rust remains the source of truth for call policy, retries, fallback, and user-visible state transitions.
 
 ## RMP Checklist for New Features
 

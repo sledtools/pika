@@ -31,6 +31,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
     private val amberClient = AmberSignerClient(appContext)
     private val signerRequestLock = Any()
     private val audioFocus = AndroidAudioFocusManager(appContext)
+    private val callAudioIo: AndroidCallAudioIo
     private val rust: FfiApp
     private var lastRevApplied: ULong = 0UL
     private val listening = AtomicBoolean(false)
@@ -71,9 +72,11 @@ class AppManager private constructor(context: Context) : AppReconciler {
         val dataDir = context.filesDir.absolutePath
         rust = FfiApp(dataDir, "")
         rust.setExternalSignerBridge(AmberRustBridge())
+        callAudioIo = AndroidCallAudioIo(rust)
         val initial = rust.state()
         state = initial
         audioFocus.syncForCall(initial.activeCall)
+        callAudioIo.syncForCall(initial.activeCall)
         lastRevApplied = initial.rev
         startListening()
         restoreSessionFromSecureStore()
@@ -226,6 +229,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             }
             syncSecureStoreWithAuthState()
             audioFocus.syncForCall(state.activeCall)
+            callAudioIo.syncForCall(state.activeCall)
         }
     }
 

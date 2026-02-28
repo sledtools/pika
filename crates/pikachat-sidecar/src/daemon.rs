@@ -1299,7 +1299,7 @@ fn publish_pcm_audio_response_with_relay(
         return Err(anyhow!("invalid frame size from track spec"));
     }
 
-    let codec = OpusCodec;
+    let codec = OpusCodec::default();
     let mut seq = start_seq;
     let mut frames = 0u64;
     for chunk in pcm.chunks(frame_samples) {
@@ -1388,7 +1388,7 @@ fn publish_pcm_audio_response_with_transport(
         return Err(anyhow!("invalid frame size from track spec"));
     }
 
-    let codec = OpusCodec;
+    let codec = OpusCodec::default();
     let mut seq = start_seq;
     let mut frames = 0u64;
     for chunk in pcm.chunks(frame_samples) {
@@ -1767,7 +1767,7 @@ fn start_echo_worker_with_relay(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_task = stop.clone();
     let task = tokio::spawn(async move {
-        let codec = OpusCodec;
+        let codec = OpusCodec::default();
         let mut seq = 0u64;
         let mut tx_frames = 0u64;
         let mut rx_frames = 0u64;
@@ -1846,7 +1846,7 @@ fn start_echo_worker_with_transport(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_task = stop.clone();
     let task = tokio::task::spawn_blocking(move || {
-        let codec = OpusCodec;
+        let codec = OpusCodec::default();
         let mut seq = 0u64;
         let mut tx_frames = 0u64;
         let mut rx_frames = 0u64;
@@ -2079,7 +2079,7 @@ pub async fn run_audio_echo_smoke(frame_count: u64) -> anyhow::Result<AudioEchoS
     )
     .context("start echo worker")?;
 
-    let codec = OpusCodec;
+    let codec = OpusCodec::default();
     let mut sent_frames = 0u64;
     for i in 0..frame_count {
         let pcm = vec![i as i16, (i as i16).saturating_mul(-1)];
@@ -4427,13 +4427,14 @@ mod tests {
         .expect("publish tts pcm");
         assert_eq!(stats.frames_published, total_frames as u64);
 
+        let codec = OpusCodec::default();
         let mut echoed_frames = 0u64;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while echoed_frames < stats.frames_published && std::time::Instant::now() < deadline {
             while let Ok(frame) = echoed_rx.try_recv() {
                 let opened =
                     decrypt_frame(&frame.payload, &media_crypto.tx_keys).expect("decrypt frame");
-                let _ = OpusCodec.decode_to_pcm_i16(&OpusPacket(opened.payload));
+                let _ = codec.decode_to_pcm_i16(&OpusPacket(opened.payload));
                 echoed_frames = echoed_frames.saturating_add(1);
             }
             std::thread::sleep(Duration::from_millis(20));

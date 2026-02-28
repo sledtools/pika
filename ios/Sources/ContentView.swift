@@ -175,7 +175,8 @@ struct ContentView: View {
                     isCallScreenPresented = false
                 },
                 remotePixelBuffer: videoPipeline.remotePixelBuffer,
-                localCaptureSession: videoPipeline.localCaptureSession
+                localCaptureSession: videoPipeline.localCaptureSession,
+                videoDiagnostics: videoPipeline.videoDebugSummary
             )
         }
     }

@@ -98,6 +98,21 @@ final class CallE2ETests: XCTestCase {
         XCTAssertTrue(nav.waitForExistence(timeout: timeout))
     }
 
+    private func extractTxRx(from statsLabel: String) -> (tx: Int?, rx: Int?) {
+        let parts = statsLabel.components(separatedBy: CharacterSet.whitespaces)
+        var tx: Int?
+        var rx: Int?
+        if let txIdx = parts.firstIndex(of: "tx"),
+           txIdx + 1 < parts.count {
+            tx = Int(parts[txIdx + 1])
+        }
+        if let rxIdx = parts.firstIndex(of: "rx"),
+           rxIdx + 1 < parts.count {
+            rx = Int(parts[rxIdx + 1])
+        }
+        return (tx, rx)
+    }
+
     func testCallDeployedBot() throws {
         let buildEnv = ProcessInfo.processInfo.environment
         if buildEnv["PIKA_UI_E2E"] != "1" {
@@ -241,24 +256,16 @@ final class CallE2ETests: XCTestCase {
                 let label = text.label
                 if label.hasPrefix("tx ") && label.contains("rx ") {
                     lastStats = label
-                    // Parse tx and rx values.
-                    let parts = label.components(separatedBy: CharacterSet.whitespaces)
-                    if let txIdx = parts.firstIndex(of: "tx"),
-                       txIdx + 1 < parts.count,
-                       let tx = Int(parts[txIdx + 1]) {
+                    let parsed = extractTxRx(from: label)
+                    if let tx = parsed.tx {
                         if tx > 0 { sawTxFrames = true }
                     }
-                    if let rxIdx = parts.firstIndex(of: "rx"),
-                       rxIdx + 1 < parts.count,
-                       let rx = Int(parts[rxIdx + 1]) {
+                    if let rx = parsed.rx {
                         if rx > 0 { sawRxFrames = true }
                     }
                 }
             }
             if sawTxFrames && sawRxFrames { break }
-            if sawTxFrames && Date().addingTimeInterval(-15) > Date().addingTimeInterval(-mediaTimeout) {
-                // tx is flowing, give rx more time
-            }
             Thread.sleep(forTimeInterval: 1)
         }
         print("[call-e2e] final media stats: \(lastStats)")
@@ -266,6 +273,43 @@ final class CallE2ETests: XCTestCase {
         // rx may not arrive if bot TTS is slow; warn but don't fail hard.
         if !sawRxFrames {
             print("[call-e2e] WARNING: no rx frames observed (bot may not have responded with TTS)")
+        }
+
+        // --- Continuity windows ---
+        // Require tx continuity over multiple windows; rx continuity is asserted only if rx is present.
+        var prevTx: Int?
+        var prevRx: Int?
+        var txGrowthWindows = 0
+        var rxGrowthWindows = 0
+        let continuityDeadline = Date().addingTimeInterval(8)
+        while Date() < continuityDeadline {
+            let allTexts = app.staticTexts.allElementsBoundByIndex
+            for text in allTexts {
+                let label = text.label
+                guard label.hasPrefix("tx "), label.contains("rx ") else { continue }
+                let parsed = extractTxRx(from: label)
+                if let tx = parsed.tx {
+                    if let prevTx, tx > prevTx { txGrowthWindows += 1 }
+                    prevTx = tx
+                }
+                if let rx = parsed.rx {
+                    if let prevRx, rx > prevRx { rxGrowthWindows += 1 }
+                    prevRx = rx
+                }
+            }
+            Thread.sleep(forTimeInterval: 2)
+        }
+        XCTAssertGreaterThanOrEqual(
+            txGrowthWindows,
+            2,
+            "tx continuity window failed; stats did not keep increasing"
+        )
+        if sawRxFrames {
+            XCTAssertGreaterThanOrEqual(
+                rxGrowthWindows,
+                1,
+                "rx continuity window failed after rx stream started"
+            )
         }
 
         // --- End call ---

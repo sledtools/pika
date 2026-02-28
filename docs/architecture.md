@@ -16,6 +16,7 @@ This page is the topology overview.
 
 - **Rust core** (`rust/`) — MLS state machine, Nostr transport, UniFFI bindings
 - **Call control (Rust core)** — call signaling state machine over MLS app messages (`pika.call` namespace)
+- **Call media runtime (Rust core)** — transport/crypto/jitter/codec loop with selectable audio backend (`platform`, `cpal`, `synthetic`)
 - **iOS app** (`ios/`) — Swift UI, uses PikaCore.xcframework
 - **Android app** (`android/`) — Kotlin, uses JNI bindings via cargo-ndk
 - **pikachat** (`cli/`) — Command-line interface for testing and agent automation
@@ -27,6 +28,15 @@ This page is the topology overview.
 2. Rust core uses MDK for MLS group operations (create, invite, encrypt, decrypt)
 3. Rust core uses nostr-sdk to publish/subscribe Nostr events on relays
 4. Key packages (kind 443) enable async peer discovery
+
+## Call Audio Native Capability Bridge (In Progress)
+
+- Rust controls call policy and state transitions.
+- Native iOS/Android adapters execute OS-coupled audio operations (capture/playout callbacks, route/interruption signaling).
+- Audio frames cross the boundary via typed bridge methods:
+  - native -> Rust: capture PCM frames + route/interruption events
+  - Rust -> native: playout PCM callback
+- Rollout/rollback is controlled by Rust backend selection (`platform`, `cpal`, `synthetic`), with non-mobile preserving `cpal` behavior.
 
 ## State Management (v1/v2 Specs)
 

@@ -21,6 +21,7 @@ struct CallScreenView: View {
     var remotePixelBuffer: CVPixelBuffer?
     /// Local camera preview session (zero-copy preview layer).
     var localCaptureSession: AVCaptureSession?
+    var videoDiagnostics: String? = nil
 
     @State private var showMicDeniedAlert = false
     @State private var isSpeakerOn = false
@@ -108,8 +109,8 @@ struct CallScreenView: View {
                         .foregroundStyle(.white.opacity(0.9))
                 }
 
-                if let debug = call.debug {
-                    Text(formattedCallDebugStats(debug))
+                if let debugText = composedDebugText {
+                    Text(debugText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.78))
                         .padding(.horizontal, 12)
@@ -196,8 +197,8 @@ struct CallScreenView: View {
                                 .padding(.vertical, 4)
                                 .background(Color.black.opacity(0.5), in: Capsule())
                         }
-                        if let debug = call.debug {
-                            Text(formattedCallDebugStats(debug))
+                        if let debugText = composedDebugText {
+                            Text(debugText)
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.white.opacity(0.7))
                                 .padding(.horizontal, 8)
@@ -227,6 +228,20 @@ struct CallScreenView: View {
                     )
             }
         }
+    }
+
+    private var composedDebugText: String? {
+        var parts: [String] = []
+        if let debug = call.debug {
+            parts.append(formattedCallDebugStats(debug))
+        }
+        if let videoDiagnostics, !videoDiagnostics.isEmpty {
+            parts.append(videoDiagnostics)
+        }
+        if parts.isEmpty {
+            return nil
+        }
+        return parts.joined(separator: "  |  ")
     }
 
     @ViewBuilder

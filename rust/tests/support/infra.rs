@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use pikahub::config::{ProfileName, ResolvedConfig};
@@ -15,6 +16,7 @@ pub struct TestInfra {
     pub relay_url: String,
     pub moq_url: Option<String>,
     state_dir: Option<PathBuf>,
+    resolved: Option<ResolvedConfig>,
 }
 
 impl TestInfra {
@@ -68,6 +70,7 @@ impl TestInfra {
             relay_url,
             moq_url,
             state_dir: Some(state_dir),
+            resolved: Some(resolved),
         }
     }
 
@@ -79,6 +82,50 @@ impl TestInfra {
     /// Start relay + moq local infra.
     pub fn start_relay_and_moq() -> Self {
         Self::start_local(true)
+    }
+
+    /// Restart all fixture components using the same resolved config.
+    pub fn restart(&mut self) {
+        self.restart_with_downtime(Duration::from_secs(0));
+    }
+
+    /// Restart all fixture components with an optional forced downtime.
+    pub fn restart_with_downtime(&mut self, downtime: Duration) {
+        let state_dir = self
+            .state_dir
+            .clone()
+            .expect("restart requires managed state_dir");
+        let resolved = self
+            .resolved
+            .clone()
+            .expect("restart requires stored resolved config");
+        let state_dir_for_restart = state_dir.clone();
+
+        let restart: Result<()> = run_async(async move {
+            fixture::down(&state_dir_for_restart).await?;
+            if !downtime.is_zero() {
+                tokio::time::sleep(downtime).await;
+            }
+            fixture::up_background(&resolved).await?;
+            let manifest = Manifest::load(&state_dir_for_restart)?
+                .ok_or_else(|| anyhow!("manifest missing after fixture restart"))?;
+            fixture::wait(&state_dir_for_restart, 30).await?;
+            eprintln!(
+                "[TestInfra] restarted relay={}",
+                manifest.relay_url.clone().unwrap_or_default()
+            );
+            if let Some(ref moq) = manifest.moq_url {
+                eprintln!("[TestInfra] restarted moq={moq}");
+            }
+            Ok(())
+        });
+        restart.unwrap_or_else(|e| panic!("restart pikahub fixture failed: {e:#}"));
+
+        let manifest = Manifest::load(&state_dir)
+            .unwrap_or_else(|e| panic!("load manifest after restart failed: {e:#}"))
+            .unwrap_or_else(|| panic!("manifest missing after restart at {}", state_dir.display()));
+        self.relay_url = manifest.relay_url.expect("manifest missing relay_url");
+        self.moq_url = manifest.moq_url;
     }
 }
 

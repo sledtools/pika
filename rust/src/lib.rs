@@ -92,6 +92,13 @@ pub trait VideoFrameReceiver: Send + Sync + 'static {
     fn on_video_frame(&self, call_id: String, payload: Vec<u8>);
 }
 
+/// Platform-side callback for receiving decoded audio playout PCM from Rust.
+/// Native executes this operational callback but Rust keeps call policy/state ownership.
+#[uniffi::export(callback_interface)]
+pub trait AudioPlayoutReceiver: Send + Sync + 'static {
+    fn on_audio_playout_frame(&self, call_id: String, pcm: Vec<i16>);
+}
+
 #[derive(uniffi::Object)]
 pub struct FfiApp {
     core_tx: Sender<CoreMsg>,
@@ -101,6 +108,7 @@ pub struct FfiApp {
     external_signer_bridge: SharedExternalSignerBridgeType,
     bunker_signer_connector: SharedBunkerSignerConnectorType,
     video_frame_receiver: Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>>,
+    audio_playout_receiver: Arc<RwLock<Option<Arc<dyn AudioPlayoutReceiver>>>>,
 }
 
 #[uniffi::export]
@@ -121,6 +129,8 @@ impl FfiApp {
         ));
         let video_frame_receiver: Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>> =
             Arc::new(RwLock::new(None));
+        let audio_playout_receiver: Arc<RwLock<Option<Arc<dyn AudioPlayoutReceiver>>>> =
+            Arc::new(RwLock::new(None));
 
         // Actor loop thread (single threaded "app actor").
         let core_tx_for_core = core_tx.clone();
@@ -128,6 +138,7 @@ impl FfiApp {
         let signer_bridge_for_core = external_signer_bridge.clone();
         let bunker_connector_for_core = bunker_signer_connector.clone();
         let video_receiver_for_core = video_frame_receiver.clone();
+        let audio_playout_for_core = audio_playout_receiver.clone();
         thread::spawn(move || {
             let mut core = crate::core::AppCore::new(
                 update_tx,
@@ -139,6 +150,7 @@ impl FfiApp {
                 bunker_connector_for_core,
             );
             core.set_video_frame_receiver(video_receiver_for_core);
+            core.set_audio_playout_receiver(audio_playout_for_core);
             while let Ok(msg) = core_rx.recv() {
                 core.handle_message(msg);
             }
@@ -152,6 +164,7 @@ impl FfiApp {
             external_signer_bridge,
             bunker_signer_connector,
             video_frame_receiver,
+            audio_playout_receiver,
         })
     }
 
@@ -200,6 +213,48 @@ impl FfiApp {
     pub fn send_video_frame(&self, payload: Vec<u8>) {
         let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
             InternalEvent::VideoFrameFromPlatform { payload },
+        )));
+    }
+
+    pub fn request_video_keyframe(&self, reason: String) {
+        let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
+            InternalEvent::RequestVideoKeyframe { reason },
+        )));
+    }
+
+    pub fn set_audio_playout_receiver(&self, receiver: Box<dyn AudioPlayoutReceiver>) {
+        let receiver: Arc<dyn AudioPlayoutReceiver> = Arc::from(receiver);
+        match self.audio_playout_receiver.write() {
+            Ok(mut slot) => {
+                *slot = Some(receiver);
+            }
+            Err(poison) => {
+                *poison.into_inner() = Some(receiver);
+            }
+        }
+    }
+
+    pub fn send_audio_capture_frame(&self, pcm: Vec<i16>) {
+        let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
+            InternalEvent::AudioFrameFromPlatform {
+                pcm,
+                sample_rate_hz: 48_000,
+            },
+        )));
+    }
+
+    pub fn notify_audio_device_route_changed(&self, route: String) {
+        let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
+            InternalEvent::AudioDeviceRouteChanged { route },
+        )));
+    }
+
+    pub fn notify_audio_interruption_changed(&self, interrupted: bool, reason: String) {
+        let _ = self.core_tx.send(CoreMsg::Internal(Box::new(
+            InternalEvent::AudioInterruptionChanged {
+                interrupted,
+                reason,
+            },
         )));
     }
 

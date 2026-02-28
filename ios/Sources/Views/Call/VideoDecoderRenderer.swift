@@ -4,6 +4,18 @@ import Foundation
 import os
 import VideoToolbox
 
+enum VideoDecoderResetReason {
+    case formatChange
+    case decodeFailure(OSStatus)
+}
+
+struct VideoDecoderCounters {
+    var formatResets: UInt64 = 0
+    var decodeFailureResets: UInt64 = 0
+    var decodeFailures: UInt64 = 0
+    var droppedUntilKeyframe: UInt64 = 0
+}
+
 /// Receives encrypted H.264 NALUs from Rust core, decodes them, and publishes
 /// decoded pixel buffers for display.
 final class VideoDecoderRenderer: VideoFrameReceiver {
@@ -12,12 +24,20 @@ final class VideoDecoderRenderer: VideoFrameReceiver {
     private var formatDescription: CMVideoFormatDescription?
     private var lastSps: Data?
     private var lastPps: Data?
+    private var waitingForKeyframeAfterFailure = false
+    private var consecutiveDecodeFailures: UInt64 = 0
+    private var counters = VideoDecoderCounters()
 
     /// Called on the main thread when a new decoded frame is available.
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
+    var onDecoderReset: ((VideoDecoderResetReason, VideoDecoderCounters) -> Void)?
 
     func onVideoFrame(callId: String, payload: Data) {
         processAnnexBPayload(payload)
+    }
+
+    func currentCounters() -> VideoDecoderCounters {
+        counters
     }
 
     // MARK: - Annex B Parsing
@@ -36,7 +56,11 @@ final class VideoDecoderRenderer: VideoFrameReceiver {
                 lastPps = nalu
                 tryCreateFormatDescription()
             case 1, 5: // Non-IDR slice, IDR slice
-                decodeNalu(nalu)
+                if waitingForKeyframeAfterFailure, naluType != 5 {
+                    bump(&counters.droppedUntilKeyframe)
+                    continue
+                }
+                decodeNalu(nalu, isKeyframe: naluType == 5)
             default:
                 break
             }
@@ -120,16 +144,19 @@ final class VideoDecoderRenderer: VideoFrameReceiver {
             return
         }
         formatDescription = newFormat
-        createDecompressionSession()
+        if decompressionSession != nil {
+            recordReset(.formatChange)
+        }
+        _ = createDecompressionSession()
     }
 
-    private func createDecompressionSession() {
+    private func createDecompressionSession() -> Bool {
         if let session = decompressionSession {
             VTDecompressionSessionInvalidate(session)
             decompressionSession = nil
         }
 
-        guard let formatDescription else { return }
+        guard let formatDescription else { return false }
 
         let attrs: [NSString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA
@@ -146,15 +173,20 @@ final class VideoDecoderRenderer: VideoFrameReceiver {
         )
         guard status == noErr else {
             Self.log.error("VTDecompressionSessionCreate failed: \(status)")
-            return
+            return false
         }
         decompressionSession = session
+        return true
     }
 
     // MARK: - Decode
 
-    private func decodeNalu(_ nalu: Data) {
-        guard let session = decompressionSession, let formatDescription else { return }
+    private func decodeNalu(_ nalu: Data, isKeyframe: Bool) {
+        guard let formatDescription else { return }
+        if decompressionSession == nil {
+            _ = createDecompressionSession()
+        }
+        guard let session = decompressionSession else { return }
 
         // Wrap NALU with AVCC length prefix (4 bytes, big-endian)
         var avccData = Data()
@@ -212,10 +244,54 @@ final class VideoDecoderRenderer: VideoFrameReceiver {
             flags: [._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] status, _, imageBuffer, _, _ in
-            guard status == noErr, let imageBuffer else { return }
+            guard let self else { return }
+            guard status == noErr, let imageBuffer else {
+                self.handleDecodeFailure(status)
+                return
+            }
+            self.consecutiveDecodeFailures = 0
+            if isKeyframe {
+                self.waitingForKeyframeAfterFailure = false
+            }
             DispatchQueue.main.async {
-                self?.onDecodedFrame?(imageBuffer)
+                self.onDecodedFrame?(imageBuffer)
             }
         }
     }
+
+    private func handleDecodeFailure(_ status: OSStatus) {
+        bump(&counters.decodeFailures)
+        bump(&consecutiveDecodeFailures)
+        waitingForKeyframeAfterFailure = true
+        recordReset(.decodeFailure(status))
+        _ = createDecompressionSession()
+    }
+
+    private func recordReset(_ reason: VideoDecoderResetReason) {
+        switch reason {
+        case .formatChange:
+            bump(&counters.formatResets)
+        case .decodeFailure:
+            bump(&counters.decodeFailureResets)
+        }
+        onDecoderReset?(reason, counters)
+    }
+
+    private func bump(_ value: inout UInt64) {
+        if value < UInt64.max {
+            value += 1
+        }
+    }
 }
+
+#if DEBUG
+extension VideoDecoderRenderer {
+    func debugInjectDecodeFailure(_ status: OSStatus = -1) {
+        handleDecodeFailure(status)
+    }
+
+    func debugCanAttemptDecode(naluType: UInt8) -> Bool {
+        !(waitingForKeyframeAfterFailure && naluType != 5)
+    }
+}
+#endif

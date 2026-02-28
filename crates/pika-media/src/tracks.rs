@@ -15,6 +15,44 @@ pub mod video_params {
     pub const HEIGHT: u32 = 720;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoQualityLevel {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoQualityPreset {
+    pub bitrate_bps: u32,
+    pub fps: u32,
+    pub keyframe_interval_frames: u32,
+}
+
+pub const DEFAULT_VIDEO_QUALITY: VideoQualityLevel = VideoQualityLevel::High;
+
+impl VideoQualityLevel {
+    pub fn preset(self) -> VideoQualityPreset {
+        match self {
+            VideoQualityLevel::Low => VideoQualityPreset {
+                bitrate_bps: 500_000,
+                fps: 15,
+                keyframe_interval_frames: 30,
+            },
+            VideoQualityLevel::Medium => VideoQualityPreset {
+                bitrate_bps: 900_000,
+                fps: 24,
+                keyframe_interval_frames: 48,
+            },
+            VideoQualityLevel::High => VideoQualityPreset {
+                bitrate_bps: 1_500_000,
+                fps: 30,
+                keyframe_interval_frames: 60,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackSpec {
     pub name: String,

@@ -525,6 +525,15 @@ impl AppCore {
         self.call_runtime.set_video_frame_receiver(receiver);
     }
 
+    pub fn set_audio_playout_receiver(
+        &mut self,
+        receiver: std::sync::Arc<
+            std::sync::RwLock<Option<std::sync::Arc<dyn crate::AudioPlayoutReceiver>>>,
+        >,
+    ) {
+        self.call_runtime.set_audio_playout_receiver(receiver);
+    }
+
     fn archived_chats_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("archived_chats.json")
     }
@@ -2503,13 +2512,34 @@ impl AppCore {
                     }
                 }
             }
+            InternalEvent::CallRuntimeTerminalError {
+                call_id,
+                reason,
+                user_message,
+            } => {
+                if let Some(call) = self.state.active_call.as_ref() {
+                    if call.call_id == call_id && call.status.is_live() {
+                        self.toast(user_message);
+                        self.end_call_local(reason);
+                    }
+                }
+            }
             InternalEvent::CallRuntimeStats {
                 call_id,
                 tx_frames,
                 rx_frames,
                 rx_dropped,
                 jitter_buffer_ms,
+                jitter_target_frames,
+                rx_underflows,
+                concealment_short,
+                concealment_medium,
+                concealment_long,
                 last_rtt_ms,
+                reconnect_count,
+                last_reconnect_duration_ms,
+                subscription_ready_latency_ms,
+                consecutive_disconnects,
                 video_tx,
                 video_rx,
                 video_rx_decrypt_fail,
@@ -2532,7 +2562,16 @@ impl AppCore {
                                 rx_frames,
                                 rx_dropped,
                                 jitter_buffer_ms,
+                                jitter_target_frames,
+                                rx_underflows,
+                                concealment_short,
+                                concealment_medium,
+                                concealment_long,
                                 last_rtt_ms,
+                                reconnect_count,
+                                last_reconnect_duration_ms,
+                                subscription_ready_latency_ms,
+                                consecutive_disconnects,
                                 video_tx,
                                 video_rx,
                                 video_rx_decrypt_fail,
@@ -2581,10 +2620,59 @@ impl AppCore {
                     self.schedule_voice_recording_tick(token);
                 }
             }
+            InternalEvent::RequestVideoKeyframe { reason } => {
+                let target = self.state.active_call.as_ref().and_then(|call| {
+                    if call.is_video_call && call.status.is_live() {
+                        Some((call.chat_id.clone(), call.call_id.clone()))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((chat_id, call_id)) = target {
+                    self.call_runtime.request_video_keyframe(&call_id, &reason);
+                    self.send_keyframe_request(&chat_id, &call_id, &reason);
+                }
+            }
             InternalEvent::VideoFrameFromPlatform { payload } => {
                 if let Some(call) = self.state.active_call.as_ref() {
                     if call.is_video_call && call.is_camera_enabled {
                         self.call_runtime.send_video_frame(&call.call_id, payload);
+                    }
+                }
+            }
+            InternalEvent::AudioFrameFromPlatform {
+                pcm,
+                sample_rate_hz,
+            } => {
+                if let Some(call) = self.state.active_call.as_ref() {
+                    if call.status.is_live() {
+                        self.call_runtime.send_audio_capture_frame(
+                            &call.call_id,
+                            pcm,
+                            sample_rate_hz,
+                        );
+                    }
+                }
+            }
+            InternalEvent::AudioDeviceRouteChanged { route } => {
+                if let Some(call) = self.state.active_call.as_ref() {
+                    if call.status.is_live() {
+                        self.call_runtime
+                            .on_audio_device_route_changed(&call.call_id, &route);
+                    }
+                }
+            }
+            InternalEvent::AudioInterruptionChanged {
+                interrupted,
+                reason,
+            } => {
+                if let Some(call) = self.state.active_call.as_ref() {
+                    if call.status.is_live() {
+                        self.call_runtime.on_audio_interruption_changed(
+                            &call.call_id,
+                            interrupted,
+                            &reason,
+                        );
                     }
                 }
             }

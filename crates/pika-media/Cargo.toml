@@ -11,6 +11,7 @@ network = ["moq-lite", "tokio", "bytes", "tracing", "url", "quinn", "web-transpo
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+opus-rs = "0.1.1"
 
 # Network transport (behind "network" feature so tests stay light)
 moq-lite = { git = "https://github.com/kixelated/moq", rev = "5ad5c064875d11d22f31779537fc0e541d792717", optional = true }

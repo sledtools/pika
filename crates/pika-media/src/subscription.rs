@@ -52,3 +52,40 @@ impl MediaFrameSubscription {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn wait_ready_times_out_when_ready_signal_is_delayed() {
+        let (_frame_tx, frame_rx) = mpsc::channel::<MediaFrame>();
+        let (_ready_tx, ready_rx) = mpsc::channel::<Result<(), MediaSessionError>>();
+        let subscription = MediaFrameSubscription::new(frame_rx, ready_rx, None);
+        let err = subscription
+            .wait_ready(Duration::from_millis(10))
+            .expect_err("wait_ready should time out");
+        match err {
+            MediaSessionError::Timeout(message) => {
+                assert!(
+                    message.contains("media subscription ready"),
+                    "timeout should mention subscription readiness, got: {message}"
+                );
+            }
+            other => panic!("expected timeout error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_ready_returns_not_connected_when_ready_sender_drops() {
+        let (_frame_tx, frame_rx) = mpsc::channel::<MediaFrame>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), MediaSessionError>>();
+        drop(ready_tx);
+        let subscription = MediaFrameSubscription::new(frame_rx, ready_rx, None);
+        let err = subscription
+            .wait_ready(Duration::from_millis(10))
+            .expect_err("wait_ready should report disconnected sender");
+        assert!(matches!(err, MediaSessionError::NotConnected));
+    }
+}

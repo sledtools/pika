@@ -39,7 +39,7 @@ use crate::state::{
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
-use mdk_core::prelude::{GroupId, MessageProcessingResult, NostrGroupConfigData};
+use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
@@ -103,8 +103,10 @@ const DEFAULT_GROUP_NAME: &str = "DM";
 const DEFAULT_GROUP_DESCRIPTION: &str = "";
 const IOS_MIGRATION_SENTINEL: &str = ".migrated_to_app_group";
 
-const TYPING_INDICATOR_KIND: Kind = Kind::Custom(20_067);
-pub(crate) const CALL_SIGNAL_KIND: Kind = Kind::Custom(10);
+pub(crate) const TYPING_INDICATOR_KIND_NUM: u16 = 20_067;
+pub(crate) const TYPING_INDICATOR_KIND: Kind = Kind::Custom(TYPING_INDICATOR_KIND_NUM);
+pub(crate) const CALL_SIGNAL_KIND_NUM: u16 = 10;
+pub(crate) const CALL_SIGNAL_KIND: Kind = Kind::Custom(CALL_SIGNAL_KIND_NUM);
 pub(crate) const HYPERNOTE_KIND: Kind = Kind::Custom(hn::HYPERNOTE_KIND);
 pub(crate) const HYPERNOTE_ACTION_RESPONSE_KIND: Kind =
     Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND);
@@ -114,6 +116,65 @@ const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
 const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
 const NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT: &str = "nostr_connect_pairing";
 const NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT: &str = "nostr_connect_pending";
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum AppMessageKind {
+    TypingIndicator,
+    CallSignal,
+    Chat,
+    Reaction,
+    Hypernote,
+    HypernoteResponse,
+}
+
+impl AppMessageKind {
+    fn increments_unread(&self) -> bool {
+        match self {
+            Self::Chat | Self::Hypernote => true,
+            Self::TypingIndicator | Self::CallSignal | Self::Reaction | Self::HypernoteResponse => {
+                false
+            }
+        }
+    }
+
+    fn increments_loaded(&self) -> bool {
+        match self {
+            Self::Chat | Self::Reaction | Self::Hypernote => true,
+            Self::TypingIndicator | Self::CallSignal | Self::HypernoteResponse => false,
+        }
+    }
+}
+
+fn is_pika_typing_indicator(msg: &message_types::Message) -> bool {
+    msg.content == "typing"
+        && msg
+            .tags
+            .iter()
+            .any(|t| t.kind() == TagKind::d() && t.content().map(|c| c == "pika").unwrap_or(false))
+}
+
+fn classify_app_message(msg: &message_types::Message) -> Option<AppMessageKind> {
+    let kind = msg.kind;
+    let classified = match kind {
+        Kind::ChatMessage => Some(AppMessageKind::Chat),
+        Kind::Reaction => Some(AppMessageKind::Reaction),
+        Kind::Custom(TYPING_INDICATOR_KIND_NUM) => {
+            if is_pika_typing_indicator(msg) {
+                Some(AppMessageKind::TypingIndicator)
+            } else {
+                None
+            }
+        }
+        Kind::Custom(CALL_SIGNAL_KIND_NUM) => Some(AppMessageKind::CallSignal),
+        Kind::Custom(hn::HYPERNOTE_KIND) => Some(AppMessageKind::Hypernote),
+        Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND) => Some(AppMessageKind::HypernoteResponse),
+        _ => None,
+    };
+    classified.or_else(|| {
+        tracing::warn!(?kind, "ignoring app message with unknown kind");
+        None
+    })
+}
 
 fn diag_nostr_publish_enabled() -> bool {
     match std::env::var("PIKA_DIAG_NOSTR_PUBLISH") {
@@ -3253,153 +3314,119 @@ impl AppCore {
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
-                let result = {
-                    let Some(sess) = self.session.as_mut() else {
-                        tracing::warn!("group_message but no session");
-                        return;
-                    };
-                    match sess.mdk.process_message(&event) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
-                            self.toast(format!("Message decrypt failed: {e}"));
-                            return;
-                        }
-                    }
-                };
-                let is_app_message =
-                    matches!(result, MessageProcessingResult::ApplicationMessage(_));
-                let mut app_sender: Option<PublicKey> = None;
-                let mut app_content: Option<String> = None;
-                let mut is_typing_indicator = false;
-                let mut is_call_signal_kind = false;
-                let mut is_reaction = false;
-                let mut is_hypernote_response = false;
+                self.handle_group_message(event);
+            }
+        }
+    }
 
-                let mls_group_id: Option<GroupId> = match &result {
-                    MessageProcessingResult::ApplicationMessage(msg) => {
-                        match msg.kind {
-                            Kind::Custom(20_067)
-                                if msg.content == "typing"
-                                    && msg.tags.iter().any(|t| {
-                                        t.kind() == TagKind::d()
-                                            && t.content().map(|c| c == "pika").unwrap_or(false)
-                                    }) =>
-                            {
-                                is_typing_indicator = true;
-                                app_sender = Some(msg.pubkey);
-                            }
-                            Kind::Custom(10) => {
-                                is_call_signal_kind = true;
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            Kind::ChatMessage | Kind::Reaction => {
-                                if msg.kind == Kind::Reaction {
-                                    is_reaction = true;
-                                }
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            kind if kind == HYPERNOTE_KIND
-                                || kind == HYPERNOTE_ACTION_RESPONSE_KIND =>
-                            {
-                                if msg.kind == HYPERNOTE_ACTION_RESPONSE_KIND {
-                                    is_hypernote_response = true;
-                                }
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            kind => {
-                                tracing::warn!(?kind, "ignoring app message with unknown kind");
-                                return;
-                            }
-                        }
-                        Some(msg.mls_group_id.clone())
-                    }
-                    MessageProcessingResult::Proposal(update) => Some(update.mls_group_id.clone()),
-                    MessageProcessingResult::PendingProposal { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::ExternalJoinProposal { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::Commit { mls_group_id } => Some(mls_group_id.clone()),
-                    MessageProcessingResult::Unprocessable { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::PreviouslyFailed => None,
-                };
-
-                if let Some(group_id) = mls_group_id {
-                    let chat_id = {
-                        let Some(sess) = self.session.as_mut() else {
-                            self.refresh_all_from_storage();
-                            return;
-                        };
-                        match sess.mdk.get_group(&group_id) {
-                            Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
-                            _ => None,
-                        }
-                    };
-                    if let Some(chat_id) = chat_id {
-                        if is_typing_indicator {
-                            // Handle typing indicator: update in-memory state, refresh chat.
-                            if let Some(sender) = app_sender {
-                                let sender_hex = sender.to_hex();
-                                let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
-                                // Ignore our own typing indicators.
-                                if my_hex.as_deref() != Some(sender_hex.as_str()) {
-                                    self.update_typing(&chat_id, &sender_hex, now_seconds() + 10);
-                                    self.refresh_current_chat_if_open(&chat_id);
-                                }
-                            }
-                        } else {
-                            // Normal message: clear typing indicator for sender.
-                            if let Some(sender) = app_sender {
-                                self.update_typing(&chat_id, &sender.to_hex(), 0);
-                            }
-
-                            if is_call_signal_kind {
-                                if let (Some(sender), Some(content)) =
-                                    (app_sender, app_content.as_deref())
-                                {
-                                    if let Some(signal) =
-                                        self.maybe_parse_call_signal(&sender, content)
-                                    {
-                                        self.handle_incoming_call_signal(&chat_id, &sender, signal);
-                                    }
-                                }
-                            }
-
-                            let current =
-                                self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                            let is_call_signal = is_call_signal_kind;
-                            if current != Some(chat_id.as_str())
-                                && !is_call_signal
-                                && !is_reaction
-                                && !is_hypernote_response
-                            {
-                                *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
-                            } else if is_app_message && !is_call_signal && !is_hypernote_response {
-                                self.loaded_count
-                                    .entry(chat_id.clone())
-                                    .and_modify(|n| *n += 1)
-                                    .or_insert(51);
-                            }
-                            self.refresh_chat_list_from_storage();
-                            self.refresh_current_chat_if_open(&chat_id);
-                        }
-                    } else {
-                        // Fallback: refresh everything if metadata lookup fails.
-                        self.refresh_all_from_storage();
-                    }
-                } else {
-                    self.refresh_all_from_storage();
+    pub(crate) fn handle_group_message(&mut self, event: Event) {
+        let result = {
+            let Some(sess) = self.session.as_mut() else {
+                tracing::warn!("group_message but no session");
+                return;
+            };
+            match sess.mdk.process_message(&event) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
+                    self.toast(format!("Message decrypt failed: {e}"));
+                    return;
                 }
+            }
+        };
+        self.handle_message_processing_result(result);
+    }
+
+    fn handle_message_processing_result(&mut self, result: MessageProcessingResult) {
+        // Phase 1: Extract mls_group_id and optional app message.
+        let (mls_group_id, app_msg) = match result {
+            MessageProcessingResult::ApplicationMessage(msg) => {
+                if classify_app_message(&msg).is_none() {
+                    return;
+                }
+                (Some(msg.mls_group_id.clone()), Some(msg))
+            }
+            MessageProcessingResult::Proposal(update) => (Some(update.mls_group_id.clone()), None),
+            MessageProcessingResult::PendingProposal { mls_group_id } => (Some(mls_group_id), None),
+            MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
+                (Some(mls_group_id), None)
+            }
+            MessageProcessingResult::ExternalJoinProposal { mls_group_id } => {
+                (Some(mls_group_id), None)
+            }
+            MessageProcessingResult::Commit { mls_group_id } => (Some(mls_group_id), None),
+            MessageProcessingResult::Unprocessable { mls_group_id } => (Some(mls_group_id), None),
+            MessageProcessingResult::PreviouslyFailed => (None, None),
+        };
+
+        // Phase 2: Resolve group_id → chat_id, early-return on failure.
+        let Some(group_id) = mls_group_id else {
+            self.refresh_all_from_storage();
+            return;
+        };
+        let Some(chat_id) = self.resolve_chat_id(&group_id) else {
+            self.refresh_all_from_storage();
+            return;
+        };
+
+        // Phase 3: Dispatch app message or refresh chat.
+        if let Some(msg) = app_msg {
+            self.handle_app_message(&chat_id, msg);
+        } else {
+            self.refresh_chat_list_from_storage();
+            self.refresh_current_chat_if_open(&chat_id);
+        }
+    }
+
+    fn resolve_chat_id(&mut self, group_id: &GroupId) -> Option<String> {
+        let sess = self.session.as_mut()?;
+        match sess.mdk.get_group(group_id) {
+            Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
+            _ => None,
+        }
+    }
+
+    fn handle_app_message(&mut self, chat_id: &str, msg: message_types::Message) {
+        let Some(kind) = classify_app_message(&msg) else {
+            return;
+        };
+
+        match kind {
+            AppMessageKind::TypingIndicator => {
+                let sender_hex = msg.pubkey.to_hex();
+                let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
+                if my_hex.as_deref() != Some(sender_hex.as_str()) {
+                    self.update_typing(chat_id, &sender_hex, msg.created_at.as_secs() as i64 + 10);
+                    self.refresh_current_chat_if_open(chat_id);
+                }
+            }
+            AppMessageKind::CallSignal => {
+                if let Some(signal) = self.maybe_parse_call_signal(&msg.pubkey, &msg.content) {
+                    self.handle_incoming_call_signal(chat_id, &msg.pubkey, signal);
+                }
+                self.refresh_chat_list_from_storage();
+                self.refresh_current_chat_if_open(chat_id);
+            }
+            kind @ (AppMessageKind::Chat
+            | AppMessageKind::Reaction
+            | AppMessageKind::Hypernote
+            | AppMessageKind::HypernoteResponse) => {
+                if matches!(kind, AppMessageKind::Chat) {
+                    self.update_typing(chat_id, &msg.pubkey.to_hex(), 0);
+                }
+
+                let current = self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
+                if current != Some(chat_id) && kind.increments_unread() {
+                    *self.unread_counts.entry(chat_id.to_string()).or_insert(0) += 1;
+                } else if kind.increments_loaded() {
+                    self.loaded_count
+                        .entry(chat_id.to_string())
+                        .and_modify(|n| *n += 1)
+                        .or_insert(51);
+                }
+
+                self.refresh_chat_list_from_storage();
+                self.refresh_current_chat_if_open(chat_id);
             }
         }
     }
@@ -4894,5 +4921,584 @@ mod tests {
                 }
             ]
         );
+    }
+
+    mod handle_message_processing {
+        use super::*;
+        use crate::mdk_support::open_mdk;
+        use crate::state::ChatViewState;
+        use mdk_core::prelude::{
+            message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
+        };
+        use nostr_sdk::prelude::*;
+
+        /// Creates a core with a real MDK session and a group in storage.
+        /// Returns (core, chat_id_hex, creator_keys, group_id).
+        fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            // Leak tempdir so it lives for the test duration.
+            std::mem::forget(tempdir);
+
+            let creator = Keys::generate();
+            let pubkey = creator.public_key();
+
+            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+
+            // Create a solo group (no other members).
+            let config = NostrGroupConfigData::new(
+                "Test".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![pubkey],
+            );
+            let result = mdk
+                .create_group(&pubkey, vec![], config)
+                .expect("create_group");
+            let group_id = result.group.mls_group_id.clone();
+            let chat_id = hex::encode(result.group.nostr_group_id);
+            mdk.merge_pending_commit(&group_id)
+                .expect("merge_pending_commit");
+
+            let mut core = make_core(data_dir);
+
+            let client = Client::builder().signer(creator.clone()).build();
+            core.session = Some(super::super::Session {
+                pubkey,
+                local_keys: Some(creator.clone()),
+                mdk,
+                client,
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups: std::collections::HashMap::new(),
+            });
+
+            (core, chat_id, creator, group_id)
+        }
+
+        /// Construct a test Message for use in MessageProcessingResult::ApplicationMessage.
+        fn make_test_message(
+            pubkey: &PublicKey,
+            kind: Kind,
+            content: &str,
+            mls_group_id: &GroupId,
+            tags: Tags,
+        ) -> message_types::Message {
+            make_test_message_at(pubkey, kind, content, mls_group_id, tags, Timestamp::now())
+        }
+
+        fn make_test_message_at(
+            pubkey: &PublicKey,
+            kind: Kind,
+            content: &str,
+            mls_group_id: &GroupId,
+            tags: Tags,
+            created_at: Timestamp,
+        ) -> message_types::Message {
+            message_types::Message {
+                id: EventId::all_zeros(),
+                pubkey: *pubkey,
+                kind,
+                mls_group_id: mls_group_id.clone(),
+                created_at,
+                processed_at: created_at,
+                content: content.to_string(),
+                tags: tags.clone(),
+                event: UnsignedEvent::new(*pubkey, created_at, kind, tags, content.to_string()),
+                wrapper_event_id: EventId::all_zeros(),
+                epoch: None,
+                state: message_types::MessageState::Processed,
+            }
+        }
+
+        #[test]
+        fn no_session_returns_early() {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir);
+            assert!(core.session.is_none());
+            // PreviouslyFailed triggers refresh_all_from_storage which needs session;
+            // should not panic.
+            core.handle_message_processing_result(MessageProcessingResult::PreviouslyFailed);
+        }
+
+        #[test]
+        fn previously_failed_refreshes_without_panic() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            // PreviouslyFailed has no group_id, so takes the else branch (refresh_all).
+            core.handle_message_processing_result(MessageProcessingResult::PreviouslyFailed);
+        }
+
+        #[test]
+        fn commit_refreshes_chat() {
+            let (mut core, _chat_id, _keys, group_id) = make_core_with_group();
+            // Commit variant should resolve the group and refresh.
+            core.handle_message_processing_result(MessageProcessingResult::Commit {
+                mls_group_id: group_id,
+            });
+        }
+
+        #[test]
+        fn unknown_kind_returns_early() {
+            let (mut core, _chat_id, keys, group_id) = make_core_with_group();
+            let msg = make_test_message(
+                &keys.public_key(),
+                Kind::Custom(59999),
+                "mystery",
+                &group_id,
+                Tags::new(),
+            );
+            // Should log warning and return; no panic, no state change.
+            let before = core.unread_counts.clone();
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(core.unread_counts, before);
+        }
+
+        #[test]
+        fn typing_indicator_updates_state() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let tags: Tags = vec![Tag::custom(TagKind::d(), vec!["pika"])]
+                .into_iter()
+                .collect();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(20_067),
+                "typing",
+                &group_id,
+                tags,
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let chat_typing = core.typing_state.get(&chat_id);
+            assert!(
+                chat_typing.is_some(),
+                "typing_state should have entry for chat"
+            );
+            assert!(
+                chat_typing
+                    .unwrap()
+                    .contains_key(&other.public_key().to_hex()),
+                "typing_state should have entry for sender"
+            );
+        }
+
+        #[test]
+        fn typing_indicator_from_self_ignored() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let tags: Tags = vec![Tag::custom(TagKind::d(), vec!["pika"])]
+                .into_iter()
+                .collect();
+            let msg = make_test_message(
+                &keys.public_key(),
+                Kind::Custom(20_067),
+                "typing",
+                &group_id,
+                tags,
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let chat_typing = core.typing_state.get(&chat_id);
+            let has_self = chat_typing
+                .map(|m| m.contains_key(&keys.public_key().to_hex()))
+                .unwrap_or(false);
+            assert!(!has_self, "own typing indicators should be ignored");
+        }
+
+        #[test]
+        fn chat_message_increments_unread() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::ChatMessage,
+                "hello",
+                &group_id,
+                Tags::new(),
+            );
+            assert_eq!(core.unread_counts.get(&chat_id).copied().unwrap_or(0), 0);
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                1,
+                "unread count should be 1"
+            );
+        }
+
+        #[test]
+        fn chat_message_on_current_chat_increments_loaded() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            // Simulate the chat being currently open.
+            core.state.current_chat = Some(ChatViewState {
+                chat_id: chat_id.clone(),
+                is_group: false,
+                group_name: None,
+                members: vec![],
+                is_admin: false,
+                messages: vec![],
+                first_unread_message_id: None,
+                can_load_older: false,
+                typing_members: vec![],
+            });
+            let other = Keys::generate();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::ChatMessage,
+                "hello",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                0,
+                "unread should stay 0 when chat is current"
+            );
+            // loaded_count is bumped by the handler but then overwritten by
+            // refresh_current_chat (which re-fetches from storage).  The key
+            // assertion is that unread stays at 0 — proving we took the
+            // "current chat" code path instead of the "other chat" path.
+        }
+
+        #[test]
+        fn reaction_does_not_increment_unread() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Reaction,
+                "+",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                0,
+                "reactions should not increment unread"
+            );
+        }
+
+        #[test]
+        fn chat_message_clears_typing() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let sender_hex = other.public_key().to_hex();
+
+            // Pre-seed typing state.
+            core.typing_state
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(sender_hex.clone(), i64::MAX);
+
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::ChatMessage,
+                "done typing",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let still_typing = core
+                .typing_state
+                .get(&chat_id)
+                .map(|m| m.contains_key(&sender_hex))
+                .unwrap_or(false);
+            assert!(
+                !still_typing,
+                "sending a message should clear typing indicator"
+            );
+        }
+
+        #[test]
+        fn call_signal_does_not_increment_unread() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            // Kind::Custom(10) is CALL_SIGNAL_KIND. Content doesn't need to
+            // be a valid call envelope — the unread-skip is decided purely by
+            // `is_call_signal_kind`.
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(10),
+                "{}",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                0,
+                "call signals should never increment unread"
+            );
+        }
+
+        #[test]
+        fn reaction_does_not_clear_typing() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let sender_hex = other.public_key().to_hex();
+
+            core.typing_state
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(sender_hex.clone(), i64::MAX);
+
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Reaction,
+                "+",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let still_typing = core
+                .typing_state
+                .get(&chat_id)
+                .map(|m| m.contains_key(&sender_hex))
+                .unwrap_or(false);
+            assert!(still_typing, "reactions should not clear typing indicator");
+        }
+
+        #[test]
+        fn call_signal_does_not_clear_typing() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let sender_hex = other.public_key().to_hex();
+
+            // Pre-seed typing state.
+            core.typing_state
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(sender_hex.clone(), i64::MAX);
+
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(10),
+                "{}",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let still_typing = core
+                .typing_state
+                .get(&chat_id)
+                .map(|m| m.contains_key(&sender_hex))
+                .unwrap_or(false);
+            assert!(
+                still_typing,
+                "call signals should not clear typing indicator"
+            );
+        }
+
+        #[test]
+        fn call_signal_from_self_does_not_trigger_incoming() {
+            let (mut core, _chat_id, keys, group_id) = make_core_with_group();
+            // A call signal from ourselves should not set active_call (because
+            // maybe_parse_call_signal filters out self-sends).
+            let msg = make_test_message(
+                &keys.public_key(),
+                Kind::Custom(10),
+                r#"{"v":1,"ns":"pika.call","call_id":"test-id","message_type":"call.invite","body":{}}"#,
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert!(
+                core.state.active_call.is_none(),
+                "self call signal should not set active_call"
+            );
+        }
+
+        #[test]
+        fn call_signal_invalid_json_does_not_panic() {
+            let (mut core, _chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            // Invalid JSON — parse_call_signal returns None, but the message
+            // still flows through the call-signal path (clears typing, skips
+            // unread, etc.) without panicking.
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(10),
+                "not valid json",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            // No panic = pass.
+        }
+
+        #[test]
+        fn hypernote_increments_unread() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            // Regular hypernotes are real content the user should see.
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(9467), // HYPERNOTE_KIND
+                "{}",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                1,
+                "hypernotes should increment unread"
+            );
+        }
+
+        #[test]
+        fn hypernote_response_does_not_increment_unread() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(9468), // HYPERNOTE_ACTION_RESPONSE_KIND
+                "{}",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                0,
+                "hypernote responses should not increment unread"
+            );
+        }
+
+        #[test]
+        fn hypernote_does_not_clear_typing() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let sender_hex = other.public_key().to_hex();
+
+            core.typing_state
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(sender_hex.clone(), i64::MAX);
+
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(9467), // HYPERNOTE_KIND
+                "{}",
+                &group_id,
+                Tags::new(),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let still_typing = core
+                .typing_state
+                .get(&chat_id)
+                .map(|m| m.contains_key(&sender_hex))
+                .unwrap_or(false);
+            assert!(still_typing, "hypernotes should not clear typing indicator");
+        }
+
+        #[test]
+        fn multiple_messages_increment_unread_cumulatively() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            for _ in 0..3 {
+                let msg = make_test_message(
+                    &other.public_key(),
+                    Kind::ChatMessage,
+                    "hello",
+                    &group_id,
+                    Tags::new(),
+                );
+                core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(
+                    msg,
+                ));
+            }
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                3,
+                "unread count should accumulate across messages"
+            );
+        }
+
+        #[test]
+        fn unknown_group_id_does_not_panic() {
+            let (mut core, _chat_id, _keys, _group_id) = make_core_with_group();
+            let bogus_group_id = GroupId::from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+            // Commit with an mls_group_id that doesn't exist in MDK storage.
+            // Should fall back to refresh_all, not panic.
+            core.handle_message_processing_result(MessageProcessingResult::Commit {
+                mls_group_id: bogus_group_id,
+            });
+            // No panic = pass. The fallback path calls refresh_all_from_storage.
+        }
+
+        #[test]
+        fn kind_20067_wrong_content_is_unknown() {
+            let (mut core, _chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            // Kind 20067 but content is NOT "typing" — doesn't match the
+            // typing-indicator guard, falls through to the unknown-kind arm.
+            let tags: Tags = vec![Tag::custom(TagKind::d(), vec!["pika"])]
+                .into_iter()
+                .collect();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(20_067),
+                "not-typing",
+                &group_id,
+                tags,
+            );
+            let before = core.unread_counts.clone();
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            // Unknown kind returns early — no state change.
+            assert_eq!(core.unread_counts, before);
+        }
+
+        #[test]
+        fn typing_indicator_from_past_does_not_linger() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let sender_hex = other.public_key().to_hex();
+            let tags: Tags = vec![Tag::custom(TagKind::d(), vec!["pika"])]
+                .into_iter()
+                .collect();
+            // A typing indicator whose created_at is far in the past.
+            // created_at + 10 is still long expired, so update_typing should
+            // clear it rather than keeping a stale indicator around.
+            let msg = make_test_message_at(
+                &other.public_key(),
+                Kind::Custom(20_067),
+                "typing",
+                &group_id,
+                tags,
+                Timestamp::from(1_000_000),
+            );
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            let has_entry = core
+                .typing_state
+                .get(&chat_id)
+                .map(|m| m.contains_key(&sender_hex))
+                .unwrap_or(false);
+            assert!(
+                !has_entry,
+                "old typing indicator should not create a typing entry"
+            );
+        }
+
+        #[test]
+        fn kind_20067_missing_d_tag_is_unknown() {
+            let (mut core, _chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            // Kind 20067 with correct content but missing the d-tag — doesn't
+            // match the typing-indicator guard.
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::Custom(20_067),
+                "typing",
+                &group_id,
+                Tags::new(), // no d-tag
+            );
+            let before = core.unread_counts.clone();
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+            assert_eq!(core.unread_counts, before);
+        }
     }
 }

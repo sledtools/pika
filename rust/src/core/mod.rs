@@ -3253,154 +3253,147 @@ impl AppCore {
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
-                let result = {
-                    let Some(sess) = self.session.as_mut() else {
-                        tracing::warn!("group_message but no session");
-                        return;
-                    };
-                    match sess.mdk.process_message(&event) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
-                            self.toast(format!("Message decrypt failed: {e}"));
-                            return;
-                        }
-                    }
-                };
-                let is_app_message =
-                    matches!(result, MessageProcessingResult::ApplicationMessage(_));
-                let mut app_sender: Option<PublicKey> = None;
-                let mut app_content: Option<String> = None;
-                let mut is_typing_indicator = false;
-                let mut is_call_signal_kind = false;
-                let mut is_reaction = false;
-                let mut is_hypernote_response = false;
+                self.handle_group_message(event);
+            }
+        }
+    }
 
-                let mls_group_id: Option<GroupId> = match &result {
-                    MessageProcessingResult::ApplicationMessage(msg) => {
-                        match msg.kind {
-                            Kind::Custom(20_067)
-                                if msg.content == "typing"
-                                    && msg.tags.iter().any(|t| {
-                                        t.kind() == TagKind::d()
-                                            && t.content().map(|c| c == "pika").unwrap_or(false)
-                                    }) =>
-                            {
-                                is_typing_indicator = true;
-                                app_sender = Some(msg.pubkey);
-                            }
-                            Kind::Custom(10) => {
-                                is_call_signal_kind = true;
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            Kind::ChatMessage | Kind::Reaction => {
-                                if msg.kind == Kind::Reaction {
-                                    is_reaction = true;
-                                }
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            kind if kind == HYPERNOTE_KIND
-                                || kind == HYPERNOTE_ACTION_RESPONSE_KIND =>
-                            {
-                                if msg.kind == HYPERNOTE_ACTION_RESPONSE_KIND {
-                                    is_hypernote_response = true;
-                                }
-                                app_sender = Some(msg.pubkey);
-                                app_content = Some(msg.content.clone());
-                            }
-                            kind => {
-                                tracing::warn!(?kind, "ignoring app message with unknown kind");
-                                return;
-                            }
-                        }
-                        Some(msg.mls_group_id.clone())
-                    }
-                    MessageProcessingResult::Proposal(update) => Some(update.mls_group_id.clone()),
-                    MessageProcessingResult::PendingProposal { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::ExternalJoinProposal { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::Commit { mls_group_id } => Some(mls_group_id.clone()),
-                    MessageProcessingResult::Unprocessable { mls_group_id } => {
-                        Some(mls_group_id.clone())
-                    }
-                    MessageProcessingResult::PreviouslyFailed => None,
-                };
-
-                if let Some(group_id) = mls_group_id {
-                    let chat_id = {
-                        let Some(sess) = self.session.as_mut() else {
-                            self.refresh_all_from_storage();
-                            return;
-                        };
-                        match sess.mdk.get_group(&group_id) {
-                            Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
-                            _ => None,
-                        }
-                    };
-                    if let Some(chat_id) = chat_id {
-                        if is_typing_indicator {
-                            // Handle typing indicator: update in-memory state, refresh chat.
-                            if let Some(sender) = app_sender {
-                                let sender_hex = sender.to_hex();
-                                let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
-                                // Ignore our own typing indicators.
-                                if my_hex.as_deref() != Some(sender_hex.as_str()) {
-                                    self.update_typing(&chat_id, &sender_hex, now_seconds() + 10);
-                                    self.refresh_current_chat_if_open(&chat_id);
-                                }
-                            }
-                        } else {
-                            // Normal message: clear typing indicator for sender.
-                            if let Some(sender) = app_sender {
-                                self.update_typing(&chat_id, &sender.to_hex(), 0);
-                            }
-
-                            if is_call_signal_kind {
-                                if let (Some(sender), Some(content)) =
-                                    (app_sender, app_content.as_deref())
-                                {
-                                    if let Some(signal) =
-                                        self.maybe_parse_call_signal(&sender, content)
-                                    {
-                                        self.handle_incoming_call_signal(&chat_id, &sender, signal);
-                                    }
-                                }
-                            }
-
-                            let current =
-                                self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                            let is_call_signal = is_call_signal_kind;
-                            if current != Some(chat_id.as_str())
-                                && !is_call_signal
-                                && !is_reaction
-                                && !is_hypernote_response
-                            {
-                                *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
-                            } else if is_app_message && !is_call_signal && !is_hypernote_response {
-                                self.loaded_count
-                                    .entry(chat_id.clone())
-                                    .and_modify(|n| *n += 1)
-                                    .or_insert(51);
-                            }
-                            self.refresh_chat_list_from_storage();
-                            self.refresh_current_chat_if_open(&chat_id);
-                        }
-                    } else {
-                        // Fallback: refresh everything if metadata lookup fails.
-                        self.refresh_all_from_storage();
-                    }
-                } else {
-                    self.refresh_all_from_storage();
+    pub(crate) fn handle_group_message(&mut self, event: Event) {
+        let result = {
+            let Some(sess) = self.session.as_mut() else {
+                tracing::warn!("group_message but no session");
+                return;
+            };
+            match sess.mdk.process_message(&event) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
+                    self.toast(format!("Message decrypt failed: {e}"));
+                    return;
                 }
             }
+        };
+        let is_app_message = matches!(result, MessageProcessingResult::ApplicationMessage(_));
+        let mut app_sender: Option<PublicKey> = None;
+        let mut app_content: Option<String> = None;
+        let mut is_typing_indicator = false;
+        let mut is_call_signal_kind = false;
+        let mut is_reaction = false;
+        let mut is_hypernote_response = false;
+
+        let mls_group_id: Option<GroupId> = match &result {
+            MessageProcessingResult::ApplicationMessage(msg) => {
+                match msg.kind {
+                    Kind::Custom(20_067)
+                        if msg.content == "typing"
+                            && msg.tags.iter().any(|t| {
+                                t.kind() == TagKind::d()
+                                    && t.content().map(|c| c == "pika").unwrap_or(false)
+                            }) =>
+                    {
+                        is_typing_indicator = true;
+                        app_sender = Some(msg.pubkey);
+                    }
+                    Kind::Custom(10) => {
+                        is_call_signal_kind = true;
+                        app_sender = Some(msg.pubkey);
+                        app_content = Some(msg.content.clone());
+                    }
+                    Kind::ChatMessage | Kind::Reaction => {
+                        if msg.kind == Kind::Reaction {
+                            is_reaction = true;
+                        }
+                        app_sender = Some(msg.pubkey);
+                        app_content = Some(msg.content.clone());
+                    }
+                    kind if kind == HYPERNOTE_KIND || kind == HYPERNOTE_ACTION_RESPONSE_KIND => {
+                        if msg.kind == HYPERNOTE_ACTION_RESPONSE_KIND {
+                            is_hypernote_response = true;
+                        }
+                        app_sender = Some(msg.pubkey);
+                        app_content = Some(msg.content.clone());
+                    }
+                    kind => {
+                        tracing::warn!(?kind, "ignoring app message with unknown kind");
+                        return;
+                    }
+                }
+                Some(msg.mls_group_id.clone())
+            }
+            MessageProcessingResult::Proposal(update) => Some(update.mls_group_id.clone()),
+            MessageProcessingResult::PendingProposal { mls_group_id } => Some(mls_group_id.clone()),
+            MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
+                Some(mls_group_id.clone())
+            }
+            MessageProcessingResult::ExternalJoinProposal { mls_group_id } => {
+                Some(mls_group_id.clone())
+            }
+            MessageProcessingResult::Commit { mls_group_id } => Some(mls_group_id.clone()),
+            MessageProcessingResult::Unprocessable { mls_group_id } => Some(mls_group_id.clone()),
+            MessageProcessingResult::PreviouslyFailed => None,
+        };
+
+        if let Some(group_id) = mls_group_id {
+            let chat_id = {
+                let Some(sess) = self.session.as_mut() else {
+                    self.refresh_all_from_storage();
+                    return;
+                };
+                match sess.mdk.get_group(&group_id) {
+                    Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
+                    _ => None,
+                }
+            };
+            if let Some(chat_id) = chat_id {
+                if is_typing_indicator {
+                    // Handle typing indicator: update in-memory state, refresh chat.
+                    if let Some(sender) = app_sender {
+                        let sender_hex = sender.to_hex();
+                        let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
+                        // Ignore our own typing indicators.
+                        if my_hex.as_deref() != Some(sender_hex.as_str()) {
+                            self.update_typing(&chat_id, &sender_hex, now_seconds() + 10);
+                            self.refresh_current_chat_if_open(&chat_id);
+                        }
+                    }
+                } else {
+                    // Normal message: clear typing indicator for sender.
+                    if let Some(sender) = app_sender {
+                        self.update_typing(&chat_id, &sender.to_hex(), 0);
+                    }
+
+                    if is_call_signal_kind {
+                        if let (Some(sender), Some(content)) = (app_sender, app_content.as_deref())
+                        {
+                            if let Some(signal) = self.maybe_parse_call_signal(&sender, content) {
+                                self.handle_incoming_call_signal(&chat_id, &sender, signal);
+                            }
+                        }
+                    }
+
+                    let current = self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
+                    let is_call_signal = is_call_signal_kind;
+                    if current != Some(chat_id.as_str())
+                        && !is_call_signal
+                        && !is_reaction
+                        && !is_hypernote_response
+                    {
+                        *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
+                    } else if is_app_message && !is_call_signal && !is_hypernote_response {
+                        self.loaded_count
+                            .entry(chat_id.clone())
+                            .and_modify(|n| *n += 1)
+                            .or_insert(51);
+                    }
+                    self.refresh_chat_list_from_storage();
+                    self.refresh_current_chat_if_open(&chat_id);
+                }
+            } else {
+                // Fallback: refresh everything if metadata lookup fails.
+                self.refresh_all_from_storage();
+            }
+        } else {
+            self.refresh_all_from_storage();
         }
     }
 

@@ -130,6 +130,7 @@ pub enum Message {
     WindowEvent(iced::Event),
 }
 
+#[allow(clippy::large_enum_variant)]
 enum DesktopApp {
     BootError {
         error: String,
@@ -262,7 +263,7 @@ impl DesktopApp {
                 Message::Home(message) => {
                     if let Screen::Home(ref mut home_state) = screen {
                         if let Some(event) =
-                            home_state.update(message, state, manager, &cached_profiles)
+                            home_state.update(message, state, manager, cached_profiles)
                         {
                             match event {
                                 screen::home::Event::AppAction(action) => {
@@ -397,13 +398,13 @@ impl DesktopApp {
             } => match screen {
                 Screen::Home(ref home) => home
                     .view(
-                        &state,
-                        &avatar_cache,
-                        &app_version_display,
+                        state,
+                        avatar_cache,
+                        app_version_display,
                         *active_theme_index,
                     )
                     .map(Message::Home),
-                Screen::Login(ref login) => login.view(&state, &manager).map(Message::Login),
+                Screen::Login(ref login) => login.view(state, manager).map(Message::Login),
             },
         }
     }
@@ -449,7 +450,7 @@ impl DesktopApp {
 
                 // Delegate screen-specific sync.
                 if let Screen::Home(ref mut home) = screen {
-                    home.sync_from_update(&state, &latest, manager, &cached_profiles);
+                    home.sync_from_update(state, &latest, manager, cached_profiles);
                 }
 
                 *state = latest;

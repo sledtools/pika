@@ -579,11 +579,11 @@ fn build_snippet(text: &str, query_lower: &str, max_chars: usize) -> String {
 
     let mut snippet = String::new();
     if start > 0 {
-        snippet.push_str("\u{2026}");
+        snippet.push('\u{2026}');
     }
     snippet.push_str(&text[start..end]);
     if end < text.len() {
-        snippet.push_str("\u{2026}");
+        snippet.push('\u{2026}');
     }
     snippet
 }

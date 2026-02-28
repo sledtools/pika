@@ -943,6 +943,7 @@ fn find_in_path(bin_name: &str) -> Option<PathBuf> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_runtime_metadata(
     vm_state_dir: &Path,
     public_key: &str,

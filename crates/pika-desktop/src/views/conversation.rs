@@ -29,6 +29,7 @@ pub struct State {
 // ── Messages ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Message {
     MessageChanged(String),
     SendMessage,
@@ -268,6 +269,7 @@ impl State {
         let picture_url = chat.members.first().and_then(|m| m.picture_url.as_deref());
 
         // Call buttons for 1:1 chats
+        #[allow(clippy::type_complexity)]
         let (call_button, video_call_button): (
             Option<Element<'a, Message, Theme>>,
             Option<Element<'a, Message, Theme>>,
@@ -637,9 +639,7 @@ pub fn jump_to_message_task(chat: &ChatViewState, message_id: &str) -> Option<Ta
     if chat.messages.is_empty() {
         return None;
     }
-    let Some(index) = chat.messages.iter().position(|m| m.id == message_id) else {
-        return None;
-    };
+    let index = chat.messages.iter().position(|m| m.id == message_id)?;
     let denom = chat.messages.len().saturating_sub(1) as f32;
     let y = if denom <= 0.0 {
         1.0

@@ -1,4 +1,5 @@
-Run `./scripts/agent-brief` first thing to get a live context snapshot.
+Run `./scripts/agent-brief` once at the start of each new agent session in this worktree (not every turn).
+Rerun only if asked, if you switch worktrees, or if the first run failed.
 
 ## Related codebases
 

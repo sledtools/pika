@@ -64,6 +64,10 @@ pub(super) enum ParsedCallSignal {
         call_id: String,
         reason: String,
     },
+    KeyframeRequest {
+        call_id: String,
+        reason: String,
+    },
     End {
         call_id: String,
         reason: String,
@@ -74,6 +78,7 @@ enum OutgoingCallSignal<'a> {
     Invite(&'a CallSessionParams),
     Accept(&'a CallSessionParams),
     Reject { reason: &'a str },
+    KeyframeRequest { reason: &'a str },
     End { reason: &'a str },
 }
 
@@ -171,6 +176,13 @@ pub(super) fn parse_call_signal(content: &str) -> Option<ParsedCallSignal> {
                 reason: body.reason,
             })
         }
+        "call.keyframe_request" => {
+            let body: CallReasonBody = serde_json::from_value(env.body).ok()?;
+            Some(ParsedCallSignal::KeyframeRequest {
+                call_id: env.call_id,
+                reason: body.reason,
+            })
+        }
         "call.end" => {
             let body: CallReasonBody = serde_json::from_value(env.body).ok()?;
             Some(ParsedCallSignal::End {
@@ -191,6 +203,12 @@ fn build_call_signal_json(
         OutgoingCallSignal::Accept(session) => ("call.accept", serde_json::to_value(session)?),
         OutgoingCallSignal::Reject { reason } => (
             "call.reject",
+            serde_json::to_value(CallReasonBody {
+                reason: reason.to_string(),
+            })?,
+        ),
+        OutgoingCallSignal::KeyframeRequest { reason } => (
+            "call.keyframe_request",
             serde_json::to_value(CallReasonBody {
                 reason: reason.to_string(),
             })?,
@@ -619,7 +637,7 @@ impl AppCore {
         self.emit_call_state_with_previous(previous);
     }
 
-    fn end_call_local(&mut self, reason: String) {
+    pub(super) fn end_call_local(&mut self, reason: String) {
         let previous = self.state.active_call.clone();
         let mut should_emit = false;
         if let Some(call) = self.state.active_call.as_mut() {
@@ -946,6 +964,22 @@ impl AppCore {
         self.send_call_reject(chat_id, call_id, "busy");
     }
 
+    pub(super) fn send_keyframe_request(&mut self, chat_id: &str, call_id: &str, reason: &str) {
+        let payload =
+            match build_call_signal_json(call_id, OutgoingCallSignal::KeyframeRequest { reason }) {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(call_id, reason, "serialize keyframe request failed: {err}");
+                    return;
+                }
+            };
+        if let Err(err) =
+            self.publish_call_signal(chat_id, payload, "Keyframe request publish failed")
+        {
+            tracing::warn!(call_id, reason, "keyframe request publish failed: {err}");
+        }
+    }
+
     pub(super) fn handle_incoming_call_signal(
         &mut self,
         chat_id: &str,
@@ -1078,6 +1112,17 @@ impl AppCore {
                 }
                 self.update_call_status(CallStatus::Connecting);
             }
+            ParsedCallSignal::KeyframeRequest { call_id, reason } => {
+                if let Some(active) = self.state.active_call.as_ref() {
+                    if active.call_id == call_id
+                        && active.chat_id == chat_id
+                        && active.is_video_call
+                        && active.status.is_live()
+                    {
+                        self.call_runtime.request_video_keyframe(&call_id, &reason);
+                    }
+                }
+            }
             ParsedCallSignal::Reject { call_id, reason } => {
                 let Some(active) = self.state.active_call.as_ref() else {
                     return;
@@ -1156,5 +1201,27 @@ mod tests {
         ));
         assert!(!valid_relay_auth_token("capv1_short"));
         assert!(!valid_relay_auth_token("notcap_0123456789abcdef"));
+    }
+
+    #[test]
+    fn parses_keyframe_request_signal() {
+        let call_id = "550e8400-e29b-41d4-a716-446655440000";
+        let json = build_call_signal_json(
+            call_id,
+            OutgoingCallSignal::KeyframeRequest {
+                reason: "decode_stale",
+            },
+        )
+        .unwrap();
+        match parse_call_signal(&json) {
+            Some(ParsedCallSignal::KeyframeRequest {
+                call_id: got_call_id,
+                reason,
+            }) => {
+                assert_eq!(got_call_id, call_id);
+                assert_eq!(reason, "decode_stale");
+            }
+            other => panic!("expected keyframe request, got {other:?}"),
+        }
     }
 }

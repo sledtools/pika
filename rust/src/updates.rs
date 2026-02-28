@@ -171,13 +171,27 @@ pub enum InternalEvent {
     CallRuntimeConnected {
         call_id: String,
     },
+    CallRuntimeTerminalError {
+        call_id: String,
+        reason: String,
+        user_message: String,
+    },
     CallRuntimeStats {
         call_id: String,
         tx_frames: u64,
         rx_frames: u64,
         rx_dropped: u64,
         jitter_buffer_ms: u32,
+        jitter_target_frames: u32,
+        rx_underflows: u64,
+        concealment_short: u64,
+        concealment_medium: u64,
+        concealment_long: u64,
         last_rtt_ms: Option<u32>,
+        reconnect_count: u64,
+        last_reconnect_duration_ms: Option<u32>,
+        subscription_ready_latency_ms: Option<u32>,
+        consecutive_disconnects: u64,
         video_tx: u64,
         video_rx: u64,
         video_rx_decrypt_fail: u64,
@@ -192,5 +206,23 @@ pub enum InternalEvent {
     // Video frame sent from platform (camera capture → H.264 NALUs).
     VideoFrameFromPlatform {
         payload: Vec<u8>,
+    },
+    // Platform-side decoder/call pipeline requests a recovery keyframe.
+    RequestVideoKeyframe {
+        reason: String,
+    },
+    // Audio PCM frame sent from platform capture pipeline.
+    AudioFrameFromPlatform {
+        pcm: Vec<i16>,
+        sample_rate_hz: u32,
+    },
+    // Platform notifies Rust about route changes; Rust keeps policy ownership.
+    AudioDeviceRouteChanged {
+        route: String,
+    },
+    // Platform notifies Rust about interruption lifecycle; Rust decides recovery policy.
+    AudioInterruptionChanged {
+        interrupted: bool,
+        reason: String,
     },
 }

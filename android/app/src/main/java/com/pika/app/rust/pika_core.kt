@@ -616,6 +616,9 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfaceAppReconcilerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`update`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceAudioPlayoutReceiverMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`callId`: RustBuffer.ByValue,`pcm`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceVideoFrameReceiverMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`callId`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
@@ -656,6 +659,25 @@ internal open class UniffiVTableCallbackInterfaceAppReconciler(
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `reconcile` = other.`reconcile`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onAudioPlayoutFrame")
+internal open class UniffiVTableCallbackInterfaceAudioPlayoutReceiver(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onAudioPlayoutFrame`: UniffiCallbackInterfaceAudioPlayoutReceiverMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onAudioPlayoutFrame`: UniffiCallbackInterfaceAudioPlayoutReceiverMethod0? = null,
+    ): UniffiVTableCallbackInterfaceAudioPlayoutReceiver(`uniffiFree`,`uniffiClone`,`onAudioPlayoutFrame`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAudioPlayoutReceiver) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onAudioPlayoutFrame` = other.`onAudioPlayoutFrame`
     }
 
 }
@@ -746,7 +768,17 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_listen_for_updates(
     ): Short
+    external fun uniffi_pika_core_checksum_method_ffiapp_notify_audio_device_route_changed(
+    ): Short
+    external fun uniffi_pika_core_checksum_method_ffiapp_notify_audio_interruption_changed(
+    ): Short
+    external fun uniffi_pika_core_checksum_method_ffiapp_request_video_keyframe(
+    ): Short
+    external fun uniffi_pika_core_checksum_method_ffiapp_send_audio_capture_frame(
+    ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_send_video_frame(
+    ): Short
+    external fun uniffi_pika_core_checksum_method_ffiapp_set_audio_playout_receiver(
     ): Short
     external fun uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge(
     ): Short
@@ -757,6 +789,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_pika_core_checksum_constructor_ffiapp_new(
     ): Short
     external fun uniffi_pika_core_checksum_method_appreconciler_reconcile(
+    ): Short
+    external fun uniffi_pika_core_checksum_method_audioplayoutreceiver_on_audio_playout_frame(
     ): Short
     external fun uniffi_pika_core_checksum_method_videoframereceiver_on_video_frame(
     ): Short
@@ -791,6 +825,7 @@ internal object UniffiLib {
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "pika_core"))
         uniffiCallbackInterfaceAppReconciler.register(this)
+        uniffiCallbackInterfaceAudioPlayoutReceiver.register(this)
         uniffiCallbackInterfaceExternalSignerBridge.register(this)
         uniffiCallbackInterfaceVideoFrameReceiver.register(this)
         
@@ -805,7 +840,17 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_listen_for_updates(`ptr`: Long,`reconciler`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_pika_core_fn_method_ffiapp_notify_audio_device_route_changed(`ptr`: Long,`route`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_pika_core_fn_method_ffiapp_notify_audio_interruption_changed(`ptr`: Long,`interrupted`: Byte,`reason`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_pika_core_fn_method_ffiapp_request_video_keyframe(`ptr`: Long,`reason`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_pika_core_fn_method_ffiapp_send_audio_capture_frame(`ptr`: Long,`pcm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_send_video_frame(`ptr`: Long,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_pika_core_fn_method_ffiapp_set_audio_playout_receiver(`ptr`: Long,`receiver`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_pika_core_fn_method_ffiapp_set_external_signer_bridge(`ptr`: Long,`bridge`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -814,6 +859,8 @@ internal object UniffiLib {
     external fun uniffi_pika_core_fn_method_ffiapp_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_pika_core_fn_init_callback_vtable_appreconciler(`vtable`: UniffiVTableCallbackInterfaceAppReconciler,
+    ): Unit
+    external fun uniffi_pika_core_fn_init_callback_vtable_audioplayoutreceiver(`vtable`: UniffiVTableCallbackInterfaceAudioPlayoutReceiver,
     ): Unit
     external fun uniffi_pika_core_fn_init_callback_vtable_videoframereceiver(`vtable`: UniffiVTableCallbackInterfaceVideoFrameReceiver,
     ): Unit
@@ -954,7 +1001,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_pika_core_checksum_method_ffiapp_listen_for_updates() != 54024.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_pika_core_checksum_method_ffiapp_notify_audio_device_route_changed() != 5551.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_pika_core_checksum_method_ffiapp_notify_audio_interruption_changed() != 10178.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_pika_core_checksum_method_ffiapp_request_video_keyframe() != 37670.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_pika_core_checksum_method_ffiapp_send_audio_capture_frame() != 11186.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_pika_core_checksum_method_ffiapp_send_video_frame() != 39589.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_pika_core_checksum_method_ffiapp_set_audio_playout_receiver() != 31179.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_ffiapp_set_external_signer_bridge() != 60161.toShort()) {
@@ -970,6 +1032,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_appreconciler_reconcile() != 10811.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_pika_core_checksum_method_audioplayoutreceiver_on_audio_playout_frame() != 53979.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_pika_core_checksum_method_videoframereceiver_on_video_frame() != 12741.toShort()) {
@@ -1204,6 +1269,29 @@ public object FfiConverterUShort: FfiConverter<UShort, Short> {
 
     override fun write(value: UShort, buf: ByteBuffer) {
         buf.putShort(value.toShort())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterShort: FfiConverter<Short, Short> {
+    override fun lift(value: Short): Short {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Short {
+        return buf.getShort()
+    }
+
+    override fun lower(value: Short): Short {
+        return value
+    }
+
+    override fun allocationSize(value: Short) = 2UL
+
+    override fun write(value: Short, buf: ByteBuffer) {
+        buf.putShort(value)
     }
 }
 
@@ -1523,7 +1611,17 @@ public interface FfiAppInterface {
     
     fun `listenForUpdates`(`reconciler`: AppReconciler)
     
+    fun `notifyAudioDeviceRouteChanged`(`route`: kotlin.String)
+    
+    fun `notifyAudioInterruptionChanged`(`interrupted`: kotlin.Boolean, `reason`: kotlin.String)
+    
+    fun `requestVideoKeyframe`(`reason`: kotlin.String)
+    
+    fun `sendAudioCaptureFrame`(`pcm`: List<kotlin.Short>)
+    
     fun `sendVideoFrame`(`payload`: kotlin.ByteArray)
+    
+    fun `setAudioPlayoutReceiver`(`receiver`: AudioPlayoutReceiver)
     
     fun `setExternalSignerBridge`(`bridge`: ExternalSignerBridge)
     
@@ -1662,6 +1760,54 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     
     
 
+    override fun `notifyAudioDeviceRouteChanged`(`route`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_method_ffiapp_notify_audio_device_route_changed(
+        it,
+        FfiConverterString.lower(`route`),_status)
+}
+    }
+    
+    
+
+    override fun `notifyAudioInterruptionChanged`(`interrupted`: kotlin.Boolean, `reason`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_method_ffiapp_notify_audio_interruption_changed(
+        it,
+        FfiConverterBoolean.lower(`interrupted`),FfiConverterString.lower(`reason`),_status)
+}
+    }
+    
+    
+
+    override fun `requestVideoKeyframe`(`reason`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_method_ffiapp_request_video_keyframe(
+        it,
+        FfiConverterString.lower(`reason`),_status)
+}
+    }
+    
+    
+
+    override fun `sendAudioCaptureFrame`(`pcm`: List<kotlin.Short>)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_method_ffiapp_send_audio_capture_frame(
+        it,
+        FfiConverterSequenceShort.lower(`pcm`),_status)
+}
+    }
+    
+    
+
     override fun `sendVideoFrame`(`payload`: kotlin.ByteArray)
         = 
     callWithHandle {
@@ -1669,6 +1815,18 @@ open class FfiApp: Disposable, AutoCloseable, FfiAppInterface
     UniffiLib.uniffi_pika_core_fn_method_ffiapp_send_video_frame(
         it,
         FfiConverterByteArray.lower(`payload`),_status)
+}
+    }
+    
+    
+
+    override fun `setAudioPlayoutReceiver`(`receiver`: AudioPlayoutReceiver)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_method_ffiapp_set_audio_playout_receiver(
+        it,
+        FfiConverterTypeAudioPlayoutReceiver.lower(`receiver`),_status)
 }
     }
     
@@ -1913,7 +2071,25 @@ data class CallDebugStats (
     , 
     var `jitterBufferMs`: kotlin.UInt
     , 
+    var `jitterTargetFrames`: kotlin.UInt
+    , 
+    var `rxUnderflows`: kotlin.ULong
+    , 
+    var `concealmentShort`: kotlin.ULong
+    , 
+    var `concealmentMedium`: kotlin.ULong
+    , 
+    var `concealmentLong`: kotlin.ULong
+    , 
     var `lastRttMs`: kotlin.UInt?
+    , 
+    var `reconnectCount`: kotlin.ULong
+    , 
+    var `lastReconnectDurationMs`: kotlin.UInt?
+    , 
+    var `subscriptionReadyLatencyMs`: kotlin.UInt?
+    , 
+    var `consecutiveDisconnects`: kotlin.ULong
     , 
     var `videoTx`: kotlin.ULong
     , 
@@ -1940,7 +2116,16 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
             FfiConverterOptionalUInt.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterULong.read(buf),
@@ -1952,7 +2137,16 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.allocationSize(value.`rxFrames`) +
             FfiConverterULong.allocationSize(value.`rxDropped`) +
             FfiConverterUInt.allocationSize(value.`jitterBufferMs`) +
+            FfiConverterUInt.allocationSize(value.`jitterTargetFrames`) +
+            FfiConverterULong.allocationSize(value.`rxUnderflows`) +
+            FfiConverterULong.allocationSize(value.`concealmentShort`) +
+            FfiConverterULong.allocationSize(value.`concealmentMedium`) +
+            FfiConverterULong.allocationSize(value.`concealmentLong`) +
             FfiConverterOptionalUInt.allocationSize(value.`lastRttMs`) +
+            FfiConverterULong.allocationSize(value.`reconnectCount`) +
+            FfiConverterOptionalUInt.allocationSize(value.`lastReconnectDurationMs`) +
+            FfiConverterOptionalUInt.allocationSize(value.`subscriptionReadyLatencyMs`) +
+            FfiConverterULong.allocationSize(value.`consecutiveDisconnects`) +
             FfiConverterULong.allocationSize(value.`videoTx`) +
             FfiConverterULong.allocationSize(value.`videoRx`) +
             FfiConverterULong.allocationSize(value.`videoRxDecryptFail`)
@@ -1963,7 +2157,16 @@ public object FfiConverterTypeCallDebugStats: FfiConverterRustBuffer<CallDebugSt
             FfiConverterULong.write(value.`rxFrames`, buf)
             FfiConverterULong.write(value.`rxDropped`, buf)
             FfiConverterUInt.write(value.`jitterBufferMs`, buf)
+            FfiConverterUInt.write(value.`jitterTargetFrames`, buf)
+            FfiConverterULong.write(value.`rxUnderflows`, buf)
+            FfiConverterULong.write(value.`concealmentShort`, buf)
+            FfiConverterULong.write(value.`concealmentMedium`, buf)
+            FfiConverterULong.write(value.`concealmentLong`, buf)
             FfiConverterOptionalUInt.write(value.`lastRttMs`, buf)
+            FfiConverterULong.write(value.`reconnectCount`, buf)
+            FfiConverterOptionalUInt.write(value.`lastReconnectDurationMs`, buf)
+            FfiConverterOptionalUInt.write(value.`subscriptionReadyLatencyMs`, buf)
+            FfiConverterULong.write(value.`consecutiveDisconnects`, buf)
             FfiConverterULong.write(value.`videoTx`, buf)
             FfiConverterULong.write(value.`videoRx`, buf)
             FfiConverterULong.write(value.`videoRxDecryptFail`, buf)
@@ -5398,6 +5601,71 @@ public object FfiConverterTypeAppReconciler: FfiConverterCallbackInterface<AppRe
 
 
 
+/**
+ * Platform-side callback for receiving decoded audio playout PCM from Rust.
+ * Native executes this operational callback but Rust keeps call policy/state ownership.
+ */
+public interface AudioPlayoutReceiver {
+    
+    fun `onAudioPlayoutFrame`(`callId`: kotlin.String, `pcm`: List<kotlin.Short>)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceAudioPlayoutReceiver {
+    internal object `onAudioPlayoutFrame`: UniffiCallbackInterfaceAudioPlayoutReceiverMethod0 {
+        override fun callback(`uniffiHandle`: Long,`callId`: RustBuffer.ByValue,`pcm`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeAudioPlayoutReceiver.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`onAudioPlayoutFrame`(
+                    FfiConverterString.lift(`callId`),
+                    FfiConverterSequenceShort.lift(`pcm`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeAudioPlayoutReceiver.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeAudioPlayoutReceiver.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceAudioPlayoutReceiver.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `onAudioPlayoutFrame`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_pika_core_fn_init_callback_vtable_audioplayoutreceiver(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeAudioPlayoutReceiver: FfiConverterCallbackInterface<AudioPlayoutReceiver>()
+
+
+
+
+
 public interface ExternalSignerBridge {
     
     fun `openUrl`(`url`: kotlin.String): ExternalSignerResult
@@ -5971,6 +6239,34 @@ public object FfiConverterOptionalTypeExternalSignerErrorKind: FfiConverterRustB
         } else {
             buf.put(1)
             FfiConverterTypeExternalSignerErrorKind.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceShort: FfiConverterRustBuffer<List<kotlin.Short>> {
+    override fun read(buf: ByteBuffer): List<kotlin.Short> {
+        val len = buf.getInt()
+        return List<kotlin.Short>(len) {
+            FfiConverterShort.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.Short>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterShort.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.Short>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterShort.write(it, buf)
         }
     }
 }

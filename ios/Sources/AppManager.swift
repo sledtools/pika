@@ -6,7 +6,12 @@ protocol AppCore: AnyObject, Sendable {
     func listenForUpdates(reconciler: AppReconciler)
     func state() -> AppState
     func setVideoFrameReceiver(receiver: VideoFrameReceiver)
+    func setAudioPlayoutReceiver(receiver: AudioPlayoutReceiver)
     func sendVideoFrame(payload: Data)
+    func sendAudioCaptureFrame(pcm: [Int16])
+    func notifyAudioDeviceRouteChanged(route: String)
+    func notifyAudioInterruptionChanged(interrupted: Bool, reason: String)
+    func requestVideoKeyframe(reason: String)
 }
 
 extension FfiApp: AppCore {}
@@ -113,6 +118,7 @@ final class AppManager: AppReconciler {
     /// True while we're waiting for a stored session to be restored by Rust.
     var isRestoringSession: Bool = false
     private let callAudioSession = CallAudioSessionCoordinator()
+    private var callNativeAudio: CallNativeAudioIO?
 
     init(core: AppCore, authStore: AuthStore) {
         self.core = core
@@ -122,6 +128,8 @@ final class AppManager: AppReconciler {
         self.state = initial
         self.lastRevApplied = initial.rev
         callAudioSession.apply(activeCall: initial.activeCall)
+        callNativeAudio = CallNativeAudioIO(core: core)
+        callNativeAudio?.apply(activeCall: initial.activeCall)
 
         core.listenForUpdates(reconciler: self)
 
@@ -227,6 +235,7 @@ final class AppManager: AppReconciler {
         case .fullState(let s):
             state = s
             callAudioSession.apply(activeCall: s.activeCall)
+            callNativeAudio?.apply(activeCall: s.activeCall)
             if isRestoringSession {
                 // Clear once we've transitioned away from login (success) or if
                 // the router settles on login (restore failed / nsec invalid).
@@ -241,12 +250,14 @@ final class AppManager: AppReconciler {
             }
             state.rev = updateRev
             callAudioSession.apply(activeCall: state.activeCall)
+            callNativeAudio?.apply(activeCall: state.activeCall)
         case .bunkerSessionDescriptor(_, let bunkerUri, let clientNsec):
             if !bunkerUri.isEmpty, !clientNsec.isEmpty {
                 authStore.saveBunker(bunkerUri: bunkerUri, bunkerClientNsec: clientNsec)
             }
             state.rev = updateRev
             callAudioSession.apply(activeCall: state.activeCall)
+            callNativeAudio?.apply(activeCall: state.activeCall)
         }
 
         syncAuthStoreWithAuthState()

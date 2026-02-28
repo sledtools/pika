@@ -25,6 +25,12 @@ use crate::session::{MediaFrame, MediaSessionError};
 use crate::subscription::MediaFrameSubscription;
 use crate::tracks::TrackAddress;
 
+const NETWORK_FRAME_MAGIC: [u8; 4] = *b"PKMF";
+const NETWORK_FRAME_VERSION: u8 = 1;
+const NETWORK_FRAME_FLAG_KEYFRAME: u8 = 0x01;
+const NETWORK_FRAME_HEADER_LEN: usize = 4 + 1 + 1 + 8 + 8;
+const LEGACY_FRAME_DURATION_US: u64 = 20_000;
+
 fn is_localhost_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
@@ -438,7 +444,7 @@ impl NetworkRelayState {
 
         let _guard = self.rt.enter();
         let mut track = self.ensure_broadcast_and_track(track_addr);
-        track.write_frame(bytes::Bytes::from(frame.payload));
+        track.write_frame(encode_network_frame(&frame));
 
         Ok(1)
     }
@@ -460,6 +466,10 @@ impl NetworkRelayState {
 
         tracing::info!("subscribe: broadcast={broadcast_path} track={track_name}");
         self.rt.spawn(async move {
+            // Signal local subscribe installation immediately so callers can gate startup
+            // without waiting for remote publishers to announce broadcasts.
+            let _ = ready_tx.send(Ok(()));
+
             // Poll for broadcast announcement with retries.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
             let mut consumer = consumer;
@@ -490,12 +500,12 @@ impl NetworkRelayState {
 
             let track = Track::new(&track_name);
             let mut track_cons = broadcast_cons.subscribe_track(&track);
-            let _ = ready_tx.send(Ok(()));
 
             let subscribe_start = tokio::time::Instant::now();
             tracing::info!("subscriber: receiving on {broadcast_path}/{track_name}");
 
-            let mut seq = 0u64;
+            let mut rx_frames = 0u64;
+            let mut legacy_seq = 0u64;
             let mut empty_groups = 0u64;
             let mut read_errors = 0u64;
             let mut last_group_seq: Option<u64> = None;
@@ -520,30 +530,40 @@ impl NetworkRelayState {
 
                         match group.read_frame().await {
                             Ok(Some(data)) => {
-                                let frame = MediaFrame {
-                                    seq,
-                                    timestamp_us: seq * 20_000,
-                                    keyframe: true,
-                                    payload: data.to_vec(),
+                                let frame = if let Some(decoded) = decode_network_frame(data.as_ref()) {
+                                    legacy_seq = legacy_seq.max(decoded.seq.saturating_add(1));
+                                    decoded
+                                } else {
+                                    // Backward-compat path: old senders published payload-only frames.
+                                    let seq = legacy_seq;
+                                    legacy_seq = legacy_seq.saturating_add(1);
+                                    MediaFrame {
+                                        seq,
+                                        timestamp_us: seq.saturating_mul(LEGACY_FRAME_DURATION_US),
+                                        keyframe: true,
+                                        payload: data.to_vec(),
+                                    }
                                 };
-                                seq += 1;
-                                if seq == 1 {
+                                rx_frames = rx_frames.saturating_add(1);
+                                if rx_frames == 1 {
                                     let elapsed = subscribe_start.elapsed();
                                     tracing::info!(
-                                        "subscriber: FIRST frame group_seq={group_seq} len={} latency={:.1}ms",
-                                        data.len(),
+                                        "subscriber: FIRST frame group_seq={group_seq} seq={} len={} latency={:.1}ms",
+                                        frame.seq,
+                                        frame.payload.len(),
                                         elapsed.as_secs_f64() * 1000.0,
                                     );
-                                } else if seq.is_multiple_of(50) {
+                                } else if rx_frames.is_multiple_of(50) {
                                     let elapsed = subscribe_start.elapsed();
                                     tracing::info!(
-                                        "subscriber: progress rx={seq} group_seq={group_seq} skipped={skipped_groups} elapsed={:.1}s",
+                                        "subscriber: progress rx={rx_frames} seq={} group_seq={group_seq} skipped={skipped_groups} elapsed={:.1}s",
+                                        frame.seq,
                                         elapsed.as_secs_f64(),
                                     );
                                 }
                                 if tx.send(frame).is_err() {
                                     tracing::warn!(
-                                        "subscriber: mpsc receiver dropped after {seq} frames, stopping"
+                                        "subscriber: mpsc receiver dropped after {rx_frames} frames, stopping"
                                     );
                                     break;
                                 }
@@ -566,14 +586,14 @@ impl NetworkRelayState {
                     }
                     Ok(None) => {
                         tracing::warn!(
-                            "subscriber: track closed (no more groups) after {seq} frames, \
+                            "subscriber: track closed (no more groups) after {rx_frames} frames, \
                              empty_groups={empty_groups}, read_errors={read_errors}, skipped_groups={skipped_groups}"
                         );
                         break;
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "subscriber: next_group error after {seq} frames: {e}, \
+                            "subscriber: next_group error after {rx_frames} frames: {e}, \
                              empty_groups={empty_groups}, read_errors={read_errors}, skipped_groups={skipped_groups}"
                         );
                         break;
@@ -583,7 +603,7 @@ impl NetworkRelayState {
 
             let total_elapsed = subscribe_start.elapsed();
             tracing::info!(
-                "subscriber: loop ended — total_rx={seq}, empty_groups={empty_groups}, \
+                "subscriber: loop ended — total_rx={rx_frames}, empty_groups={empty_groups}, \
                  read_errors={read_errors}, skipped_groups={skipped_groups}, \
                  elapsed={:.1}s",
                 total_elapsed.as_secs_f64(),
@@ -603,6 +623,42 @@ impl NetworkRelayState {
         self.endpoint = None;
         self.broadcasts.clear();
     }
+}
+
+fn encode_network_frame(frame: &MediaFrame) -> bytes::Bytes {
+    let mut out = Vec::with_capacity(NETWORK_FRAME_HEADER_LEN + frame.payload.len());
+    out.extend_from_slice(&NETWORK_FRAME_MAGIC);
+    out.push(NETWORK_FRAME_VERSION);
+    let mut flags = 0u8;
+    if frame.keyframe {
+        flags |= NETWORK_FRAME_FLAG_KEYFRAME;
+    }
+    out.push(flags);
+    out.extend_from_slice(&frame.seq.to_be_bytes());
+    out.extend_from_slice(&frame.timestamp_us.to_be_bytes());
+    out.extend_from_slice(&frame.payload);
+    bytes::Bytes::from(out)
+}
+
+fn decode_network_frame(data: &[u8]) -> Option<MediaFrame> {
+    if data.len() < NETWORK_FRAME_HEADER_LEN {
+        return None;
+    }
+    if data[0..4] != NETWORK_FRAME_MAGIC {
+        return None;
+    }
+    if data[4] != NETWORK_FRAME_VERSION {
+        return None;
+    }
+    let flags = data[5];
+    let seq = u64::from_be_bytes(data[6..14].try_into().ok()?);
+    let timestamp_us = u64::from_be_bytes(data[14..22].try_into().ok()?);
+    Some(MediaFrame {
+        seq,
+        timestamp_us,
+        keyframe: (flags & NETWORK_FRAME_FLAG_KEYFRAME) != 0,
+        payload: data[NETWORK_FRAME_HEADER_LEN..].to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -731,6 +787,62 @@ mod tests {
         assert!(
             received >= 50,
             "expected >=50 frames in concurrent test, got {received}"
+        );
+    }
+
+    /// Regression guard for call startup gating: local subscribe readiness must not
+    /// depend on remote publish timing.
+    #[tokio::test]
+    async fn subscribe_ready_signal_does_not_wait_for_first_publish() {
+        let origin = Origin::produce();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), MediaSessionError>>();
+        let broadcast_path = "pika/tests/startup-ready".to_string();
+        let mut consumer = origin.consume();
+
+        tokio::spawn(async move {
+            let _ = ready_tx.send(Ok(()));
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+            loop {
+                if consumer.consume_broadcast(&broadcast_path).is_some() {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(25),
+                    consumer.announced(),
+                )
+                .await;
+            }
+        });
+
+        let ready = tokio::time::timeout(std::time::Duration::from_millis(100), ready_rx)
+            .await
+            .expect("ready signal should arrive before any publish")
+            .expect("ready sender should remain connected");
+        assert!(ready.is_ok(), "ready signal should be success");
+    }
+
+    #[test]
+    fn network_frame_wire_round_trip_preserves_metadata() {
+        let frame = MediaFrame {
+            seq: 42,
+            timestamp_us: 1_234_567,
+            keyframe: false,
+            payload: vec![1, 2, 3, 4, 5],
+        };
+        let encoded = encode_network_frame(&frame);
+        let decoded = decode_network_frame(encoded.as_ref()).expect("decode should succeed");
+        assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn network_frame_wire_decode_rejects_payload_only_frames() {
+        let legacy = vec![0xde, 0xad, 0xbe, 0xef];
+        assert!(
+            decode_network_frame(&legacy).is_none(),
+            "legacy payload-only frames should use fallback decode path"
         );
     }
 }

@@ -80,6 +80,8 @@ final class PreviewCore: AppCore, @unchecked Sendable {
     func setVideoFrameReceiver(receiver: VideoFrameReceiver) {}
 
     func sendVideoFrame(payload: Data) {}
+
+    func requestVideoKeyframe(reason: String) {}
 }
 
 final class PreviewAuthStore: AuthStore {

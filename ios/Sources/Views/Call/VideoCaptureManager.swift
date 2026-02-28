@@ -6,6 +6,7 @@ import VideoToolbox
 private final class SharedCaptureState: @unchecked Sendable {
     private let lock = NSLock()
     private var _compressionSession: VTCompressionSession?
+    private var _targetFps: Int32 = 30
     private let _core: (any AppCore)?
 
     init(core: (any AppCore)?) {
@@ -17,6 +18,11 @@ private final class SharedCaptureState: @unchecked Sendable {
         set { lock.withLock { _compressionSession = newValue } }
     }
 
+    var targetFps: Int32 {
+        get { lock.withLock { _targetFps } }
+        set { lock.withLock { _targetFps = max(1, newValue) } }
+    }
+
     var core: (any AppCore)? { _core }
 
     /// Atomically read and clear the compression session.
@@ -26,6 +32,105 @@ private final class SharedCaptureState: @unchecked Sendable {
             _compressionSession = nil
             return s
         }
+    }
+}
+
+enum VideoQualityTier: Int, CaseIterable {
+    case low = 0
+    case medium = 1
+    case high = 2
+
+    var lowerTier: VideoQualityTier {
+        VideoQualityTier(rawValue: max(VideoQualityTier.low.rawValue, rawValue - 1)) ?? .low
+    }
+
+    var higherTier: VideoQualityTier {
+        VideoQualityTier(rawValue: min(VideoQualityTier.high.rawValue, rawValue + 1)) ?? .high
+    }
+}
+
+struct VideoQualitySettings {
+    let bitrateBps: Int
+    let fps: Int32
+    let keyframeIntervalFrames: Int
+    let profile: CFString
+}
+
+struct AdaptationSample {
+    let rxDropped: UInt64
+    let videoRxDecryptFail: UInt64
+}
+
+struct VideoAdaptationController {
+    let degradeStreakThreshold: Int
+    let upgradeStreakThreshold: Int
+    let holdSeconds: CFAbsoluteTime
+
+    private(set) var tier: VideoQualityTier = .high
+    private var lastSample: AdaptationSample?
+    private var poorSignalStreak = 0
+    private var goodSignalStreak = 0
+    private var lastTierChangeAt: CFAbsoluteTime = 0
+
+    init(
+        degradeStreakThreshold: Int = 2,
+        upgradeStreakThreshold: Int = 6,
+        holdSeconds: CFAbsoluteTime = 4.0,
+        initialTier: VideoQualityTier = .high
+    ) {
+        self.degradeStreakThreshold = degradeStreakThreshold
+        self.upgradeStreakThreshold = upgradeStreakThreshold
+        self.holdSeconds = holdSeconds
+        tier = initialTier
+        lastTierChangeAt = -holdSeconds
+    }
+
+    mutating func observe(sample: AdaptationSample, staleVideoSignal: Bool, now: CFAbsoluteTime) -> VideoQualityTier? {
+        defer { lastSample = sample }
+        guard let previous = lastSample else { return nil }
+
+        let dropDelta = sample.rxDropped >= previous.rxDropped
+            ? sample.rxDropped - previous.rxDropped
+            : 0
+        let decryptDelta = sample.videoRxDecryptFail >= previous.videoRxDecryptFail
+            ? sample.videoRxDecryptFail - previous.videoRxDecryptFail
+            : 0
+
+        let poorSignal = staleVideoSignal || decryptDelta > 0 || dropDelta >= 12
+        let goodSignal = !poorSignal && decryptDelta == 0 && dropDelta <= 2
+
+        if poorSignal {
+            poorSignalStreak += 1
+            goodSignalStreak = 0
+        } else if goodSignal {
+            goodSignalStreak += 1
+            poorSignalStreak = 0
+        } else {
+            poorSignalStreak = 0
+            goodSignalStreak = 0
+        }
+
+        if poorSignalStreak >= degradeStreakThreshold
+            && now - lastTierChangeAt >= holdSeconds
+            && tier != .low
+        {
+            poorSignalStreak = 0
+            tier = tier.lowerTier
+            lastTierChangeAt = now
+            return tier
+        }
+
+        if goodSignalStreak >= upgradeStreakThreshold
+            && now - lastTierChangeAt >= holdSeconds
+            && tier != .high
+        {
+            goodSignalStreak = 0
+            tier = tier.higherTier
+            lastTierChangeAt = now
+            return tier
+        }
+
+        return nil
     }
 }
 
@@ -41,12 +146,39 @@ final class VideoCaptureManager: NSObject {
     private var isRunning = false
 
     private let shared: SharedCaptureState
+    private var adaptationController = VideoAdaptationController()
 
     private nonisolated(unsafe) static let log = Logger(subsystem: "chat.pika", category: "VideoCaptureManager")
 
     init(core: (any AppCore)?) {
         self.shared = SharedCaptureState(core: core)
         super.init()
+    }
+
+    private static func settings(for tier: VideoQualityTier) -> VideoQualitySettings {
+        switch tier {
+        case .high:
+            return VideoQualitySettings(
+                bitrateBps: 1_500_000,
+                fps: 30,
+                keyframeIntervalFrames: 60,
+                profile: kVTProfileLevel_H264_Main_AutoLevel
+            )
+        case .medium:
+            return VideoQualitySettings(
+                bitrateBps: 900_000,
+                fps: 24,
+                keyframeIntervalFrames: 48,
+                profile: kVTProfileLevel_H264_Main_AutoLevel
+            )
+        case .low:
+            return VideoQualitySettings(
+                bitrateBps: 500_000,
+                fps: 15,
+                keyframeIntervalFrames: 30,
+                profile: kVTProfileLevel_H264_Baseline_AutoLevel
+            )
+        }
     }
 
     func startCapture() {
@@ -105,6 +237,23 @@ final class VideoCaptureManager: NSObject {
         }
     }
 
+    func updateAdaptationMetrics(debug: CallDebugStats?, staleVideoSignal: Bool) {
+        guard isRunning, let debug else { return }
+        let sample = AdaptationSample(
+            rxDropped: debug.rxDropped,
+            videoRxDecryptFail: debug.videoRxDecryptFail
+        )
+        let previousTier = adaptationController.tier
+        if let nextTier = adaptationController.observe(
+            sample: sample,
+            staleVideoSignal: staleVideoSignal,
+            now: CFAbsoluteTimeGetCurrent()
+        ) {
+            let reason = nextTier.rawValue < previousTier.rawValue ? "degrade" : "upgrade"
+            applyQualityTier(nextTier, reason: reason)
+        }
+    }
+
     // MARK: - Private
 
     private func setupCaptureSession() {
@@ -130,10 +279,13 @@ final class VideoCaptureManager: NSObject {
         }
 
         // Configure frame rate
+        let initialFps = Self.settings(for: adaptationController.tier).fps
+        shared.targetFps = initialFps
         do {
             try device.lockForConfiguration()
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            let frameDuration = CMTime(value: 1, timescale: initialFps)
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
             device.unlockForConfiguration()
         } catch {
             Self.log.error("failed to set frame rate: \(error.localizedDescription)")
@@ -191,18 +343,73 @@ final class VideoCaptureManager: NSObject {
             return
         }
 
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
-                             value: kVTProfileLevel_H264_Main_AutoLevel)
-        let bitrate = 1_500_000 as CFNumber // 1.5 Mbps
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate)
-        let keyframeInterval = 60 as CFNumber // every 2s at 30fps
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: keyframeInterval)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        applyEncoderSettings(session: session, tier: adaptationController.tier)
 
         VTCompressionSessionPrepareToEncodeFrames(session)
 
         shared.compressionSession = session
+    }
+
+    private func applyQualityTier(_ nextTier: VideoQualityTier, reason: String) {
+        let settings = Self.settings(for: nextTier)
+        shared.targetFps = settings.fps
+        Self.log.info(
+            "video quality tier=\(nextTier.rawValue) reason=\(reason) bitrate=\(settings.bitrateBps) fps=\(settings.fps)"
+        )
+
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            if let session = self.shared.compressionSession {
+                self.applyEncoderSettings(session: session, tier: nextTier)
+            }
+            self.applyCaptureFrameRateForCurrentInput(tier: nextTier)
+        }
+    }
+
+    private nonisolated func applyEncoderSettings(
+        session: VTCompressionSession,
+        tier: VideoQualityTier
+    ) {
+        let settings = Self.settings(for: tier)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: settings.profile)
+        let bitrate = settings.bitrateBps as CFNumber
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate)
+        let expectedFrameRate = Int(settings.fps) as CFNumber
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_ExpectedFrameRate,
+            value: expectedFrameRate
+        )
+        let keyframeInterval = settings.keyframeIntervalFrames as CFNumber
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            value: keyframeInterval
+        )
+        VTSessionSetProperty(
+            session,
+            key: kVTCompressionPropertyKey_AllowFrameReordering,
+            value: kCFBooleanFalse
+        )
+    }
+
+    private nonisolated func applyCaptureFrameRateForCurrentInput(tier: VideoQualityTier) {
+        let settings = Self.settings(for: tier)
+        for input in captureSession.inputs {
+            guard let deviceInput = input as? AVCaptureDeviceInput else { continue }
+            let device = deviceInput.device
+            do {
+                try device.lockForConfiguration()
+                let frameDuration = CMTime(value: 1, timescale: settings.fps)
+                device.activeVideoMinFrameDuration = frameDuration
+                device.activeVideoMaxFrameDuration = frameDuration
+                device.unlockForConfiguration()
+            } catch {
+                Self.log.error("failed to apply quality frame rate: \(error.localizedDescription)")
+            }
+            return
+        }
     }
 
     private func camera(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
@@ -211,13 +418,14 @@ final class VideoCaptureManager: NSObject {
 
     private nonisolated func encodeFrame(_ pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         guard let session = shared.compressionSession else { return }
+        let fps = shared.targetFps
 
         var flags: VTEncodeInfoFlags = []
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: presentationTime,
-            duration: CMTime(value: 1, timescale: 30),
+            duration: CMTime(value: 1, timescale: fps),
             frameProperties: nil,
             infoFlagsOut: &flags
         ) { [weak self] status, _, sampleBuffer in

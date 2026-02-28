@@ -32,7 +32,7 @@ impl OpusToAudioPipeline {
             return Err(anyhow!("channels must be > 0"));
         }
         Ok(Self {
-            codec: OpusCodec,
+            codec: OpusCodec::default(),
             segmenter: SilenceSegmenter::new(sample_rate_hz, channels),
             sample_rate_hz,
             channels,
@@ -343,7 +343,7 @@ mod tests {
         let sample_rate = 48_000u32;
         let channels = 1u8;
         let samples_per_frame = 960;
-        let codec = OpusCodec;
+        let codec = OpusCodec::default();
 
         let mut pipeline = OpusToAudioPipeline::new(sample_rate, channels).expect("pipeline init");
 

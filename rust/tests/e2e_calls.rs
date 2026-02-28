@@ -18,6 +18,15 @@ struct CallStatsSnapshot {
     tx_frames: u64,
     rx_frames: u64,
     jitter_buffer_ms: u32,
+    jitter_target_frames: u32,
+    rx_underflows: u64,
+    concealment_long: u64,
+    reconnect_count: u64,
+    subscription_ready_latency_ms: Option<u32>,
+    consecutive_disconnects: u64,
+    video_tx: u64,
+    video_rx: u64,
+    video_rx_decrypt_fail: u64,
 }
 
 fn call_stats_snapshot(app: &FfiApp) -> Option<CallStatsSnapshot> {
@@ -27,6 +36,15 @@ fn call_stats_snapshot(app: &FfiApp) -> Option<CallStatsSnapshot> {
         tx_frames: debug.tx_frames,
         rx_frames: debug.rx_frames,
         jitter_buffer_ms: debug.jitter_buffer_ms,
+        jitter_target_frames: debug.jitter_target_frames,
+        rx_underflows: debug.rx_underflows,
+        concealment_long: debug.concealment_long,
+        reconnect_count: debug.reconnect_count,
+        subscription_ready_latency_ms: debug.subscription_ready_latency_ms,
+        consecutive_disconnects: debug.consecutive_disconnects,
+        video_tx: debug.video_tx,
+        video_rx: debug.video_rx,
+        video_rx_decrypt_fail: debug.video_rx_decrypt_fail,
     })
 }
 
@@ -67,6 +85,24 @@ fn create_or_open_dm_chat(app: &FfiApp, peer_npub: &str, timeout: Duration) -> S
         std::thread::sleep(Duration::from_millis(500));
     }
     panic!("chat for peer {peer_npub} was not ready within {timeout:?}");
+}
+
+fn wait_until_since(
+    what: &str,
+    since: Instant,
+    timeout: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> Duration {
+    loop {
+        let elapsed = since.elapsed();
+        if elapsed >= timeout {
+            panic!("{what}: condition not met within {timeout:?}");
+        }
+        if predicate() {
+            return elapsed;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +256,98 @@ fn call_over_local_moq_relay() {
         "bob jitter buffer should stay bounded, got {}ms",
         bob_after.jitter_buffer_ms
     );
+    assert!(
+        alice_after.jitter_target_frames <= 8,
+        "alice adaptive jitter target should stay bounded, got {} frames",
+        alice_after.jitter_target_frames
+    );
+    assert!(
+        bob_after.jitter_target_frames <= 8,
+        "bob adaptive jitter target should stay bounded, got {} frames",
+        bob_after.jitter_target_frames
+    );
+
+    let alice_rx_delta = alice_after.rx_frames.saturating_sub(alice_snap.rx_frames);
+    let bob_rx_delta = bob_after.rx_frames.saturating_sub(bob_snap.rx_frames);
+    let alice_underflow_delta = alice_after
+        .rx_underflows
+        .saturating_sub(alice_snap.rx_underflows);
+    let bob_underflow_delta = bob_after
+        .rx_underflows
+        .saturating_sub(bob_snap.rx_underflows);
+    let alice_long_conceal_delta = alice_after
+        .concealment_long
+        .saturating_sub(alice_snap.concealment_long);
+    let bob_long_conceal_delta = bob_after
+        .concealment_long
+        .saturating_sub(bob_snap.concealment_long);
+
+    assert!(
+        alice_underflow_delta <= 6,
+        "alice underflows spiked unexpectedly over 2s: {}",
+        alice_underflow_delta
+    );
+    assert!(
+        bob_underflow_delta <= 6,
+        "bob underflows spiked unexpectedly over 2s: {}",
+        bob_underflow_delta
+    );
+    assert!(
+        alice_long_conceal_delta <= 6,
+        "alice long-gap concealment should not dominate over 2s: {}",
+        alice_long_conceal_delta
+    );
+    assert!(
+        bob_long_conceal_delta <= 6,
+        "bob long-gap concealment should not dominate over 2s: {}",
+        bob_long_conceal_delta
+    );
+    assert!(
+        alice_underflow_delta.saturating_mul(5) <= alice_rx_delta.saturating_add(1),
+        "alice audio path is underflow-heavy: underflows={} rx_delta={}",
+        alice_underflow_delta,
+        alice_rx_delta
+    );
+    assert!(
+        bob_underflow_delta.saturating_mul(5) <= bob_rx_delta.saturating_add(1),
+        "bob audio path is underflow-heavy: underflows={} rx_delta={}",
+        bob_underflow_delta,
+        bob_rx_delta
+    );
+
+    // If video counters are active in this environment, enforce continuity windows.
+    if alice_after.video_tx > 0
+        || alice_after.video_rx > 0
+        || bob_after.video_tx > 0
+        || bob_after.video_rx > 0
+    {
+        let video_window_start = (
+            call_stats_snapshot(&alice).expect("alice video window start"),
+            call_stats_snapshot(&bob).expect("bob video window start"),
+        );
+        std::thread::sleep(Duration::from_secs(4));
+        let video_window_end = (
+            call_stats_snapshot(&alice).expect("alice video window end"),
+            call_stats_snapshot(&bob).expect("bob video window end"),
+        );
+        assert!(
+            video_window_end.0.video_tx > video_window_start.0.video_tx
+                || video_window_end.1.video_tx > video_window_start.1.video_tx,
+            "video continuity window: expected video tx to advance"
+        );
+        assert!(
+            video_window_end.0.video_rx >= video_window_start.0.video_rx
+                && video_window_end.1.video_rx >= video_window_start.1.video_rx,
+            "video continuity window: video rx should not regress"
+        );
+        assert!(
+            video_window_end.0.video_rx_decrypt_fail
+                <= video_window_start.0.video_rx_decrypt_fail.saturating_add(8)
+                && video_window_end.1.video_rx_decrypt_fail
+                    <= video_window_start.1.video_rx_decrypt_fail.saturating_add(8),
+            "video continuity window: decrypt failures spiked unexpectedly"
+        );
+    }
 
     alice.dispatch(AppAction::EndCall);
     wait_until("alice call ended", Duration::from_secs(10), || {
@@ -260,6 +388,265 @@ fn call_over_local_moq_relay() {
             debug.tx_frames, debug.rx_frames, debug.rx_dropped
         );
     }
+}
+
+#[test]
+#[ignore] // requires local relay+moq binaries (use `nix develop`)
+fn call_recovers_after_fixture_restart() {
+    const RECOVERY_WINDOW: Duration = Duration::from_secs(20);
+    const FORCED_DOWNTIME: Duration = Duration::from_secs(3);
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let mut infra = support::TestInfra::start_relay_and_moq();
+    let moq_url = infra.moq_url.clone().expect("moq_url required");
+    let relay_url = infra.relay_url.clone();
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config_with_moq(
+        &dir_a.path().to_string_lossy(),
+        &relay_url,
+        Some(&relay_url),
+        &moq_url,
+    );
+    write_config_with_moq(
+        &dir_b.path().to_string_lossy(),
+        &relay_url,
+        Some(&relay_url),
+        &moq_url,
+    );
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(90));
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
+        bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob ringing", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ringing))
+            .unwrap_or(false)
+    });
+    bob.dispatch(AppAction::AcceptCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("alice active", Duration::from_secs(30), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Active))
+            .unwrap_or(false)
+    });
+    wait_until("bob active", Duration::from_secs(30), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Active))
+            .unwrap_or(false)
+    });
+    wait_until(
+        "alice tx+rx before restart",
+        Duration::from_secs(20),
+        || {
+            alice
+                .state()
+                .active_call
+                .as_ref()
+                .and_then(|c| c.debug.as_ref())
+                .map(|d| d.tx_frames > 5 && d.rx_frames > 5)
+                .unwrap_or(false)
+        },
+    );
+    wait_until("bob tx+rx before restart", Duration::from_secs(20), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .and_then(|c| c.debug.as_ref())
+            .map(|d| d.tx_frames > 5 && d.rx_frames > 5)
+            .unwrap_or(false)
+    });
+
+    let alice_before = call_stats_snapshot(&alice).expect("alice stats before restart");
+    let bob_before = call_stats_snapshot(&bob).expect("bob stats before restart");
+
+    let restart_start = Instant::now();
+    infra.restart_with_downtime(FORCED_DOWNTIME);
+
+    let alice_reconnect_elapsed = wait_until_since(
+        "alice reconnect observed",
+        restart_start,
+        RECOVERY_WINDOW,
+        || {
+            call_stats_snapshot(&alice)
+                .map(|s| s.reconnect_count > alice_before.reconnect_count)
+                .unwrap_or(false)
+        },
+    );
+    let bob_reconnect_elapsed = wait_until_since(
+        "bob reconnect observed",
+        restart_start,
+        RECOVERY_WINDOW,
+        || {
+            call_stats_snapshot(&bob)
+                .map(|s| s.reconnect_count > bob_before.reconnect_count)
+                .unwrap_or(false)
+        },
+    );
+
+    let alice_recovered_elapsed = wait_until_since(
+        "alice recovers tx/rx after fixture restart",
+        restart_start,
+        RECOVERY_WINDOW,
+        || {
+            call_stats_snapshot(&alice)
+                .map(|s| {
+                    s.tx_frames > alice_before.tx_frames && s.rx_frames > alice_before.rx_frames
+                })
+                .unwrap_or(false)
+        },
+    );
+    let bob_recovered_elapsed = wait_until_since(
+        "bob recovers tx/rx after fixture restart",
+        restart_start,
+        RECOVERY_WINDOW,
+        || {
+            call_stats_snapshot(&bob)
+                .map(|s| s.tx_frames > bob_before.tx_frames && s.rx_frames > bob_before.rx_frames)
+                .unwrap_or(false)
+        },
+    );
+    eprintln!(
+        "[test] restart recovery elapsed: alice_reconnect={:?} bob_reconnect={:?} alice_media={:?} bob_media={:?}",
+        alice_reconnect_elapsed, bob_reconnect_elapsed, alice_recovered_elapsed, bob_recovered_elapsed
+    );
+
+    let alice_after = call_stats_snapshot(&alice).expect("alice stats after restart");
+    let bob_after = call_stats_snapshot(&bob).expect("bob stats after restart");
+    assert!(
+        alice_after.subscription_ready_latency_ms.is_some(),
+        "alice should expose subscription readiness telemetry"
+    );
+    assert!(
+        bob_after.subscription_ready_latency_ms.is_some(),
+        "bob should expose subscription readiness telemetry"
+    );
+    assert_eq!(
+        alice_after.consecutive_disconnects, 0,
+        "alice disconnect streak should reset after successful recovery"
+    );
+    assert_eq!(
+        bob_after.consecutive_disconnects, 0,
+        "bob disconnect streak should reset after successful recovery"
+    );
+
+    alice.dispatch(AppAction::EndCall);
+    wait_until("alice call ended", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ended { .. }))
+            .unwrap_or(true)
+    });
+}
+
+#[test]
+#[ignore] // requires local relay fixture (use `nix develop`)
+fn call_start_fails_when_subscription_never_becomes_ready() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let infra = support::TestInfra::start_relay();
+    let relay_url = infra.relay_url.clone();
+    let unreachable_moq_url = "ws://127.0.0.1:65535/anon";
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config_with_moq(
+        &dir_a.path().to_string_lossy(),
+        &relay_url,
+        Some(&relay_url),
+        unreachable_moq_url,
+    );
+    write_config_with_moq(
+        &dir_b.path().to_string_lossy(),
+        &relay_url,
+        Some(&relay_url),
+        unreachable_moq_url,
+    );
+
+    let alice = FfiApp::new(dir_a.path().to_string_lossy().to_string(), String::new());
+    let bob = FfiApp::new(dir_b.path().to_string_lossy().to_string(), String::new());
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(90));
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
+        bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("bob ringing", Duration::from_secs(10), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|c| matches!(c.status, CallStatus::Ringing))
+            .unwrap_or(false)
+    });
+
+    bob.dispatch(AppAction::AcceptCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until(
+        "bob runtime fails fast when subscription cannot become ready",
+        Duration::from_secs(20),
+        || {
+            bob.state()
+                .active_call
+                .as_ref()
+                .map(|c| {
+                    matches!(
+                        &c.status,
+                        CallStatus::Ended { reason } if reason == "runtime_error"
+                    )
+                })
+                .unwrap_or(false)
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------

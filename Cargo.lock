@@ -5911,7 +5911,7 @@ dependencies = [
  "pika-media",
  "pika-relay-profiles",
  "pika-tls",
- "pikahub",
+ "pikahut",
  "rand 0.8.5",
  "regex",
  "reqwest",
@@ -5987,7 +5987,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pikahub"
+name = "pikahut"
 version = "0.1.0"
 dependencies = [
  "anyhow",

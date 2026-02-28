@@ -4,11 +4,11 @@ set -euo pipefail
 # Quick smoke test: two users, local relay, send+receive.
 #
 # Starts its own pika-relay on a free port, runs the test, then cleans up.
-# Uses pikahub for relay lifecycle.
+# Uses pikahut for relay lifecycle.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-. tools/lib/pikahub.sh
+. tools/lib/pikahut.sh
 
 with_media=0
 external_relay=""
@@ -45,7 +45,7 @@ done
 STATE_DIR="$(mktemp -d /tmp/pikachat-smoke.XXXXXX)"
 
 cleanup() {
-  pikahub_down "$STATE_DIR"
+  pikahut_down "$STATE_DIR"
 }
 trap cleanup EXIT
 
@@ -54,7 +54,7 @@ trap cleanup EXIT
 if [ -n "$external_relay" ]; then
   relay="$external_relay"
 else
-  pikahub_up relay "$STATE_DIR"
+  pikahut_up relay "$STATE_DIR"
   relay="$RELAY_URL"
   echo "relay: $relay"
 fi

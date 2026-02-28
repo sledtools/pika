@@ -12,7 +12,7 @@ SCENARIO="$1"
 shift || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-. "${REPO_ROOT}/tools/lib/pikahub.sh"
+. "${REPO_ROOT}/tools/lib/pikahut.sh"
 
 AUTO_STATE_DIR=0
 if [[ -z "${STATE_DIR:-}" ]]; then
@@ -23,7 +23,7 @@ RELAY_URL="${RELAY_URL:-}"
 
 cleanup() {
   if [[ -z "${RELAY_URL_WAS_SET:-}" ]]; then
-    pikahub_down "${STATE_DIR}"
+    pikahut_down "${STATE_DIR}"
   elif [[ "${AUTO_STATE_DIR}" == "1" ]]; then
     rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
   fi
@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${RELAY_URL}" ]]; then
-  pikahub_up relay "${STATE_DIR}"
+  pikahut_up relay "${STATE_DIR}"
 else
   RELAY_URL_WAS_SET=1
 fi

@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pikahub::{config, fixture};
+use pikahut::{config, fixture};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "pikahub")]
+#[command(name = "pikahut")]
 #[command(about = "Unified test environment runner for Pika")]
 struct Cli {
     #[command(subcommand)]
@@ -89,7 +89,7 @@ enum Command {
         #[arg(long, default_value = "60")]
         timeout: u64,
     },
-    /// Kill all pikahub processes and remove state directory
+    /// Kill all pikahut processes and remove state directory
     Nuke {
         #[arg(long)]
         state_dir: Option<PathBuf>,

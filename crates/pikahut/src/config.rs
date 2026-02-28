@@ -8,7 +8,7 @@ pub const DEFAULT_PORT_BASE: u16 = 19_400;
 pub const DEFAULT_RELAY_PORT: u16 = DEFAULT_PORT_BASE; // 19400
 pub const DEFAULT_SERVER_PORT: u16 = DEFAULT_PORT_BASE + 1; // 19401
 pub const DEFAULT_MOQ_PORT: u16 = DEFAULT_PORT_BASE + 2; // 19402
-pub const DEFAULT_STATE_DIR: &str = ".pikahub";
+pub const DEFAULT_STATE_DIR: &str = ".pikahut";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -132,7 +132,7 @@ impl ResolvedConfig {
         let overlay = overlay.unwrap_or_default();
 
         // relay_port=0 is passed through to the Go relay which binds :0 natively;
-        // pikahub discovers the actual port from the relay's log output.
+        // pikahut discovers the actual port from the relay's log output.
         // For non-zero ports, verify availability and fall back to 0 (Go native :0) on conflict.
         let relay_port_pref = relay_port_cli
             .or(overlay.relay.as_ref().and_then(|r| r.port))
@@ -259,7 +259,7 @@ fn find_workspace_root() -> Result<PathBuf> {
 }
 
 /// Resolve the state directory. If no explicit path is given, defaults to
-/// `<workspace_root>/.pikahub` so that down/status/env/logs/exec/wait
+/// `<workspace_root>/.pikahut` so that down/status/env/logs/exec/wait
 /// work regardless of CWD.
 pub fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf> {
     match state_dir {

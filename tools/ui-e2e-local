@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Deterministic local E2E UI runner:
-# - starts a local pika-relay + Rust bot via pikahub
+# - starts a local pika-relay + Rust bot via pikahut
 # - runs platform UI E2E tests against that relay+bot
 #
 # Usage:
@@ -16,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-. tools/lib/pikahub.sh
+. tools/lib/pikahut.sh
 
 platform=""
 KEEP="${KEEP:-0}"
@@ -84,15 +84,15 @@ STATE_DIR="$(mktemp -d /tmp/pika-ui-e2e-local.XXXXXX)"
 
 cleanup() {
   if [ "${KEEP}" != "1" ]; then
-    pikahub_down "$STATE_DIR"
+    pikahut_down "$STATE_DIR"
   else
-    pikahub_stop "$STATE_DIR"
+    pikahut_stop "$STATE_DIR"
     echo "note: keeping state dir: ${STATE_DIR}" >&2
   fi
 }
 trap cleanup EXIT
 
-# ── Start relay + bot via pikahub ───────────────────────────────────────
+# ── Start relay + bot via pikahut ───────────────────────────────────────
 
 FIXTURE_CONFIG="$STATE_DIR/fixture-config.toml"
 cat > "$FIXTURE_CONFIG" <<EOF
@@ -100,8 +100,8 @@ cat > "$FIXTURE_CONFIG" <<EOF
 timeout_secs = ${BOT_TIMEOUT_SEC}
 EOF
 
-pikahub_up relay-bot "$STATE_DIR" --config "$FIXTURE_CONFIG"
-BOT_NPUB="$(pikahub_manifest_field bot_npub)"
+pikahut_up relay-bot "$STATE_DIR" --config "$FIXTURE_CONFIG"
+BOT_NPUB="$(pikahut_manifest_field bot_npub)"
 
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 

@@ -5,7 +5,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 ROOT_DIR="$(pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-. "${REPO_ROOT}/tools/lib/pikahub.sh"
+. "${REPO_ROOT}/tools/lib/pikahut.sh"
 
 AUTO_STATE_DIR=0
 if [[ -z "${STATE_DIR:-}" ]]; then
@@ -37,7 +37,7 @@ cleanup() {
     tail -n 120 "${OPENCLAW_LOG:-/dev/null}" >&2 || true
   fi
   if [[ -z "${RELAY_URL_WAS_SET:-}" ]]; then
-    pikahub_down "${STATE_DIR_ABS}"
+    pikahut_down "${STATE_DIR_ABS}"
   elif [[ "${AUTO_STATE_DIR}" == "1" ]]; then
     rm -rf "${STATE_DIR}" >/dev/null 2>&1 || true
   fi
@@ -46,7 +46,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "${RELAY_URL}" ]]; then
-  pikahub_up relay "${STATE_DIR_ABS}"
+  pikahut_up relay "${STATE_DIR_ABS}"
 else
   RELAY_URL_WAS_SET=1
 fi

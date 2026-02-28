@@ -4,13 +4,13 @@ use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use pikahub::config::{ProfileName, ResolvedConfig};
-use pikahub::{fixture, manifest::Manifest};
+use pikahut::config::{ProfileName, ResolvedConfig};
+use pikahut::{fixture, manifest::Manifest};
 
 /// Provides relay + moq URLs for E2E tests.
 ///
-/// In local mode (default): starts pikahub in the background with a temp state dir.
-/// On Drop, calls `pikahub::fixture::down_sync` to clean up.
+/// In local mode (default): starts pikahut in the background with a temp state dir.
+/// On Drop, calls `pikahut::fixture::down_sync` to clean up.
 pub struct TestInfra {
     pub relay_url: String,
     pub moq_url: Option<String>,
@@ -18,9 +18,9 @@ pub struct TestInfra {
 }
 
 impl TestInfra {
-    /// Start local infra via pikahub. `need_moq` controls whether moq-relay is included.
+    /// Start local infra via pikahut. `need_moq` controls whether moq-relay is included.
     pub fn start_local(need_moq: bool) -> Self {
-        let state_dir = tempfile::tempdir().expect("tempdir for pikahub").keep();
+        let state_dir = tempfile::tempdir().expect("tempdir for pikahut").keep();
         let profile = if need_moq {
             ProfileName::RelayMoq
         } else {
@@ -35,7 +35,7 @@ impl TestInfra {
             None,
             Some(state_dir.clone()),
         )
-        .unwrap_or_else(|e| panic!("resolve pikahub config failed: {e:#}"));
+        .unwrap_or_else(|e| panic!("resolve pikahut config failed: {e:#}"));
 
         let startup_resolved = resolved.clone();
         let startup_state_dir = state_dir.clone();
@@ -43,20 +43,20 @@ impl TestInfra {
             fixture::up_background(&startup_resolved).await?;
             let manifest = Manifest::load(&startup_state_dir)?.ok_or_else(|| {
                 anyhow!(
-                    "manifest missing after pikahub startup at {}",
+                    "manifest missing after pikahut startup at {}",
                     startup_state_dir.display()
                 )
             })?;
             fixture::wait(&startup_state_dir, 30).await?;
             Ok(manifest)
         });
-        let manifest = startup.unwrap_or_else(|e| panic!("start pikahub fixture failed: {e:#}"));
+        let manifest = startup.unwrap_or_else(|e| panic!("start pikahut fixture failed: {e:#}"));
 
         let relay_url = manifest.relay_url.expect("manifest missing relay_url");
         let moq_url = manifest.moq_url;
 
         if need_moq && moq_url.is_none() {
-            panic!("requested moq but pikahub manifest has no moq_url");
+            panic!("requested moq but pikahut manifest has no moq_url");
         }
 
         eprintln!("[TestInfra] local relay={relay_url}");
@@ -87,7 +87,7 @@ impl Drop for TestInfra {
         if let Some(state_dir) = self.state_dir.take() {
             if let Err(e) = fixture::down_sync(&state_dir) {
                 eprintln!(
-                    "[TestInfra] WARNING: pikahub down failed for {}: {e:#}",
+                    "[TestInfra] WARNING: pikahut down failed for {}: {e:#}",
                     state_dir.display()
                 );
             }

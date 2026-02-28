@@ -5,13 +5,13 @@ set -euo pipefail
 # from marmot-interop-lab-rust over a local relay.
 #
 # This script:
-# 1) starts a local pika-relay via pikahub
+# 1) starts a local pika-relay via pikahut
 # 2) starts the rust_harness "bot" (publishes kind 443 + waits for a welcome)
 # 3) runs the Pika core baseline client to create a chat and verify `ping` -> `pong`
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-. tools/lib/pikahub.sh
+. tools/lib/pikahut.sh
 
 KEEP=0
 MANUAL=0
@@ -79,16 +79,16 @@ cleanup() {
     wait "${BOT_PID}" >/dev/null 2>&1 || true
   fi
   if [ "$KEEP" -eq 0 ] && [ -z "${PIKA_INTEROP_STATE_DIR:-}" ]; then
-    pikahub_down "$STATE_DIR"
+    pikahut_down "$STATE_DIR"
   else
-    pikahub_stop "$STATE_DIR"
+    pikahut_stop "$STATE_DIR"
   fi
 }
 trap cleanup EXIT
 
-# ── Start relay via pikahub ─────────────────────────────────────────────
+# ── Start relay via pikahut ─────────────────────────────────────────────
 
-pikahub_up relay "$STATE_DIR"
+pikahut_up relay "$STATE_DIR"
 ANDROID_RELAY_URL="ws://10.0.2.2:${RELAY_PORT}"
 
 echo "relay_url=${RELAY_URL}"

@@ -18,7 +18,7 @@ members = [
   "crates/rmp-cli",
   "crates/pika-server",
   "crates/pika-test-utils",
-  "crates/pikahub",
+  "crates/pikahut",
   "crates/vm-spawner",
 ]
 

@@ -457,7 +457,7 @@ EOF
             '' else ""}
 
             # PostgreSQL defaults for pika-server.
-            # Database startup is explicit via `pikahub up --profile postgres`.
+            # Database startup is explicit via `pikahut up --profile postgres`.
             export PGDATA="''${PGDATA:-$PWD/crates/pika-server/.pgdata}"
             export PGHOST="''${PGHOST:-$PGDATA}"
             export DATABASE_URL="''${DATABASE_URL:-postgresql:///pika_server?host=$PGDATA}"
@@ -473,7 +473,7 @@ EOF
             echo "  NDK:          $ANDROID_NDK_HOME"
             '' else ""}
             echo "  DATABASE_URL: $DATABASE_URL"
-            echo "  Postgres:     run 'cargo run -p pikahub -- up --profile postgres' when needed"
+            echo "  Postgres:     run 'cargo run -p pikahut -- up --profile postgres' when needed"
             if [ "$(uname -s)" = "Darwin" ]; then
               echo "  Xcode:        ''${DEVELOPER_DIR:-not found}"
             fi

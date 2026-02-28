@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-. tools/lib/pikahub.sh
+. tools/lib/pikahut.sh
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "error: tools/primal-ios-interop-lab requires macOS" >&2
@@ -270,7 +270,7 @@ run_lab() {
   tap_log="$run_dir/nostr_connect_tap.log"
   sim_log="$run_dir/sim.log"
 
-  pikahub_up relay "$run_dir"
+  pikahut_up relay "$run_dir"
   relay_url="$RELAY_URL"
   relay_port="$RELAY_PORT"
 
@@ -421,7 +421,7 @@ cleanup() {
     wait "$TAP_PID" >/dev/null 2>&1 || true
   fi
   if [ -n "${LAST_RUN_DIR:-}" ]; then
-    pikahub_stop "$LAST_RUN_DIR"
+    pikahut_stop "$LAST_RUN_DIR"
   fi
 }
 trap cleanup EXIT

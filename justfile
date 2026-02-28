@@ -45,7 +45,7 @@ info:
     @echo
     @echo "Agent demos"
     @echo "  Local backend (postgres + relay + server):"
-    @echo "    just pikahub"
+    @echo "    just pikahut-up"
     @echo "  Fly demo (against local backend):"
     @echo "    just agent-fly-local"
     @echo "  Fly demo (against deployed backend):"
@@ -229,7 +229,7 @@ pre-commit: fmt
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
     cargo clippy -p pika-server --tests -- -D warnings
-    cargo clippy -p pikahub -- -D warnings
+    cargo clippy -p pikahut -- -D warnings
 
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt
@@ -247,11 +247,11 @@ pre-merge-pika: fmt
 pre-merge-notifications:
     #!/usr/bin/env bash
     set -euo pipefail
-    SD="$(mktemp -d /tmp/pikahub-notifications.XXXXXX)"
-    cleanup() { cargo run -q -p pikahub -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+    SD="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
+    cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT
-    cargo run -q -p pikahub -- up --profile postgres --background --state-dir "$SD" >/dev/null
-    eval "$(cargo run -q -p pikahub -- env --state-dir "$SD")"
+    cargo run -q -p pikahut -- up --profile postgres --background --state-dir "$SD" >/dev/null
+    eval "$(cargo run -q -p pikahut -- env --state-dir "$SD")"
     cargo clippy -p pika-server -- -D warnings
     cargo test -p pika-server -- --test-threads=1
     echo "pre-merge-notifications complete"
@@ -279,18 +279,18 @@ pre-merge-rmp:
     just rmp-init-smoke-ci
     @echo "pre-merge-rmp complete"
 
-# CI-safe pre-merge for the pikahub tooling lane.
+# CI-safe pre-merge for the pikahut tooling lane.
 pre-merge-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo clippy -p pikahub -- -D warnings
-    cargo test -p pikahub
-    SD="$(mktemp -d /tmp/pikahub-smoke.XXXXXX)"
-    cleanup() { cargo run -q -p pikahub -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+    cargo clippy -p pikahut -- -D warnings
+    cargo test -p pikahut
+    SD="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
+    cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT
-    cargo run -q -p pikahub -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
-    cargo run -q -p pikahub -- wait --state-dir "$SD" --timeout 30
-    cargo run -q -p pikahub -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
+    cargo run -q -p pikahut -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
+    cargo run -q -p pikahut -- wait --state-dir "$SD" --timeout 30
+    cargo run -q -p pikahut -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
     echo "pre-merge-fixture complete"
 
 # Single CI entrypoint for the whole repo.
@@ -757,19 +757,19 @@ relay-build:
 # ── Local backend (postgres + relay + pika-server) ──────────────────────────
 # Start local backend (postgres, pika-relay, pika-server with agent control).
 
-# State persists in .pikahub/. Press Ctrl-C to stop all services.
-pikahub:
-    cargo run -p pikahub -- up --profile backend
+# State persists in .pikahut/. Press Ctrl-C to stop all services.
+pikahut-up:
+    cargo run -p pikahut -- up --profile backend
 
-# TUI: pikahub + component logs + interactive shell via mprocs.
+# TUI: pikahut-up + component logs + interactive shell via mprocs.
 pikahut:
     mprocs
 
-# Run agent-fly against local backend (requires `just pikahub` in another terminal).
+# Run agent-fly against local backend (requires `just pikahut-up` in another terminal).
 agent-fly-local *ARGS="":
     #!/usr/bin/env bash
     set -euo pipefail
-    eval "$(cargo run -q -p pikahub -- env)"
+    eval "$(cargo run -q -p pikahut -- env)"
     if [ ! -f .env ]; then
       echo "error: missing .env in repo root"
       echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"

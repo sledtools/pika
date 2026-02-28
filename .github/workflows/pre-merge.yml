@@ -22,6 +22,7 @@ jobs:
     outputs:
       pika: ${{ steps.filter.outputs.pika || 'true' }}
       pikachat: ${{ steps.filter.outputs.pikachat || 'true' }}
+      pikachat_openclaw_e2e: ${{ steps.filter.outputs.pikachat_openclaw_e2e || 'true' }}
       agent_contracts: ${{ steps.filter.outputs.agent_contracts || 'true' }}
       rmp: ${{ steps.filter.outputs.rmp || 'true' }}
       notifications: ${{ steps.filter.outputs.notifications || 'true' }}
@@ -69,6 +70,9 @@ jobs:
               - 'pikachat-openclaw/**'
               - 'crates/pika-media/**'
               - 'crates/pika-tls/**'
+            pikachat_openclaw_e2e:
+              - 'cli/**'
+              - 'pikachat-openclaw/openclaw/extensions/pikachat-openclaw/**'
             agent_contracts:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -114,7 +118,7 @@ jobs:
               - 'nix/**'
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
-              - 'crates/pikahub/**'
+              - 'crates/pikahut/**'
               - 'crates/pika-marmot-runtime/**'
               - 'cmd/pika-relay/**'
 
@@ -177,6 +181,42 @@ jobs:
           path: target
 
       - run: nix develop .#default -c just pre-merge-pikachat
+
+  check-pikachat-openclaw-e2e:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && github.actor != 'clarkmoody' && 'ci-approval' || 'ci-auto' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openclaw/openclaw
+          path: openclaw
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R "$(id -u):$(id -g)" /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just openclaw-pikachat-e2e
 
   check-agent-contracts:
     needs: [detect-changes]
@@ -296,7 +336,7 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [detect-changes, check-pika, check-pikachat, check-agent-contracts, check-rmp, check-notifications, check-fixture]
+    needs: [detect-changes, check-pika, check-pikachat, check-pikachat-openclaw-e2e, check-agent-contracts, check-rmp, check-notifications, check-fixture]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate lane results
@@ -305,17 +345,19 @@ jobs:
           echo "detect-changes outputs:"
           echo "  pika=${{ needs.detect-changes.outputs.pika }}"
           echo "  pikachat=${{ needs.detect-changes.outputs.pikachat }}"
+          echo "  pikachat_openclaw_e2e=${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}"
           echo "  agent_contracts=${{ needs.detect-changes.outputs.agent_contracts }}"
           echo "  rmp=${{ needs.detect-changes.outputs.rmp }}"
           echo "  notifications=${{ needs.detect-changes.outputs.notifications }}"
           echo "  fixture=${{ needs.detect-changes.outputs.fixture }}"
 
-          echo "Blocking deterministic lanes:"
-          for lane in pika pikachat agent-contracts rmp notifications fixture; do
+          echo "Blocking pre-merge lanes:"
+          for lane in pika pikachat pikachat-openclaw-e2e agent-contracts rmp notifications fixture; do
             result=""
             case "$lane" in
               pika)          result="${{ needs.check-pika.result }}" ;;
               pikachat)      result="${{ needs.check-pikachat.result }}" ;;
+              pikachat-openclaw-e2e) result="${{ needs.check-pikachat-openclaw-e2e.result }}" ;;
               agent-contracts) result="${{ needs.check-agent-contracts.result }}" ;;
               rmp)           result="${{ needs.check-rmp.result }}" ;;
               notifications) result="${{ needs.check-notifications.result }}" ;;
@@ -399,6 +441,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/checkout@v4
+        with:
+          repository: openclaw/openclaw
+          path: openclaw
+
       - uses: useblacksmith/stickydisk@v1
         with:
           key: ${{ github.repository }}-nix-v1-${{ runner.os }}
@@ -419,7 +466,7 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - run: nix develop .#default -c just nightly-pikachat
+      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just nightly-pikachat
 
   nightly-pika-ui-android:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')

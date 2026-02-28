@@ -1,4 +1,4 @@
-//! E2E call tests: signaling + media transport via pikahub.
+//! E2E call tests: signaling + media transport via pikahut.
 //!
 //! All tests are #[ignore] -- they require moq-relay and/or pikachat binaries
 //! on PATH (use `nix develop`). They run in nightly, not pre-merge.

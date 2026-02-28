@@ -1,13 +1,13 @@
 procs:
-  pikahub:
-    cmd: ["cargo", "run", "-p", "pikahub", "--", "up", "--profile", "backend"]
+  pikahut:
+    cmd: ["cargo", "run", "-p", "pikahut", "--", "up", "--profile", "backend"]
   relay:
-    cmd: ["tail", "-f", ".pikahub/relay.log"]
+    cmd: ["tail", "-f", ".pikahut/relay.log"]
   moq:
-    cmd: ["tail", "-f", ".pikahub/moq.log"]
+    cmd: ["tail", "-f", ".pikahut/moq.log"]
   server:
-    cmd: ["tail", "-f", ".pikahub/server.log"]
+    cmd: ["tail", "-f", ".pikahut/server.log"]
   postgres:
-    cmd: ["tail", "-f", ".pikahub/pgdata/postgres.log"]
+    cmd: ["tail", "-f", ".pikahut/pgdata/postgres.log"]
   shell:
-    shell: "eval $(cargo run -q -p pikahub -- env) && exec $SHELL"
+    shell: "eval $(cargo run -q -p pikahut -- env) && exec $SHELL"

@@ -1,6 +1,6 @@
 //! E2E messaging tests: account creation, key packages, group chat, message delivery, dedup.
 //!
-//! Uses pikahub for local infrastructure (default). All tests run in pre-merge.
+//! Uses pikahut for local infrastructure (default). All tests run in pre-merge.
 
 use std::time::{Duration, Instant};
 

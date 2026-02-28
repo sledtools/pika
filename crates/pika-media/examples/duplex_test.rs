@@ -39,7 +39,7 @@ fn make_keys(label: &str) -> FrameKeyMaterial {
 
 #[cfg(feature = "network")]
 struct Party {
-    name: String,
+    _name: String,
     relay: NetworkRelay,
     tx_track: TrackAddress,
     rx_track: TrackAddress,
@@ -69,7 +69,7 @@ fn main() {
 
     // Alice publishes to alice's broadcast, subscribes to bob's
     let alice = Party {
-        name: "Alice".to_string(),
+        _name: "Alice".to_string(),
         relay: NetworkRelay::new(relay_url).expect("alice relay"),
         tx_track: TrackAddress {
             broadcast_path: format!("{broadcast_base}/{alice_label}"),
@@ -88,7 +88,7 @@ fn main() {
 
     // Bob publishes to bob's broadcast, subscribes to alice's
     let bob = Party {
-        name: "Bob".to_string(),
+        _name: "Bob".to_string(),
         relay: NetworkRelay::new(relay_url).expect("bob relay"),
         tx_track: TrackAddress {
             broadcast_path: format!("{broadcast_base}/{bob_label}"),

@@ -491,6 +491,7 @@ fn tpl_workspace_toml(include_iced: bool) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tpl_rmp_toml(
     project_name: &str,
     org: &str,

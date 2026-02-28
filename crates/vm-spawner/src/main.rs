@@ -47,9 +47,8 @@ async fn main() -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            match health_manager.list().await.len() {
-                count => info!(vm_count = count, "vm-spawner health tick"),
-            }
+            let count = health_manager.list().await.len();
+            info!(vm_count = count, "vm-spawner health tick");
         }
     });
 

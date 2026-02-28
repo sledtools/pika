@@ -218,22 +218,16 @@ fmt:
 
 # Lint with clippy.
 clippy *ARGS:
-    cargo clippy -p pika_core {{ ARGS }} -- -D warnings
+    cargo clippy --all-targets {{ ARGS }} -- -D warnings
 
 # Local pre-commit checks (fmt + clippy + justfile + docs checks).
-pre-commit: fmt
+pre-commit: fmt clippy
     just --fmt --check --unstable
     npx --yes @justinmoon/agent-tools check-docs
     npx --yes @justinmoon/agent-tools check-justfile
-    just clippy --lib --tests
-    cargo clippy -p pikachat --tests -- -D warnings
-    cargo clippy -p pikachat-sidecar --tests -- -D warnings
-    cargo clippy -p pika-server --tests -- -D warnings
-    cargo clippy -p pikahub -- -D warnings
 
 # CI-safe pre-merge for the Pika app lane.
-pre-merge-pika: fmt
-    just clippy --lib --tests
+pre-merge-pika: fmt clippy
     just test --lib --tests
     cd android && ./gradlew :app:compileDebugAndroidTestKotlin
     cargo build -p pikachat

@@ -37,6 +37,16 @@ just pre-merge-agent-contracts
 just pre-merge-pikachat
 ```
 
+For the `pikachat-openclaw` pyramid specifically:
+
+```bash
+# Deterministic lane (pre-merge)
+just openclaw-pikachat-deterministic
+
+# Full OpenClaw gateway E2E lane (nightly/manual)
+just openclaw-pikachat-e2e
+```
+
 ## Trigger Sanity Checks
 
 Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:

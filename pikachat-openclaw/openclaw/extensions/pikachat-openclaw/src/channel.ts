@@ -5,6 +5,14 @@ import {
 } from "openclaw/plugin-sdk";
 import { getPikachatRuntime } from "./runtime.js";
 import {
+  evaluateAllowlistDecision,
+  normalizeGroupId,
+  parseDeterministicPingNonce,
+  parseReplyExactly,
+  shouldBufferGroupMessage,
+  toWelcomeBatchEntry,
+} from "./channel-behavior.js";
+import {
   listPikachatAccountIds,
   resolveDefaultPikachatAccountId,
   resolvePikachatAccount,
@@ -398,12 +406,6 @@ function resolveGroupSystemPrompt(chatId: string, cfg: any): string | null {
   return null;
 }
 
-function isSenderAllowedInGroup(senderPk: string, chatId: string, cfg: any): boolean {
-  const groupUsers = resolveGroupUsers(chatId, cfg);
-  if (!groupUsers) return true; // No per-group restriction
-  return groupUsers.includes(senderPk.toLowerCase());
-}
-
 const GROUP_SYSTEM_PROMPT = [
   "Trust model: You are in a group chat with your owner and their trusted friends.",
   "Be helpful and engaging with everyone — they are trusted, not strangers.",
@@ -536,40 +538,6 @@ function resolveOutboundTarget(to: string, accountId?: string | null): { handle:
     throw new Error(`invalid pikachat group id: ${to}`);
   }
   return { handle, groupId };
-}
-
-function normalizeGroupId(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return trimmed;
-  return trimmed
-    .replace(/^pikachat-openclaw:/i, "")
-    .replace(/^pikachat:/i, "")
-    .replace(/^group:/i, "")
-    .replace(/^pikachat-openclaw:group:/i, "")
-    .replace(/^pikachat:group:/i, "")
-    .trim()
-    .toLowerCase();
-}
-
-function parseReplyExactly(text: string): string | null {
-  const m = text.match(/^openclaw:\s*reply exactly\s*\"([^\"]*)\"\s*$/i);
-  return m ? m[1] ?? "" : null;
-}
-
-function parseE2ePingNonce(text: string): string | null {
-  // Deterministic E2E test hook (no LLM):
-  //   inbound:  ping:<nonce>
-  //   reply:   pong:<nonce>
-  //
-  // Keep this intentionally strict so it doesn't trigger accidentally in normal chats.
-  const m = text.match(/^ping:([a-zA-Z0-9._-]{16,128})\s*$/);
-  return m ? m[1] ?? "" : null;
-}
-
-function parseLegacyPikaE2eNonce(text: string): string | null {
-  // Back-compat with older tests.
-  const m = text.match(/^pika-e2e:([a-zA-Z0-9._-]{8,128})\s*$/);
-  return m ? m[1] ?? "" : null;
 }
 
 function parsePikaPromptResponse(text: string): { promptId: string; selected: string } | null {
@@ -927,17 +895,6 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         return Math.max(0, Math.min(30_000, Math.floor(n)));
       })();
 
-      const isGroupAllowed = (nostrGroupId: string): boolean => {
-        if (groupPolicy === "open") return true;
-        const gid = String(nostrGroupId).trim().toLowerCase();
-        return Boolean(allowedGroups[gid]);
-      };
-      const isSenderAllowed = (pubkey: string): boolean => {
-        if (groupAllowFrom.length === 0) return true;
-        const pk = String(pubkey).trim().toLowerCase();
-        return groupAllowFrom.includes(pk);
-      };
-
       // Batch welcome processing: collect welcomes over a short window,
       // then log a single summary line with accept/fail counts.
       let welcomeBatch: Array<{ from: string; group: string; name: string; wrapperId: string }> = [];
@@ -990,12 +947,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           if (ev.group_name && ev.nostr_group_id) {
             groupNames.set(ev.nostr_group_id.toLowerCase(), ev.group_name);
           }
-          welcomeBatch.push({
-            from: ev.from_pubkey,
-            group: ev.nostr_group_id,
-            name: ev.group_name,
-            wrapperId: ev.wrapper_event_id,
-          });
+          welcomeBatch.push(toWelcomeBatchEntry(ev));
           if (!welcomeFlushTimer) {
             welcomeFlushTimer = setTimeout(() => { void flushWelcomeBatch(); }, WELCOME_BATCH_DELAY_MS);
           }
@@ -1016,31 +968,32 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           return;
         }
         if (ev.type === "call_invite_received") {
-          if (!isGroupAllowed(ev.nostr_group_id)) {
-            ctx.log?.debug(
-              `[${resolved.accountId}] reject call invite (group not allowed) group=${ev.nostr_group_id} call_id=${ev.call_id}`,
-            );
-            await sidecar.rejectCall(ev.call_id, "group_not_allowed");
-            return;
-          }
-          if (!isSenderAllowed(ev.from_pubkey)) {
-            ctx.log?.debug(
-              `[${resolved.accountId}] reject call invite (sender not allowed) sender=${ev.from_pubkey} call_id=${ev.call_id}`,
-            );
-            await sidecar.rejectCall(ev.call_id, "sender_not_allowed");
-            return;
-          }
-          // Per-group user allowlist check (same layered logic as messages — see below).
-          // groups[id].users is an additional filter on top of groupAllowFrom.
-          {
-            const currentCfgForCall = runtime.config.loadConfig();
-            if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForCall)) {
+          const currentCfgForCall = runtime.config.loadConfig();
+          const callAllowlistDecision = evaluateAllowlistDecision({
+            groupPolicy,
+            allowedGroups,
+            groupAllowFrom,
+            groupUsers: resolveGroupUsers(ev.nostr_group_id, currentCfgForCall),
+            nostrGroupId: ev.nostr_group_id,
+            senderPubkey: ev.from_pubkey,
+          });
+          if (!callAllowlistDecision.allowed) {
+            const reason = callAllowlistDecision.reason;
+            if (reason === "group_not_allowed") {
+              ctx.log?.debug(
+                `[${resolved.accountId}] reject call invite (group not allowed) group=${ev.nostr_group_id} call_id=${ev.call_id}`,
+              );
+            } else if (reason === "sender_not_allowed") {
+              ctx.log?.debug(
+                `[${resolved.accountId}] reject call invite (sender not allowed) sender=${ev.from_pubkey} call_id=${ev.call_id}`,
+              );
+            } else {
               ctx.log?.debug(
                 `[${resolved.accountId}] reject call invite (sender not in group users) sender=${ev.from_pubkey} group=${ev.nostr_group_id} call_id=${ev.call_id}`,
               );
-              await sidecar.rejectCall(ev.call_id, "sender_not_allowed_in_group");
-              return;
             }
+            await sidecar.rejectCall(ev.call_id, reason);
+            return;
           }
           ctx.log?.info(
             `[${resolved.accountId}] accept call invite group=${ev.nostr_group_id} from=${ev.from_pubkey} call_id=${ev.call_id}`,
@@ -1199,32 +1152,30 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             return;
           }
 
-          if (!isGroupAllowed(ev.nostr_group_id)) {
-            ctx.log?.debug(
-              `[${resolved.accountId}] drop message (group not allowed) group=${ev.nostr_group_id}`,
-            );
-            return;
-          }
-          if (!isSenderAllowed(ev.from_pubkey)) {
-            ctx.log?.debug(
-              `[${resolved.accountId}] drop message (sender not allowed) sender=${ev.from_pubkey}`,
-            );
-            return;
-          }
-
-          // Per-group user allowlist check.
-          // Note: groups[id].users is an *additional* filter on top of groupAllowFrom.
-          // A sender who passes groupAllowFrom can still be silently dropped here if they
-          // are not listed in the group's users array. This is intentional for fine-grained
-          // per-group control, but the drop is silent so it's easy to miss if misconfigured.
-          {
-            const currentCfgForGroupCheck = runtime.config.loadConfig();
-            if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForGroupCheck)) {
+          const currentCfgForGroupCheck = runtime.config.loadConfig();
+          const messageAllowlistDecision = evaluateAllowlistDecision({
+            groupPolicy,
+            allowedGroups,
+            groupAllowFrom,
+            groupUsers: resolveGroupUsers(ev.nostr_group_id, currentCfgForGroupCheck),
+            nostrGroupId: ev.nostr_group_id,
+            senderPubkey: ev.from_pubkey,
+          });
+          if (!messageAllowlistDecision.allowed) {
+            if (messageAllowlistDecision.reason === "group_not_allowed") {
+              ctx.log?.debug(
+                `[${resolved.accountId}] drop message (group not allowed) group=${ev.nostr_group_id}`,
+              );
+            } else if (messageAllowlistDecision.reason === "sender_not_allowed") {
+              ctx.log?.debug(
+                `[${resolved.accountId}] drop message (sender not allowed) sender=${ev.from_pubkey}`,
+              );
+            } else {
               ctx.log?.debug(
                 `[${resolved.accountId}] drop message (sender not in group users allowlist) sender=${ev.from_pubkey} group=${ev.nostr_group_id}`,
               );
-              return;
             }
+            return;
           }
 
           // Debug: if a call signal fails to parse in the sidecar, it will fall back to
@@ -1246,7 +1197,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             );
           }
 
-          const e2ePingNonce = parseE2ePingNonce(ev.content) ?? parseLegacyPikaE2eNonce(ev.content);
+          const e2ePingNonce = parseDeterministicPingNonce(ev.content);
           if (e2ePingNonce !== null) {
             const ack = `pong:${e2ePingNonce}`;
             ctx.log?.info(
@@ -1287,7 +1238,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           try {
             const senderPk = String(ev.from_pubkey).trim().toLowerCase();
             const senderIsOwner = isOwnerPubkey(senderPk);
-            const currentCfg = runtime.config.loadConfig();
+            const currentCfg = currentCfgForGroupCheck;
             const groupId = ev.nostr_group_id.toLowerCase();
             const historyKey = `pikachat-openclaw:${resolved.accountId}:${groupId}`;
 
@@ -1302,7 +1253,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               const wasMentioned = handle ? detectMention(messageText, handle.pubkey, handle.npub, currentCfg) : false;
               const isHypernoteActionResponse = ev.kind === HYPERNOTE_ACTION_RESPONSE_KIND;
 
-              if (requireMention && !wasMentioned && !isHypernoteActionResponse) {
+              if (shouldBufferGroupMessage({
+                requireMention,
+                wasMentioned,
+                isHypernoteActionResponse,
+              })) {
                 // Not mentioned — buffer for context, don't dispatch.
                 // Use sync resolveMemberName (returns cached name or npub) to
                 // avoid the slow relay fetch just for history buffering.

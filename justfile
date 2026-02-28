@@ -250,12 +250,13 @@ pre-merge-notifications:
     cargo test -p pika-server -- --test-threads=1
     echo "pre-merge-notifications complete"
 
-# CI-safe pre-merge for the pikachat lane (CLI + daemon sidecar).
+# CI-safe pre-merge for the pikachat lane (deterministic only).
 pre-merge-pikachat:
     cargo clippy -p pikachat -- -D warnings
     cargo clippy -p pikachat-sidecar -- -D warnings
     cargo test -p pikachat
     cargo test -p pikachat-sidecar
+    just openclaw-pikachat-deterministic
     @echo "pre-merge-pikachat complete"
 
 # Deterministic provider control-plane contracts (mocked Fly + mocked MicroVM spawner).
@@ -311,9 +312,9 @@ nightly-pika-e2e:
     cargo build -p pikachat; \
     cargo test -p pika_core --tests -- --ignored --nocapture
 
-# Nightly lane: pikachat E2E suite (openclaw scenarios use pikahub for local relay).
+# Nightly lane: full OpenClaw integration E2E (gateway + real sidecar wiring).
 nightly-pikachat:
-    just openclaw-pikachat-scenarios
+    just openclaw-pikachat-e2e
 
 # Nightly lane: iOS interop smoke (nostrconnect:// route + Pika bridge emission).
 nightly-primal-ios-interop:
@@ -339,13 +340,22 @@ primal-ios-lab-seed-reset:
 primal-ios-lab-dump-debug:
     ./tools/primal-ios-interop-lab dump-debug
 
-# openclaw pikachat scenario suite (local Nostr relay + pikachat scenarios).
-openclaw-pikachat-scenarios:
-    ./pikachat-openclaw/scripts/phase1.sh
-    ./pikachat-openclaw/scripts/phase2.sh
-    ./pikachat-openclaw/scripts/phase3.sh
+# openclaw pikachat deterministic contract suite (local relay + scenarios + focused tests).
+openclaw-pikachat-deterministic:
+    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat
+    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat-rust-bot
+    ./pikachat-openclaw/scripts/run-scenario.sh invite-and-chat-daemon
     ./pikachat-openclaw/scripts/phase3_audio.sh
     PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
+    npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
+
+# Full OpenClaw integration lane (nightly/manual).
+openclaw-pikachat-e2e:
+    ./pikachat-openclaw/scripts/run-openclaw-e2e.sh
+
+# Backwards-compatible alias for older docs/scripts.
+openclaw-pikachat-scenarios:
+    just openclaw-pikachat-deterministic
 
 # Full QA: fmt, clippy, test, android build, iOS sim build.
 qa: fmt clippy test android-assemble ios-build-sim

@@ -178,51 +178,33 @@ Then set `sidecarCmd` in your plugin config to the absolute path of the binary:
 
 ---
 
-## Phase Tests
+## Test Lanes
 
-- Phase 1: `PLAN.md` (Rust <-> Rust over local Docker relay)
-- Phase 2: `OPENCLAW-INTEGRATION-PLAN.md` (Rust harness <-> deterministic Rust bot process)
-- Phase 3: `OPENCLAW-CHANNEL-DESIGN.md` + `rust_harness daemon` (JSONL sidecar integration surface)
-- Phase 3 Audio: in-memory call echo smoke (`pikachat scenario audio-echo`)
-- Phase 4: Local OpenClaw gateway E2E: Rust harness <-> OpenClaw `pikachat` channel (Rust sidecar spawned by OpenClaw)
+The maintained test pyramid is documented in [docs/testing-pyramid.md](docs/testing-pyramid.md).
 
-### Run Phase 1
+### Deterministic lane (pre-merge/default local)
 
 ```sh
-./scripts/phase1.sh
+just openclaw-pikachat-deterministic
 ```
 
-Defaults:
-- Relay URL: random free localhost port (started via `pikahub` / `pika-relay`)
-- State dir: a fresh temp dir (override via `STATE_DIR=...` if you want to keep artifacts)
+This runs:
+- local relay-backed scenario checks (`invite-and-chat`, `invite-and-chat-rust-bot`, `invite-and-chat-daemon`)
+- audio echo smoke
+- Rust sidecar deterministic audio publish contract
+- TypeScript channel behavior tests (allowlist/mention hooks, ping/reply-exact hooks, normalization)
 
-### Run Phase 2
+### Full gateway E2E lane (nightly/manual)
 
 ```sh
-./scripts/phase2.sh
+just openclaw-pikachat-e2e
 ```
 
-### Run Phase 3 (Daemon JSONL Smoke)
+This starts local relay + OpenClaw gateway + `pikachat-openclaw` plugin sidecar wiring and runs strict invite/reply verification. Failure artifacts are preserved under `${STATE_DIR}/artifacts/openclaw-e2e`.
 
-```sh
-./scripts/phase3.sh
-```
+### Legacy phase wrappers
 
-### Run Phase 3 Audio Echo Smoke
-
-```sh
-./scripts/phase3_audio.sh
-```
-
-### Run Phase 4 (OpenClaw Pikachat Plugin E2E)
-
-This uses the pinned OpenClaw checkout under `./openclaw/`, runs a local relay on a random port,
-starts OpenClaw gateway with the `pikachat` plugin enabled, then runs a strict Rust harness invite+reply
-scenario against the plugin's pubkey.
-
-```sh
-./scripts/phase4_openclaw_pikachat.sh
-```
+`phase1.sh`, `phase2.sh`, `phase3.sh`, and `phase4_openclaw_pikachat.sh` remain as compatibility wrappers during migration, but normal workflow should use the `just` lanes above.
 
 ### Phase 4 Call STT -> Text (pikachat daemon)
 

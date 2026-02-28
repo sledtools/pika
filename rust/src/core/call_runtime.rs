@@ -161,10 +161,7 @@ impl CallRuntime {
         self.video_frame_receiver = Some(receiver);
     }
 
-    pub(super) fn set_audio_playout_receiver(
-        &mut self,
-        receiver: SharedAudioPlayoutReceiver,
-    ) {
+    pub(super) fn set_audio_playout_receiver(&mut self, receiver: SharedAudioPlayoutReceiver) {
         self.audio_playout_receiver = Some(receiver);
     }
 
@@ -1126,5 +1123,125 @@ mod tests {
         assert!(w.allow(1001));
         assert!(!w.allow(1000), "duplicate frame must be rejected");
         assert!(!w.allow(800), "stale frame outside window must be rejected");
+    }
+
+    #[test]
+    fn platform_audio_backend_capture_queue_works() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let playout_receiver = Arc::new(RwLock::new(None));
+
+        let mut backend = PlatformAudio::new(
+            capture_queue.clone(),
+            playout_receiver,
+            "test-call-id".to_string(),
+        );
+
+        // Push some test frames to the capture queue
+        {
+            let mut q = capture_queue.lock().unwrap();
+            q.push_back(vec![100i16; 960]); // One 20ms frame
+        }
+
+        // Capture should return the frame
+        let frame = backend.capture_pcm_frame();
+        assert_eq!(frame.len(), 960);
+        assert_eq!(frame[0], 100);
+    }
+
+    #[test]
+    fn platform_audio_backend_capture_returns_silence_when_empty() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let playout_receiver = Arc::new(RwLock::new(None));
+
+        let mut backend =
+            PlatformAudio::new(capture_queue, playout_receiver, "test-call-id".to_string());
+
+        // Capture should return silence when queue is empty
+        let frame = backend.capture_pcm_frame();
+        assert_eq!(frame.len(), 960);
+        assert_eq!(frame[0], 0);
+    }
+
+    #[test]
+    fn platform_audio_backend_playout_calls_receiver() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        struct TestReceiver {
+            received_frames: Arc<Mutex<Vec<Vec<i16>>>>,
+        }
+
+        impl crate::AudioPlayoutReceiver for TestReceiver {
+            fn on_playout_frame(&self, call_id: String, pcm_i16: Vec<i16>) {
+                let mut frames = self.received_frames.lock().unwrap();
+                frames.push(pcm_i16);
+                assert_eq!(call_id, "test-call-id");
+            }
+        }
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let received_frames = Arc::new(Mutex::new(Vec::new()));
+        let receiver = Arc::new(TestReceiver {
+            received_frames: received_frames.clone(),
+        });
+        let playout_receiver = Arc::new(RwLock::new(Some(
+            receiver as Arc<dyn crate::AudioPlayoutReceiver>,
+        )));
+
+        let mut backend =
+            PlatformAudio::new(capture_queue, playout_receiver, "test-call-id".to_string());
+
+        // Play a test frame
+        let test_frame = vec![200i16; 960];
+        backend.play_pcm_frame(&test_frame);
+
+        // Verify the receiver got the frame
+        let frames = received_frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 960);
+        assert_eq!(frames[0][0], 200);
+    }
+
+    #[test]
+    fn audio_capture_queue_caps_at_max_size() {
+        use super::CallRuntime;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+
+        let mut runtime = CallRuntime::default();
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+
+        // Simulate a worker with audio capture queue
+        let worker = super::CallWorker {
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            camera_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            video_stop: None,
+            video_frame_tx: None,
+            audio_capture_tx: Some(capture_queue.clone()),
+        };
+
+        runtime.workers.insert("test-call".to_string(), worker);
+
+        // Push 150 frames (should cap at 100)
+        for i in 0..150 {
+            runtime.push_audio_capture_frame("test-call", vec![i as i16; 960]);
+        }
+
+        let q = capture_queue.lock().unwrap();
+        assert!(
+            q.len() <= 100,
+            "Queue should be capped at 100 frames, got {}",
+            q.len()
+        );
     }
 }

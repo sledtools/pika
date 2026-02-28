@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use pika_core::{AppReconciler, AppUpdate};
 
 pub fn wait_until(what: &str, timeout: Duration, f: impl FnMut() -> bool) {
-    wait_until_with_poll(what, timeout, Duration::from_millis(50), f);
+    wait_until_with_poll(what, timeout, Duration::from_millis(100), f);
 }
 
 pub fn wait_until_with_poll(

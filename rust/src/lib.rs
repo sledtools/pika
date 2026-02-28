@@ -34,6 +34,8 @@ pub use route_projection::*;
 pub use state::*;
 pub use updates::*;
 
+pub use core::normalize_peer_key_package_event_for_mdk;
+
 // Not exposed over UniFFI; used by binaries/tests to avoid rustls provider ambiguity when
 // multiple crypto backends are enabled in the dependency graph.
 pub fn init_rustls_crypto_provider() {

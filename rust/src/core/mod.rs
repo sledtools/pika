@@ -94,9 +94,10 @@ pub(crate) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
 }
 use nostr_sdk::prelude::*;
 
+pub use interop::normalize_peer_key_package_event_for_mdk;
 use interop::{
     extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
-    normalize_peer_key_package_event_for_mdk, referenced_key_package_event_id,
+    referenced_key_package_event_id,
 };
 
 const DEFAULT_GROUP_NAME: &str = "DM";

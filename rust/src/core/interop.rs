@@ -41,7 +41,7 @@ pub(super) fn extract_relays_from_key_package_relays_event(event: &Event) -> Vec
 //
 // This does NOT re-sign the event; MDK doesn't require Nostr signature verification for
 // keypackage parsing, but it does validate the credential identity matches `event.pubkey`.
-pub(super) fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
+pub fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
     let mut out = event.clone();
 
     // Determine if content looks like hex. Some interop stacks omit the encoding tag and use hex.

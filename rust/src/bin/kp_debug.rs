@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use base64::Engine as _;
 use mdk_core::MDK;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
+use pika_core::normalize_peer_key_package_event_for_mdk;
 use pika_relay_profiles::app_default_message_relays;
 
 fn looks_like_hex(s: &str) -> bool {
@@ -113,65 +113,4 @@ fn fmt_res<T, E: std::fmt::Display>(r: &std::result::Result<T, E>) -> String {
         Ok(_) => "OK".to_string(),
         Err(e) => format!("ERR({e})"),
     }
-}
-
-fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
-    let mut out = event.clone();
-
-    let content_is_hex = {
-        let s = out.content.trim();
-        !s.is_empty() && s.len().is_multiple_of(2) && s.bytes().all(|b| b.is_ascii_hexdigit())
-    };
-
-    let mut encoding_value: Option<String> = None;
-    for t in out.tags.iter() {
-        if t.kind() == TagKind::Custom("encoding".into()) {
-            if let Some(v) = t.as_slice().get(1) {
-                encoding_value = Some(v.to_string());
-            }
-        }
-    }
-
-    let mut tags: Vec<Tag> = Vec::new();
-    let mut saw_encoding = false;
-    for t in out.tags.iter() {
-        let kind = t.kind();
-        if kind == TagKind::MlsProtocolVersion {
-            let v = t.as_slice().get(1).map(|s| s.as_str()).unwrap_or("");
-            if v == "1" {
-                tags.push(Tag::custom(TagKind::MlsProtocolVersion, ["1.0"]));
-                continue;
-            }
-        }
-        if kind == TagKind::MlsCiphersuite {
-            let v = t.as_slice().get(1).map(|s| s.as_str()).unwrap_or("");
-            if v == "1" {
-                tags.push(Tag::custom(TagKind::MlsCiphersuite, ["0x0001"]));
-                continue;
-            }
-        }
-        if kind == TagKind::Custom("encoding".into()) {
-            saw_encoding = true;
-            tags.push(t.clone());
-            continue;
-        }
-        tags.push(t.clone());
-    }
-
-    let encoding_is_hex = encoding_value
-        .as_deref()
-        .map(|s| s.eq_ignore_ascii_case("hex"))
-        .unwrap_or(false);
-    if encoding_is_hex || (!saw_encoding && content_is_hex) {
-        if let Ok(bytes) = hex::decode(out.content.trim()) {
-            out.content = base64::engine::general_purpose::STANDARD.encode(bytes);
-            tags.retain(|t| t.kind() != TagKind::Custom("encoding".into()));
-            tags.push(Tag::custom(TagKind::Custom("encoding".into()), ["base64"]));
-        }
-    } else if !saw_encoding {
-        tags.push(Tag::custom(TagKind::Custom("encoding".into()), ["base64"]));
-    }
-
-    out.tags = tags.into_iter().collect();
-    out
 }

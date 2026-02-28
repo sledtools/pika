@@ -2917,6 +2917,7 @@ impl AppCore {
             InternalEvent::GroupKeyPackagesFetched {
                 peer_pubkeys,
                 group_name,
+                existing_chat_id,
                 key_package_events,
                 failed_peers,
                 candidate_kp_relays,
@@ -2945,12 +2946,7 @@ impl AppCore {
                     ));
                 }
 
-                // Check if this is an add-members-to-existing-group operation.
-                // We repurpose group_name: if it's a hex chat_id of an existing group, it's an add-member op.
-                let is_add_members = self.chat_exists(&group_name);
-
-                if is_add_members {
-                    let chat_id = group_name;
+                if let Some(chat_id) = existing_chat_id {
                     let Some(sess) = self.session.as_mut() else {
                         self.set_busy(|b| b.creating_chat = false);
                         return;
@@ -4392,6 +4388,7 @@ impl AppCore {
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
                             group_name,
+                            existing_chat_id: None,
                             key_package_events: all_kp_events,
                             failed_peers: failed,
                             candidate_kp_relays: all_candidate_relays,
@@ -4534,7 +4531,8 @@ impl AppCore {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
-                            group_name: chat_id_clone, // repurpose: signals this is an add-member op
+                            group_name: String::new(),
+                            existing_chat_id: Some(chat_id_clone),
                             key_package_events: kp_events,
                             failed_peers: failed,
                             candidate_kp_relays: all_candidate_relays,

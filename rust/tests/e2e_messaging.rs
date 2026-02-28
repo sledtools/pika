@@ -71,6 +71,11 @@ fn alice_sends_bob_receives() {
         matches!(bob.state().auth, AuthState::LoggedIn { .. })
     });
 
+    // Wait for both to publish their key packages before attempting CreateChat.
+    // This prevents the race where Alice tries to fetch Bob's key package before
+    // Bob has published it to the relay.
+    std::thread::sleep(Duration::from_millis(500));
+
     let bob_npub = match bob.state().auth {
         AuthState::LoggedIn { npub, .. } => npub,
         _ => unreachable!(),
@@ -168,6 +173,9 @@ fn call_invite_with_invalid_relay_auth_is_rejected() {
     wait_until("bob logged in", Duration::from_secs(10), || {
         matches!(bob.state().auth, AuthState::LoggedIn { .. })
     });
+
+    // Wait for both to publish their key packages before attempting CreateChat.
+    std::thread::sleep(Duration::from_millis(500));
 
     let bob_npub = match bob.state().auth {
         AuthState::LoggedIn { npub: bob_npub, .. } => bob_npub,

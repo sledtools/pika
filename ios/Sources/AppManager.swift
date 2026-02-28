@@ -7,6 +7,8 @@ protocol AppCore: AnyObject, Sendable {
     func state() -> AppState
     func setVideoFrameReceiver(receiver: VideoFrameReceiver)
     func sendVideoFrame(payload: Data)
+    func setAudioPlayoutReceiver(receiver: AudioPlayoutReceiver)
+    func sendAudioCaptureFrame(pcmI16: [Int16])
 }
 
 extension FfiApp: AppCore {}
@@ -112,11 +114,12 @@ final class AppManager: AppReconciler {
     private let authStore: AuthStore
     /// True while we're waiting for a stored session to be restored by Rust.
     var isRestoringSession: Bool = false
-    private let callAudioSession = CallAudioSessionCoordinator()
+    private let callAudioSession: CallAudioSessionCoordinator
 
     init(core: AppCore, authStore: AuthStore) {
         self.core = core
         self.authStore = authStore
+        self.callAudioSession = CallAudioSessionCoordinator(core: core)
 
         let initial = core.state()
         self.state = initial

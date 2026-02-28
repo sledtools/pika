@@ -119,6 +119,10 @@ final class MockCore: AppCore, @unchecked Sendable {
     func sendVideoFrame(payload: Data) {
         sentVideoFrames.append(payload)
     }
+
+    func setAudioPlayoutReceiver(receiver: AudioPlayoutReceiver) {}
+
+    func sendAudioCaptureFrame(pcmI16: [Int16]) {}
 }
 
 final class MockAuthStore: AuthStore {

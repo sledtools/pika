@@ -50,14 +50,17 @@ struct CallWorker {
     camera_enabled: Arc<AtomicBool>,
     video_stop: Option<Arc<AtomicBool>>,
     video_frame_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    audio_capture_tx: Option<Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>>,
 }
 
 type SharedVideoFrameReceiver = Arc<RwLock<Option<Arc<dyn VideoFrameReceiver>>>>;
+type SharedAudioPlayoutReceiver = Arc<RwLock<Option<Arc<dyn crate::AudioPlayoutReceiver>>>>;
 
 #[derive(Default)]
 pub(super) struct CallRuntime {
     workers: HashMap<String, CallWorker>, // call_id -> worker
     video_frame_receiver: Option<SharedVideoFrameReceiver>,
+    audio_playout_receiver: Option<SharedAudioPlayoutReceiver>,
 }
 
 impl std::fmt::Debug for CallRuntime {
@@ -156,6 +159,23 @@ impl MediaTransport {
 impl CallRuntime {
     pub(super) fn set_video_frame_receiver(&mut self, receiver: SharedVideoFrameReceiver) {
         self.video_frame_receiver = Some(receiver);
+    }
+
+    pub(super) fn set_audio_playout_receiver(&mut self, receiver: SharedAudioPlayoutReceiver) {
+        self.audio_playout_receiver = Some(receiver);
+    }
+
+    pub(super) fn push_audio_capture_frame(&self, call_id: &str, pcm_i16: Vec<i16>) {
+        if let Some(worker) = self.workers.get(call_id) {
+            if let Some(ref tx) = worker.audio_capture_tx {
+                let mut q = tx.lock().expect("audio capture queue lock poisoned");
+                q.push_back(pcm_i16);
+                // Cap at ~2 seconds of frames to prevent unbounded growth
+                while q.len() > 100 {
+                    q.pop_front();
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -337,14 +357,55 @@ impl CallRuntime {
         let tx_for_thread = tx.clone();
         let audio_backend_mode: Option<String> = audio_backend_mode.map(|s| s.to_owned());
         let video_stats_for_audio = video_stats_shared.clone();
+
+        // For platform backend: create shared capture queue and clone playout receiver
+        let resolved_mode = audio_backend_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(default_backend_mode())
+            .to_ascii_lowercase();
+        let is_platform = resolved_mode == "platform";
+        let platform_capture_queue: Option<Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>> =
+            if is_platform {
+                Some(Arc::new(Mutex::new(std::collections::VecDeque::new())))
+            } else {
+                None
+            };
+        let platform_capture_for_thread = platform_capture_queue.clone();
+        let platform_playout_for_thread = if is_platform {
+            self.audio_playout_receiver.clone()
+        } else {
+            None
+        };
+        let call_id_for_platform = call_id.to_string();
+
         thread::spawn(move || {
-            let mut audio_backend = match AudioBackend::try_new(audio_backend_mode.as_deref()) {
-                Ok(v) => v,
-                Err(err) => {
-                    let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
-                        format!("Audio backend fallback: {err}"),
-                    ))));
-                    AudioBackend::synthetic()
+            let mut audio_backend = if is_platform {
+                match (platform_capture_for_thread, platform_playout_for_thread) {
+                    (Some(capture_rx), Some(playout_rx)) => AudioBackend::Platform(
+                        PlatformAudio::new(capture_rx, playout_rx, call_id_for_platform),
+                    ),
+                    _ => {
+                        let _ =
+                            tx_for_thread.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                                "Native audio not wired; falling back".to_string(),
+                            ))));
+                        match AudioBackend::try_new(Some("cpal")) {
+                            Ok(v) => v,
+                            Err(_) => AudioBackend::synthetic(),
+                        }
+                    }
+                }
+            } else {
+                match AudioBackend::try_new(audio_backend_mode.as_deref()) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::Toast(format!("Audio backend fallback: {err}")),
+                        )));
+                        AudioBackend::synthetic()
+                    }
                 }
             };
             let _ = tx_for_thread.send(CoreMsg::Internal(Box::new(
@@ -527,6 +588,7 @@ impl CallRuntime {
                 camera_enabled,
                 video_stop,
                 video_frame_tx: video_sender,
+                audio_capture_tx: platform_capture_queue,
             },
         );
         Ok(())
@@ -589,6 +651,7 @@ pub(super) struct CallMediaCryptoContext {
 enum AudioBackend {
     Synthetic(SyntheticAudio),
     Cpal(CpalAudio),
+    Platform(PlatformAudio),
 }
 
 impl AudioBackend {
@@ -605,6 +668,10 @@ impl AudioBackend {
         match normalized.as_str() {
             "synthetic" => Ok(Self::synthetic()),
             "cpal" => CpalAudio::new().map(Self::Cpal),
+            "platform" => Err(
+                "platform backend requires explicit construction via PlatformAudio::new()"
+                    .to_string(),
+            ),
             other => Err(format!(
                 "unknown call audio backend '{other}'; using synthetic"
             )),
@@ -615,6 +682,7 @@ impl AudioBackend {
         match self {
             Self::Synthetic(v) => v.capture_pcm_frame(),
             Self::Cpal(v) => v.capture_pcm_frame(),
+            Self::Platform(v) => v.capture_pcm_frame(),
         }
     }
 
@@ -622,12 +690,67 @@ impl AudioBackend {
         match self {
             Self::Synthetic(v) => v.play_pcm_frame(pcm),
             Self::Cpal(v) => v.play_pcm_frame(pcm),
+            Self::Platform(v) => v.play_pcm_frame(pcm),
+        }
+    }
+}
+
+/// Native platform audio backend. Capture frames arrive from the platform (iOS/Android)
+/// via a shared queue. Playout frames are pushed to the platform via a callback interface.
+/// The Rust audio thread still owns the 20ms tick, codec, crypto, jitter, and transport.
+struct PlatformAudio {
+    capture_rx: Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>,
+    playout_receiver: SharedAudioPlayoutReceiver,
+    call_id: String,
+}
+
+impl std::fmt::Debug for PlatformAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlatformAudio")
+            .field("call_id", &self.call_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlatformAudio {
+    fn new(
+        capture_rx: Arc<Mutex<std::collections::VecDeque<Vec<i16>>>>,
+        playout_receiver: SharedAudioPlayoutReceiver,
+        call_id: String,
+    ) -> Self {
+        Self {
+            capture_rx,
+            playout_receiver,
+            call_id,
+        }
+    }
+
+    fn capture_pcm_frame(&mut self) -> Vec<i16> {
+        let mut q = self
+            .capture_rx
+            .lock()
+            .expect("platform capture queue lock poisoned");
+        q.pop_front().unwrap_or_else(|| vec![0i16; FRAME_SAMPLES])
+    }
+
+    fn play_pcm_frame(&mut self, pcm: &[i16]) {
+        if let Ok(guard) = self.playout_receiver.read() {
+            if let Some(ref receiver) = *guard {
+                receiver.on_playout_frame(self.call_id.clone(), pcm.to_vec());
+            }
         }
     }
 }
 
 fn default_backend_mode() -> &'static str {
-    "cpal"
+    #[cfg(target_os = "ios")]
+    {
+        "platform"
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        "cpal"
+    }
 }
 
 #[derive(Debug)]
@@ -1000,5 +1123,125 @@ mod tests {
         assert!(w.allow(1001));
         assert!(!w.allow(1000), "duplicate frame must be rejected");
         assert!(!w.allow(800), "stale frame outside window must be rejected");
+    }
+
+    #[test]
+    fn platform_audio_backend_capture_queue_works() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let playout_receiver = Arc::new(RwLock::new(None));
+
+        let mut backend = PlatformAudio::new(
+            capture_queue.clone(),
+            playout_receiver,
+            "test-call-id".to_string(),
+        );
+
+        // Push some test frames to the capture queue
+        {
+            let mut q = capture_queue.lock().unwrap();
+            q.push_back(vec![100i16; 960]); // One 20ms frame
+        }
+
+        // Capture should return the frame
+        let frame = backend.capture_pcm_frame();
+        assert_eq!(frame.len(), 960);
+        assert_eq!(frame[0], 100);
+    }
+
+    #[test]
+    fn platform_audio_backend_capture_returns_silence_when_empty() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let playout_receiver = Arc::new(RwLock::new(None));
+
+        let mut backend =
+            PlatformAudio::new(capture_queue, playout_receiver, "test-call-id".to_string());
+
+        // Capture should return silence when queue is empty
+        let frame = backend.capture_pcm_frame();
+        assert_eq!(frame.len(), 960);
+        assert_eq!(frame[0], 0);
+    }
+
+    #[test]
+    fn platform_audio_backend_playout_calls_receiver() {
+        use super::PlatformAudio;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex, RwLock};
+
+        struct TestReceiver {
+            received_frames: Arc<Mutex<Vec<Vec<i16>>>>,
+        }
+
+        impl crate::AudioPlayoutReceiver for TestReceiver {
+            fn on_playout_frame(&self, call_id: String, pcm_i16: Vec<i16>) {
+                let mut frames = self.received_frames.lock().unwrap();
+                frames.push(pcm_i16);
+                assert_eq!(call_id, "test-call-id");
+            }
+        }
+
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let received_frames = Arc::new(Mutex::new(Vec::new()));
+        let receiver = Arc::new(TestReceiver {
+            received_frames: received_frames.clone(),
+        });
+        let playout_receiver = Arc::new(RwLock::new(Some(
+            receiver as Arc<dyn crate::AudioPlayoutReceiver>,
+        )));
+
+        let mut backend =
+            PlatformAudio::new(capture_queue, playout_receiver, "test-call-id".to_string());
+
+        // Play a test frame
+        let test_frame = vec![200i16; 960];
+        backend.play_pcm_frame(&test_frame);
+
+        // Verify the receiver got the frame
+        let frames = received_frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 960);
+        assert_eq!(frames[0][0], 200);
+    }
+
+    #[test]
+    fn audio_capture_queue_caps_at_max_size() {
+        use super::CallRuntime;
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+
+        let mut runtime = CallRuntime::default();
+        let capture_queue = Arc::new(Mutex::new(VecDeque::new()));
+
+        // Simulate a worker with audio capture queue
+        let worker = super::CallWorker {
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            camera_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            video_stop: None,
+            video_frame_tx: None,
+            audio_capture_tx: Some(capture_queue.clone()),
+        };
+
+        runtime.workers.insert("test-call".to_string(), worker);
+
+        // Push 150 frames (should cap at 100)
+        for i in 0..150 {
+            runtime.push_audio_capture_frame("test-call", vec![i as i16; 960]);
+        }
+
+        let q = capture_queue.lock().unwrap();
+        assert!(
+            q.len() <= 100,
+            "Queue should be capped at 100 frames, got {}",
+            q.len()
+        );
     }
 }

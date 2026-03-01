@@ -616,7 +616,8 @@ fn logout_resets_state() {
 
     app.dispatch(AppAction::Logout);
     wait_until("logged out", Duration::from_secs(10), || {
-        matches!(app.state().auth, AuthState::LoggedOut)
+        let s = app.state();
+        matches!(s.auth, AuthState::LoggedOut) && s.router.default_screen == Screen::Login
     });
 
     let s = app.state();

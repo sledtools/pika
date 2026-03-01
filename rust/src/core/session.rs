@@ -198,14 +198,13 @@ impl AppCore {
 
     pub(super) fn ensure_key_package_published_best_effort(&mut self) {
         let key_package_relays = self.key_package_relays();
-        let mut publish_relay_set: BTreeSet<RelayUrl> = BTreeSet::new();
-        for r in key_package_relays.iter().cloned() {
-            publish_relay_set.insert(r);
-        }
-        for r in self.default_relays() {
-            publish_relay_set.insert(r);
-        }
+        let mut publish_relay_set: BTreeSet<RelayUrl> =
+            key_package_relays.iter().cloned().collect();
+        publish_relay_set.extend(self.default_relays());
         let publish_relays: Vec<RelayUrl> = publish_relay_set.into_iter().collect();
+        if publish_relays.is_empty() {
+            return;
+        }
         let relays_for_tags = if key_package_relays.is_empty() {
             publish_relays.clone()
         } else {
@@ -235,6 +234,7 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
+            let relay_list: Vec<String> = publish_relays.iter().map(|r| r.to_string()).collect();
             let event = match client.sign_event_builder(builder).await {
                 Ok(e) => e,
                 Err(e) => {
@@ -247,17 +247,6 @@ impl AppCore {
                     return;
                 }
             };
-
-            let relay_list: Vec<String> = publish_relays.iter().map(|r| r.to_string()).collect();
-            if publish_relays.is_empty() {
-                let _ = tx.send(CoreMsg::Internal(Box::new(
-                    InternalEvent::KeyPackagePublished {
-                        ok: false,
-                        error: Some("no relays configured".to_string()),
-                    },
-                )));
-                return;
-            }
 
             for r in publish_relays.iter().cloned() {
                 let _ = client.add_relay(r).await;
@@ -371,15 +360,11 @@ impl AppCore {
         // Ensure the client is connected to all relays referenced by joined groups.
         // Without this, we may subscribe to #h filters but never actually see events because
         // the relay URLs were never added to the client pool.
-        let mut needed_relays: Vec<RelayUrl> = self.all_session_relays();
+        let mut needed_relays: BTreeSet<RelayUrl> = self.all_session_relays().into_iter().collect();
         if let Some(sess) = self.session.as_ref() {
             for entry in sess.groups.values() {
                 if let Ok(set) = sess.mdk.get_relays(&entry.mls_group_id) {
-                    for r in set.into_iter() {
-                        if !needed_relays.contains(&r) {
-                            needed_relays.push(r);
-                        }
-                    }
+                    needed_relays.extend(set);
                 }
             }
         }

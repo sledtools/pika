@@ -593,7 +593,10 @@ impl AppCore {
                 }
             };
 
-            let newest = contact_events.into_iter().max_by_key(|e| e.created_at);
+            let newest = contact_events
+                .into_iter()
+                .filter(|e| e.verify().is_ok())
+                .max_by_key(|e| e.created_at);
             let Some(contact_event) = newest else {
                 empty(&tx);
                 return;
@@ -644,7 +647,7 @@ impl AppCore {
                     .await
                 {
                     let mut best: HashMap<String, Event> = HashMap::new();
-                    for ev in events.into_iter() {
+                    for ev in events.into_iter().filter(|e| e.verify().is_ok()) {
                         let author_hex = ev.pubkey.to_hex();
                         let dominated = best
                             .get(&author_hex)
@@ -695,7 +698,11 @@ impl AppCore {
                 .fetch_events(filter, Duration::from_secs(8))
                 .await
                 .ok()
-                .and_then(|evs| evs.into_iter().max_by_key(|e| e.created_at));
+                .and_then(|evs| {
+                    evs.into_iter()
+                        .filter(|e| e.verify().is_ok())
+                        .max_by_key(|e| e.created_at)
+                });
 
             let event_created_at = best_event
                 .as_ref()
@@ -784,7 +791,10 @@ impl AppCore {
                 .kind(Kind::ContactList)
                 .limit(1);
             let current = match client.fetch_events(filter, Duration::from_secs(10)).await {
-                Ok(evs) => evs.into_iter().max_by_key(|e| e.created_at),
+                Ok(evs) => evs
+                    .into_iter()
+                    .filter(|e| e.verify().is_ok())
+                    .max_by_key(|e| e.created_at),
                 Err(e) => {
                     tracing::error!(
                         %e, action = action_label,

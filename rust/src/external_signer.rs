@@ -163,6 +163,9 @@ impl NostrSigner for ExternalSignerBridgeSigner {
                 Self::expect_value(bridge.sign_event(signer_package, current_user, unsigned_json))?;
             let event = Event::from_json(signed_json)
                 .map_err(|e| SignerError::from(format!("invalid response: {e}")))?;
+            event
+                .verify()
+                .map_err(|e| SignerError::from(format!("invalid event signature: {e}")))?;
             if event.pubkey != expected_pubkey {
                 return Err(SignerError::from(
                     "package mismatch: signed pubkey mismatch",

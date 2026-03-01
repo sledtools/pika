@@ -3,15 +3,39 @@ import UIKit
 
 final class IOSExternalSignerBridge: ExternalSignerBridge, @unchecked Sendable {
     private var nostrConnectCallbackUrl: String {
-        let scheme = Self.callbackScheme(forBundleIdentifier: Bundle.main.bundleIdentifier)
+        let scheme = Self.callbackScheme()
         return "\(scheme)://nostrconnect-return"
+    }
+
+    static func callbackScheme() -> String {
+        if let scheme = registeredUrlScheme(bundle: .main) {
+            return scheme.lowercased()
+        }
+        return callbackScheme(forBundleIdentifier: Bundle.main.bundleIdentifier)
     }
 
     static func callbackScheme(forBundleIdentifier bundleIdentifier: String?) -> String {
         guard let bundleIdentifier else { return "pika" }
-        if bundleIdentifier.hasSuffix(".dev") { return "pika-dev" }
-        if bundleIdentifier.hasSuffix(".pikatest") { return "pika-test" }
-        return "pika"
+        // Legacy fallback for tests/older builds: infer from bundle id suffix.
+        return bundleIdentifier.components(separatedBy: ".").last ?? "pika"
+    }
+
+    private static func registeredUrlScheme(bundle: Bundle) -> String? {
+        guard
+            let urlTypes = bundle.infoDictionary?["CFBundleURLTypes"] as? [[String: Any]]
+        else {
+            return nil
+        }
+        for urlType in urlTypes {
+            guard let schemes = urlType["CFBundleURLSchemes"] as? [String] else { continue }
+            for scheme in schemes {
+                let trimmed = scheme.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+        return nil
     }
 
     func openUrl(url: String) -> ExternalSignerResult {

@@ -206,6 +206,49 @@ class PikaUiTest {
         compose.onNodeWithText("Pika").assertIsDisplayed()
     }
 
+    @Test
+    @OptIn(ExperimentalTestApi::class)
+    fun chatDeepLink_createsChat() {
+        hardResetForeground()
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        runOnMain { AppManager.getInstance(ctx).logout() }
+
+        compose.onNodeWithTag(TestTags.LOGIN_CREATE_ACCOUNT).performClick()
+        compose.waitUntil(30_000) {
+            runCatching { compose.onNodeWithText("Chats").assertIsDisplayed() }.isSuccess
+        }
+
+        // Read our own npub for a deterministic note-to-self deep link.
+        compose.onNodeWithTag(TestTags.CHATLIST_MY_PROFILE).performClick()
+        compose.waitUntil(30_000) {
+            runCatching { compose.onNodeWithText("Profile").assertIsDisplayed() }.isSuccess &&
+                runCatching { compose.onNodeWithTag(TestTags.MYPROFILE_COPY_NPUB).assertIsDisplayed() }.isSuccess
+        }
+        compose.onNodeWithTag(TestTags.MYPROFILE_COPY_NPUB).performClick()
+        val myNpub = waitForClipboardMatching(Regex("^npub1[0-9a-z]+$"))
+
+        compose.onNodeWithContentDescription("New Chat").performClick()
+        compose.waitUntil(30_000) {
+            runCatching {
+                compose.onAllNodesWithTag(TestTags.NEWCHAT_PEER_NPUB).fetchSemanticsNodes().isNotEmpty()
+            }.getOrDefault(false)
+        }
+
+        // Type the full deep-link URL (as if scanned from the CLI QR code).
+        // normalizePeerKey strips the pika://chat/ prefix via UniFFI.
+        compose.onNodeWithTag(TestTags.NEWCHAT_PEER_NPUB).performTextInput("pika://chat/$myNpub")
+        compose.waitForIdle()
+        compose.onNodeWithTag(TestTags.NEWCHAT_START).performClick()
+
+        dumpState("after deep-link Start chat click", ctx)
+        compose.waitUntil(60_000) {
+            runCatching {
+                compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertIsDisplayed()
+            }.isSuccess
+        }
+        compose.onNodeWithTag(TestTags.CHAT_MESSAGE_INPUT).assertIsDisplayed()
+    }
+
     private fun waitForClipboardMatching(re: Regex): String {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

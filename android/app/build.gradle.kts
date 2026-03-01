@@ -10,6 +10,11 @@ val (major, minor, patch) = appVersionMatch.destructured
 val appVersionCode = major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt()
 val debugApplicationIdSuffix =
     providers.gradleProperty("PIKA_ANDROID_APPLICATION_ID_SUFFIX").orElse(".dev").get()
+val pikaUrlScheme =
+    providers.gradleProperty("PIKA_ANDROID_URL_SCHEME")
+        .orElse(providers.environmentVariable("PIKA_ANDROID_URL_SCHEME"))
+        .orElse("pika")
+        .get()
 
 android {
     namespace = "com.pika.app"
@@ -23,6 +28,8 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         testInstrumentationRunner = "com.pika.app.PikaTestRunner"
+        manifestPlaceholders["pikaUrlScheme"] = pikaUrlScheme
+        buildConfigField("String", "PIKA_URL_SCHEME", "\"$pikaUrlScheme\"")
 
         vectorDrawables {
             useSupportLibrary = true

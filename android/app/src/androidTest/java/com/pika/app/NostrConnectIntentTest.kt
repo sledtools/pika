@@ -11,6 +11,12 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NostrConnectIntentTest {
+    // Read scheme inside each test method body rather than at class-init time.
+    // On some emulator configs, accessing `AppManager.NOSTR_CONNECT_CALLBACK_SCHEME`
+    // during test class construction resolves to null because the app's BuildConfig
+    // hasn't been class-loaded yet.
+    private fun scheme(): String = AppManager.NOSTR_CONNECT_CALLBACK_SCHEME
+
     @Test
     fun withNostrConnectCallback_addsCallbackToNostrConnectUrls() {
         val raw =
@@ -25,8 +31,9 @@ class NostrConnectIntentTest {
 
     @Test
     fun withNostrConnectCallback_isIdempotentWhenCallbackExists() {
+        val encodedCallback = Uri.encode(AppManager.NOSTR_CONNECT_CALLBACK_URL)
         val raw =
-            "nostrconnect://abc123?relay=wss%3A%2F%2Frelay.example.com&callback=pika%3A%2F%2Fnostrconnect-return"
+            "nostrconnect://abc123?relay=wss%3A%2F%2Frelay.example.com&callback=$encodedCallback"
 
         val out = AppManager.withNostrConnectCallback(raw)
 
@@ -45,29 +52,81 @@ class NostrConnectIntentTest {
 
     @Test
     fun extractNostrConnectCallback_returnsCallbackUrlForMatchingIntent() {
+        val s = scheme()
         val intent =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("pika://nostrconnect-return?result=ok")
+                data = Uri.parse("$s://nostrconnect-return?result=ok")
             }
 
         val callback = AppManager.extractNostrConnectCallback(intent)
 
-        assertEquals("pika://nostrconnect-return?result=ok", callback)
+        assertEquals("$s://nostrconnect-return?result=ok", callback)
     }
 
     @Test
     fun extractNostrConnectCallback_rejectsNonCallbackIntents() {
+        val s = scheme()
         val wrongHost =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("pika://other-host?result=ok")
+                data = Uri.parse("$s://other-host?result=ok")
             }
         val wrongAction =
             Intent(Intent.ACTION_MAIN).apply {
-                data = Uri.parse("pika://nostrconnect-return?result=ok")
+                data = Uri.parse("$s://nostrconnect-return?result=ok")
             }
 
         assertNull(AppManager.extractNostrConnectCallback(wrongHost))
         assertNull(AppManager.extractNostrConnectCallback(wrongAction))
+    }
+
+    // ── Chat deep link intent tests ──
+
+    // A valid 64-char hex pubkey (always passes isValidPeerKey).
+    private val validHexPubkey = "a".repeat(64)
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNpubForValidChatIntent() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("$s://chat/$validHexPubkey")
+        }
+        assertEquals(validHexPubkey, AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForWrongHost() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("$s://nostrconnect-return/$validHexPubkey")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForInvalidNpub() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("$s://chat/garbage")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForMissingPath() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("$s://chat")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkNpub_returnsNullForWrongAction() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            data = Uri.parse("$s://chat/$validHexPubkey")
+        }
+        assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
 
     private fun String.countOccurrences(fragment: String): Int {

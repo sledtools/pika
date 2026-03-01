@@ -19,6 +19,7 @@ import com.pika.app.rust.ExternalSignerErrorKind
 import com.pika.app.rust.ExternalSignerHandshakeResult
 import com.pika.app.rust.ExternalSignerResult
 import com.pika.app.rust.FfiApp
+import com.pika.app.rust.isValidPeerKey
 import com.pika.app.rust.MyProfileState
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -183,6 +184,10 @@ class AppManager private constructor(context: Context) : AppReconciler {
     }
 
     fun handleIncomingIntent(intent: Intent?) {
+        extractChatDeepLinkNpub(intent)?.let { npub ->
+            rust.dispatch(AppAction.CreateChat(peerNpub = npub))
+            return
+        }
         val callbackUrl = extractNostrConnectCallback(intent) ?: return
         rust.dispatch(AppAction.NostrConnectCallback(url = callbackUrl))
     }
@@ -449,9 +454,9 @@ class AppManager private constructor(context: Context) : AppReconciler {
     }
 
     companion object {
-        internal const val NOSTR_CONNECT_CALLBACK_SCHEME = "pika"
+        internal val NOSTR_CONNECT_CALLBACK_SCHEME = BuildConfig.PIKA_URL_SCHEME.lowercase()
         internal const val NOSTR_CONNECT_CALLBACK_HOST = "nostrconnect-return"
-        internal const val NOSTR_CONNECT_CALLBACK_URL =
+        internal val NOSTR_CONNECT_CALLBACK_URL =
             "$NOSTR_CONNECT_CALLBACK_SCHEME://$NOSTR_CONNECT_CALLBACK_HOST"
 
         private val CALLBACK_QUERY_REGEX = Regex("(^|[?&])callback=", RegexOption.IGNORE_CASE)
@@ -480,6 +485,16 @@ class AppManager private constructor(context: Context) : AppReconciler {
             val encoded = Uri.encode(NOSTR_CONNECT_CALLBACK_URL)
             val separator = if (trimmed.contains("?")) "&" else "?"
             return "$trimmed${separator}callback=$encoded"
+        }
+
+        internal fun extractChatDeepLinkNpub(intent: Intent?): String? {
+            if (intent?.action != Intent.ACTION_VIEW) return null
+            val data = intent.data ?: return null
+            if (!data.scheme.equals(NOSTR_CONNECT_CALLBACK_SCHEME, ignoreCase = true)) return null
+            if (!data.host.equals("chat", ignoreCase = true)) return null
+            val npub = data.pathSegments?.firstOrNull() ?: return null
+            if (!isValidPeerKey(npub)) return null
+            return npub
         }
 
         internal fun extractNostrConnectCallback(intent: Intent?): String? {

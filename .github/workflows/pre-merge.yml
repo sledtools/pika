@@ -450,10 +450,19 @@ jobs:
       - run: |
           nix develop .#default -c ./tools/android-avd-ensure
           # Keep nightly Android lane deterministic. Public-relay bot ping/pong remains flaky on CI emulators.
-          PIKA_ANDROID_E2E_TEST_CLASS="com.pika.app.NostrConnectIntentTest" \
+          # Run intent tests (NostrConnect + chat deep link) and the deterministic PikaUiTest suite.
+          PIKA_ANDROID_E2E_TEST_CLASS="com.pika.app.NostrConnectIntentTest,com.pika.app.PikaUiTest" \
           PIKA_ANDROID_FORCE_GUI=0 \
           PIKA_ANDROID_EMULATOR_ARGS="-no-window" \
           nix develop .#default -c just android-ui-e2e-local
+
+  nightly-pika-ui-ios:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v30
+      - run: nix develop .#default -c just ios-ui-test
 
   nightly-primal-ios-interop:
     if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')) && vars.PIKA_NIGHTLY_PRIMAL_INTEROP == '1'
@@ -465,7 +474,7 @@ jobs:
 
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
-    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-primal-ios-interop]
+    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-pika-ui-ios, nightly-primal-ios-interop]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -489,6 +498,10 @@ jobs:
           if [[ "${{ needs.nightly-pika-ui-android.result }}" != "success" ]]; then
             echo "nightly-pika-ui-android failed"
             failed="${failed}- **nightly-pika-ui-android**: ${{ needs.nightly-pika-ui-android.result }}\n"
+          fi
+          if [[ "${{ needs.nightly-pika-ui-ios.result }}" != "success" ]]; then
+            echo "nightly-pika-ui-ios failed"
+            failed="${failed}- **nightly-pika-ui-ios**: ${{ needs.nightly-pika-ui-ios.result }}\n"
           fi
           if [[ -n "$failed" ]]; then
             {

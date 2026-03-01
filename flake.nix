@@ -253,7 +253,9 @@
 
         # Xcode version pinned for the team. Install with: xcodes install 26.2
         xcodeVersion = "26.2";
+        # Local dev machines (xcodes) use dash; CI runners use underscore.
         xcodeBaseDir = "/Applications/Xcode-${xcodeVersion}.0.app";
+        xcodeBaseDirAlt = "/Applications/Xcode_${xcodeVersion}.0.app";
 
         xcodeWrapper = pkgs.xcodeenv.composeXcodeWrapper {
           versions = [ xcodeVersion ];
@@ -406,8 +408,12 @@
               fi
 
               # Pin DEVELOPER_DIR to the team-standard Xcode managed by xcodeenv wrapper.
+              # Local dev machines (xcodes) use dash (Xcode-26.2.0.app); CI runners use
+              # underscore (Xcode_26.2.0.app). Check both.
               if [ -d "${xcodeBaseDir}/Contents/Developer" ]; then
                 export DEVELOPER_DIR="${xcodeBaseDir}/Contents/Developer"
+              elif [ -d "${xcodeBaseDirAlt}/Contents/Developer" ]; then
+                export DEVELOPER_DIR="${xcodeBaseDirAlt}/Contents/Developer"
               else
                 echo ""
                 echo "┌─────────────────────────────────────────────────────────┐"

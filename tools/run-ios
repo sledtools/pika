@@ -28,6 +28,8 @@ source "$ROOT/tools/lib/dotenv.sh"
 load_dotenv_no_override "$ROOT"
 # shellcheck disable=SC1091
 source "$ROOT/tools/lib/relay-defaults.sh"
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/channel-config.sh"
 
 # If the user isn't in the devShell, re-exec under Nix for a consistent toolchain.
 if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
@@ -36,7 +38,15 @@ if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
   exec nix develop -c bash -lc "cd \"$ROOT\"; ./tools/run-ios ${qargs[*]}"
 fi
 
-IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika}"
+IOS_CHANNEL="${PIKA_CHANNEL:-}"
+IOS_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-}"
+if [ -z "${IOS_BUNDLE_ID:-}" ]; then
+  if [ -n "${IOS_CHANNEL:-}" ] && IOS_BUNDLE_ID="$(channel_ios_bundle_id "$IOS_CHANNEL" 2>/dev/null)"; then
+    :
+  else
+    IOS_BUNDLE_ID="org.pikachat.pika"
+  fi
+fi
 IOS_TEAM_ID="${PIKA_IOS_DEVELOPMENT_TEAM:-}"
 IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-}"
 MODE="sim"
@@ -52,8 +62,9 @@ usage() {
 usage: ./tools/run-ios [--sim|--device] [--release] [--console] [--udid <udid>] [--list-devices]
 
 Env:
+  PIKA_CHANNEL              (optional: prod|dev|test; used to resolve bundle id/scheme)
   PIKA_IOS_BUNDLE_ID        (default: $IOS_BUNDLE_ID)
-  PIKA_IOS_URL_SCHEME       (default: derived from bundle id: pika|pika-dev|pika-test)
+  PIKA_IOS_URL_SCHEME       (default: channel mapping, else bundle-id suffix fallback)
   PIKA_IOS_DEVELOPMENT_TEAM (required for --device; put it in .env to avoid typing)
   PIKA_IOS_DEVICE_UDID      (optional, for --device)
   PIKA_IOS_SIM_UDID         (optional, for --sim)
@@ -67,15 +78,25 @@ EOF
 
 callback_scheme_for_bundle_id() {
   local bundle_id="$1"
-  if [[ "$bundle_id" == *.dev ]]; then
-    echo "pika-dev"
-    return 0
+  if [ -n "${IOS_CHANNEL:-}" ]; then
+    if channel_scheme "$IOS_CHANNEL" >/dev/null 2>&1; then
+      channel_scheme "$IOS_CHANNEL"
+      return 0
+    fi
+    echo "error: unknown PIKA_CHANNEL '$IOS_CHANNEL' (expected prod|dev|test)" >&2
+    exit 2
   fi
-  if [[ "$bundle_id" == *.pikatest ]]; then
-    echo "pika-test"
-    return 0
+
+  local inferred_channel
+  if inferred_channel="$(channel_from_ios_bundle_id "$bundle_id" 2>/dev/null)"; then
+    if channel_scheme "$inferred_channel" >/dev/null 2>&1; then
+      channel_scheme "$inferred_channel"
+      return 0
+    fi
   fi
-  echo "pika"
+
+  # Fallback for custom/local bundle ids that are intentionally outside the manifest.
+  echo "${bundle_id##*.}"
 }
 
 list_connected_iphones() {

@@ -229,6 +229,16 @@ impl AppMessageKind {
             Self::TypingIndicator | Self::CallSignal | Self::HypernoteResponse => false,
         }
     }
+
+    /// Whether this kind should be fetched for chat display (messages, reactions,
+    /// hypernotes, and their responses). Excludes ephemeral kinds like typing
+    /// indicators and call signals.
+    fn is_chat_visible(&self) -> bool {
+        match self {
+            Self::Chat | Self::Reaction | Self::Hypernote | Self::HypernoteResponse => true,
+            Self::TypingIndicator | Self::CallSignal => false,
+        }
+    }
 }
 
 fn is_pika_typing_indicator(msg: &message_types::Message) -> bool {
@@ -277,6 +287,19 @@ struct GroupMember {
     pubkey: PublicKey,
     name: Option<String>,
     picture_url: Option<String>,
+}
+
+impl GroupMember {
+    fn to_member_info(&self, admin_pubkeys: &[String]) -> crate::state::MemberInfo {
+        let hex = self.pubkey.to_hex();
+        crate::state::MemberInfo {
+            npub: self.pubkey.to_bech32().unwrap_or_else(|_| hex.clone()),
+            is_admin: admin_pubkeys.contains(&hex),
+            pubkey: hex,
+            name: self.name.clone(),
+            picture_url: self.picture_url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

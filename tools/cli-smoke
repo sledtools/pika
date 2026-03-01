@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ "${1:-}" = "--with-media" ]; then
+if [ "$#" -eq 0 ]; then
+  exec cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+fi
+
+if [ "$#" -eq 1 ] && [ "$1" = "--with-media" ]; then
   exec cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 fi
 
-exec cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+exec cargo run -q -p pikahut -- test cli-smoke "$@"

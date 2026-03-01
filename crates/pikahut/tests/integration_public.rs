@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
 
 use pikahut::testing::{
-    ArtifactPolicy, Capabilities, CommandRunner, CommandSpec, Requirement, TestContext,
+    ArtifactPolicy, Capabilities, CommandRunner, CommandSpec, RequireOutcome, Requirement,
+    TestContext,
 };
 
 const ENV_PIKA_TEST_NSEC: &str = "PIKA_TEST_NSEC";
@@ -11,6 +15,7 @@ const ENV_PIKA_UI_E2E_BOT_NPUB: &str = "PIKA_UI_E2E_BOT_NPUB";
 const ENV_PIKA_UI_E2E_RELAYS: &str = "PIKA_UI_E2E_RELAYS";
 const ENV_PIKA_UI_E2E_KP_RELAYS: &str = "PIKA_UI_E2E_KP_RELAYS";
 const ENV_PIKA_UI_E2E_NSEC: &str = "PIKA_UI_E2E_NSEC";
+static DOTENV_DEFAULTS: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -19,27 +24,101 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn skip_if_missing(requirements: &[Requirement]) -> Result<bool> {
-    let caps = Capabilities::probe(&workspace_root());
-    match caps.require_all_or_skip(requirements) {
-        Ok(()) => Ok(false),
-        Err(skip) => {
-            eprintln!("SKIP: {skip}");
-            Ok(true)
+fn dotenv_defaults() -> &'static HashMap<String, String> {
+    DOTENV_DEFAULTS.get_or_init(|| load_dotenv_defaults(&workspace_root()).unwrap_or_default())
+}
+
+fn load_dotenv_defaults(root: &Path) -> Result<HashMap<String, String>> {
+    let mut defaults = HashMap::new();
+
+    for file_name in [".env", ".env.local"] {
+        let path = root.join(file_name);
+        if !path.is_file() {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let Some((raw_key, raw_value)) = trimmed.split_once('=') else {
+                continue;
+            };
+
+            let raw_key = raw_key.trim();
+            let key = raw_key
+                .strip_prefix("export")
+                .map(str::trim_start)
+                .unwrap_or(raw_key)
+                .trim();
+            if key.is_empty() || defaults.contains_key(key) || std::env::var_os(key).is_some() {
+                continue;
+            }
+
+            let value = parse_dotenv_value(raw_value.trim());
+            if value.is_empty() {
+                continue;
+            }
+
+            defaults.insert(key.to_string(), value);
         }
     }
+
+    Ok(defaults)
+}
+
+fn parse_dotenv_value(raw: &str) -> String {
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        return raw[1..raw.len() - 1].to_string();
+    }
+    if raw.len() >= 2 && raw.starts_with('\'') && raw.ends_with('\'') {
+        return raw[1..raw.len() - 1].to_string();
+    }
+    raw.to_string()
+}
+
+fn skip_if_missing(requirements: &[Requirement]) -> Result<bool> {
+    let caps = Capabilities::probe(&workspace_root());
+    for requirement in requirements {
+        match requirement {
+            Requirement::EnvSecretPikaTestNsec => {
+                if optional_env(ENV_PIKA_TEST_NSEC).is_none()
+                    && optional_env(ENV_PIKA_UI_E2E_NSEC).is_none()
+                {
+                    eprintln!(
+                        "SKIP: EnvSecretPikaTestNsec: {} or {} is not set",
+                        ENV_PIKA_TEST_NSEC, ENV_PIKA_UI_E2E_NSEC
+                    );
+                    return Ok(true);
+                }
+            }
+            Requirement::EnvVar { name } => {
+                if optional_env(name).is_none() {
+                    eprintln!(
+                        "SKIP: EnvVar {{ name: {name} }}: required env var is missing: {name}"
+                    );
+                    return Ok(true);
+                }
+            }
+            _ => match caps.require_or_skip_outcome(requirement.clone()) {
+                RequireOutcome::Proceed => {}
+                RequireOutcome::Skip(skip) => {
+                    eprintln!("SKIP: {skip}");
+                    return Ok(true);
+                }
+            },
+        }
+    }
+    Ok(false)
 }
 
 fn required_env(name: &'static str) -> Result<String> {
-    std::env::var(name)
-        .with_context(|| format!("missing required env: {name}"))
-        .map(|value| value.trim().to_string())
-        .and_then(|value| {
-            if value.is_empty() {
-                bail!("required env is empty: {name}");
-            }
-            Ok(value)
-        })
+    if let Some(value) = optional_env(name) {
+        return Ok(value);
+    }
+    bail!("missing required env: {name}");
 }
 
 fn optional_env(name: &'static str) -> Option<String> {
@@ -47,6 +126,7 @@ fn optional_env(name: &'static str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| dotenv_defaults().get(name).cloned())
 }
 
 fn parse_udid(output: &str) -> Option<String> {

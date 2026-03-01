@@ -7,20 +7,15 @@ use chrono::Utc;
 use crate::config;
 
 /// Artifact retention policy for integration test runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArtifactPolicy {
     /// Remove auto-created state/artifacts after successful completion.
     DeleteOnSuccess,
     /// Preserve state/artifacts when a run fails, but clean successful runs.
+    #[default]
     PreserveOnFailure,
     /// Preserve state/artifacts for both success and failure.
     PreserveAlways,
-}
-
-impl Default for ArtifactPolicy {
-    fn default() -> Self {
-        Self::PreserveOnFailure
-    }
 }
 
 /// Builder for [`TestContext`].

@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ "${1:-}" = "--manual" ]; then
-  exec cargo run -q -p pikahut -- test interop-rust-baseline --manual
+if [ "$#" -eq 0 ]; then
+  exec cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
 fi
 
-exec cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
+exec cargo run -q -p pikahut -- test interop-rust-baseline "$@"

@@ -250,13 +250,24 @@ fn find_or_build_relay(workspace_root: &Path) -> Result<PathBuf> {
 
     info!("[relay] Building pika-relay binary (go build)...");
     let relay_dir = workspace_root.join("cmd/pika-relay");
-    let out = std::process::Command::new("go")
+    let mut build = std::process::Command::new("go");
+    build
         .args(["build", "-o"])
         .arg(&target_bin)
         .arg(".")
-        .current_dir(&relay_dir)
-        .output()
-        .context("go build pika-relay")?;
+        .current_dir(&relay_dir);
+
+    if cfg!(target_os = "macos") {
+        // Keep this Go/cgo build independent from Xcode-pinned shell defaults.
+        // We intentionally clear DEVELOPER_DIR and force plain clang/clang++ so
+        // the relay build uses the Nix toolchain from PATH instead of Xcode.
+        build
+            .env_remove("DEVELOPER_DIR")
+            .env("CC", "clang")
+            .env("CXX", "clang++");
+    }
+
+    let out = build.output().context("go build pika-relay")?;
 
     if !out.status.success() {
         bail!(

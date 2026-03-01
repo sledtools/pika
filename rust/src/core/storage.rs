@@ -8,6 +8,69 @@ use hypernote_protocol as hn;
 use std::sync::OnceLock;
 
 impl AppCore {
+    /// Build a sender pubkey → display name lookup from member info + profile cache,
+    /// including the current user's name for mention resolution.
+    fn build_sender_names(
+        &self,
+        members: &[super::GroupMember],
+        my_pubkey_hex: &str,
+    ) -> HashMap<String, String> {
+        let mut names: HashMap<String, String> = members
+            .iter()
+            .filter_map(|m| {
+                let hex = m.pubkey.to_hex();
+                let display = m
+                    .name
+                    .clone()
+                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
+                display.map(|n| (hex, n))
+            })
+            .collect();
+        let my_name = &self.state.my_profile.name;
+        if !my_name.is_empty() {
+            names.insert(my_pubkey_hex.to_string(), my_name.clone());
+        }
+        names
+    }
+
+    /// Build a member profile lookup: pubkey_hex → (name, npub, picture_url),
+    /// including the current user.
+    fn build_member_profiles(
+        &self,
+        sess: &super::Session,
+        members: &[super::GroupMember],
+        my_pubkey_hex: &str,
+    ) -> HashMap<String, (Option<String>, String, Option<String>)> {
+        let mut profiles: HashMap<String, (Option<String>, String, Option<String>)> = members
+            .iter()
+            .map(|m| {
+                let hex = m.pubkey.to_hex();
+                let npub = m.pubkey.to_bech32().unwrap_or_else(|_| hex.clone());
+                let name = m
+                    .name
+                    .clone()
+                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
+                let picture_url = m.picture_url.clone();
+                (hex, (name, npub, picture_url))
+            })
+            .collect();
+        if !profiles.contains_key(my_pubkey_hex) {
+            let my_npub = sess
+                .pubkey
+                .to_bech32()
+                .unwrap_or_else(|_| my_pubkey_hex.to_string());
+            let my_pic = self.state.my_profile.picture_url.clone();
+            let my_name = &self.state.my_profile.name;
+            let name = if my_name.is_empty() {
+                None
+            } else {
+                Some(my_name.clone())
+            };
+            profiles.insert(my_pubkey_hex.to_string(), (name, my_npub, my_pic));
+        }
+        profiles
+    }
+
     pub(super) fn refresh_all_from_storage(&mut self) {
         self.refresh_chat_list_from_storage();
         if let Some(Screen::Chat { chat_id }) = self.state.router.screen_stack.last().cloned() {
@@ -36,7 +99,7 @@ impl AppCore {
         let my_pubkey = sess.pubkey;
         let mut index: HashMap<String, GroupIndexEntry> = HashMap::new();
         let mut list: Vec<ChatSummary> = Vec::new();
-        let mut missing_profile_pubkeys: Vec<PublicKey> = Vec::new();
+        let mut missing_profile_pubkeys: HashSet<PublicKey> = HashSet::new();
 
         for g in groups {
             let chat_id = hex::encode(g.nostr_group_id);
@@ -82,8 +145,8 @@ impl AppCore {
                     None => true,
                     Some(p) => (now - p.last_checked_at) > 3600,
                 };
-                if needs_fetch && !missing_profile_pubkeys.iter().any(|p| p == pk) {
-                    missing_profile_pubkeys.push(*pk);
+                if needs_fetch {
+                    missing_profile_pubkeys.insert(*pk);
                 }
             }
 
@@ -91,13 +154,7 @@ impl AppCore {
 
             let members_for_state: Vec<MemberInfo> = member_infos
                 .iter()
-                .map(|m| MemberInfo {
-                    pubkey: m.pubkey.to_hex(),
-                    npub: m.pubkey.to_bech32().unwrap_or_else(|_| m.pubkey.to_hex()),
-                    name: m.name.clone(),
-                    picture_url: m.picture_url.clone(),
-                    is_admin: admin_pubkeys.contains(&m.pubkey.to_hex()),
-                })
+                .map(|m| m.to_member_info(&admin_pubkeys))
                 .collect();
 
             // Do not rely on `last_message_id` being populated in all MDK flows.
@@ -233,11 +290,11 @@ impl AppCore {
                     let mut best: HashMap<String, Event> = HashMap::new();
                     for ev in events.into_iter().filter(|e| e.verify().is_ok()) {
                         let author_hex = ev.pubkey.to_hex();
-                        let dominated = best
+                        let is_newer = best
                             .get(&author_hex)
                             .map(|prev| ev.created_at > prev.created_at)
                             .unwrap_or(true);
-                        if dominated {
+                        if is_newer {
                             best.insert(author_hex, ev);
                         }
                     }
@@ -292,55 +349,8 @@ impl AppCore {
 
         let my_pubkey_hex = sess.pubkey.to_hex();
 
-        // Build a sender pubkey -> display name lookup from member info + profile cache.
-        let mut sender_names: HashMap<String, String> = entry
-            .members
-            .iter()
-            .filter_map(|m| {
-                let hex = m.pubkey.to_hex();
-                let display = m
-                    .name
-                    .clone()
-                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
-                display.map(|n| (hex, n))
-            })
-            .collect();
-
-        // Include current user's name so mention resolution can render "@you".
-        let my_name = &self.state.my_profile.name;
-        if !my_name.is_empty() {
-            sender_names.insert(my_pubkey_hex.clone(), my_name.clone());
-        }
-
-        // Build member profile lookup: pubkey_hex -> (name, npub, picture_url)
-        let mut member_profiles: HashMap<String, (Option<String>, String, Option<String>)> = entry
-            .members
-            .iter()
-            .map(|m| {
-                let hex = m.pubkey.to_hex();
-                let npub = m.pubkey.to_bech32().unwrap_or_else(|_| hex.clone());
-                let name = m
-                    .name
-                    .clone()
-                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
-                let picture_url = m.picture_url.clone();
-                (hex, (name, npub, picture_url))
-            })
-            .collect();
-        // Include self in member profiles.
-        if !member_profiles.contains_key(&my_pubkey_hex) {
-            let my_npub = sess
-                .pubkey
-                .to_bech32()
-                .unwrap_or_else(|_| my_pubkey_hex.clone());
-            let my_pic = self.state.my_profile.picture_url.clone();
-            let name = if my_name.is_empty() {
-                None
-            } else {
-                Some(my_name.clone())
-            };
-            member_profiles.insert(my_pubkey_hex.clone(), (name, my_npub, my_pic));
-        }
+        let sender_names = self.build_sender_names(&entry.members, &my_pubkey_hex);
+        let member_profiles = self.build_member_profiles(sess, &entry.members, &my_pubkey_hex);
 
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let target = desired.max(50);
@@ -361,147 +371,42 @@ impl AppCore {
                 .unwrap_or_default();
             let batch_len = batch.len();
             storage_len += batch_len;
-            visible_messages.extend(batch.into_iter().filter(|m| {
-                m.kind == Kind::ChatMessage
-                    || m.kind == Kind::Reaction
-                    || m.kind == super::HYPERNOTE_KIND
-                    || m.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND
-            }));
+            visible_messages.extend(
+                batch
+                    .into_iter()
+                    .filter(|m| classify_app_message(m).is_some_and(|k| k.is_chat_visible())),
+            );
             if batch_len < target || visible_messages.len() >= target {
                 break;
             }
             fetch_offset += batch_len;
         }
 
-        // Separate reactions (kind 7) from regular messages.
-        // reaction_target_id -> Vec<(emoji, sender_pubkey)>
-        let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        let mut hypernote_responses: Vec<HypernoteResponseMessage> = Vec::new();
-        let mut regular_messages = Vec::new();
-        for m in &visible_messages {
-            if m.kind == Kind::Reaction {
-                // Find the target event id from the `e` tag.
-                if let Some(target_id) = first_event_tag_id(&m.tags) {
-                    let emoji = if m.content.is_empty() || m.content == "+" {
-                        "\u{2764}\u{FE0F}".to_string()
-                    } else {
-                        m.content.clone()
-                    };
-                    reaction_map
-                        .entry(target_id)
-                        .or_default()
-                        .push((emoji, m.pubkey.to_hex()));
-                }
-                continue;
-            }
-            if m.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND {
-                if let Some(response) = parse_hypernote_response_message(
-                    m.pubkey.to_hex(),
-                    sender_names.get(&m.pubkey.to_hex()).cloned(),
-                    m.created_at.as_secs() as i64,
-                    last_event_tag_id(&m.tags),
-                    &m.content,
-                ) {
-                    hypernote_responses.push(response);
-                }
-                continue;
-            }
-            regular_messages.push(m);
-        }
+        let separated = separate_messages(&visible_messages, &sender_names);
+        let mut hypernote_responses = separated.hypernote_responses;
 
         // MDK returns descending by created_at; UI wants ascending.
-        let mut msgs: Vec<ChatMessage> = regular_messages
+        let mut msgs: Vec<ChatMessage> = separated
+            .regular
             .into_iter()
             .rev()
             .map(|m| {
-                let id = m.id.to_hex();
-                let sender_hex = m.pubkey.to_hex();
-                let is_mine = sender_hex == my_pubkey_hex;
-                let sender_name = sender_names.get(&sender_hex).cloned();
-                let delivery = self
+                let mut cm =
+                    build_chat_message(m, &my_pubkey_hex, &sender_names, &separated.reaction_map);
+                cm.delivery = self
                     .delivery_overrides
                     .get(chat_id)
-                    .and_then(|map| map.get(&id))
+                    .and_then(|map| map.get(&cm.id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
-                let media = self.chat_media_attachments_for_tags(
+                cm.media = self.chat_media_attachments_for_tags(
                     &sess.mdk,
                     &entry.mls_group_id,
                     chat_id,
                     &my_pubkey_hex,
                     &m.tags,
                 );
-                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
-                let segments = parse_message_segments(&display_content);
-                let timestamp = m.created_at.as_secs() as i64;
-
-                // Aggregate reactions for this message.
-                let reactions = if let Some(rxns) = reaction_map.get(&id) {
-                    let mut emoji_counts: HashMap<String, (u32, bool)> = HashMap::new();
-                    for (emoji, sender) in rxns {
-                        let entry = emoji_counts.entry(emoji.clone()).or_insert((0, false));
-                        entry.0 += 1;
-                        if sender == &my_pubkey_hex {
-                            entry.1 = true;
-                        }
-                    }
-                    emoji_counts
-                        .into_iter()
-                        .map(
-                            |(emoji, (count, reacted_by_me))| crate::state::ReactionSummary {
-                                emoji,
-                                count,
-                                reacted_by_me,
-                            },
-                        )
-                        .collect()
-                } else {
-                    vec![]
-                };
-
-                ChatMessage {
-                    id,
-                    sender_pubkey: sender_hex,
-                    sender_name,
-                    content: m.content.clone(),
-                    display_content,
-                    reply_to_message_id: last_event_tag_id(&m.tags),
-                    mentions,
-                    timestamp,
-                    display_timestamp: format_display_timestamp(timestamp),
-                    is_mine,
-                    delivery,
-                    reactions,
-                    media,
-                    segments,
-                    html_state: None,
-                    hypernote: if m.kind == super::HYPERNOTE_KIND {
-                        let ast_json =
-                            hypernote_mdx::serialize_tree(&hypernote_mdx::parse(&m.content));
-                        let declared_actions = hn::extract_submit_actions_from_ast_json(&ast_json);
-                        let title = m
-                            .tags
-                            .iter()
-                            .find(|t| t.kind() == TagKind::custom("title"))
-                            .and_then(|t| t.content().map(|s| s.to_string()));
-                        let default_state = m
-                            .tags
-                            .iter()
-                            .find(|t| t.kind() == TagKind::custom("state"))
-                            .and_then(|t| t.content().map(|s| s.to_string()));
-                        Some(crate::state::HypernoteData {
-                            ast_json,
-                            declared_actions,
-                            title,
-                            default_state,
-                            my_response: None,
-                            response_tallies: vec![],
-                            responders: vec![],
-                        })
-                    } else {
-                        None
-                    },
-                }
+                cm
             })
             .collect();
 
@@ -516,12 +421,13 @@ impl AppCore {
                 if lm.timestamp < oldest_loaded_ts {
                     continue;
                 }
-                // Skip non-visible kinds.
-                if lm.kind != Kind::ChatMessage
-                    && lm.kind != Kind::Reaction
-                    && lm.kind != super::HYPERNOTE_KIND
-                    && lm.kind != super::HYPERNOTE_ACTION_RESPONSE_KIND
-                {
+                if !matches!(
+                    lm.kind,
+                    Kind::ChatMessage
+                        | Kind::Reaction
+                        | Kind::Custom(hn::HYPERNOTE_KIND)
+                        | Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND)
+                ) {
                     continue;
                 }
                 if lm.kind == super::HYPERNOTE_ACTION_RESPONSE_KIND {
@@ -593,13 +499,7 @@ impl AppCore {
         let members_for_state: Vec<MemberInfo> = entry
             .members
             .iter()
-            .map(|m| MemberInfo {
-                pubkey: m.pubkey.to_hex(),
-                npub: m.pubkey.to_bech32().unwrap_or_else(|_| m.pubkey.to_hex()),
-                name: m.name.clone(),
-                picture_url: m.picture_url.clone(),
-                is_admin: entry.admin_pubkeys.contains(&m.pubkey.to_hex()),
-            })
+            .map(|m| m.to_member_info(&entry.admin_pubkeys))
             .collect();
 
         let typing = self.get_active_typers(chat_id);
@@ -628,23 +528,8 @@ impl AppCore {
 
         let my_pubkey_hex = sess.pubkey.to_hex();
 
-        let mut sender_names: HashMap<String, String> = entry
-            .members
-            .iter()
-            .filter_map(|m| {
-                let hex = m.pubkey.to_hex();
-                let display = m
-                    .name
-                    .clone()
-                    .or_else(|| self.profiles.get(&hex).and_then(|p| p.name.clone()));
-                display.map(|n| (hex, n))
-            })
-            .collect();
-
-        let my_name = &self.state.my_profile.name;
-        if !my_name.is_empty() {
-            sender_names.insert(my_pubkey_hex.clone(), my_name.clone());
-        }
+        let sender_names = self.build_sender_names(&entry.members, &my_pubkey_hex);
+        let member_profiles = self.build_member_profiles(sess, &entry.members, &my_pubkey_hex);
 
         let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let mut visible_page = Vec::new();
@@ -662,7 +547,11 @@ impl AppCore {
                 .unwrap_or_default();
             let batch_len = batch.len();
             total_fetched += batch_len;
-            visible_page.extend(batch.into_iter().filter(|m| m.kind == Kind::ChatMessage));
+            visible_page.extend(
+                batch
+                    .into_iter()
+                    .filter(|m| classify_app_message(m).is_some_and(|k| k.is_chat_visible())),
+            );
             if batch_len < limit || visible_page.len() >= limit {
                 break;
             }
@@ -678,50 +567,38 @@ impl AppCore {
             return;
         }
 
-        let mut older: Vec<ChatMessage> = visible_page
+        let separated = separate_messages(&visible_page, &sender_names);
+
+        let mut older: Vec<ChatMessage> = separated
+            .regular
             .into_iter()
             .rev()
             .map(|m| {
-                let id = m.id.to_hex();
-                let sender_hex = m.pubkey.to_hex();
-                let is_mine = sender_hex == my_pubkey_hex;
-                let sender_name = sender_names.get(&sender_hex).cloned();
-                let delivery = self
+                let mut cm =
+                    build_chat_message(m, &my_pubkey_hex, &sender_names, &separated.reaction_map);
+                cm.delivery = self
                     .delivery_overrides
                     .get(chat_id)
-                    .and_then(|map| map.get(&id))
+                    .and_then(|map| map.get(&cm.id))
                     .cloned()
                     .unwrap_or(MessageDeliveryState::Sent);
-                let media = self.chat_media_attachments_for_tags(
+                cm.media = self.chat_media_attachments_for_tags(
                     &sess.mdk,
                     &entry.mls_group_id,
                     chat_id,
                     &my_pubkey_hex,
                     &m.tags,
                 );
-                let (display_content, mentions) = resolve_mentions(&m.content, &sender_names);
-                let timestamp = m.created_at.as_secs() as i64;
-                let segments = parse_message_segments(&display_content);
-                ChatMessage {
-                    id,
-                    sender_pubkey: sender_hex,
-                    sender_name,
-                    content: m.content,
-                    display_content,
-                    reply_to_message_id: last_event_tag_id(&m.tags),
-                    mentions,
-                    timestamp,
-                    display_timestamp: format_display_timestamp(timestamp),
-                    is_mine,
-                    delivery,
-                    reactions: vec![],
-                    media,
-                    segments,
-                    html_state: None,
-                    hypernote: None,
-                }
+                cm
             })
             .collect();
+
+        process_hypernote_responses(
+            &mut older,
+            &separated.hypernote_responses,
+            &my_pubkey_hex,
+            &member_profiles,
+        );
 
         if let Some(cur) = self.state.current_chat.as_mut() {
             if cur.chat_id == chat_id {
@@ -829,13 +706,151 @@ fn first_event_tag_id(tags: &Tags) -> Option<String> {
 }
 
 fn last_event_tag_id(tags: &Tags) -> Option<String> {
-    let mut last = None;
-    for tag in tags.iter() {
-        if tag.kind() == TagKind::e() {
-            last = tag.content().map(|s| s.to_string());
+    tags.iter()
+        .filter(|tag| tag.kind() == TagKind::e())
+        .last()
+        .and_then(|tag| tag.content().map(|s| s.to_string()))
+}
+
+struct SeparatedMessages<'a> {
+    /// reaction_target_id → Vec<(emoji, sender_pubkey_hex)>
+    reaction_map: HashMap<String, Vec<(String, String)>>,
+    hypernote_responses: Vec<HypernoteResponseMessage>,
+    regular: Vec<&'a message_types::Message>,
+}
+
+/// Separate a flat list of stored messages into reaction map, hypernote
+/// responses, and regular (displayable) messages.
+fn separate_messages<'a>(
+    messages: &'a [message_types::Message],
+    sender_names: &HashMap<String, String>,
+) -> SeparatedMessages<'a> {
+    let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut hypernote_responses: Vec<HypernoteResponseMessage> = Vec::new();
+    let mut regular_messages = Vec::new();
+    for m in messages {
+        match classify_app_message(m) {
+            Some(AppMessageKind::Reaction) => {
+                if let Some(target_id) = first_event_tag_id(&m.tags) {
+                    let emoji = if m.content.is_empty() || m.content == "+" {
+                        "\u{2764}\u{FE0F}".to_string()
+                    } else {
+                        m.content.clone()
+                    };
+                    reaction_map
+                        .entry(target_id)
+                        .or_default()
+                        .push((emoji, m.pubkey.to_hex()));
+                }
+            }
+            Some(AppMessageKind::HypernoteResponse) => {
+                let sender_hex = m.pubkey.to_hex();
+                if let Some(response) = parse_hypernote_response_message(
+                    sender_hex.clone(),
+                    sender_names.get(&sender_hex).cloned(),
+                    m.created_at.as_secs() as i64,
+                    last_event_tag_id(&m.tags),
+                    &m.content,
+                ) {
+                    hypernote_responses.push(response);
+                }
+            }
+            Some(AppMessageKind::Chat | AppMessageKind::Hypernote) => {
+                regular_messages.push(m);
+            }
+            _ => {}
         }
     }
-    last
+    SeparatedMessages {
+        reaction_map,
+        hypernote_responses,
+        regular: regular_messages,
+    }
+}
+
+/// Convert a stored message into a ChatMessage for the UI, including
+/// reaction aggregation and hypernote parsing.
+fn build_chat_message(
+    m: &super::message_types::Message,
+    my_pubkey_hex: &str,
+    sender_names: &HashMap<String, String>,
+    reaction_map: &HashMap<String, Vec<(String, String)>>,
+) -> ChatMessage {
+    let id = m.id.to_hex();
+    let sender_hex = m.pubkey.to_hex();
+    let is_mine = sender_hex == my_pubkey_hex;
+    let sender_name = sender_names.get(&sender_hex).cloned();
+    let (display_content, mentions) = resolve_mentions(&m.content, sender_names);
+    let segments = parse_message_segments(&display_content);
+    let timestamp = m.created_at.as_secs() as i64;
+
+    let reactions = if let Some(rxns) = reaction_map.get(&id) {
+        let mut emoji_counts: HashMap<String, (u32, bool)> = HashMap::new();
+        for (emoji, sender) in rxns {
+            let entry = emoji_counts.entry(emoji.clone()).or_insert((0, false));
+            entry.0 += 1;
+            if sender == my_pubkey_hex {
+                entry.1 = true;
+            }
+        }
+        emoji_counts
+            .into_iter()
+            .map(
+                |(emoji, (count, reacted_by_me))| crate::state::ReactionSummary {
+                    emoji,
+                    count,
+                    reacted_by_me,
+                },
+            )
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let hypernote = if m.kind == super::HYPERNOTE_KIND {
+        let ast_json = hypernote_mdx::serialize_tree(&hypernote_mdx::parse(&m.content));
+        let declared_actions = hn::extract_submit_actions_from_ast_json(&ast_json);
+        let title = m
+            .tags
+            .iter()
+            .find(|t| t.kind() == TagKind::custom("title"))
+            .and_then(|t| t.content().map(|s| s.to_string()));
+        let default_state = m
+            .tags
+            .iter()
+            .find(|t| t.kind() == TagKind::custom("state"))
+            .and_then(|t| t.content().map(|s| s.to_string()));
+        Some(crate::state::HypernoteData {
+            ast_json,
+            declared_actions,
+            title,
+            default_state,
+            my_response: None,
+            response_tallies: vec![],
+            responders: vec![],
+        })
+    } else {
+        None
+    };
+
+    ChatMessage {
+        id,
+        sender_pubkey: sender_hex,
+        sender_name,
+        content: m.content.clone(),
+        display_content,
+        reply_to_message_id: last_event_tag_id(&m.tags),
+        mentions,
+        timestamp,
+        display_timestamp: format_display_timestamp(timestamp),
+        is_mine,
+        delivery: MessageDeliveryState::Sent,
+        reactions,
+        media: vec![],
+        segments,
+        html_state: None,
+        hypernote,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1006,11 +1021,11 @@ fn process_html_updates(msgs: &mut Vec<ChatMessage>) {
     for (i, msg) in msgs.iter().enumerate() {
         if let Some((target_id, new_content)) = parse_html_update(&msg.content) {
             tracing::debug!(target_id, msg_id = msg.id, "html-update found");
-            let dominated = latest_updates
+            let is_newer = latest_updates
                 .get(&target_id)
                 .map(|(_, ts)| msg.timestamp > *ts)
                 .unwrap_or(true);
-            if dominated {
+            if is_newer {
                 latest_updates.insert(target_id, (new_content, msg.timestamp));
             }
             update_indices.push(i);
@@ -1075,11 +1090,11 @@ fn process_html_state_updates(msgs: &mut Vec<ChatMessage>) {
 
     for (i, msg) in msgs.iter().enumerate() {
         if let Some((target_id, state_body)) = parse_html_state_update(&msg.content) {
-            let dominated = latest_states
+            let is_newer = latest_states
                 .get(&target_id)
                 .map(|(_, ts)| msg.timestamp > *ts)
                 .unwrap_or(true);
-            if dominated {
+            if is_newer {
                 latest_states.insert(target_id, (state_body, msg.timestamp));
             }
             update_indices.push(i);
@@ -1474,5 +1489,230 @@ mod tests {
         assert!(responder_npubs.contains(&"npub_alice".to_string()));
         assert!(responder_npubs.contains(&"npub_carol".to_string()));
         assert!(!responder_npubs.contains(&"npub_bob".to_string()));
+    }
+
+    // --- separate_messages / build_chat_message tests ---
+
+    use mdk_core::prelude::message_types;
+    use nostr_sdk::prelude::*;
+
+    fn make_stored_msg(
+        id_byte: u8,
+        kind: Kind,
+        content: &str,
+        tags: Tags,
+        timestamp: u64,
+    ) -> message_types::Message {
+        let pubkey = PublicKey::from_byte_array([id_byte; 32]);
+        let created_at = Timestamp::from_secs(timestamp);
+        let mut id_bytes = [0u8; 32];
+        id_bytes[0] = id_byte;
+        message_types::Message {
+            id: EventId::from_byte_array(id_bytes),
+            pubkey,
+            kind,
+            mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+            created_at,
+            processed_at: created_at,
+            content: content.to_string(),
+            tags: tags.clone(),
+            event: UnsignedEvent::new(pubkey, created_at, kind, tags, content.to_string()),
+            wrapper_event_id: EventId::all_zeros(),
+            epoch: None,
+            state: message_types::MessageState::Processed,
+        }
+    }
+
+    #[test]
+    fn separate_messages_splits_by_kind() {
+        let msgs = vec![
+            make_stored_msg(1, Kind::ChatMessage, "hello", Tags::new(), 100),
+            make_stored_msg(
+                2,
+                Kind::Reaction,
+                "+",
+                {
+                    let mut t = Tags::new();
+                    t.push(Tag::parse(vec!["e", "target1"]).unwrap());
+                    t
+                },
+                101,
+            ),
+            make_stored_msg(
+                3,
+                Kind::Custom(hypernote_protocol::HYPERNOTE_KIND),
+                "# Poll",
+                Tags::new(),
+                102,
+            ),
+            make_stored_msg(
+                4,
+                Kind::Custom(hypernote_protocol::HYPERNOTE_ACTION_RESPONSE_KIND),
+                r#"{"action":"yes","form":{}}"#,
+                {
+                    let mut t = Tags::new();
+                    t.push(Tag::parse(vec!["e", "note1"]).unwrap());
+                    t
+                },
+                103,
+            ),
+        ];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        // Chat + Hypernote go to regular
+        assert_eq!(separated.regular.len(), 2);
+        assert_eq!(separated.regular[0].kind, Kind::ChatMessage);
+        assert_eq!(
+            separated.regular[1].kind,
+            Kind::Custom(hypernote_protocol::HYPERNOTE_KIND)
+        );
+
+        // Reaction goes to reaction_map
+        assert_eq!(separated.reaction_map.len(), 1);
+        assert!(separated.reaction_map.contains_key("target1"));
+        let rxns = &separated.reaction_map["target1"];
+        assert_eq!(rxns.len(), 1);
+        assert_eq!(rxns[0].0, "\u{2764}\u{FE0F}"); // "+" becomes heart
+
+        // HypernoteResponse goes to hypernote_responses
+        assert_eq!(separated.hypernote_responses.len(), 1);
+        assert_eq!(separated.hypernote_responses[0].action, "yes");
+        assert_eq!(
+            separated.hypernote_responses[0].target_hypernote_id,
+            "note1"
+        );
+    }
+
+    #[test]
+    fn separate_messages_ignores_unknown_kinds() {
+        let msgs = vec![
+            make_stored_msg(1, Kind::ChatMessage, "hello", Tags::new(), 100),
+            make_stored_msg(2, Kind::Custom(9999), "unknown", Tags::new(), 101),
+        ];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        assert_eq!(separated.regular.len(), 1);
+        assert!(separated.reaction_map.is_empty());
+        assert!(separated.hypernote_responses.is_empty());
+    }
+
+    #[test]
+    fn is_chat_visible_excludes_typing_and_call_signals() {
+        assert!(AppMessageKind::Chat.is_chat_visible());
+        assert!(AppMessageKind::Reaction.is_chat_visible());
+        assert!(AppMessageKind::Hypernote.is_chat_visible());
+        assert!(AppMessageKind::HypernoteResponse.is_chat_visible());
+        assert!(!AppMessageKind::TypingIndicator.is_chat_visible());
+        assert!(!AppMessageKind::CallSignal.is_chat_visible());
+    }
+
+    #[test]
+    fn typing_indicators_and_call_signals_not_chat_visible() {
+        // Typing indicator: kind 20067 with "typing" content and "d"="pika" tag.
+        let typing_msg = make_stored_msg(
+            10,
+            super::TYPING_INDICATOR_KIND,
+            "typing",
+            {
+                let mut t = Tags::new();
+                t.push(Tag::parse(vec!["d", "pika"]).unwrap());
+                t
+            },
+            100,
+        );
+        let call_msg = make_stored_msg(11, super::CALL_SIGNAL_KIND, "signal", Tags::new(), 101);
+        let chat_msg = make_stored_msg(12, Kind::ChatMessage, "hello", Tags::new(), 102);
+
+        // classify_app_message + is_chat_visible should filter correctly.
+        let visible: Vec<_> = [&typing_msg, &call_msg, &chat_msg]
+            .into_iter()
+            .filter(|m| super::classify_app_message(m).is_some_and(|k| k.is_chat_visible()))
+            .collect();
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].kind, Kind::ChatMessage);
+    }
+
+    #[test]
+    fn separate_messages_reaction_custom_emoji() {
+        let msgs = vec![make_stored_msg(
+            1,
+            Kind::Reaction,
+            "🔥",
+            {
+                let mut t = Tags::new();
+                t.push(Tag::parse(vec!["e", "msg1"]).unwrap());
+                t
+            },
+            100,
+        )];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        let rxns = &separated.reaction_map["msg1"];
+        assert_eq!(rxns[0].0, "🔥"); // custom emoji preserved
+    }
+
+    #[test]
+    fn build_chat_message_creates_basic_message() {
+        let msg = make_stored_msg(1, Kind::ChatMessage, "hello world", Tags::new(), 100);
+        let sender_names = HashMap::new();
+        let reaction_map = HashMap::new();
+        let pubkey_hex = msg.pubkey.to_hex();
+
+        let cm = build_chat_message(&msg, &pubkey_hex, &sender_names, &reaction_map);
+
+        assert_eq!(cm.content, "hello world");
+        assert!(cm.is_mine);
+        assert!(cm.reactions.is_empty());
+        assert!(cm.hypernote.is_none());
+    }
+
+    #[test]
+    fn build_chat_message_attaches_reactions() {
+        let msg = make_stored_msg(1, Kind::ChatMessage, "hello", Tags::new(), 100);
+        let msg_id = msg.id.to_hex();
+        let sender_names = HashMap::new();
+        let reaction_map = HashMap::from([(
+            msg_id,
+            vec![
+                ("🔥".to_string(), "alice".to_string()),
+                ("🔥".to_string(), "bob".to_string()),
+                ("👍".to_string(), "alice".to_string()),
+            ],
+        )]);
+
+        let cm = build_chat_message(&msg, "someone_else", &sender_names, &reaction_map);
+
+        assert_eq!(cm.reactions.len(), 2);
+        let fire = cm.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
+        assert_eq!(fire.count, 2);
+        assert!(!fire.reacted_by_me);
+        let thumbs = cm.reactions.iter().find(|r| r.emoji == "👍").unwrap();
+        assert_eq!(thumbs.count, 1);
+    }
+
+    #[test]
+    fn build_chat_message_parses_hypernote() {
+        let msg = make_stored_msg(
+            1,
+            Kind::Custom(hypernote_protocol::HYPERNOTE_KIND),
+            "# My Poll\n\nVote!",
+            Tags::new(),
+            100,
+        );
+        let sender_names = HashMap::new();
+        let reaction_map = HashMap::new();
+
+        let cm = build_chat_message(&msg, "someone", &sender_names, &reaction_map);
+
+        assert!(cm.hypernote.is_some());
+        let hn = cm.hypernote.unwrap();
+        assert!(!hn.ast_json.is_empty());
     }
 }

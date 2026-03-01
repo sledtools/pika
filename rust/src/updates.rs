@@ -128,6 +128,8 @@ pub enum InternalEvent {
     },
     MyProfileSaved {
         metadata: nostr_sdk::prelude::Metadata,
+        /// Pre-uploaded image bytes to cache locally, avoiding a re-download.
+        image_bytes: Option<Vec<u8>>,
     },
     MyProfileError {
         message: String,

@@ -343,11 +343,24 @@ impl ProfileCache {
 
     /// Returns a `file://` URL for the cached picture if the file exists on disk,
     /// otherwise falls back to the remote `picture_url`.
+    ///
+    /// A `?v=<mtime>` query parameter is appended so that the UI image loader
+    /// treats a re-written file (same path, new content) as a distinct URL.
     fn display_picture_url(&self, data_dir: &str, pubkey_hex: &str) -> Option<String> {
         if self.picture_url.is_some() {
             let path = profile_pics::cached_path(data_dir, pubkey_hex);
-            if path.exists() {
-                return Some(profile_pics::path_to_file_url(&path));
+            if let Ok(meta) = path.metadata() {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                return Some(format!(
+                    "{}?v={}",
+                    profile_pics::path_to_file_url(&path),
+                    mtime
+                ));
             }
         }
         self.picture_url.clone()
@@ -2986,10 +2999,13 @@ impl AppCore {
                 }
             }
             InternalEvent::MyProfileFetched { metadata } => {
-                self.apply_my_profile_metadata(metadata);
+                self.apply_my_profile_metadata(metadata, None);
             }
-            InternalEvent::MyProfileSaved { metadata } => {
-                self.apply_my_profile_metadata(Some(metadata));
+            InternalEvent::MyProfileSaved {
+                metadata,
+                image_bytes,
+            } => {
+                self.apply_my_profile_metadata(Some(metadata), image_bytes);
                 self.toast("Profile updated");
             }
             InternalEvent::MyProfileError { message, toast } => {
@@ -4767,7 +4783,7 @@ fn prune_chat_routes(stack: &mut Vec<Screen>, chat_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{prune_chat_routes, AppCore};
+    use super::{profile_pics, prune_chat_routes, AppCore, ProfileCache};
     use crate::bunker_signer::{NostrConnectBunkerSignerConnector, SharedBunkerSignerConnector};
     use crate::external_signer::SharedExternalSignerBridge;
     use crate::Screen;
@@ -4875,6 +4891,142 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn upsert_profile_keeps_cached_file_on_url_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let mut core = make_core(data_dir.clone());
+        profile_pics::ensure_dir(&data_dir);
+
+        let pk = "aabbccdd".to_string();
+        let cache_path = profile_pics::cached_path(&data_dir, &pk);
+
+        // Seed an existing profile with a cached picture file.
+        std::fs::write(&cache_path, b"old image").unwrap();
+        let old = ProfileCache::from_metadata_json(
+            Some(r#"{"picture":"https://example.com/old.jpg"}"#.to_string()),
+            1,
+            1,
+        );
+        core.profiles.insert(pk.clone(), old);
+
+        // Upsert with a new picture URL — cached file should be kept
+        // (mtime cache busting handles staleness, not file deletion).
+        let new = ProfileCache::from_metadata_json(
+            Some(r#"{"picture":"https://example.com/new.jpg"}"#.to_string()),
+            2,
+            2,
+        );
+        core.upsert_profile(pk.clone(), new);
+        assert!(
+            cache_path.exists(),
+            "cached file should be kept for mtime-based cache busting"
+        );
+    }
+
+    #[test]
+    fn upsert_profile_keeps_cache_when_url_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let mut core = make_core(data_dir.clone());
+        profile_pics::ensure_dir(&data_dir);
+
+        let pk = "aabbccdd".to_string();
+        let cache_path = profile_pics::cached_path(&data_dir, &pk);
+        std::fs::write(&cache_path, b"image").unwrap();
+
+        let old = ProfileCache::from_metadata_json(
+            Some(r#"{"picture":"https://example.com/same.jpg"}"#.to_string()),
+            1,
+            1,
+        );
+        core.profiles.insert(pk.clone(), old);
+
+        // Upsert with same picture URL but different name.
+        let new = ProfileCache::from_metadata_json(
+            Some(r#"{"picture":"https://example.com/same.jpg","name":"bob"}"#.to_string()),
+            2,
+            2,
+        );
+        core.upsert_profile(pk.clone(), new);
+        assert!(
+            cache_path.exists(),
+            "cached file should be kept when URL unchanged"
+        );
+    }
+
+    mod display_picture_url_tests {
+        use super::*;
+
+        fn cache(picture_url: Option<&str>) -> ProfileCache {
+            ProfileCache {
+                metadata_json: None,
+                name: None,
+                username: None,
+                about: None,
+                picture_url: picture_url.map(String::from),
+                event_created_at: 0,
+                last_checked_at: 0,
+            }
+        }
+
+        #[test]
+        fn returns_none_when_no_picture_url() {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_str().unwrap();
+            let pc = cache(None);
+            assert_eq!(pc.display_picture_url(data_dir, "aabb"), None);
+        }
+
+        #[test]
+        fn returns_remote_url_when_no_cached_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_str().unwrap();
+            let pc = cache(Some("https://example.com/pic.jpg"));
+            assert_eq!(
+                pc.display_picture_url(data_dir, "aabb"),
+                Some("https://example.com/pic.jpg".to_string())
+            );
+        }
+
+        #[test]
+        fn returns_file_url_with_mtime_when_cached() {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_str().unwrap();
+            profile_pics::ensure_dir(data_dir);
+
+            let pk = "aabb";
+            let path = profile_pics::cached_path(data_dir, pk);
+            std::fs::write(&path, b"fake image").unwrap();
+
+            let pc = cache(Some("https://example.com/pic.jpg"));
+            let url = pc.display_picture_url(data_dir, pk).unwrap();
+            assert!(url.starts_with("file://"));
+            assert!(url.contains("?v="));
+            assert!(!url.contains("example.com"));
+        }
+
+        #[test]
+        fn mtime_changes_after_overwrite() {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_str().unwrap();
+            profile_pics::ensure_dir(data_dir);
+
+            let pk = "aabb";
+            let path = profile_pics::cached_path(data_dir, pk);
+            std::fs::write(&path, b"old").unwrap();
+
+            let pc = cache(Some("https://example.com/pic.jpg"));
+            let url1 = pc.display_picture_url(data_dir, pk).unwrap();
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::fs::write(&path, b"new").unwrap();
+
+            let url2 = pc.display_picture_url(data_dir, pk).unwrap();
+            assert_ne!(url1, url2, "mtime cache bust should produce different URLs");
+        }
     }
 
     mod handle_message_processing {

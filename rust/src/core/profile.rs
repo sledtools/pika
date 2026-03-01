@@ -72,6 +72,7 @@ impl AppCore {
                 Ok(output) if !output.success.is_empty() => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::MyProfileSaved {
                         metadata,
+                        image_bytes: None,
                     })));
                 }
                 Ok(output) => {
@@ -187,6 +188,7 @@ impl AppCore {
                         let _ =
                             tx.send(CoreMsg::Internal(Box::new(InternalEvent::MyProfileSaved {
                                 metadata,
+                                image_bytes: Some(image_bytes),
                             })));
                         return;
                     }
@@ -225,19 +227,29 @@ impl AppCore {
         });
     }
 
-    pub(super) fn apply_my_profile_metadata(&mut self, metadata: Option<Metadata>) {
+    pub(super) fn apply_my_profile_metadata(
+        &mut self,
+        metadata: Option<Metadata>,
+        image_bytes: Option<Vec<u8>>,
+    ) {
         // Serialize to JSON and upsert into the shared profile cache —
         // same storage and picture-caching path as every other profile.
         if let Some(pk) = self.session.as_ref().map(|s| s.pubkey.to_hex()) {
             let metadata_json = metadata.and_then(|m| serde_json::to_string(&m).ok());
             self.upsert_profile(
-                pk,
+                pk.clone(),
                 ProfileCache::from_metadata_json(
                     metadata_json,
                     crate::state::now_seconds(),
                     crate::state::now_seconds(),
                 ),
             );
+            // If the caller already has the image bytes (e.g. just-uploaded pfp),
+            // write them to the cache directly so the UI can show the new picture
+            // immediately without a redundant re-download from Blossom.
+            if let Some(bytes) = image_bytes {
+                let _ = profile_pics::save_image_bytes(&self.data_dir, &pk, &bytes);
+            }
         }
 
         let next = self.my_profile_state();

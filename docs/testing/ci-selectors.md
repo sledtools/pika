@@ -1,3 +1,10 @@
+---
+summary: Rust test selectors used by CI lanes for library-first integration tests
+read_when:
+  - modifying CI test lanes
+  - debugging CI selector failures
+---
+
 # CI Selector Mapping (Library-First Integration)
 
 This document defines the exact Rust test selectors used by CI lanes after migrating to `pikahut::testing`.
@@ -6,7 +13,7 @@ This document defines the exact Rust test selectors used by CI lanes after migra
 
 | Lane / recipe | Rust selectors |
 | --- | --- |
-| `pre-merge-pikachat` | `integration_deterministic::cli_smoke_local` + `openclaw-pikachat-deterministic` selectors |
+| `pre-merge-pikachat` | `integration_deterministic::cli_smoke_local` + `integration_deterministic::post_rebase_invalid_event_rejection_boundary` + `integration_deterministic::post_rebase_logout_session_convergence_boundary` + `openclaw-pikachat-deterministic` selectors |
 | `openclaw-pikachat-deterministic` | `integration_deterministic::openclaw_scenario_invite_and_chat`, `openclaw_scenario_invite_and_chat_rust_bot`, `openclaw_scenario_invite_and_chat_daemon`, `openclaw_scenario_audio_echo` |
 | Path-scoped heavy OpenClaw lane (`check-pikachat-openclaw-e2e`) | `integration_openclaw::openclaw_gateway_e2e` |
 | `android-ui-e2e-local` | `integration_deterministic::ui_e2e_local_android` |
@@ -22,6 +29,12 @@ This document defines the exact Rust test selectors used by CI lanes after migra
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | `integration_deterministic::ui_e2e_local_android` |
 | `nightly-primal-ios-interop` | `integration_primal::primal_nostrconnect_smoke` |
+
+## Manual-Only Selectors
+
+| Lane / recipe | Rust selectors |
+| --- | --- |
+| `integration-manual` | `integration_manual::manual_interop_rust_runbook_contract`, `integration_manual::manual_primal_lab_runbook_contract` |
 
 ## Nondeterministic/Manual Selectors
 

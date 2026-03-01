@@ -1,3 +1,9 @@
+---
+summary: How to add a new integration test scenario using pikahut::testing APIs
+read_when:
+  - adding a new integration test flow
+---
+
 # Adding A New Integration Scenario
 
 This repo's integration contract is library-first: new flows should be authored as Rust selectors using `pikahut::testing` APIs.

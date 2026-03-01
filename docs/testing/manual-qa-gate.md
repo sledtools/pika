@@ -1,3 +1,9 @@
+---
+summary: Final human sign-off gate for the library-first integration migration
+read_when:
+  - performing manual QA before merging migration work
+---
+
 # Manual QA Gate (User Sign-Off)
 
 This is the final human gate for the library-first integration migration.

@@ -1,22 +1,32 @@
+---
+summary: Progress checklist for the library-first integration test migration
+read_when:
+  - checking migration status
+  - picking up remaining migration work
+---
+
 # Library-First Migration Checklist
 
 Status for `todos/pikahut-library-first-integration-tests.md`.
 
-- [x] 1. Integration matrix document created and scoped.
-- [x] 2. `pikahut::testing` public API contract introduced.
-- [x] 3. Deterministic lifecycle semantics implemented.
-- [x] 4. Typed command orchestration helpers implemented.
-- [x] 5. Capability gating and explicit skip primitives implemented.
-- [x] 6. `test_harness` reduced to thin dispatch onto library scenarios.
-- [x] 7. Deterministic local integration scenarios have Rust selectors.
-- [x] 8. Full OpenClaw E2E has Rust selector with artifact-first handling.
-- [x] 9. Public/deployed UI+call flows have Rust selectors.
-- [x] 10. Primal nightly path simplified to single smoke selector with evidence capture.
-- [x] 11. CI/just lane execution switched to Rust selector contracts.
-- [x] 12. Integration shell scripts reduced to selector wrappers.
-- [x] 13. Guardrails + docs for API stability and migration completeness added.
-- [ ] 14. Manual QA gate completed by user sign-off.
+## Completed Selector-Backed Coverage
+
+- [x] Deterministic selector target exists: `integration_deterministic`.
+- [x] Heavy selector target exists: `integration_openclaw`.
+- [x] Nondeterministic selector target exists: `integration_public`.
+- [x] Primal/nightly selector target exists: `integration_primal`.
+- [x] Manual selector target exists: `integration_manual`.
+- [x] OpenClaw deterministic scenarios are selector-backed (`openclaw_scenario_*`).
+- [x] Public UI and deployed-bot flows are selector-backed (`integration_public::*`).
+- [x] `just` recipes invoke selectors as lane contracts (not ad-hoc CLI orchestration).
+- [x] Compatibility wrappers in `tools/` and `pikachat-openclaw/scripts/` dispatch into selectors/scenario library.
+
+## Remaining Gaps
+
+- [ ] Manual interop/primal lab selectors currently codify runbook contracts and capability gating; full interactive automation remains intentionally manual.
+- [ ] Manual QA gate completed by user sign-off.
 
 ## Notes
 
+- This checklist intentionally distinguishes selector-backed coverage from manual-only gaps so CI/docs do not hide unfinished migration work.
 - Manual QA sign-off remains the final gate and cannot be auto-completed in unattended mode.

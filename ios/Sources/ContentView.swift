@@ -296,6 +296,13 @@ private func screenView(
                     question: question,
                     options: options
                 ))
+            },
+            onLoadOlderMessages: { chatId, beforeMessageId, limit in
+                manager.dispatch(.loadOlderMessages(
+                    chatId: chatId,
+                    beforeMessageId: beforeMessageId,
+                    limit: limit
+                ))
             }
         )
         .onAppear {

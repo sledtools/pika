@@ -350,20 +350,27 @@ export class PikachatSidecar {
     );
   }
 
-  sendHypernote(
+  async sendHypernote(
     nostrGroupId: string,
     content: string,
     opts?: { title?: string; state?: string },
-  ): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "send_hypernote",
-        nostr_group_id: nostrGroupId,
-        content,
-        title: opts?.title,
-        state: opts?.state,
-      } as any),
-    );
+  ): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({
+            cmd: "send_hypernote",
+            nostr_group_id: nostrGroupId,
+            content,
+            title: opts?.title,
+            state: opts?.state,
+          } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
   }
 
   sendReaction(nostrGroupId: string, eventId: string, emoji: string): void {

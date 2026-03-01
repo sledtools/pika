@@ -740,7 +740,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 
   agentPrompt: {
     messageToolHints: () => [
-      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton.",
+      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton. The tool returns a `[pikachat_event_id: <id>]` you can use immediately with `submit_hypernote_action` to vote on your own poll.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
       "- Each inbound message includes a `[pikachat_event_id: <id>]` line. Use this id with the `react` action or `submit_hypernote_action` to reference that message.",
@@ -1520,11 +1520,12 @@ export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
       async execute(_id: string, params: { content: string; title?: string; state?: string }) {
         const target = resolveToolTarget(ctx);
         if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
-        target.handle.sidecar.sendHypernote(target.groupId, params.content, {
+        const result = await target.handle.sidecar.sendHypernote(target.groupId, params.content, {
           title: params.title,
           state: params.state,
         });
-        return { content: [{ type: "text" as const, text: "Hypernote sent." }] };
+        const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
+        return { content: [{ type: "text" as const, text: `Hypernote sent.${eventIdNote}` }] };
       },
     };
   };

@@ -1263,7 +1263,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               `[${resolved.accountId}] reaction received from=${ev.from_pubkey} emoji=${JSON.stringify(ev.content)} target=${ev.event_id}`,
             );
             const senderName = await resolveMemberNameAsync(ev.from_pubkey, runtime.config.loadConfig());
-            const reactionText = `${senderName} reacted ${ev.content || "?"} to a message`;
+            const reactionText = `${senderName} reacted ${ev.content || "❤️"} to a message`;
             await dispatchInboundToAgent({
               runtime,
               accountId: resolved.accountId,

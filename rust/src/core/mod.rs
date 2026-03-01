@@ -5455,4 +5455,185 @@ mod tests {
             assert_eq!(core.unread_counts, before);
         }
     }
+
+    mod group_key_packages {
+        use super::*;
+        use crate::mdk_support::open_mdk;
+        use crate::updates::InternalEvent;
+        use mdk_core::prelude::{GroupId, NostrGroupConfigData};
+        use nostr_sdk::prelude::*;
+
+        /// Creates a core with a real MDK session and a group already in storage,
+        /// with the group registered in session.groups so add-members can find it.
+        fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            std::mem::forget(tempdir);
+
+            let creator = Keys::generate();
+            let pubkey = creator.public_key();
+
+            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+
+            let config = NostrGroupConfigData::new(
+                "Test Group".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![pubkey],
+            );
+            let result = mdk
+                .create_group(&pubkey, vec![], config)
+                .expect("create_group");
+            let group_id = result.group.mls_group_id.clone();
+            let chat_id = hex::encode(result.group.nostr_group_id);
+            mdk.merge_pending_commit(&group_id)
+                .expect("merge_pending_commit");
+
+            let mut core = make_core(data_dir);
+
+            let client = Client::builder().signer(creator.clone()).build();
+            let mut groups = std::collections::HashMap::new();
+            groups.insert(
+                chat_id.clone(),
+                super::super::GroupIndexEntry {
+                    mls_group_id: group_id.clone(),
+                    is_group: true,
+                    group_name: Some("Test Group".into()),
+                    members: vec![],
+                    admin_pubkeys: vec![pubkey.to_hex()],
+                },
+            );
+            core.session = Some(super::super::Session {
+                pubkey,
+                local_keys: Some(creator.clone()),
+                mdk,
+                client,
+                alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups,
+            });
+
+            (core, chat_id, creator, group_id)
+        }
+
+        /// Create a separate MDK instance for a peer and generate a signed
+        /// key package event from it.
+        fn make_peer_key_package(peer_keys: &Keys) -> Event {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let peer_dir = tempdir.path().to_string_lossy().into_owned();
+            std::mem::forget(tempdir);
+
+            let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
+            let relay = RelayUrl::parse("wss://test.relay").unwrap();
+            let (content, tags, _hash_ref) = peer_mdk
+                .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
+                .expect("create_key_package_for_event");
+
+            EventBuilder::new(Kind::MlsKeyPackage, content)
+                .tags(tags)
+                .sign_with_keys(peer_keys)
+                .expect("sign key package event")
+        }
+
+        #[test]
+        fn empty_key_packages_clears_busy_and_toasts() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "Test".into(),
+                existing_chat_id: None,
+                key_package_events: vec![],
+                failed_peers: vec![(peer.public_key(), "No key package found".into())],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert!(core
+                .state
+                .toast
+                .as_deref()
+                .unwrap()
+                .contains("No key packages found"));
+        }
+
+        #[test]
+        fn create_group_with_peer_key_package_opens_chat() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "New Group".into(),
+                existing_chat_id: None,
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert!(
+                core.state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::Chat { .. })),
+                "expected Chat screen on stack after group creation"
+            );
+        }
+
+        #[test]
+        fn add_members_with_unknown_chat_id_toasts_not_found() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some("nonexistent_chat_id".into()),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+        }
+
+        #[test]
+        fn add_members_to_existing_group_clears_busy() {
+            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some(chat_id),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            // add_members succeeds and clears busy (the evolution publish
+            // continues asynchronously in the background).
+            assert!(!core.state.busy.creating_chat);
+            // No error toast — success path.
+            assert!(core.state.toast.is_none());
+        }
+    }
 }

@@ -721,6 +721,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 
   actions: {
     listActions: () => ["react"] as any[],
+    supportsAction: ({ action }: { action: string }) => action === "react",
     handleAction: async ({ action, params, accountId }): Promise<any> => {
       if (action === "react") {
         const messageId = typeof params.messageId === "string" ? params.messageId : "";

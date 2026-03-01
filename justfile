@@ -262,6 +262,8 @@ pre-merge-pikachat:
     cargo test -p pikachat
     cargo test -p pikachat-sidecar
     cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture
     just openclaw-pikachat-deterministic
     @echo "pre-merge-pikachat complete"
 
@@ -326,6 +328,11 @@ nightly-pikachat:
 # Nightly lane: iOS interop smoke (nostrconnect:// route + Pika bridge emission).
 nightly-primal-ios-interop:
     cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture
+
+# Manual-only selector contracts (never required in CI lanes).
+integration-manual:
+    cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
+    cargo test -p pikahut --test integration_manual manual_primal_lab_runbook_contract -- --ignored --nocapture
 
 # Local Primal interop lab: dedicated simulator + local relay + event tap logs.
 primal-ios-lab:

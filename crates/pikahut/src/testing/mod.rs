@@ -10,8 +10,14 @@ pub mod command;
 pub mod context;
 pub mod fixture;
 pub mod scenarios;
+pub mod selector;
 
 pub use capabilities::{Capabilities, RequireOutcome, Requirement, SkipReason};
 pub use command::{CommandOutput, CommandRunner, CommandSpec};
 pub use context::{ArtifactPolicy, TestContext, TestContextBuilder};
 pub use fixture::{FixtureBuilder, FixtureHandle, FixtureSpec, start_fixture};
+pub use scenarios::{
+    CliSmokeRequest, InteropRustBaselineRequest, OpenclawE2eRequest, ScenarioRequest,
+    ScenarioRunOutput, UiE2eLocalRequest, UiPlatform,
+};
+pub use selector::{emit_skip, skip_if_missing_env, skip_if_missing_requirements};

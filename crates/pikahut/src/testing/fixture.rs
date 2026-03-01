@@ -72,13 +72,28 @@ impl FixtureBuilder {
         self
     }
 
+    pub fn relay_port_opt(mut self, relay_port: Option<u16>) -> Self {
+        self.relay_port = relay_port;
+        self
+    }
+
     pub fn moq_port(mut self, moq_port: u16) -> Self {
         self.moq_port = Some(moq_port);
         self
     }
 
+    pub fn moq_port_opt(mut self, moq_port: Option<u16>) -> Self {
+        self.moq_port = moq_port;
+        self
+    }
+
     pub fn server_port(mut self, server_port: u16) -> Self {
         self.server_port = Some(server_port);
+        self
+    }
+
+    pub fn server_port_opt(mut self, server_port: Option<u16>) -> Self {
+        self.server_port = server_port;
         self
     }
 
@@ -216,6 +231,7 @@ pub async fn start_fixture(context: &TestContext, spec: &FixtureSpec) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BotOverlay;
 
     fn sample_manifest(state_dir: &Path) -> Manifest {
         Manifest {
@@ -271,5 +287,67 @@ mod tests {
             handle.env_map().get("RELAY_EU").map(String::as_str),
             Some("ws://127.0.0.1:7777")
         );
+    }
+
+    #[test]
+    fn fixture_spec_models_relay_defaults() {
+        let spec = FixtureSpec::builder(ProfileName::Relay).build();
+        assert_eq!(spec.profile, ProfileName::Relay);
+        assert_eq!(spec.relay_port, Some(0));
+        assert_eq!(spec.moq_port, None);
+        assert_eq!(spec.server_port, None);
+        assert_eq!(spec.wait_timeout_secs, 60);
+    }
+
+    #[test]
+    fn fixture_spec_models_relay_bot_overlay_and_timeout() {
+        let overlay = OverlayConfig {
+            bot: Some(BotOverlay {
+                timeout_secs: Some(1200),
+            }),
+            ..OverlayConfig::default()
+        };
+        let spec = FixtureSpec::builder(ProfileName::RelayBot)
+            .overlay(overlay.clone())
+            .wait_timeout_secs(120)
+            .build();
+
+        assert_eq!(spec.profile, ProfileName::RelayBot);
+        let timeout = spec
+            .overlay
+            .as_ref()
+            .and_then(|value| value.bot.as_ref())
+            .and_then(|bot| bot.timeout_secs);
+        assert_eq!(timeout, Some(1200));
+        assert_eq!(spec.wait_timeout_secs, 120);
+    }
+
+    #[test]
+    fn fixture_spec_models_backend_with_explicit_ports() {
+        let spec = FixtureSpec::builder(ProfileName::Backend)
+            .relay_port(17777)
+            .moq_port(4443)
+            .server_port(18080)
+            .wait_timeout_secs(90)
+            .build();
+
+        assert_eq!(spec.profile, ProfileName::Backend);
+        assert_eq!(spec.relay_port, Some(17777));
+        assert_eq!(spec.moq_port, Some(4443));
+        assert_eq!(spec.server_port, Some(18080));
+        assert_eq!(spec.wait_timeout_secs, 90);
+    }
+
+    #[test]
+    fn fixture_spec_allows_optional_port_overrides() {
+        let spec = FixtureSpec::builder(ProfileName::RelayBot)
+            .relay_port_opt(None)
+            .moq_port_opt(Some(3443))
+            .server_port_opt(Some(28080))
+            .build();
+
+        assert_eq!(spec.relay_port, None);
+        assert_eq!(spec.moq_port, Some(3443));
+        assert_eq!(spec.server_port, Some(28080));
     }
 }

@@ -139,7 +139,7 @@ PIKA_PRIMAL_BUNDLE_ID="$PRIMAL_BUNDLE_ID" \
     ARCHS=arm64 \
     ONLY_ACTIVE_ARCH=YES \
     CODE_SIGNING_ALLOWED=NO \
-    PRODUCT_BUNDLE_IDENTIFIER="$PIKA_BUNDLE_ID" \
+    PIKA_APP_BUNDLE_ID="$PIKA_BUNDLE_ID" \
     -only-testing:PikaUITests/PikaUITests/testInterop_nostrConnectLaunchesPrimal
 
 data_dir="$(xcrun simctl get_app_container "$udid" "$PIKA_BUNDLE_ID" data)"

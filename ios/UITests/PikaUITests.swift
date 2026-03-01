@@ -125,6 +125,46 @@ final class PikaUITests: XCTestCase {
         return visible.height >= minVisibleHeight && visible.width >= 20
     }
 
+    private func parseDotenv(_ data: String) -> [String: String] {
+        var env: [String: String] = [:]
+        for line in data.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let eqIdx = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[trimmed.startIndex..<eqIdx]).trimmingCharacters(in: .whitespaces)
+            var val = String(trimmed[trimmed.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
+            if (val.hasPrefix("\"") && val.hasSuffix("\"")) || (val.hasPrefix("'") && val.hasSuffix("'")) {
+                val = String(val.dropFirst().dropLast())
+            }
+            env[key] = val
+        }
+        return env
+    }
+
+    private func loadDotenv() -> [String: String] {
+        var merged: [String: String] = [:]
+
+        // 1) Bundled env copied during build phase.
+        if let bundleUrl = Bundle(for: type(of: self)).url(forResource: "env", withExtension: "test"),
+           let data = try? String(contentsOf: bundleUrl, encoding: .utf8) {
+            merged.merge(parseDotenv(data)) { _, new in new }
+        }
+
+        // 2) Source tree overrides for local simulator runs.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // UITests/
+            .deletingLastPathComponent() // ios/
+            .deletingLastPathComponent() // repo root
+        for fileName in [".env", ".env.local"] {
+            let url = repoRoot.appendingPathComponent(fileName)
+            if let data = try? String(contentsOf: url, encoding: .utf8) {
+                merged.merge(parseDotenv(data)) { _, new in new }
+            }
+        }
+
+        return merged
+    }
+
     func testCreateAccount_noteToSelf_sendMessage_and_logout() throws {
         let app = XCUIApplication()
         // Keep this test deterministic/offline.
@@ -492,10 +532,15 @@ final class PikaUITests: XCTestCase {
         // Opt-in test: run it explicitly via xcodebuild `-only-testing:`. This hits public relays,
         // so it is intentionally not part of the deterministic smoke suite.
         let env = ProcessInfo.processInfo.environment
-        let botNpub = env["PIKA_UI_E2E_BOT_NPUB"] ?? ""
-        let testNsec = env["PIKA_UI_E2E_NSEC"] ?? env["PIKA_TEST_NSEC"] ?? ""
-        let relays = env["PIKA_UI_E2E_RELAYS"] ?? ""
-        let kpRelays = env["PIKA_UI_E2E_KP_RELAYS"] ?? ""
+        let dotenv = loadDotenv()
+        let botNpub = env["PIKA_UI_E2E_BOT_NPUB"] ?? dotenv["PIKA_UI_E2E_BOT_NPUB"] ?? ""
+        let testNsec = env["PIKA_UI_E2E_NSEC"]
+            ?? env["PIKA_TEST_NSEC"]
+            ?? dotenv["PIKA_UI_E2E_NSEC"]
+            ?? dotenv["PIKA_TEST_NSEC"]
+            ?? ""
+        let relays = env["PIKA_UI_E2E_RELAYS"] ?? dotenv["PIKA_UI_E2E_RELAYS"] ?? ""
+        let kpRelays = env["PIKA_UI_E2E_KP_RELAYS"] ?? dotenv["PIKA_UI_E2E_KP_RELAYS"] ?? ""
 
         // Public-relay E2E should be explicit. Defaults hide misconfiguration and cause flaky hangs.
         if botNpub.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_BOT_NPUB"); return }

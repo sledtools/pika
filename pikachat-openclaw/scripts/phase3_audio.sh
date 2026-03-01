@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-
-cmd=(cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -q -p pikahut -- test scenario audio-echo)
 if [[ -n "${FRAMES:-}" ]]; then
-  cmd+=(-- --frames "$FRAMES")
+  echo "note: FRAMES override is no longer supported by selector wrapper; using canonical selector contract." >&2
 fi
 
-exec "${cmd[@]}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${SCRIPT_DIR}/run-scenario.sh" audio-echo "$@"

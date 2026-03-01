@@ -12,17 +12,32 @@ shift || true
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-cmd=(cargo run --manifest-path "$REPO_ROOT/Cargo.toml" -q -p pikahut -- test scenario "$SCENARIO")
+case "$SCENARIO" in
+  invite-and-chat)
+    selector="openclaw_scenario_invite_and_chat"
+    ;;
+  invite-and-chat-rust-bot)
+    selector="openclaw_scenario_invite_and_chat_rust_bot"
+    ;;
+  invite-and-chat-daemon)
+    selector="openclaw_scenario_invite_and_chat_daemon"
+    ;;
+  audio-echo)
+    selector="openclaw_scenario_audio_echo"
+    ;;
+  *)
+    echo "error: unknown scenario '$SCENARIO'" >&2
+    echo "supported: invite-and-chat | invite-and-chat-rust-bot | invite-and-chat-daemon | audio-echo" >&2
+    exit 2
+    ;;
+esac
 
-if [[ -n "${STATE_DIR:-}" ]]; then
-  cmd+=(--state-dir "$STATE_DIR")
-fi
-if [[ -n "${RELAY_URL:-}" ]]; then
-  cmd+=(--relay "$RELAY_URL")
+if [[ -n "${STATE_DIR:-}" || -n "${RELAY_URL:-}" ]]; then
+  echo "note: STATE_DIR/RELAY_URL are ignored by selector wrappers; configure environment expected by selectors instead." >&2
 fi
 
 if [[ $# -gt 0 ]]; then
-  cmd+=(-- "$@")
+  echo "note: extra scenario args are not supported by selector wrappers and will be ignored: $*" >&2
 fi
 
-exec "${cmd[@]}"
+exec cargo test -p pikahut --test integration_deterministic "$selector" -- --ignored --nocapture

@@ -12,4 +12,11 @@ if [ "$#" -eq 1 ] && [ "$1" = "--with-media" ]; then
   exec cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 fi
 
-exec cargo run -q -p pikahut -- test cli-smoke "$@"
+cat >&2 <<USAGE
+usage:
+  ./tools/cli-smoke
+  ./tools/cli-smoke --with-media
+
+note: this wrapper now dispatches Rust selectors only.
+USAGE
+exit 2

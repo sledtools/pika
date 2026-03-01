@@ -1,7 +1,9 @@
 use anyhow::Result;
 
-use pikahut::test_harness::OpenclawE2eArgs;
-use pikahut::testing::{ArtifactPolicy, Capabilities, Requirement, scenarios};
+use pikahut::testing::{
+    ArtifactPolicy, Requirement, scenarios, scenarios::OpenclawE2eRequest,
+    skip_if_missing_requirements,
+};
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -10,25 +12,13 @@ fn workspace_root() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn emit_skip(reason: &str) {
-    eprintln!("SKIP: {reason}");
-    if std::env::var("GITHUB_ACTIONS")
-        .ok()
-        .map(|v| v == "true")
-        .unwrap_or(false)
-    {
-        eprintln!("::notice title=pikahut integration skipped::{reason}");
-    }
-}
-
 #[tokio::test]
 #[ignore = "heavy integration lane (OpenClaw checkout + network)"]
 async fn openclaw_gateway_e2e() -> Result<()> {
-    let caps = Capabilities::probe(&workspace_root());
-    if let Err(skip) =
-        caps.require_all_or_skip(&[Requirement::OpenclawCheckout, Requirement::PublicNetwork])
-    {
-        emit_skip(&skip.to_string());
+    if skip_if_missing_requirements(
+        &workspace_root(),
+        &[Requirement::OpenclawCheckout, Requirement::PublicNetwork],
+    ) {
         return Ok(());
     }
 
@@ -36,7 +26,7 @@ async fn openclaw_gateway_e2e() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let result = scenarios::run_openclaw_e2e(OpenclawE2eArgs {
+    let result = scenarios::run_openclaw_e2e(OpenclawE2eRequest {
         state_dir: Some(context.state_dir().to_path_buf()),
         relay_url: None,
         openclaw_dir: None,
@@ -53,5 +43,5 @@ async fn openclaw_gateway_e2e() -> Result<()> {
         );
     }
 
-    result
+    result.map(|_| ())
 }

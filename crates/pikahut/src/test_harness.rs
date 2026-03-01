@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::testing::scenarios;
+use crate::testing::scenarios::{
+    self, CliSmokeRequest, InteropRustBaselineRequest, OpenclawE2eRequest, ScenarioRequest,
+    UiE2eLocalRequest,
+};
 
 #[derive(Debug, Subcommand)]
 pub enum TestCommand {
@@ -104,10 +107,51 @@ pub struct InteropRustBaselineArgs {
 
 pub async fn run(command: TestCommand) -> Result<()> {
     match command {
-        TestCommand::Scenario(args) => scenarios::run_scenario(args).await,
-        TestCommand::OpenclawE2e(args) => scenarios::run_openclaw_e2e(args).await,
-        TestCommand::CliSmoke(args) => scenarios::run_cli_smoke(args).await,
-        TestCommand::UiE2eLocal(args) => scenarios::run_ui_e2e_local(args).await,
-        TestCommand::InteropRustBaseline(args) => scenarios::run_interop_rust_baseline(args).await,
+        TestCommand::Scenario(args) => scenarios::run_scenario(ScenarioRequest {
+            scenario: args.scenario,
+            state_dir: args.state_dir,
+            relay: args.relay,
+            extra_args: args.extra_args,
+        })
+        .await
+        .map(|_| ()),
+        TestCommand::OpenclawE2e(args) => scenarios::run_openclaw_e2e(OpenclawE2eRequest {
+            state_dir: args.state_dir,
+            relay_url: args.relay_url,
+            openclaw_dir: args.openclaw_dir,
+            keep_state: args.keep_state,
+        })
+        .await
+        .map(|_| ()),
+        TestCommand::CliSmoke(args) => scenarios::run_cli_smoke(CliSmokeRequest {
+            relay: args.relay,
+            with_media: args.with_media,
+            state_dir: args.state_dir,
+        })
+        .await
+        .map(|_| ()),
+        TestCommand::UiE2eLocal(args) => scenarios::run_ui_e2e_local(UiE2eLocalRequest {
+            platform: match args.platform {
+                UiPlatform::Android => scenarios::UiPlatform::Android,
+                UiPlatform::Ios => scenarios::UiPlatform::Ios,
+                UiPlatform::Desktop => scenarios::UiPlatform::Desktop,
+            },
+            state_dir: args.state_dir,
+            keep: args.keep,
+            bot_timeout_sec: args.bot_timeout_sec,
+        })
+        .await
+        .map(|_| ()),
+        TestCommand::InteropRustBaseline(args) => {
+            scenarios::run_interop_rust_baseline(InteropRustBaselineRequest {
+                manual: args.manual,
+                keep: args.keep,
+                state_dir: args.state_dir,
+                rust_interop_dir: args.rust_interop_dir,
+                bot_timeout_sec: args.bot_timeout_sec,
+            })
+            .await
+            .map(|_| ())
+        }
     }
 }

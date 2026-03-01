@@ -2549,119 +2549,23 @@ impl AppCore {
                 token,
                 giftwrap_sub,
                 group_sub,
-            } => {
-                // Ignore stale results (e.g., logout/login during recompute).
-                if token != self.subs_recompute_token {
-                    return;
-                }
-
-                self.subs_recompute_in_flight = false;
-                if let Some(sess) = self.session.as_mut() {
-                    sess.giftwrap_sub = giftwrap_sub;
-                    sess.group_sub = group_sub;
-                }
-
-                if self.subs_recompute_dirty {
-                    self.subs_recompute_dirty = false;
-                    self.recompute_subscriptions();
-                }
-            }
+            } => self.handle_subscriptions_recomputed(token, giftwrap_sub, group_sub),
             InternalEvent::Toast(ref msg) => {
                 tracing::info!(msg, "toast");
                 self.toast(msg.clone());
             }
-            InternalEvent::ToastAutoDismiss { token } => {
-                if token != self.toast_dismiss_token {
-                    return;
-                }
-                if self.state.toast.is_some() {
-                    self.state.toast = None;
-                    self.emit_toast();
-                }
-            }
+            InternalEvent::ToastAutoDismiss { token } => self.handle_toast_auto_dismiss(token),
             InternalEvent::NostrConnectConnectResponseReady => {
-                if self.pending_nostr_connect_login.is_some() {
-                    tracing::info!(
-                        "nostr_connect: connect response ready, continuing pending login"
-                    );
-                    self.progress_pending_nostr_connect_login(
-                        None,
-                        false,
-                        "connect-response-ready",
-                    );
-                }
+                self.handle_nostr_connect_response_ready()
             }
             InternalEvent::NostrConnectTimeout { attempt_id } => {
-                let pending_attempt = self
-                    .pending_nostr_connect_login
-                    .as_ref()
-                    .map(|pending| pending.attempt_id);
-                if pending_attempt != Some(attempt_id) {
-                    return;
-                }
-                tracing::warn!(attempt_id, "nostr_connect: pending login timed out");
-                self.clear_pending_nostr_connect_login();
-                self.clear_busy();
-                self.toast("Signer connect response timed out");
+                self.handle_nostr_connect_timeout(attempt_id)
             }
             InternalEvent::NostrConnectInjectConnectResponseForTests {
                 remote_signer_pubkey,
-            } => {
-                let parsed = match PublicKey::parse(remote_signer_pubkey.trim()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            %e,
-                            "nostr_connect: test injection had invalid signer pubkey"
-                        );
-                        return;
-                    }
-                };
-                let mut should_continue = false;
-                if let Some(pending) = self.pending_nostr_connect_login.as_mut() {
-                    let injected = NostrConnectConnectResponse {
-                        remote_signer_pubkey: parsed,
-                        agreed_secret: pending.secret.clone(),
-                    };
-                    match pending.connect_response_result.lock() {
-                        Ok(mut slot) => {
-                            *slot = Some(Ok(injected));
-                        }
-                        Err(poison) => {
-                            *poison.into_inner() = Some(Ok(injected));
-                        }
-                    }
-                    should_continue = true;
-                }
-                if should_continue {
-                    self.progress_pending_nostr_connect_login(
-                        None,
-                        false,
-                        "connect-response-ready",
-                    );
-                }
-            }
+            } => self.handle_nostr_connect_inject_response_for_tests(remote_signer_pubkey),
             InternalEvent::CallRuntimeConnected { call_id } => {
-                if let Some(call) = self.state.active_call.as_ref() {
-                    if call.call_id == call_id && matches!(call.status, CallStatus::Connecting) {
-                        let previous = self.state.active_call.clone();
-                        let mut should_tick = false;
-                        if let Some(call) = self.state.active_call.as_mut() {
-                            call.set_status(CallStatus::Active);
-                            if call.started_at.is_none() {
-                                call.started_at = Some(now_seconds());
-                            }
-                            call.refresh_duration_display(now_seconds());
-                            should_tick = call.started_at.is_some();
-                        }
-                        if should_tick {
-                            self.ensure_call_duration_ticks();
-                        } else {
-                            self.cancel_call_duration_ticks();
-                        }
-                        self.emit_call_state_with_previous(previous);
-                    }
-                }
+                self.handle_call_runtime_connected(call_id)
             }
             InternalEvent::CallRuntimeStats {
                 call_id,
@@ -2673,347 +2577,73 @@ impl AppCore {
                 video_tx,
                 video_rx,
                 video_rx_decrypt_fail,
-            } => {
-                if let Some(call) = self.state.active_call.as_ref() {
-                    if call.call_id == call_id {
-                        let previous = self.state.active_call.clone();
-                        let mut should_tick = false;
-                        if let Some(call) = self.state.active_call.as_mut() {
-                            if matches!(call.status, CallStatus::Connecting) {
-                                call.set_status(CallStatus::Active);
-                                if call.started_at.is_none() {
-                                    call.started_at = Some(now_seconds());
-                                }
-                                call.refresh_duration_display(now_seconds());
-                                should_tick = call.started_at.is_some();
-                            }
-                            call.debug = Some(CallDebugStats {
-                                tx_frames,
-                                rx_frames,
-                                rx_dropped,
-                                jitter_buffer_ms,
-                                last_rtt_ms,
-                                video_tx,
-                                video_rx,
-                                video_rx_decrypt_fail,
-                            });
-                        }
-                        if should_tick {
-                            self.ensure_call_duration_ticks();
-                        }
-                        self.emit_call_state_with_previous(previous);
-                    }
-                }
-            }
-            InternalEvent::CallDurationTick { token } => {
-                if token != self.call_duration_tick_token {
-                    return;
-                }
-                let should_continue = self
-                    .state
-                    .active_call
-                    .as_ref()
-                    .map(|call| {
-                        matches!(call.status, CallStatus::Active) && call.started_at.is_some()
-                    })
-                    .unwrap_or(false);
-                if !should_continue {
-                    return;
-                }
-                if self.refresh_active_call_duration_display() {
-                    self.emit_call_state();
-                }
-                self.schedule_call_duration_tick(token);
-            }
+            } => self.handle_call_runtime_stats(
+                call_id,
+                tx_frames,
+                rx_frames,
+                rx_dropped,
+                jitter_buffer_ms,
+                last_rtt_ms,
+                video_tx,
+                video_rx,
+                video_rx_decrypt_fail,
+            ),
+            InternalEvent::CallDurationTick { token } => self.handle_call_duration_tick(token),
             InternalEvent::VoiceRecordingDurationTick { token } => {
-                if token != self.voice_recording_tick_token {
-                    return;
-                }
-                let mut should_continue = false;
-                if let Some(recording) = self.state.voice_recording.as_mut() {
-                    if recording.phase == VoiceRecordingPhase::Recording {
-                        recording.duration_secs += 0.1;
-                        should_continue = true;
-                        self.emit_state();
-                    }
-                }
-                if should_continue {
-                    self.schedule_voice_recording_tick(token);
-                }
+                self.handle_voice_recording_duration_tick(token)
             }
             InternalEvent::VideoFrameFromPlatform { payload } => {
-                if let Some(call) = self.state.active_call.as_ref() {
-                    if call.is_video_call && call.is_camera_enabled {
-                        self.call_runtime.send_video_frame(&call.call_id, payload);
-                    }
-                }
+                self.handle_video_frame_from_platform(payload)
             }
-            InternalEvent::KeyPackagePublished { ok, ref error } => {
-                tracing::info!(ok, ?error, "key_package_published");
-                if !ok {
-                    let msg = error.clone().unwrap_or_else(|| "unknown error".into());
-                    if msg.contains("no relays")
-                        || msg.contains("not ready")
-                        || msg.contains("not connected")
-                    {
-                        self.toast("Key package publish delayed: relay connection is not ready");
-                    } else {
-                        self.toast(format!("Key package publish failed: {msg}"));
-                    }
-                }
+            InternalEvent::KeyPackagePublished { ok, error } => {
+                self.handle_key_package_published(ok, error)
             }
             InternalEvent::PushSubscriptionsSynced { groups } => {
-                self.handle_push_subscriptions_synced(groups);
+                self.handle_push_subscriptions_synced(groups)
             }
             InternalEvent::PushUnsubscriptionsSynced { groups } => {
-                self.handle_push_unsubscriptions_synced(groups);
+                self.handle_push_unsubscriptions_synced(groups)
             }
             InternalEvent::PublishMessageResult {
                 chat_id,
                 rumor_id,
                 ok,
                 error,
-            } => {
-                tracing::info!(
-                    ok,
-                    ?error,
-                    %chat_id,
-                    %rumor_id,
-                    "message_publish_result"
-                );
-                let per_chat = self.delivery_overrides.entry(chat_id.clone()).or_default();
-                if ok {
-                    per_chat.insert(rumor_id.clone(), MessageDeliveryState::Sent);
-                    if let Some(m) = self.pending_sends.get_mut(&chat_id) {
-                        m.remove(&rumor_id);
-                    }
-                } else {
-                    per_chat.insert(
-                        rumor_id.clone(),
-                        MessageDeliveryState::Failed {
-                            reason: error.unwrap_or_else(|| "publish failed".into()),
-                        },
-                    );
-                }
-                self.refresh_chat_list_from_storage();
-                self.refresh_current_chat_if_open(&chat_id);
-            }
+            } => self.handle_publish_message_result(chat_id, rumor_id, ok, error),
             InternalEvent::ChatMediaUploadCompleted {
                 request_id,
                 uploaded_url,
                 descriptor_sha256_hex,
                 error,
-            } => {
-                self.handle_chat_media_upload_completed(
-                    request_id,
-                    uploaded_url,
-                    descriptor_sha256_hex,
-                    error,
-                );
-            }
+            } => self.handle_chat_media_upload_completed(
+                request_id,
+                uploaded_url,
+                descriptor_sha256_hex,
+                error,
+            ),
             InternalEvent::ChatMediaDownloadFetched {
                 request_id,
                 encrypted_data,
                 error,
-            } => {
-                self.handle_chat_media_download_fetched(request_id, encrypted_data, error);
-            }
+            } => self.handle_chat_media_download_fetched(request_id, encrypted_data, error),
             InternalEvent::PeerKeyPackageFetched {
                 peer_pubkey,
                 key_package_event,
                 error,
-            } => {
-                let network_enabled = self.network_enabled();
-                tracing::info!(
-                    peer = %peer_pubkey.to_hex(),
-                    kp_found = key_package_event.is_some(),
-                    ?error,
-                    "peer_key_package_fetched"
-                );
-                if let Some(err) = error {
-                    self.set_busy(|b| b.creating_chat = false);
-                    self.toast(err);
-                    return;
-                }
-                let Some(kp_event) = key_package_event else {
-                    self.set_busy(|b| b.creating_chat = false);
-                    self.toast("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
-                    return;
-                };
-                let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
-
-                // Merge our default relays with any relays the peer advertised in their key package.
-                let peer_relays =
-                    extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
-                let mut group_relays = self.default_relays();
-                for r in peer_relays.iter().cloned() {
-                    if !group_relays.contains(&r) {
-                        group_relays.push(r);
-                    }
-                }
-                let group_result = {
-                    let Some(sess) = self.session.as_mut() else {
-                        self.set_busy(|b| b.creating_chat = false);
-                        return;
-                    };
-
-                    // Validate peer key package before use (spec-v2).
-                    if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
-                        self.set_busy(|b| b.creating_chat = false);
-                        self.toast(format!(
-                            "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
-                        ));
-                        return;
-                    }
-
-                    // Create group (1:1 DM).
-                    let admins = vec![sess.pubkey, peer_pubkey];
-                    let config = NostrGroupConfigData {
-                        name: DEFAULT_GROUP_NAME.to_string(),
-                        description: DEFAULT_GROUP_DESCRIPTION.to_string(),
-                        image_hash: None,
-                        image_key: None,
-                        image_nonce: None,
-                        relays: group_relays.clone(),
-                        admins,
-                    };
-
-                    let group_result =
-                        match sess
-                            .mdk
-                            .create_group(&sess.pubkey, vec![kp_event.clone()], config)
-                        {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.set_busy(|b| b.creating_chat = false);
-                                self.toast(format!("Create group failed: {e}"));
-                                return;
-                            }
-                        };
-
-                    group_result
-                };
-
-                // Deliver welcomes (gift-wrapped kind 444) to the peer.
-                if network_enabled {
-                    self.publish_welcomes_to_peer(
-                        peer_pubkey,
-                        group_result.welcome_rumors,
-                        group_relays.clone(),
-                    );
-                }
-
-                // Refresh state + subscriptions + navigate.
-                self.refresh_all_from_storage();
-
-                let chat_id = hex::encode(group_result.group.nostr_group_id);
-                self.open_chat_screen(&chat_id);
-                self.refresh_current_chat(&chat_id);
-                self.emit_router();
-                self.set_busy(|b| b.creating_chat = false);
-            }
+            } => self.handle_peer_key_package_fetched(peer_pubkey, key_package_event, error),
             InternalEvent::GiftWrapReceived { wrapper, rumor } => {
-                tracing::info!(
-                    wrapper_id = %wrapper.id.to_hex(),
-                    rumor_kind = rumor.kind.as_u16(),
-                    "giftwrap_received"
-                );
-                let Some(sess) = self.session.as_mut() else {
-                    tracing::warn!("giftwrap_received but no session");
-                    return;
-                };
-
-                if rumor.kind != Kind::MlsWelcome {
-                    tracing::debug!(
-                        kind = rumor.kind.as_u16(),
-                        "giftwrap ignored (not MlsWelcome)"
-                    );
-                    return;
-                }
-
-                let welcome = match sess.mdk.process_welcome(&wrapper.id, &rumor) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        tracing::error!(%e, "process_welcome failed");
-                        return;
-                    }
-                };
-
-                // Skip if we already joined this group (e.g. Welcome re-delivered
-                // from relays after an app restart).  Reprocessing the Welcome
-                // would reset the MLS ratchet state and break message decryption.
-                let nostr_group_hex = hex::encode(welcome.nostr_group_id);
-                // Check both the in-memory index and MDK storage to catch
-                // duplicates even before refresh_all_from_storage() runs.
-                // Only skip if the group is Active (fully joined). Pending
-                // groups from a prior process_welcome haven't been accepted
-                // yet and should not block the accept flow.
-                let already_joined = sess.groups.contains_key(&nostr_group_hex)
-                    || sess.mdk.get_groups().unwrap_or_default().iter().any(|g| {
-                        hex::encode(g.nostr_group_id) == nostr_group_hex
-                            && g.state == mdk_storage_traits::groups::types::GroupState::Active
-                    });
-                if already_joined {
-                    tracing::debug!(
-                        nostr_group_id = %nostr_group_hex,
-                        "welcome skipped (group already exists)"
-                    );
-                    return;
-                }
-
-                tracing::info!(
-                    nostr_group_id = %nostr_group_hex,
-                    group_name = %welcome.group_name,
-                    "welcome_accepted"
-                );
-
-                if let Err(e) = sess.mdk.accept_welcome(&welcome) {
-                    tracing::error!(%e, "accept_welcome failed");
-                    self.toast(format!("Welcome accept failed: {e}"));
-                    return;
-                }
-
-                // Rotate the referenced key package: delete best-effort, publish fresh.
-                if self.network_enabled() {
-                    if let Some(kp_event_id) = referenced_key_package_event_id(&rumor) {
-                        self.delete_event_best_effort(kp_event_id);
-                    }
-                    self.ensure_key_package_published_best_effort();
-                }
-
-                self.refresh_all_from_storage();
+                self.handle_gift_wrap_received(wrapper, rumor)
             }
-            InternalEvent::ProfilesFetched { profiles } => {
-                let now = now_seconds();
-                for (hex_pubkey, metadata_json, event_created_at) in profiles {
-                    self.upsert_profile(
-                        hex_pubkey,
-                        ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
-                    );
-                }
-
-                self.refresh_chat_list_from_storage();
-                if let Some(chat) = self.state.current_chat.as_ref() {
-                    let chat_id = chat.chat_id.clone();
-                    self.refresh_current_chat(&chat_id);
-                }
-            }
+            InternalEvent::ProfilesFetched { profiles } => self.handle_profiles_fetched(profiles),
             InternalEvent::MyProfileFetched { metadata } => {
-                self.apply_my_profile_metadata(metadata, None);
+                self.apply_my_profile_metadata(metadata, None)
             }
             InternalEvent::MyProfileSaved {
                 metadata,
                 image_bytes,
-            } => {
-                self.apply_my_profile_metadata(Some(metadata), image_bytes);
-                self.toast("Profile updated");
-            }
+            } => self.handle_my_profile_saved(metadata, image_bytes),
             InternalEvent::MyProfileError { message, toast } => {
-                if toast {
-                    self.toast(message);
-                } else {
-                    tracing::debug!(%message, "profile action failed");
-                }
+                self.handle_my_profile_error(message, toast)
             }
             InternalEvent::GroupKeyPackagesFetched {
                 peer_pubkeys,
@@ -3022,399 +2652,893 @@ impl AppCore {
                 key_package_events,
                 failed_peers,
                 candidate_kp_relays,
-            } => {
-                let network_enabled = self.network_enabled();
-
-                if key_package_events.is_empty() {
-                    self.set_busy(|b| b.creating_chat = false);
-                    let names: Vec<String> = failed_peers
-                        .iter()
-                        .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
-                        .collect();
-                    self.toast(format!("No key packages found: {}", names.join(", ")));
-                    return;
-                }
-
-                if !failed_peers.is_empty() {
-                    let names: Vec<String> = failed_peers
-                        .iter()
-                        .map(|(pk, _)| pk.to_hex()[..8].to_string())
-                        .collect();
-                    self.toast(format!(
-                        "Could not add {} peer(s): {}",
-                        failed_peers.len(),
-                        names.join(", ")
-                    ));
-                }
-
-                if let Some(chat_id) = existing_chat_id {
-                    let Some(sess) = self.session.as_mut() else {
-                        self.set_busy(|b| b.creating_chat = false);
-                        return;
-                    };
-                    let Some(entry) = sess.groups.get(&chat_id).cloned() else {
-                        self.set_busy(|b| b.creating_chat = false);
-                        self.toast("Chat not found");
-                        return;
-                    };
-
-                    let kp_events: Vec<Event> = key_package_events
-                        .iter()
-                        .map(normalize_peer_key_package_event_for_mdk)
-                        .collect();
-
-                    for ev in &kp_events {
-                        if let Err(e) = sess.mdk.parse_key_package(ev) {
-                            self.set_busy(|b| b.creating_chat = false);
-                            self.toast(format!("Invalid key package: {e}"));
-                            return;
-                        }
-                    }
-
-                    let result = match sess.mdk.add_members(&entry.mls_group_id, &kp_events) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            self.set_busy(|b| b.creating_chat = false);
-                            self.toast(format!("Add members failed: {e}"));
-                            return;
-                        }
-                    };
-
-                    let added: Vec<PublicKey> = kp_events.iter().map(|e| e.pubkey).collect();
-                    self.publish_evolution_event(
-                        &chat_id,
-                        entry.mls_group_id,
-                        result.evolution_event,
-                        result.welcome_rumors,
-                        added,
-                    );
-                    // Clear busy immediately — relay confirmation, merge, and
-                    // welcome delivery continue in the background via
-                    // GroupEvolutionPublished handler.
-                    self.set_busy(|b| b.creating_chat = false);
-                } else {
-                    // Create new group chat.
-                    let kp_events: Vec<Event> = key_package_events
-                        .iter()
-                        .map(normalize_peer_key_package_event_for_mdk)
-                        .collect();
-
-                    let peer_relays: Vec<RelayUrl> = kp_events
-                        .iter()
-                        .flat_map(|e| extract_relays_from_key_package_event(e).unwrap_or_default())
-                        .collect();
-                    let mut group_relays = self.default_relays();
-                    for r in candidate_kp_relays.iter().cloned() {
-                        if !group_relays.contains(&r) {
-                            group_relays.push(r);
-                        }
-                    }
-                    for r in peer_relays.iter().cloned() {
-                        if !group_relays.contains(&r) {
-                            group_relays.push(r);
-                        }
-                    }
-
-                    let Some(sess) = self.session.as_mut() else {
-                        self.set_busy(|b| b.creating_chat = false);
-                        return;
-                    };
-
-                    for ev in &kp_events {
-                        if let Err(e) = sess.mdk.parse_key_package(ev) {
-                            self.set_busy(|b| b.creating_chat = false);
-                            self.toast(format!("Invalid key package: {e}"));
-                            return;
-                        }
-                    }
-
-                    let admins = vec![sess.pubkey];
-
-                    let config = NostrGroupConfigData {
-                        name: group_name.clone(),
-                        description: DEFAULT_GROUP_DESCRIPTION.to_string(),
-                        image_hash: None,
-                        image_key: None,
-                        image_nonce: None,
-                        relays: group_relays.clone(),
-                        admins,
-                    };
-
-                    let group_result =
-                        match sess
-                            .mdk
-                            .create_group(&sess.pubkey, kp_events.clone(), config)
-                        {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.set_busy(|b| b.creating_chat = false);
-                                self.toast(format!("Create group failed: {e}"));
-                                return;
-                            }
-                        };
-
-                    // Deliver welcomes to all peers.
-                    if network_enabled {
-                        let mut welcome_relays = peer_relays;
-                        for r in candidate_kp_relays {
-                            if !welcome_relays.contains(&r) {
-                                welcome_relays.push(r);
-                            }
-                        }
-                        for r in group_relays {
-                            if !welcome_relays.contains(&r) {
-                                welcome_relays.push(r);
-                            }
-                        }
-                        for pk in &peer_pubkeys {
-                            self.publish_welcomes_to_peer(
-                                *pk,
-                                group_result.welcome_rumors.clone(),
-                                welcome_relays.clone(),
-                            );
-                        }
-                    }
-
-                    self.refresh_all_from_storage();
-                    let chat_id = hex::encode(group_result.group.nostr_group_id);
-                    self.open_chat_screen(&chat_id);
-                    self.refresh_current_chat(&chat_id);
-                    self.emit_router();
-                    self.set_busy(|b| b.creating_chat = false);
-                }
-            }
+            } => self.handle_group_key_packages_fetched(
+                peer_pubkeys,
+                group_name,
+                existing_chat_id,
+                key_package_events,
+                failed_peers,
+                candidate_kp_relays,
+            ),
             InternalEvent::GroupEvolutionPublished {
-                chat_id: _,
+                chat_id,
                 mls_group_id,
                 welcome_rumors,
                 added_pubkeys,
                 ok,
                 error,
-            } => {
-                if !ok {
-                    self.toast(format!(
-                        "Group update failed: {}",
-                        error.unwrap_or_else(|| "unknown".into())
-                    ));
-                    return;
-                }
-
-                // Merge the pending commit now that relay confirmed.
-                if let Some(sess) = self.session.as_mut() {
-                    if let Err(e) = sess.mdk.merge_pending_commit(&mls_group_id) {
-                        tracing::error!(%e, "merge_pending_commit failed");
-                    }
-                }
-
-                // Send welcomes to newly added members.
-                if let Some(rumors) = welcome_rumors {
-                    if !rumors.is_empty() && self.network_enabled() {
-                        let fallback_relays = self.default_relays();
-                        let relays: Vec<RelayUrl> = self
-                            .session
-                            .as_ref()
-                            .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
-                            .map(|s| s.into_iter().collect())
-                            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                            .unwrap_or(fallback_relays);
-                        for pk in added_pubkeys {
-                            self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
-                        }
-                    }
-                }
-
-                self.refresh_all_from_storage();
-            }
+            } => self.handle_group_evolution_published(
+                chat_id,
+                mls_group_id,
+                welcome_rumors,
+                added_pubkeys,
+                ok,
+                error,
+            ),
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
                 checked_pubkeys,
             } => {
-                // Upsert freshly fetched profiles.
-                let now = now_seconds();
-                for (hex_pubkey, metadata_json, event_created_at) in fetched_profiles {
-                    self.upsert_profile(
-                        hex_pubkey,
-                        ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
-                    );
-                }
-                // Mark checked-but-not-fetched pubkeys so we don't re-fetch them.
-                for pk in &checked_pubkeys {
-                    if !self.profiles.contains_key(pk) {
-                        self.upsert_profile(
-                            pk.clone(),
-                            ProfileCache::from_metadata_json(None, 0, now),
-                        );
-                    }
-                }
-
-                // Build follow list entries from the shared profile cache.
-                let mut follow_list: Vec<crate::state::FollowListEntry> = followed_pubkeys
-                    .into_iter()
-                    .map(|hex_pubkey| {
-                        let npub = PublicKey::from_hex(&hex_pubkey)
-                            .ok()
-                            .and_then(|pk| pk.to_bech32().ok())
-                            .unwrap_or_else(|| hex_pubkey.clone());
-                        let cached = self.profiles.get(&hex_pubkey);
-                        let name = cached.and_then(|p| p.name.clone());
-                        let username = cached.and_then(|p| p.username.clone());
-                        let picture_url =
-                            cached.and_then(|p| p.display_picture_url(&self.data_dir, &hex_pubkey));
-                        crate::state::FollowListEntry {
-                            pubkey: hex_pubkey,
-                            npub,
-                            name,
-                            username,
-                            picture_url,
-                        }
-                    })
-                    .collect();
-                // Sort: names first (alphabetical), then npub-only entries.
-                follow_list.sort_by(|a, b| match (&a.name, &b.name) {
-                    (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => a.npub.cmp(&b.npub),
-                });
-                self.state.follow_list = follow_list;
-                // Persist to cache (guard against empty relay responses wiping the DB).
-                if self.state.follow_list.len() >= 2 {
-                    if let Some(conn) = self.profile_db.as_ref() {
-                        let pubkeys: Vec<String> = self
-                            .state
-                            .follow_list
-                            .iter()
-                            .map(|f| f.pubkey.clone())
-                            .collect();
-                        profile_db::save_follows(conn, &pubkeys);
-                    }
-                }
-                self.set_busy(|b| b.fetching_follow_list = false);
-                // Update peer_profile.is_followed if the sheet is open.
-                if let Some(ref mut pp) = self.state.peer_profile {
-                    pp.is_followed = self.state.follow_list.iter().any(|f| f.pubkey == pp.pubkey);
-                }
-                // Refresh chat list too since profiles were updated.
-                self.refresh_chat_list_from_storage();
-                if let Some(chat) = self.state.current_chat.as_ref() {
-                    let chat_id = chat.chat_id.clone();
-                    self.refresh_current_chat(&chat_id);
-                }
+                self.handle_follow_list_fetched(followed_pubkeys, fetched_profiles, checked_pubkeys)
             }
             InternalEvent::PeerProfileFetched {
                 pubkey,
                 metadata_json,
                 event_created_at,
-            } => {
-                let now = now_seconds();
-                self.upsert_profile(
-                    pubkey.clone(),
-                    ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
-                );
-
-                // Update peer_profile if it's still showing this pubkey.
-                if let Some(ref mut pp) = self.state.peer_profile {
-                    if pp.pubkey == pubkey {
-                        let cached = self.profiles.get(&pubkey);
-                        pp.name = cached.and_then(|p| p.name.clone());
-                        pp.about = cached.and_then(|p| p.about.clone());
-                        pp.picture_url =
-                            cached.and_then(|p| p.display_picture_url(&self.data_dir, &pubkey));
-                        self.emit_state();
-                    }
-                }
-            }
+            } => self.handle_peer_profile_fetched(pubkey, metadata_json, event_created_at),
             InternalEvent::ProfilePicCached { pubkey, url } => {
-                // Only refresh if the profile still has the same picture_url
-                // (guards against mid-download URL changes).
-                let url_matches = self
-                    .profiles
-                    .get(&pubkey)
-                    .and_then(|c| c.picture_url.as_deref())
-                    == Some(&url);
-                if !url_matches {
-                    return;
-                }
-                let file_url = self
-                    .profiles
-                    .get(&pubkey)
-                    .and_then(|p| p.display_picture_url(&self.data_dir, &pubkey));
-                let mut changed = false;
-
-                // Update own profile.
-                let is_me =
-                    self.session.as_ref().map(|s| s.pubkey.to_hex()).as_deref() == Some(&pubkey);
-                if is_me {
-                    let next = self.my_profile_state();
-                    if next != self.state.my_profile {
-                        self.state.my_profile = next;
-                        changed = true;
-                    }
-                }
-
-                // Patch picture URLs in chat list members.
-                for chat in &mut self.state.chat_list {
-                    for member in &mut chat.members {
-                        if member.pubkey == pubkey {
-                            member.picture_url = file_url.clone();
-                            changed = true;
-                        }
-                    }
-                }
-
-                // Patch picture URLs in current chat members.
-                if let Some(ref mut chat) = self.state.current_chat {
-                    for member in &mut chat.members {
-                        if member.pubkey == pubkey {
-                            member.picture_url = file_url.clone();
-                            changed = true;
-                        }
-                    }
-                }
-
-                // Patch peer profile if open.
-                if let Some(ref mut pp) = self.state.peer_profile {
-                    if pp.pubkey == pubkey {
-                        pp.picture_url = file_url.clone();
-                        changed = true;
-                    }
-                }
-
-                // Patch follow list.
-                for entry in &mut self.state.follow_list {
-                    if entry.pubkey == pubkey {
-                        entry.picture_url = file_url.clone();
-                        changed = true;
-                    }
-                }
-
-                if changed {
-                    self.emit_state();
-                }
+                self.handle_profile_pic_cached(pubkey, url)
             }
             InternalEvent::ContactListModifyFailed { pubkey, revert_to } => {
-                // Revert the optimistic DB update.
-                if let Some(conn) = self.profile_db.as_ref() {
-                    if revert_to {
-                        profile_db::add_follow(conn, &pubkey);
-                    } else {
-                        profile_db::remove_follow(conn, &pubkey);
-                    }
-                }
-                if let Some(ref mut pp) = self.state.peer_profile {
-                    if pp.pubkey == pubkey {
-                        pp.is_followed = revert_to;
-                    }
-                }
-                self.toast("Failed to update follow list".to_string());
-                self.emit_state();
+                self.handle_contact_list_modify_failed(pubkey, revert_to)
             }
             InternalEvent::GroupMessageReceived { event } => {
                 tracing::debug!(event_id = %event.id.to_hex(), "group_message_received");
                 self.handle_group_message(event);
             }
         }
+    }
+
+    fn handle_subscriptions_recomputed(
+        &mut self,
+        token: u64,
+        giftwrap_sub: Option<SubscriptionId>,
+        group_sub: Option<SubscriptionId>,
+    ) {
+        // Ignore stale results (e.g., logout/login during recompute).
+        if token != self.subs_recompute_token {
+            return;
+        }
+
+        self.subs_recompute_in_flight = false;
+        if let Some(sess) = self.session.as_mut() {
+            sess.giftwrap_sub = giftwrap_sub;
+            sess.group_sub = group_sub;
+        }
+
+        if self.subs_recompute_dirty {
+            self.subs_recompute_dirty = false;
+            self.recompute_subscriptions();
+        }
+    }
+
+    fn handle_toast_auto_dismiss(&mut self, token: u64) {
+        if token != self.toast_dismiss_token {
+            return;
+        }
+        if self.state.toast.is_some() {
+            self.state.toast = None;
+            self.emit_toast();
+        }
+    }
+
+    fn handle_nostr_connect_response_ready(&mut self) {
+        if self.pending_nostr_connect_login.is_some() {
+            tracing::info!("nostr_connect: connect response ready, continuing pending login");
+            self.progress_pending_nostr_connect_login(None, false, "connect-response-ready");
+        }
+    }
+
+    fn handle_nostr_connect_timeout(&mut self, attempt_id: u64) {
+        let pending_attempt = self
+            .pending_nostr_connect_login
+            .as_ref()
+            .map(|pending| pending.attempt_id);
+        if pending_attempt != Some(attempt_id) {
+            return;
+        }
+        tracing::warn!(attempt_id, "nostr_connect: pending login timed out");
+        self.clear_pending_nostr_connect_login();
+        self.clear_busy();
+        self.toast("Signer connect response timed out");
+    }
+
+    fn handle_nostr_connect_inject_response_for_tests(&mut self, remote_signer_pubkey: String) {
+        let parsed = match PublicKey::parse(remote_signer_pubkey.trim()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    "nostr_connect: test injection had invalid signer pubkey"
+                );
+                return;
+            }
+        };
+        let mut should_continue = false;
+        if let Some(pending) = self.pending_nostr_connect_login.as_mut() {
+            let injected = NostrConnectConnectResponse {
+                remote_signer_pubkey: parsed,
+                agreed_secret: pending.secret.clone(),
+            };
+            match pending.connect_response_result.lock() {
+                Ok(mut slot) => {
+                    *slot = Some(Ok(injected));
+                }
+                Err(poison) => {
+                    *poison.into_inner() = Some(Ok(injected));
+                }
+            }
+            should_continue = true;
+        }
+        if should_continue {
+            self.progress_pending_nostr_connect_login(None, false, "connect-response-ready");
+        }
+    }
+
+    fn handle_call_runtime_connected(&mut self, call_id: String) {
+        if let Some(call) = self.state.active_call.as_ref() {
+            if call.call_id == call_id && matches!(call.status, CallStatus::Connecting) {
+                let previous = self.state.active_call.clone();
+                let mut should_tick = false;
+                if let Some(call) = self.state.active_call.as_mut() {
+                    call.set_status(CallStatus::Active);
+                    if call.started_at.is_none() {
+                        call.started_at = Some(now_seconds());
+                    }
+                    call.refresh_duration_display(now_seconds());
+                    should_tick = call.started_at.is_some();
+                }
+                if should_tick {
+                    self.ensure_call_duration_ticks();
+                } else {
+                    self.cancel_call_duration_ticks();
+                }
+                self.emit_call_state_with_previous(previous);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_call_runtime_stats(
+        &mut self,
+        call_id: String,
+        tx_frames: u64,
+        rx_frames: u64,
+        rx_dropped: u64,
+        jitter_buffer_ms: u32,
+        last_rtt_ms: Option<u32>,
+        video_tx: u64,
+        video_rx: u64,
+        video_rx_decrypt_fail: u64,
+    ) {
+        if let Some(call) = self.state.active_call.as_ref() {
+            if call.call_id == call_id {
+                let previous = self.state.active_call.clone();
+                let mut should_tick = false;
+                if let Some(call) = self.state.active_call.as_mut() {
+                    if matches!(call.status, CallStatus::Connecting) {
+                        call.set_status(CallStatus::Active);
+                        if call.started_at.is_none() {
+                            call.started_at = Some(now_seconds());
+                        }
+                        call.refresh_duration_display(now_seconds());
+                        should_tick = call.started_at.is_some();
+                    }
+                    call.debug = Some(CallDebugStats {
+                        tx_frames,
+                        rx_frames,
+                        rx_dropped,
+                        jitter_buffer_ms,
+                        last_rtt_ms,
+                        video_tx,
+                        video_rx,
+                        video_rx_decrypt_fail,
+                    });
+                }
+                if should_tick {
+                    self.ensure_call_duration_ticks();
+                }
+                self.emit_call_state_with_previous(previous);
+            }
+        }
+    }
+
+    fn handle_call_duration_tick(&mut self, token: u64) {
+        if token != self.call_duration_tick_token {
+            return;
+        }
+        let should_continue = self
+            .state
+            .active_call
+            .as_ref()
+            .map(|call| matches!(call.status, CallStatus::Active) && call.started_at.is_some())
+            .unwrap_or(false);
+        if !should_continue {
+            return;
+        }
+        if self.refresh_active_call_duration_display() {
+            self.emit_call_state();
+        }
+        self.schedule_call_duration_tick(token);
+    }
+
+    fn handle_voice_recording_duration_tick(&mut self, token: u64) {
+        if token != self.voice_recording_tick_token {
+            return;
+        }
+        let mut should_continue = false;
+        if let Some(recording) = self.state.voice_recording.as_mut() {
+            if recording.phase == VoiceRecordingPhase::Recording {
+                recording.duration_secs += 0.1;
+                should_continue = true;
+                self.emit_state();
+            }
+        }
+        if should_continue {
+            self.schedule_voice_recording_tick(token);
+        }
+    }
+
+    fn handle_video_frame_from_platform(&mut self, payload: Vec<u8>) {
+        if let Some(call) = self.state.active_call.as_ref() {
+            if call.is_video_call && call.is_camera_enabled {
+                self.call_runtime.send_video_frame(&call.call_id, payload);
+            }
+        }
+    }
+
+    fn handle_key_package_published(&mut self, ok: bool, error: Option<String>) {
+        tracing::info!(ok, ?error, "key_package_published");
+        if !ok {
+            let msg = error.unwrap_or_else(|| "unknown error".into());
+            if msg.contains("no relays")
+                || msg.contains("not ready")
+                || msg.contains("not connected")
+            {
+                self.toast("Key package publish delayed: relay connection is not ready");
+            } else {
+                self.toast(format!("Key package publish failed: {msg}"));
+            }
+        }
+    }
+
+    fn handle_publish_message_result(
+        &mut self,
+        chat_id: String,
+        rumor_id: String,
+        ok: bool,
+        error: Option<String>,
+    ) {
+        tracing::info!(
+            ok,
+            ?error,
+            %chat_id,
+            %rumor_id,
+            "message_publish_result"
+        );
+        let per_chat = self.delivery_overrides.entry(chat_id.clone()).or_default();
+        if ok {
+            per_chat.insert(rumor_id.clone(), MessageDeliveryState::Sent);
+            if let Some(m) = self.pending_sends.get_mut(&chat_id) {
+                m.remove(&rumor_id);
+            }
+        } else {
+            per_chat.insert(
+                rumor_id.clone(),
+                MessageDeliveryState::Failed {
+                    reason: error.unwrap_or_else(|| "publish failed".into()),
+                },
+            );
+        }
+        self.refresh_chat_list_from_storage();
+        self.refresh_current_chat_if_open(&chat_id);
+    }
+
+    fn handle_peer_key_package_fetched(
+        &mut self,
+        peer_pubkey: PublicKey,
+        key_package_event: Option<Event>,
+        error: Option<String>,
+    ) {
+        let network_enabled = self.network_enabled();
+        tracing::info!(
+            peer = %peer_pubkey.to_hex(),
+            kp_found = key_package_event.is_some(),
+            ?error,
+            "peer_key_package_fetched"
+        );
+        if let Some(err) = error {
+            self.set_busy(|b| b.creating_chat = false);
+            self.toast(err);
+            return;
+        }
+        let Some(kp_event) = key_package_event else {
+            self.set_busy(|b| b.creating_chat = false);
+            self.toast("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
+            return;
+        };
+        let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
+
+        // Merge our default relays with any relays the peer advertised in their key package.
+        let peer_relays = extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
+        let mut group_relays = self.default_relays();
+        for r in peer_relays.iter().cloned() {
+            if !group_relays.contains(&r) {
+                group_relays.push(r);
+            }
+        }
+        let group_result = {
+            let Some(sess) = self.session.as_mut() else {
+                self.set_busy(|b| b.creating_chat = false);
+                return;
+            };
+
+            // Validate peer key package before use (spec-v2).
+            if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
+                self.set_busy(|b| b.creating_chat = false);
+                self.toast(format!(
+                    "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
+                ));
+                return;
+            }
+
+            // Create group (1:1 DM).
+            let admins = vec![sess.pubkey, peer_pubkey];
+            let config = NostrGroupConfigData {
+                name: DEFAULT_GROUP_NAME.to_string(),
+                description: DEFAULT_GROUP_DESCRIPTION.to_string(),
+                image_hash: None,
+                image_key: None,
+                image_nonce: None,
+                relays: group_relays.clone(),
+                admins,
+            };
+
+            let group_result =
+                match sess
+                    .mdk
+                    .create_group(&sess.pubkey, vec![kp_event.clone()], config)
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.set_busy(|b| b.creating_chat = false);
+                        self.toast(format!("Create group failed: {e}"));
+                        return;
+                    }
+                };
+
+            group_result
+        };
+
+        // Deliver welcomes (gift-wrapped kind 444) to the peer.
+        if network_enabled {
+            self.publish_welcomes_to_peer(
+                peer_pubkey,
+                group_result.welcome_rumors,
+                group_relays.clone(),
+            );
+        }
+
+        // Refresh state + subscriptions + navigate.
+        self.refresh_all_from_storage();
+
+        let chat_id = hex::encode(group_result.group.nostr_group_id);
+        self.open_chat_screen(&chat_id);
+        self.refresh_current_chat(&chat_id);
+        self.emit_router();
+        self.set_busy(|b| b.creating_chat = false);
+    }
+
+    fn handle_gift_wrap_received(&mut self, wrapper: Event, rumor: UnsignedEvent) {
+        tracing::info!(
+            wrapper_id = %wrapper.id.to_hex(),
+            rumor_kind = rumor.kind.as_u16(),
+            "giftwrap_received"
+        );
+        let Some(sess) = self.session.as_mut() else {
+            tracing::warn!("giftwrap_received but no session");
+            return;
+        };
+
+        if rumor.kind != Kind::MlsWelcome {
+            tracing::debug!(
+                kind = rumor.kind.as_u16(),
+                "giftwrap ignored (not MlsWelcome)"
+            );
+            return;
+        }
+
+        let welcome = match sess.mdk.process_welcome(&wrapper.id, &rumor) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(%e, "process_welcome failed");
+                return;
+            }
+        };
+
+        // Skip if we already joined this group (e.g. Welcome re-delivered
+        // from relays after an app restart).  Reprocessing the Welcome
+        // would reset the MLS ratchet state and break message decryption.
+        let nostr_group_hex = hex::encode(welcome.nostr_group_id);
+        // Check both the in-memory index and MDK storage to catch
+        // duplicates even before refresh_all_from_storage() runs.
+        // Only skip if the group is Active (fully joined). Pending
+        // groups from a prior process_welcome haven't been accepted
+        // yet and should not block the accept flow.
+        let already_joined = sess.groups.contains_key(&nostr_group_hex)
+            || sess.mdk.get_groups().unwrap_or_default().iter().any(|g| {
+                hex::encode(g.nostr_group_id) == nostr_group_hex
+                    && g.state == mdk_storage_traits::groups::types::GroupState::Active
+            });
+        if already_joined {
+            tracing::debug!(
+                nostr_group_id = %nostr_group_hex,
+                "welcome skipped (group already exists)"
+            );
+            return;
+        }
+
+        tracing::info!(
+            nostr_group_id = %nostr_group_hex,
+            group_name = %welcome.group_name,
+            "welcome_accepted"
+        );
+
+        if let Err(e) = sess.mdk.accept_welcome(&welcome) {
+            tracing::error!(%e, "accept_welcome failed");
+            self.toast(format!("Welcome accept failed: {e}"));
+            return;
+        }
+
+        // Rotate the referenced key package: delete best-effort, publish fresh.
+        if self.network_enabled() {
+            if let Some(kp_event_id) = referenced_key_package_event_id(&rumor) {
+                self.delete_event_best_effort(kp_event_id);
+            }
+            self.ensure_key_package_published_best_effort();
+        }
+
+        self.refresh_all_from_storage();
+    }
+
+    fn handle_profiles_fetched(&mut self, profiles: Vec<(String, Option<String>, i64)>) {
+        let now = now_seconds();
+        for (hex_pubkey, metadata_json, event_created_at) in profiles {
+            self.upsert_profile(
+                hex_pubkey,
+                ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
+            );
+        }
+
+        self.refresh_chat_list_from_storage();
+        if let Some(chat) = self.state.current_chat.as_ref() {
+            let chat_id = chat.chat_id.clone();
+            self.refresh_current_chat(&chat_id);
+        }
+    }
+
+    fn handle_my_profile_saved(&mut self, metadata: Metadata, image_bytes: Option<Vec<u8>>) {
+        self.apply_my_profile_metadata(Some(metadata), image_bytes);
+        self.toast("Profile updated");
+    }
+
+    fn handle_my_profile_error(&mut self, message: String, toast: bool) {
+        if toast {
+            self.toast(message);
+        } else {
+            tracing::debug!(%message, "profile action failed");
+        }
+    }
+
+    fn handle_group_key_packages_fetched(
+        &mut self,
+        peer_pubkeys: Vec<PublicKey>,
+        group_name: String,
+        existing_chat_id: Option<String>,
+        key_package_events: Vec<Event>,
+        failed_peers: Vec<(PublicKey, String)>,
+        candidate_kp_relays: Vec<RelayUrl>,
+    ) {
+        let network_enabled = self.network_enabled();
+
+        if key_package_events.is_empty() {
+            self.set_busy(|b| b.creating_chat = false);
+            let names: Vec<String> = failed_peers
+                .iter()
+                .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
+                .collect();
+            self.toast(format!("No key packages found: {}", names.join(", ")));
+            return;
+        }
+
+        if !failed_peers.is_empty() {
+            let names: Vec<String> = failed_peers
+                .iter()
+                .map(|(pk, _)| pk.to_hex()[..8].to_string())
+                .collect();
+            self.toast(format!(
+                "Could not add {} peer(s): {}",
+                failed_peers.len(),
+                names.join(", ")
+            ));
+        }
+
+        if let Some(chat_id) = existing_chat_id {
+            let Some(sess) = self.session.as_mut() else {
+                self.set_busy(|b| b.creating_chat = false);
+                return;
+            };
+            let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+                self.set_busy(|b| b.creating_chat = false);
+                self.toast("Chat not found");
+                return;
+            };
+
+            let kp_events: Vec<Event> = key_package_events
+                .iter()
+                .map(normalize_peer_key_package_event_for_mdk)
+                .collect();
+
+            for ev in &kp_events {
+                if let Err(e) = sess.mdk.parse_key_package(ev) {
+                    self.set_busy(|b| b.creating_chat = false);
+                    self.toast(format!("Invalid key package: {e}"));
+                    return;
+                }
+            }
+
+            let result = match sess.mdk.add_members(&entry.mls_group_id, &kp_events) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.set_busy(|b| b.creating_chat = false);
+                    self.toast(format!("Add members failed: {e}"));
+                    return;
+                }
+            };
+
+            let added: Vec<PublicKey> = kp_events.iter().map(|e| e.pubkey).collect();
+            self.publish_evolution_event(
+                &chat_id,
+                entry.mls_group_id,
+                result.evolution_event,
+                result.welcome_rumors,
+                added,
+            );
+            // Clear busy immediately — relay confirmation, merge, and
+            // welcome delivery continue in the background via
+            // GroupEvolutionPublished handler.
+            self.set_busy(|b| b.creating_chat = false);
+        } else {
+            // Create new group chat.
+            let kp_events: Vec<Event> = key_package_events
+                .iter()
+                .map(normalize_peer_key_package_event_for_mdk)
+                .collect();
+
+            let peer_relays: Vec<RelayUrl> = kp_events
+                .iter()
+                .flat_map(|e| extract_relays_from_key_package_event(e).unwrap_or_default())
+                .collect();
+            let mut group_relays = self.default_relays();
+            for r in candidate_kp_relays.iter().cloned() {
+                if !group_relays.contains(&r) {
+                    group_relays.push(r);
+                }
+            }
+            for r in peer_relays.iter().cloned() {
+                if !group_relays.contains(&r) {
+                    group_relays.push(r);
+                }
+            }
+
+            let Some(sess) = self.session.as_mut() else {
+                self.set_busy(|b| b.creating_chat = false);
+                return;
+            };
+
+            for ev in &kp_events {
+                if let Err(e) = sess.mdk.parse_key_package(ev) {
+                    self.set_busy(|b| b.creating_chat = false);
+                    self.toast(format!("Invalid key package: {e}"));
+                    return;
+                }
+            }
+
+            let admins = vec![sess.pubkey];
+
+            let config = NostrGroupConfigData {
+                name: group_name.clone(),
+                description: DEFAULT_GROUP_DESCRIPTION.to_string(),
+                image_hash: None,
+                image_key: None,
+                image_nonce: None,
+                relays: group_relays.clone(),
+                admins,
+            };
+
+            let group_result = match sess
+                .mdk
+                .create_group(&sess.pubkey, kp_events.clone(), config)
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    self.set_busy(|b| b.creating_chat = false);
+                    self.toast(format!("Create group failed: {e}"));
+                    return;
+                }
+            };
+
+            // Deliver welcomes to all peers.
+            if network_enabled {
+                let mut welcome_relays = peer_relays;
+                for r in candidate_kp_relays {
+                    if !welcome_relays.contains(&r) {
+                        welcome_relays.push(r);
+                    }
+                }
+                for r in group_relays {
+                    if !welcome_relays.contains(&r) {
+                        welcome_relays.push(r);
+                    }
+                }
+                for pk in &peer_pubkeys {
+                    self.publish_welcomes_to_peer(
+                        *pk,
+                        group_result.welcome_rumors.clone(),
+                        welcome_relays.clone(),
+                    );
+                }
+            }
+
+            self.refresh_all_from_storage();
+            let chat_id = hex::encode(group_result.group.nostr_group_id);
+            self.open_chat_screen(&chat_id);
+            self.refresh_current_chat(&chat_id);
+            self.emit_router();
+            self.set_busy(|b| b.creating_chat = false);
+        }
+    }
+
+    fn handle_group_evolution_published(
+        &mut self,
+        _chat_id: String,
+        mls_group_id: GroupId,
+        welcome_rumors: Option<Vec<UnsignedEvent>>,
+        added_pubkeys: Vec<PublicKey>,
+        ok: bool,
+        error: Option<String>,
+    ) {
+        if !ok {
+            self.toast(format!(
+                "Group update failed: {}",
+                error.unwrap_or_else(|| "unknown".into())
+            ));
+            return;
+        }
+
+        // Merge the pending commit now that relay confirmed.
+        if let Some(sess) = self.session.as_mut() {
+            if let Err(e) = sess.mdk.merge_pending_commit(&mls_group_id) {
+                tracing::error!(%e, "merge_pending_commit failed");
+            }
+        }
+
+        // Send welcomes to newly added members.
+        if let Some(rumors) = welcome_rumors {
+            if !rumors.is_empty() && self.network_enabled() {
+                let fallback_relays = self.default_relays();
+                let relays: Vec<RelayUrl> = self
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
+                    .map(|s| s.into_iter().collect())
+                    .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                    .unwrap_or(fallback_relays);
+                for pk in added_pubkeys {
+                    self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
+                }
+            }
+        }
+
+        self.refresh_all_from_storage();
+    }
+
+    fn handle_follow_list_fetched(
+        &mut self,
+        followed_pubkeys: Vec<String>,
+        fetched_profiles: Vec<(String, Option<String>, i64)>,
+        checked_pubkeys: HashSet<String>,
+    ) {
+        // Upsert freshly fetched profiles.
+        let now = now_seconds();
+        for (hex_pubkey, metadata_json, event_created_at) in fetched_profiles {
+            self.upsert_profile(
+                hex_pubkey,
+                ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
+            );
+        }
+        // Mark checked-but-not-fetched pubkeys so we don't re-fetch them.
+        for pk in &checked_pubkeys {
+            if !self.profiles.contains_key(pk) {
+                self.upsert_profile(pk.clone(), ProfileCache::from_metadata_json(None, 0, now));
+            }
+        }
+
+        // Build follow list entries from the shared profile cache.
+        let mut follow_list: Vec<crate::state::FollowListEntry> = followed_pubkeys
+            .into_iter()
+            .map(|hex_pubkey| {
+                let npub = PublicKey::from_hex(&hex_pubkey)
+                    .ok()
+                    .and_then(|pk| pk.to_bech32().ok())
+                    .unwrap_or_else(|| hex_pubkey.clone());
+                let cached = self.profiles.get(&hex_pubkey);
+                let name = cached.and_then(|p| p.name.clone());
+                let username = cached.and_then(|p| p.username.clone());
+                let picture_url =
+                    cached.and_then(|p| p.display_picture_url(&self.data_dir, &hex_pubkey));
+                crate::state::FollowListEntry {
+                    pubkey: hex_pubkey,
+                    npub,
+                    name,
+                    username,
+                    picture_url,
+                }
+            })
+            .collect();
+        // Sort: names first (alphabetical), then npub-only entries.
+        follow_list.sort_by(|a, b| match (&a.name, &b.name) {
+            (Some(na), Some(nb)) => na.to_lowercase().cmp(&nb.to_lowercase()),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.npub.cmp(&b.npub),
+        });
+        self.state.follow_list = follow_list;
+        // Persist to cache (guard against empty relay responses wiping the DB).
+        if self.state.follow_list.len() >= 2 {
+            if let Some(conn) = self.profile_db.as_ref() {
+                let pubkeys: Vec<String> = self
+                    .state
+                    .follow_list
+                    .iter()
+                    .map(|f| f.pubkey.clone())
+                    .collect();
+                profile_db::save_follows(conn, &pubkeys);
+            }
+        }
+        self.set_busy(|b| b.fetching_follow_list = false);
+        // Update peer_profile.is_followed if the sheet is open.
+        if let Some(ref mut pp) = self.state.peer_profile {
+            pp.is_followed = self.state.follow_list.iter().any(|f| f.pubkey == pp.pubkey);
+        }
+        // Refresh chat list too since profiles were updated.
+        self.refresh_chat_list_from_storage();
+        if let Some(chat) = self.state.current_chat.as_ref() {
+            let chat_id = chat.chat_id.clone();
+            self.refresh_current_chat(&chat_id);
+        }
+    }
+
+    fn handle_peer_profile_fetched(
+        &mut self,
+        pubkey: String,
+        metadata_json: Option<String>,
+        event_created_at: i64,
+    ) {
+        let now = now_seconds();
+        self.upsert_profile(
+            pubkey.clone(),
+            ProfileCache::from_metadata_json(metadata_json, event_created_at, now),
+        );
+
+        // Update peer_profile if it's still showing this pubkey.
+        if let Some(ref mut pp) = self.state.peer_profile {
+            if pp.pubkey == pubkey {
+                let cached = self.profiles.get(&pubkey);
+                pp.name = cached.and_then(|p| p.name.clone());
+                pp.about = cached.and_then(|p| p.about.clone());
+                pp.picture_url =
+                    cached.and_then(|p| p.display_picture_url(&self.data_dir, &pubkey));
+                self.emit_state();
+            }
+        }
+    }
+
+    fn handle_profile_pic_cached(&mut self, pubkey: String, url: String) {
+        // Only refresh if the profile still has the same picture_url
+        // (guards against mid-download URL changes).
+        let url_matches = self
+            .profiles
+            .get(&pubkey)
+            .and_then(|c| c.picture_url.as_deref())
+            == Some(&url);
+        if !url_matches {
+            return;
+        }
+        let file_url = self
+            .profiles
+            .get(&pubkey)
+            .and_then(|p| p.display_picture_url(&self.data_dir, &pubkey));
+        let mut changed = false;
+
+        // Update own profile.
+        let is_me = self.session.as_ref().map(|s| s.pubkey.to_hex()).as_deref() == Some(&pubkey);
+        if is_me {
+            let next = self.my_profile_state();
+            if next != self.state.my_profile {
+                self.state.my_profile = next;
+                changed = true;
+            }
+        }
+
+        // Patch picture URLs in chat list members.
+        for chat in &mut self.state.chat_list {
+            for member in &mut chat.members {
+                if member.pubkey == pubkey {
+                    member.picture_url = file_url.clone();
+                    changed = true;
+                }
+            }
+        }
+
+        // Patch picture URLs in current chat members.
+        if let Some(ref mut chat) = self.state.current_chat {
+            for member in &mut chat.members {
+                if member.pubkey == pubkey {
+                    member.picture_url = file_url.clone();
+                    changed = true;
+                }
+            }
+        }
+
+        // Patch peer profile if open.
+        if let Some(ref mut pp) = self.state.peer_profile {
+            if pp.pubkey == pubkey {
+                pp.picture_url = file_url.clone();
+                changed = true;
+            }
+        }
+
+        // Patch follow list.
+        for entry in &mut self.state.follow_list {
+            if entry.pubkey == pubkey {
+                entry.picture_url = file_url.clone();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.emit_state();
+        }
+    }
+
+    fn handle_contact_list_modify_failed(&mut self, pubkey: String, revert_to: bool) {
+        // Revert the optimistic DB update.
+        if let Some(conn) = self.profile_db.as_ref() {
+            if revert_to {
+                profile_db::add_follow(conn, &pubkey);
+            } else {
+                profile_db::remove_follow(conn, &pubkey);
+            }
+        }
+        if let Some(ref mut pp) = self.state.peer_profile {
+            if pp.pubkey == pubkey {
+                pp.is_followed = revert_to;
+            }
+        }
+        self.toast("Failed to update follow list".to_string());
+        self.emit_state();
     }
 
     pub(crate) fn handle_group_message(&mut self, event: Event) {

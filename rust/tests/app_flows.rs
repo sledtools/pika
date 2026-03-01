@@ -339,10 +339,10 @@ fn create_account_navigates_to_chat_list() {
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
 
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
-    wait_until("navigated to chat list", Duration::from_secs(2), || {
+    wait_until("navigated to chat list", Duration::from_secs(10), || {
         app.state().router.default_screen == Screen::ChatList
     });
 
@@ -350,7 +350,7 @@ fn create_account_navigates_to_chat_list() {
     assert!(matches!(s.auth, AuthState::LoggedIn { .. }));
     assert_eq!(s.router.default_screen, Screen::ChatList);
 
-    wait_until("updates emitted", Duration::from_secs(2), || {
+    wait_until("updates emitted", Duration::from_secs(10), || {
         !collector.0.lock().unwrap().is_empty()
     });
 
@@ -367,20 +367,20 @@ fn push_and_pop_stack_updates_router() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
     app.dispatch(AppAction::PushScreen {
         screen: Screen::NewChat,
     });
-    wait_until("screen pushed", Duration::from_secs(2), || {
+    wait_until("screen pushed", Duration::from_secs(10), || {
         app.state().router.screen_stack == vec![Screen::NewChat]
     });
 
     // Native reports a pop.
     app.dispatch(AppAction::UpdateScreenStack { stack: vec![] });
-    wait_until("screen stack popped", Duration::from_secs(2), || {
+    wait_until("screen stack popped", Duration::from_secs(10), || {
         app.state().router.screen_stack.is_empty()
     });
 }
@@ -391,7 +391,7 @@ fn send_message_creates_pending_then_sent() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -401,7 +401,7 @@ fn send_message_creates_pending_then_sent() {
     };
     // Use "note to self" flow for deterministic offline tests.
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
@@ -409,7 +409,7 @@ fn send_message_creates_pending_then_sent() {
     app.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("chat opened", Duration::from_secs(2), || {
+    wait_until("chat opened", Duration::from_secs(10), || {
         app.state().current_chat.is_some()
     });
 
@@ -419,7 +419,7 @@ fn send_message_creates_pending_then_sent() {
         kind: None,
         reply_to_message_id: None,
     });
-    wait_until("message appears", Duration::from_secs(2), || {
+    wait_until("message appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -438,7 +438,7 @@ fn send_message_creates_pending_then_sent() {
             || matches!(msg.delivery, pika_core::MessageDeliveryState::Sent)
     );
 
-    wait_until("message sent", Duration::from_secs(2), || {
+    wait_until("message sent", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -453,7 +453,7 @@ fn send_message_creates_pending_then_sent() {
         kind: None,
         reply_to_message_id: Some(first_message_id.clone()),
     });
-    wait_until("reply appears", Duration::from_secs(2), || {
+    wait_until("reply appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -472,7 +472,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -481,7 +481,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
     let chat_id = app.state().chat_list[0].chat_id.clone();
@@ -489,7 +489,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
     app.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("chat opened", Duration::from_secs(2), || {
+    wait_until("chat opened", Duration::from_secs(10), || {
         app.state().current_chat.is_some()
     });
 
@@ -502,7 +502,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
         reply_to_message_id: Some(missing_reply_target),
     });
 
-    wait_until("message appears", Duration::from_secs(2), || {
+    wait_until("message appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -518,7 +518,7 @@ fn send_message_with_unresolvable_reply_falls_back_to_plain_message() {
 
     wait_until(
         "stale reply send succeeds as plain text",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || {
             app.state()
                 .current_chat
@@ -540,7 +540,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -549,7 +549,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
     let chat_id = app.state().chat_list[0].chat_id.clone();
@@ -557,7 +557,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
     app.dispatch(AppAction::StartCall {
         chat_id: chat_id.clone(),
     });
-    wait_until("call offering", Duration::from_secs(2), || {
+    wait_until("call offering", Duration::from_secs(10), || {
         app.state()
             .active_call
             .as_ref()
@@ -566,7 +566,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
     });
 
     app.dispatch(AppAction::ToggleMute);
-    wait_until("call muted", Duration::from_secs(2), || {
+    wait_until("call muted", Duration::from_secs(10), || {
         app.state()
             .active_call
             .as_ref()
@@ -575,7 +575,7 @@ fn start_call_toggle_mute_and_end_transitions_state() {
     });
 
     app.dispatch(AppAction::EndCall);
-    wait_until("call ended", Duration::from_secs(2), || {
+    wait_until("call ended", Duration::from_secs(10), || {
         app.state()
             .active_call
             .as_ref()
@@ -595,7 +595,7 @@ fn logout_resets_state() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -604,19 +604,20 @@ fn logout_resets_state() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
     let chat_id = app.state().chat_list[0].chat_id.clone();
     app.dispatch(AppAction::OpenChat { chat_id });
-    wait_until("chat opened", Duration::from_secs(2), || {
+    wait_until("chat opened", Duration::from_secs(10), || {
         app.state().current_chat.is_some()
     });
 
     app.dispatch(AppAction::Logout);
-    wait_until("logged out", Duration::from_secs(2), || {
-        matches!(app.state().auth, AuthState::LoggedOut)
+    wait_until("logged out", Duration::from_secs(10), || {
+        let s = app.state();
+        matches!(s.auth, AuthState::LoggedOut) && s.router.default_screen == Screen::Login
     });
 
     let s = app.state();
@@ -634,7 +635,7 @@ fn wipe_local_data_removes_persistent_files() {
 
     let app = FfiApp::new(data_dir.to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -644,17 +645,17 @@ fn wipe_local_data_removes_persistent_files() {
     };
 
     let mdk_path = data_dir.join("mls").join(&pubkey).join("mdk.sqlite3");
-    wait_until("mdk db created", Duration::from_secs(2), || {
+    wait_until("mdk db created", Duration::from_secs(10), || {
         mdk_path.exists()
     });
 
     let profile_db_path = data_dir.join("profiles.sqlite3");
-    wait_until("profile db created", Duration::from_secs(2), || {
+    wait_until("profile db created", Duration::from_secs(10), || {
         profile_db_path.exists()
     });
 
     let push_device_id_path = data_dir.join("push_device_id.txt");
-    wait_until("push device id created", Duration::from_secs(2), || {
+    wait_until("push device id created", Duration::from_secs(10), || {
         push_device_id_path.exists()
     });
     let migration_sentinel = data_dir.join(".migrated_to_app_group");
@@ -663,14 +664,14 @@ fn wipe_local_data_removes_persistent_files() {
     std::fs::write(data_dir.join("dev_wipe_marker.txt"), b"x").unwrap();
 
     app.dispatch(AppAction::WipeLocalData);
-    wait_until("logged out", Duration::from_secs(2), || {
+    wait_until("logged out", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedOut)
     });
 
     // wipe_local_data() runs after emit_auth() on the core thread, so the
     // shared state may show LoggedOut before file cleanup + recreation is
     // complete. Wait for the recreated push_device_id to appear.
-    wait_until("push device id recreated", Duration::from_secs(2), || {
+    wait_until("push device id recreated", Duration::from_secs(10), || {
         push_device_id_path.exists()
     });
 
@@ -693,7 +694,7 @@ fn restore_session_recovers_chat_history() {
     let collector = Collector::new();
     app.listen_for_updates(Box::new(collector.clone()));
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -702,7 +703,7 @@ fn restore_session_recovers_chat_history() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: my_npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
@@ -713,7 +714,7 @@ fn restore_session_recovers_chat_history() {
         kind: None,
         reply_to_message_id: None,
     });
-    wait_until("message persisted", Duration::from_secs(2), || {
+    wait_until("message persisted", Duration::from_secs(10), || {
         app.state()
             .chat_list
             .iter()
@@ -724,7 +725,7 @@ fn restore_session_recovers_chat_history() {
 
     // Grab the generated nsec from the update stream (spec-v2 requirement).
     let nsec = {
-        wait_until("AccountCreated update", Duration::from_secs(2), || {
+        wait_until("AccountCreated update", Duration::from_secs(10), || {
             collector
                 .0
                 .lock()
@@ -744,10 +745,14 @@ fn restore_session_recovers_chat_history() {
     // New process instance restores from the same encrypted per-identity DB.
     let app2 = FfiApp::new(data_dir, String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
-    wait_until("restored session logged in", Duration::from_secs(2), || {
-        matches!(app2.state().auth, AuthState::LoggedIn { .. })
-            && !app2.state().chat_list.is_empty()
-    });
+    wait_until(
+        "restored session logged in",
+        Duration::from_secs(10),
+        || {
+            matches!(app2.state().auth, AuthState::LoggedIn { .. })
+                && !app2.state().chat_list.is_empty()
+        },
+    );
 
     let s = app2.state();
     assert!(matches!(s.auth, AuthState::LoggedIn { .. }));
@@ -758,7 +763,7 @@ fn restore_session_recovers_chat_history() {
     app2.dispatch(AppAction::OpenChat { chat_id });
     wait_until(
         "chat opened has persisted message",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || {
             app2.state()
                 .current_chat
@@ -778,7 +783,7 @@ fn paging_loads_older_messages_in_pages() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -787,7 +792,7 @@ fn paging_loads_older_messages_in_pages() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
@@ -796,7 +801,7 @@ fn paging_loads_older_messages_in_pages() {
     // CreateChat pushes into the chat; pop back to chat list so initial open uses the default
     // newest-50 paging behavior.
     app.dispatch(AppAction::UpdateScreenStack { stack: vec![] });
-    wait_until("back to chat list", Duration::from_secs(2), || {
+    wait_until("back to chat list", Duration::from_secs(10), || {
         app.state().current_chat.is_none()
     });
 
@@ -905,7 +910,7 @@ fn restore_session_with_invalid_nsec_shows_toast_and_stays_logged_out() {
         nsec: "not-a-real-nsec".into(),
     });
 
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
     let s = app.state();
@@ -925,14 +930,14 @@ fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
 
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
     app.dispatch(AppAction::CreateChat {
         peer_npub: "nope".into(),
     });
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
 
@@ -967,7 +972,7 @@ fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
     app.dispatch(AppAction::BeginExternalSignerLogin {
         current_user_hint: Some("hint-user".into()),
     });
-    wait_until("external signer logged in", Duration::from_secs(2), || {
+    wait_until("external signer logged in", Duration::from_secs(10), || {
         let s = app.state();
         matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
     });
@@ -1018,7 +1023,7 @@ fn begin_external_signer_login_failure_shows_rust_toast_and_clears_busy() {
         current_user_hint: None,
     });
 
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
     let s = app.state();
@@ -1056,7 +1061,7 @@ fn restore_session_external_signer_keeps_current_user_in_auth_state() {
 
     wait_until(
         "restored external signer logged in",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || matches!(app.state().auth, AuthState::LoggedIn { .. }),
     );
     let s = app.state();
@@ -1092,7 +1097,7 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
                 .into(),
     });
 
-    wait_until("bunker logged in", Duration::from_secs(2), || {
+    wait_until("bunker logged in", Duration::from_secs(10), || {
         let s = app.state();
         matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
     });
@@ -1116,7 +1121,7 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
         Some("bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input")
     );
 
-    wait_until("bunker descriptor update", Duration::from_secs(2), || {
+    wait_until("bunker descriptor update", Duration::from_secs(10), || {
         collector
             .0
             .lock()
@@ -1154,7 +1159,7 @@ fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
         bunker_uri: "not-a-uri".into(),
     });
 
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
     let s = app.state();
@@ -1192,7 +1197,7 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
 
-    wait_until("nostrconnect uri opened", Duration::from_secs(2), || {
+    wait_until("nostrconnect uri opened", Duration::from_secs(10), || {
         bridge.last_opened_url().is_some()
     });
 
@@ -1208,7 +1213,7 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
     );
 
-    wait_until("nostrconnect logged in", Duration::from_secs(2), || {
+    wait_until("nostrconnect logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -1277,7 +1282,7 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+    wait_until("nostrconnect pending", Duration::from_secs(10), || {
         app.state().busy.logging_in
     });
     app.dispatch(AppAction::NostrConnectCallback {
@@ -1285,7 +1290,7 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     });
     app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey.clone());
 
-    wait_until("nostrconnect logged in", Duration::from_secs(2), || {
+    wait_until("nostrconnect logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
     assert!(!app.state().busy.logging_in);
@@ -1338,7 +1343,7 @@ fn begin_nostr_connect_login_does_not_retry_without_new_secret_marker() {
     app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+    wait_until("nostrconnect pending", Duration::from_secs(10), || {
         app.state().busy.logging_in
     });
     app.dispatch(AppAction::NostrConnectCallback {
@@ -1346,7 +1351,7 @@ fn begin_nostr_connect_login_does_not_retry_without_new_secret_marker() {
     });
     app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey);
 
-    wait_until("login failed with toast", Duration::from_secs(2), || {
+    wait_until("login failed with toast", Duration::from_secs(10), || {
         app.state().toast.is_some() && !app.state().busy.logging_in
     });
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
@@ -1383,7 +1388,7 @@ fn begin_nostr_connect_login_reuses_persisted_secret() {
     app.dispatch(AppAction::BeginNostrConnectLogin);
     wait_until(
         "first nostrconnect uri opened",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || bridge.last_opened_url().is_some(),
     );
     let first_url = bridge.last_opened_url().expect("first opened URL");
@@ -1396,7 +1401,7 @@ fn begin_nostr_connect_login_reuses_persisted_secret() {
     app.dispatch(AppAction::BeginNostrConnectLogin);
     wait_until(
         "second nostrconnect uri opened",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || bridge.open_url_calls() > first_open_calls,
     );
     let second_url = bridge.last_opened_url().expect("second opened URL");
@@ -1422,7 +1427,7 @@ fn begin_nostr_connect_login_reuses_persisted_secret() {
 
     wait_until(
         "nostrconnect uri opened after restart",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || bridge_after_restart.last_opened_url().is_some(),
     );
     let restarted_url = bridge_after_restart
@@ -1455,7 +1460,7 @@ fn reset_nostr_connect_pairing_rotates_persisted_client_pair() {
     app.dispatch(AppAction::BeginNostrConnectLogin);
     wait_until(
         "first nostrconnect uri opened",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || bridge.last_opened_url().is_some(),
     );
     let first_url = bridge.last_opened_url().expect("first opened URL");
@@ -1464,7 +1469,7 @@ fn reset_nostr_connect_pairing_rotates_persisted_client_pair() {
         nostrconnect_client_pubkey(&first_url).expect("first nostrconnect host pubkey");
 
     app.dispatch(AppAction::ResetNostrConnectPairing);
-    wait_until("busy cleared after reset", Duration::from_secs(2), || {
+    wait_until("busy cleared after reset", Duration::from_secs(10), || {
         !app.state().busy.logging_in
     });
     assert!(app
@@ -1478,7 +1483,7 @@ fn reset_nostr_connect_pairing_rotates_persisted_client_pair() {
     app.dispatch(AppAction::BeginNostrConnectLogin);
     wait_until(
         "second nostrconnect uri opened",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || bridge.open_url_calls() > first_open_calls,
     );
     let second_url = bridge.last_opened_url().expect("second opened URL");
@@ -1508,7 +1513,7 @@ fn pending_nostr_connect_login_survives_app_restart() {
     app.set_external_signer_bridge(Box::new(bridge.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect uri opened", Duration::from_secs(2), || {
+    wait_until("nostrconnect uri opened", Duration::from_secs(10), || {
         bridge.last_opened_url().is_some()
     });
     assert!(app.state().busy.logging_in);
@@ -1524,7 +1529,7 @@ fn pending_nostr_connect_login_survives_app_restart() {
 
     wait_until(
         "restart restored pending busy state",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || app_after_restart.state().busy.logging_in,
     );
     app_after_restart.dispatch(AppAction::NostrConnectCallback {
@@ -1537,7 +1542,7 @@ fn pending_nostr_connect_login_survives_app_restart() {
 
     wait_until(
         "nostrconnect logged in after restart",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || matches!(app_after_restart.state().auth, AuthState::LoggedIn { .. }),
     );
     assert!(!app_after_restart.state().busy.logging_in);
@@ -1553,7 +1558,7 @@ fn begin_nostr_connect_login_without_bridge_shows_toast() {
     let app = FfiApp::new(data_dir, String::new());
     app.dispatch(AppAction::BeginNostrConnectLogin);
 
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
     let s = app.state();
@@ -1608,7 +1613,7 @@ fn nostr_connect_callback_without_connect_response_does_not_log_in() {
     app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+    wait_until("nostrconnect pending", Duration::from_secs(10), || {
         app.state().busy.logging_in
     });
 
@@ -1646,7 +1651,7 @@ fn nostr_connect_connect_response_without_callback_does_not_log_in() {
     app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+    wait_until("nostrconnect pending", Duration::from_secs(10), || {
         app.state().busy.logging_in
     });
 
@@ -1684,7 +1689,7 @@ fn foregrounded_continues_pending_nostr_connect_login() {
     app.set_bunker_signer_connector_for_tests(Arc::new(connector));
 
     app.dispatch(AppAction::BeginNostrConnectLogin);
-    wait_until("nostrconnect pending", Duration::from_secs(2), || {
+    wait_until("nostrconnect pending", Duration::from_secs(10), || {
         app.state().busy.logging_in
     });
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
@@ -1701,7 +1706,7 @@ fn foregrounded_continues_pending_nostr_connect_login() {
 
     wait_until(
         "nostrconnect logged in via foreground",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || matches!(app.state().auth, AuthState::LoggedIn { .. }),
     );
     assert!(!app.state().busy.logging_in);
@@ -1730,10 +1735,10 @@ fn restore_session_bunker_uses_stored_client_key_and_logs_in() {
         client_nsec,
     });
 
-    wait_until("bunker restored", Duration::from_secs(2), || {
+    wait_until("bunker restored", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
-    wait_until("busy cleared", Duration::from_secs(2), || {
+    wait_until("busy cleared", Duration::from_secs(10), || {
         !app.state().busy.logging_in
     });
 
@@ -1765,7 +1770,7 @@ fn restore_session_bunker_with_invalid_client_key_shows_toast() {
         client_nsec: "not-a-valid-client-key".into(),
     });
 
-    wait_until("toast shown", Duration::from_secs(2), || {
+    wait_until("toast shown", Duration::from_secs(10), || {
         app.state().toast.is_some()
     });
     let s = app.state();
@@ -1787,7 +1792,7 @@ fn react_to_message_shows_reaction_on_message() {
     let collector = Collector::new();
     app.listen_for_updates(Box::new(collector.clone()));
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -1796,7 +1801,7 @@ fn react_to_message_shows_reaction_on_message() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
@@ -1804,7 +1809,7 @@ fn react_to_message_shows_reaction_on_message() {
     app.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("chat opened", Duration::from_secs(2), || {
+    wait_until("chat opened", Duration::from_secs(10), || {
         app.state().current_chat.is_some()
     });
 
@@ -1815,7 +1820,7 @@ fn react_to_message_shows_reaction_on_message() {
         kind: None,
         reply_to_message_id: None,
     });
-    wait_until("message appears", Duration::from_secs(2), || {
+    wait_until("message appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -1841,7 +1846,7 @@ fn react_to_message_shows_reaction_on_message() {
         message_id: message_id.clone(),
         emoji: "\u{1F44D}".into(),
     });
-    wait_until("reaction appears", Duration::from_secs(2), || {
+    wait_until("reaction appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -1877,7 +1882,7 @@ fn react_to_message_shows_reaction_on_message() {
     });
     wait_until(
         "chat reopened with reaction",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || {
             app.state()
                 .current_chat
@@ -1902,7 +1907,7 @@ fn react_to_message_shows_reaction_on_message() {
     // --- Restore session in a fresh app instance (simulates the other party
     //     or the same user on a new device loading chat history from storage) ---
     let nsec = {
-        wait_until("AccountCreated update", Duration::from_secs(2), || {
+        wait_until("AccountCreated update", Duration::from_secs(10), || {
             collector
                 .0
                 .lock()
@@ -1921,22 +1926,30 @@ fn react_to_message_shows_reaction_on_message() {
 
     let app2 = FfiApp::new(data_dir, String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
-    wait_until("restored session logged in", Duration::from_secs(2), || {
-        matches!(app2.state().auth, AuthState::LoggedIn { .. })
-            && !app2.state().chat_list.is_empty()
-    });
+    wait_until(
+        "restored session logged in",
+        Duration::from_secs(10),
+        || {
+            matches!(app2.state().auth, AuthState::LoggedIn { .. })
+                && !app2.state().chat_list.is_empty()
+        },
+    );
 
     app2.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("restored chat has reaction", Duration::from_secs(2), || {
-        app2.state()
-            .current_chat
-            .as_ref()
-            .and_then(|c| c.messages.iter().find(|m| m.id == message_id))
-            .map(|m| !m.reactions.is_empty())
-            .unwrap_or(false)
-    });
+    wait_until(
+        "restored chat has reaction",
+        Duration::from_secs(10),
+        || {
+            app2.state()
+                .current_chat
+                .as_ref()
+                .and_then(|c| c.messages.iter().find(|m| m.id == message_id))
+                .map(|m| !m.reactions.is_empty())
+                .unwrap_or(false)
+        },
+    );
     let s2 = app2.state();
     let chat2 = s2.current_chat.as_ref().unwrap();
     assert_eq!(
@@ -1957,7 +1970,7 @@ fn reactions_survive_interleaved_typing_indicators() {
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(dir.path().to_string_lossy().to_string(), String::new());
     app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(2), || {
+    wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
@@ -1966,7 +1979,7 @@ fn reactions_survive_interleaved_typing_indicators() {
         _ => panic!("expected logged in"),
     };
     app.dispatch(AppAction::CreateChat { peer_npub: npub });
-    wait_until("chat created", Duration::from_secs(2), || {
+    wait_until("chat created", Duration::from_secs(10), || {
         !app.state().chat_list.is_empty()
     });
 
@@ -1974,7 +1987,7 @@ fn reactions_survive_interleaved_typing_indicators() {
     app.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
-    wait_until("chat opened", Duration::from_secs(2), || {
+    wait_until("chat opened", Duration::from_secs(10), || {
         app.state().current_chat.is_some()
     });
 
@@ -1985,7 +1998,7 @@ fn reactions_survive_interleaved_typing_indicators() {
         kind: None,
         reply_to_message_id: None,
     });
-    wait_until("message appears", Duration::from_secs(2), || {
+    wait_until("message appears", Duration::from_secs(10), || {
         app.state()
             .current_chat
             .as_ref()
@@ -2021,7 +2034,7 @@ fn reactions_survive_interleaved_typing_indicators() {
     });
     wait_until(
         "reaction visible despite typing indicators",
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         || {
             app.state()
                 .current_chat

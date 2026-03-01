@@ -88,10 +88,13 @@ pub enum InternalEvent {
         error: Option<String>,
     },
 
-    // Async CreateGroupChat: all key packages collected
+    // Async CreateGroupChat / AddGroupMembers: all key packages collected.
+    // When `existing_chat_id` is Some, this is an add-members operation on
+    // that chat; otherwise it is a new-group creation with `group_name`.
     GroupKeyPackagesFetched {
         peer_pubkeys: Vec<nostr_sdk::prelude::PublicKey>,
         group_name: String,
+        existing_chat_id: Option<String>,
         key_package_events: Vec<nostr_sdk::prelude::Event>,
         failed_peers: Vec<(nostr_sdk::prelude::PublicKey, String)>,
         candidate_kp_relays: Vec<nostr_sdk::prelude::RelayUrl>,

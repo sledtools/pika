@@ -94,9 +94,10 @@ pub(crate) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
 }
 use nostr_sdk::prelude::*;
 
+pub use interop::normalize_peer_key_package_event_for_mdk;
 use interop::{
     extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
-    normalize_peer_key_package_event_for_mdk, referenced_key_package_event_id,
+    referenced_key_package_event_id,
 };
 
 const DEFAULT_GROUP_NAME: &str = "DM";
@@ -116,6 +117,91 @@ const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
 const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
 const NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT: &str = "nostr_connect_pairing";
 const NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT: &str = "nostr_connect_pending";
+
+struct FetchedKeyPackages {
+    key_package_events: Vec<Event>,
+    failed_peers: Vec<(PublicKey, String)>,
+    candidate_kp_relays: Vec<RelayUrl>,
+}
+
+async fn fetch_key_packages_for_peers(
+    client: &Client,
+    peer_pubkeys: &[PublicKey],
+    fallback_kp_relays: &[RelayUrl],
+    fallback_popular_relays: &[RelayUrl],
+) -> FetchedKeyPackages {
+    let mut key_package_events: Vec<Event> = Vec::new();
+    let mut failed: Vec<(PublicKey, String)> = Vec::new();
+    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+
+    for pk in peer_pubkeys {
+        let kp_relay_filter = Filter::new()
+            .author(*pk)
+            .kind(Kind::MlsKeyPackageRelays)
+            .limit(5);
+        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
+        if let Ok(events) = client
+            .fetch_events(kp_relay_filter, Duration::from_secs(6))
+            .await
+        {
+            if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                candidate_relays = extract_relays_from_key_package_relays_event(&ev);
+            }
+        }
+        if candidate_relays.is_empty() {
+            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
+            for r in fallback_kp_relays.iter().cloned() {
+                s.insert(r);
+            }
+            for r in fallback_popular_relays.iter().cloned() {
+                s.insert(r);
+            }
+            candidate_relays = s.into_iter().collect();
+        }
+        for r in candidate_relays.iter().cloned() {
+            let _ = client.add_relay(r).await;
+        }
+        client.connect().await;
+        client.wait_for_connection(Duration::from_secs(4)).await;
+
+        let kp_filter = Filter::new()
+            .author(*pk)
+            .kind(Kind::MlsKeyPackage)
+            .limit(10);
+        let res = match client
+            .fetch_events_from(
+                candidate_relays.clone(),
+                kp_filter.clone(),
+                Duration::from_secs(8),
+            )
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
+        };
+        match res {
+            Ok(events) => {
+                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                    key_package_events.push(ev);
+                } else {
+                    failed.push((*pk, "No key package found".into()));
+                }
+            }
+            Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
+        }
+        for r in candidate_relays {
+            if !all_candidate_relays.contains(&r) {
+                all_candidate_relays.push(r);
+            }
+        }
+    }
+
+    FetchedKeyPackages {
+        key_package_events,
+        failed_peers: failed,
+        candidate_kp_relays: all_candidate_relays,
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum AppMessageKind {
@@ -2916,6 +3002,7 @@ impl AppCore {
             InternalEvent::GroupKeyPackagesFetched {
                 peer_pubkeys,
                 group_name,
+                existing_chat_id,
                 key_package_events,
                 failed_peers,
                 candidate_kp_relays,
@@ -2944,12 +3031,7 @@ impl AppCore {
                     ));
                 }
 
-                // Check if this is an add-members-to-existing-group operation.
-                // We repurpose group_name: if it's a hex chat_id of an existing group, it's an add-member op.
-                let is_add_members = self.chat_exists(&group_name);
-
-                if is_add_members {
-                    let chat_id = group_name;
+                if let Some(chat_id) = existing_chat_id {
                     let Some(sess) = self.session.as_mut() else {
                         self.set_busy(|b| b.creating_chat = false);
                         return;
@@ -4308,92 +4390,22 @@ impl AppCore {
                     client.connect().await;
                     client.wait_for_connection(Duration::from_secs(5)).await;
 
-                    let mut all_kp_events: Vec<Event> = Vec::new();
-                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
-                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
-
-                    for pk in &peer_pubkeys {
-                        let kp_relay_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackageRelays)
-                            .limit(5);
-                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
-                        if let Ok(events) = client
-                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
-                            .await
-                        {
-                            let mut newest: Option<Event> = None;
-                            for e in events.into_iter() {
-                                if newest
-                                    .as_ref()
-                                    .map(|b| e.created_at > b.created_at)
-                                    .unwrap_or(true)
-                                {
-                                    newest = Some(e);
-                                }
-                            }
-                            if let Some(ev) = newest.as_ref() {
-                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
-                            }
-                        }
-                        if candidate_relays.is_empty() {
-                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-                            for r in fallback_kp_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            for r in fallback_popular_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            candidate_relays = s.into_iter().collect();
-                        }
-                        for r in candidate_relays.iter().cloned() {
-                            let _ = client.add_relay(r).await;
-                        }
-                        client.connect().await;
-                        client.wait_for_connection(Duration::from_secs(4)).await;
-
-                        let kp_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackage)
-                            .limit(10);
-                        let res = match client
-                            .fetch_events_from(
-                                candidate_relays.clone(),
-                                kp_filter.clone(),
-                                Duration::from_secs(8),
-                            )
-                            .await
-                        {
-                            Ok(v) => Ok(v),
-                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
-                        };
-                        match res {
-                            Ok(events) => {
-                                let best = events.into_iter().max_by_key(|e| e.created_at);
-                                if let Some(ev) = best {
-                                    all_kp_events.push(ev);
-                                } else {
-                                    failed.push((*pk, "No key package found".into()));
-                                }
-                            }
-                            Err(e) => {
-                                failed.push((*pk, format!("Fetch failed: {e}")));
-                            }
-                        }
-                        for r in candidate_relays {
-                            if !all_candidate_relays.contains(&r) {
-                                all_candidate_relays.push(r);
-                            }
-                        }
-                    }
+                    let fetched = fetch_key_packages_for_peers(
+                        &client,
+                        &peer_pubkeys,
+                        &fallback_kp_relays,
+                        &fallback_popular_relays,
+                    )
+                    .await;
 
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
                             group_name,
-                            key_package_events: all_kp_events,
-                            failed_peers: failed,
-                            candidate_kp_relays: all_candidate_relays,
+                            existing_chat_id: None,
+                            key_package_events: fetched.key_package_events,
+                            failed_peers: fetched.failed_peers,
+                            candidate_kp_relays: fetched.candidate_kp_relays,
                         },
                     )));
                 });
@@ -4445,75 +4457,17 @@ impl AppCore {
                     client.connect().await;
                     client.wait_for_connection(Duration::from_secs(5)).await;
 
-                    let mut kp_events: Vec<Event> = Vec::new();
-                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
-                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+                    let fetched = fetch_key_packages_for_peers(
+                        &client,
+                        &peer_pubkeys,
+                        &fallback_kp_relays,
+                        &fallback_popular_relays,
+                    )
+                    .await;
 
-                    for pk in &peer_pubkeys {
-                        let kp_relay_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackageRelays)
-                            .limit(5);
-                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
-                        if let Ok(events) = client
-                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
-                            .await
-                        {
-                            let newest = events.into_iter().max_by_key(|e| e.created_at);
-                            if let Some(ev) = newest.as_ref() {
-                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
-                            }
-                        }
-                        if candidate_relays.is_empty() {
-                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-                            for r in fallback_kp_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            for r in fallback_popular_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            candidate_relays = s.into_iter().collect();
-                        }
-                        for r in candidate_relays.iter().cloned() {
-                            let _ = client.add_relay(r).await;
-                        }
-                        client.connect().await;
-                        client.wait_for_connection(Duration::from_secs(4)).await;
-
-                        let kp_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackage)
-                            .limit(10);
-                        let res = match client
-                            .fetch_events_from(
-                                candidate_relays.clone(),
-                                kp_filter.clone(),
-                                Duration::from_secs(8),
-                            )
-                            .await
-                        {
-                            Ok(v) => Ok(v),
-                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
-                        };
-                        match res {
-                            Ok(events) => {
-                                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
-                                    kp_events.push(ev);
-                                } else {
-                                    failed.push((*pk, "No key package found".into()));
-                                }
-                            }
-                            Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
-                        }
-                        for r in candidate_relays {
-                            if !all_candidate_relays.contains(&r) {
-                                all_candidate_relays.push(r);
-                            }
-                        }
-                    }
-
-                    if !failed.is_empty() {
-                        let names: Vec<String> = failed
+                    if !fetched.failed_peers.is_empty() {
+                        let names: Vec<String> = fetched
+                            .failed_peers
                             .iter()
                             .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
                             .collect();
@@ -4522,21 +4476,21 @@ impl AppCore {
                         ))));
                     }
 
-                    if kp_events.is_empty() {
+                    if fetched.key_package_events.is_empty() {
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             "No key packages found for any peer".into(),
                         ))));
                         return;
                     }
 
-                    // Send fetched KP events back to the actor thread for MDK mutation.
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
-                            group_name: chat_id_clone, // repurpose: signals this is an add-member op
-                            key_package_events: kp_events,
-                            failed_peers: failed,
-                            candidate_kp_relays: all_candidate_relays,
+                            group_name: String::new(),
+                            existing_chat_id: Some(chat_id_clone),
+                            key_package_events: fetched.key_package_events,
+                            failed_peers: fetched.failed_peers,
+                            candidate_kp_relays: fetched.candidate_kp_relays,
                         },
                     )));
                 });
@@ -5499,6 +5453,187 @@ mod tests {
             let before = core.unread_counts.clone();
             core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
             assert_eq!(core.unread_counts, before);
+        }
+    }
+
+    mod group_key_packages {
+        use super::*;
+        use crate::mdk_support::open_mdk;
+        use crate::updates::InternalEvent;
+        use mdk_core::prelude::{GroupId, NostrGroupConfigData};
+        use nostr_sdk::prelude::*;
+
+        /// Creates a core with a real MDK session and a group already in storage,
+        /// with the group registered in session.groups so add-members can find it.
+        fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            std::mem::forget(tempdir);
+
+            let creator = Keys::generate();
+            let pubkey = creator.public_key();
+
+            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+
+            let config = NostrGroupConfigData::new(
+                "Test Group".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![pubkey],
+            );
+            let result = mdk
+                .create_group(&pubkey, vec![], config)
+                .expect("create_group");
+            let group_id = result.group.mls_group_id.clone();
+            let chat_id = hex::encode(result.group.nostr_group_id);
+            mdk.merge_pending_commit(&group_id)
+                .expect("merge_pending_commit");
+
+            let mut core = make_core(data_dir);
+
+            let client = Client::builder().signer(creator.clone()).build();
+            let mut groups = std::collections::HashMap::new();
+            groups.insert(
+                chat_id.clone(),
+                super::super::GroupIndexEntry {
+                    mls_group_id: group_id.clone(),
+                    is_group: true,
+                    group_name: Some("Test Group".into()),
+                    members: vec![],
+                    admin_pubkeys: vec![pubkey.to_hex()],
+                },
+            );
+            core.session = Some(super::super::Session {
+                pubkey,
+                local_keys: Some(creator.clone()),
+                mdk,
+                client,
+                alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups,
+            });
+
+            (core, chat_id, creator, group_id)
+        }
+
+        /// Create a separate MDK instance for a peer and generate a signed
+        /// key package event from it.
+        fn make_peer_key_package(peer_keys: &Keys) -> Event {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let peer_dir = tempdir.path().to_string_lossy().into_owned();
+            std::mem::forget(tempdir);
+
+            let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
+            let relay = RelayUrl::parse("wss://test.relay").unwrap();
+            let (content, tags, _hash_ref) = peer_mdk
+                .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
+                .expect("create_key_package_for_event");
+
+            EventBuilder::new(Kind::MlsKeyPackage, content)
+                .tags(tags)
+                .sign_with_keys(peer_keys)
+                .expect("sign key package event")
+        }
+
+        #[test]
+        fn empty_key_packages_clears_busy_and_toasts() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "Test".into(),
+                existing_chat_id: None,
+                key_package_events: vec![],
+                failed_peers: vec![(peer.public_key(), "No key package found".into())],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert!(core
+                .state
+                .toast
+                .as_deref()
+                .unwrap()
+                .contains("No key packages found"));
+        }
+
+        #[test]
+        fn create_group_with_peer_key_package_opens_chat() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "New Group".into(),
+                existing_chat_id: None,
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert!(
+                core.state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::Chat { .. })),
+                "expected Chat screen on stack after group creation"
+            );
+        }
+
+        #[test]
+        fn add_members_with_unknown_chat_id_toasts_not_found() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some("nonexistent_chat_id".into()),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+        }
+
+        #[test]
+        fn add_members_to_existing_group_clears_busy() {
+            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some(chat_id),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            // add_members succeeds and clears busy (the evolution publish
+            // continues asynchronously in the background).
+            assert!(!core.state.busy.creating_chat);
+            // No error toast — success path.
+            assert!(core.state.toast.is_none());
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{AppState, AuthState, CallStatus, Router, Screen};
+use crate::{AppState, AuthState, Router, Screen};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MobileRouteState {
@@ -96,7 +96,7 @@ pub fn project_desktop(state: &AppState) -> DesktopRouteState {
     };
 
     let modal = if let Some(call) = &state.active_call {
-        if is_live_call_status(&call.status) {
+        if call.status.is_live() {
             DesktopModal::ActiveCall {
                 chat_id: call.chat_id.clone(),
                 call_id: call.call_id.clone(),
@@ -126,17 +126,10 @@ fn active_screen(router: &Router) -> Screen {
         .unwrap_or_else(|| router.default_screen.clone())
 }
 
-fn is_live_call_status(status: &CallStatus) -> bool {
-    matches!(
-        status,
-        CallStatus::Offering | CallStatus::Ringing | CallStatus::Connecting | CallStatus::Active
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AuthMode, AuthState, CallState, ChatViewState};
+    use crate::{AuthMode, AuthState, CallState, CallStatus, ChatViewState};
 
     fn state_with_router(default_screen: Screen, stack: Vec<Screen>) -> AppState {
         let mut state = AppState::empty();

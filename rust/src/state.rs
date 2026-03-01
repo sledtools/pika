@@ -423,7 +423,7 @@ pub enum MessageDeliveryState {
     Failed { reason: String },
 }
 
-pub fn now_seconds() -> i64 {
+pub(crate) fn now_seconds() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -433,7 +433,7 @@ pub fn now_seconds() -> i64 {
 
 /// Scan `content` for `nostr:npub1...` tokens, resolve display names via `lookup`,
 /// and return `(display_content, mentions)`.
-pub fn resolve_mentions(
+pub(crate) fn resolve_mentions(
     content: &str,
     lookup: &std::collections::HashMap<String, String>,
 ) -> (String, Vec<Mention>) {

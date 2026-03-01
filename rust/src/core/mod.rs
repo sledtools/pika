@@ -118,6 +118,91 @@ const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
 const NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT: &str = "nostr_connect_pairing";
 const NOSTR_CONNECT_PENDING_KEYRING_ACCOUNT: &str = "nostr_connect_pending";
 
+struct FetchedKeyPackages {
+    key_package_events: Vec<Event>,
+    failed_peers: Vec<(PublicKey, String)>,
+    candidate_kp_relays: Vec<RelayUrl>,
+}
+
+async fn fetch_key_packages_for_peers(
+    client: &Client,
+    peer_pubkeys: &[PublicKey],
+    fallback_kp_relays: &[RelayUrl],
+    fallback_popular_relays: &[RelayUrl],
+) -> FetchedKeyPackages {
+    let mut key_package_events: Vec<Event> = Vec::new();
+    let mut failed: Vec<(PublicKey, String)> = Vec::new();
+    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+
+    for pk in peer_pubkeys {
+        let kp_relay_filter = Filter::new()
+            .author(*pk)
+            .kind(Kind::MlsKeyPackageRelays)
+            .limit(5);
+        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
+        if let Ok(events) = client
+            .fetch_events(kp_relay_filter, Duration::from_secs(6))
+            .await
+        {
+            if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                candidate_relays = extract_relays_from_key_package_relays_event(&ev);
+            }
+        }
+        if candidate_relays.is_empty() {
+            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
+            for r in fallback_kp_relays.iter().cloned() {
+                s.insert(r);
+            }
+            for r in fallback_popular_relays.iter().cloned() {
+                s.insert(r);
+            }
+            candidate_relays = s.into_iter().collect();
+        }
+        for r in candidate_relays.iter().cloned() {
+            let _ = client.add_relay(r).await;
+        }
+        client.connect().await;
+        client.wait_for_connection(Duration::from_secs(4)).await;
+
+        let kp_filter = Filter::new()
+            .author(*pk)
+            .kind(Kind::MlsKeyPackage)
+            .limit(10);
+        let res = match client
+            .fetch_events_from(
+                candidate_relays.clone(),
+                kp_filter.clone(),
+                Duration::from_secs(8),
+            )
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
+        };
+        match res {
+            Ok(events) => {
+                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
+                    key_package_events.push(ev);
+                } else {
+                    failed.push((*pk, "No key package found".into()));
+                }
+            }
+            Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
+        }
+        for r in candidate_relays {
+            if !all_candidate_relays.contains(&r) {
+                all_candidate_relays.push(r);
+            }
+        }
+    }
+
+    FetchedKeyPackages {
+        key_package_events,
+        failed_peers: failed,
+        candidate_kp_relays: all_candidate_relays,
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum AppMessageKind {
     TypingIndicator,
@@ -4305,93 +4390,22 @@ impl AppCore {
                     client.connect().await;
                     client.wait_for_connection(Duration::from_secs(5)).await;
 
-                    let mut all_kp_events: Vec<Event> = Vec::new();
-                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
-                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
-
-                    for pk in &peer_pubkeys {
-                        let kp_relay_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackageRelays)
-                            .limit(5);
-                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
-                        if let Ok(events) = client
-                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
-                            .await
-                        {
-                            let mut newest: Option<Event> = None;
-                            for e in events.into_iter() {
-                                if newest
-                                    .as_ref()
-                                    .map(|b| e.created_at > b.created_at)
-                                    .unwrap_or(true)
-                                {
-                                    newest = Some(e);
-                                }
-                            }
-                            if let Some(ev) = newest.as_ref() {
-                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
-                            }
-                        }
-                        if candidate_relays.is_empty() {
-                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-                            for r in fallback_kp_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            for r in fallback_popular_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            candidate_relays = s.into_iter().collect();
-                        }
-                        for r in candidate_relays.iter().cloned() {
-                            let _ = client.add_relay(r).await;
-                        }
-                        client.connect().await;
-                        client.wait_for_connection(Duration::from_secs(4)).await;
-
-                        let kp_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackage)
-                            .limit(10);
-                        let res = match client
-                            .fetch_events_from(
-                                candidate_relays.clone(),
-                                kp_filter.clone(),
-                                Duration::from_secs(8),
-                            )
-                            .await
-                        {
-                            Ok(v) => Ok(v),
-                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
-                        };
-                        match res {
-                            Ok(events) => {
-                                let best = events.into_iter().max_by_key(|e| e.created_at);
-                                if let Some(ev) = best {
-                                    all_kp_events.push(ev);
-                                } else {
-                                    failed.push((*pk, "No key package found".into()));
-                                }
-                            }
-                            Err(e) => {
-                                failed.push((*pk, format!("Fetch failed: {e}")));
-                            }
-                        }
-                        for r in candidate_relays {
-                            if !all_candidate_relays.contains(&r) {
-                                all_candidate_relays.push(r);
-                            }
-                        }
-                    }
+                    let fetched = fetch_key_packages_for_peers(
+                        &client,
+                        &peer_pubkeys,
+                        &fallback_kp_relays,
+                        &fallback_popular_relays,
+                    )
+                    .await;
 
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
                             group_name,
                             existing_chat_id: None,
-                            key_package_events: all_kp_events,
-                            failed_peers: failed,
-                            candidate_kp_relays: all_candidate_relays,
+                            key_package_events: fetched.key_package_events,
+                            failed_peers: fetched.failed_peers,
+                            candidate_kp_relays: fetched.candidate_kp_relays,
                         },
                     )));
                 });
@@ -4443,75 +4457,17 @@ impl AppCore {
                     client.connect().await;
                     client.wait_for_connection(Duration::from_secs(5)).await;
 
-                    let mut kp_events: Vec<Event> = Vec::new();
-                    let mut failed: Vec<(PublicKey, String)> = Vec::new();
-                    let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+                    let fetched = fetch_key_packages_for_peers(
+                        &client,
+                        &peer_pubkeys,
+                        &fallback_kp_relays,
+                        &fallback_popular_relays,
+                    )
+                    .await;
 
-                    for pk in &peer_pubkeys {
-                        let kp_relay_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackageRelays)
-                            .limit(5);
-                        let mut candidate_relays: Vec<RelayUrl> = Vec::new();
-                        if let Ok(events) = client
-                            .fetch_events(kp_relay_filter, Duration::from_secs(6))
-                            .await
-                        {
-                            let newest = events.into_iter().max_by_key(|e| e.created_at);
-                            if let Some(ev) = newest.as_ref() {
-                                candidate_relays = extract_relays_from_key_package_relays_event(ev);
-                            }
-                        }
-                        if candidate_relays.is_empty() {
-                            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-                            for r in fallback_kp_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            for r in fallback_popular_relays.iter().cloned() {
-                                s.insert(r);
-                            }
-                            candidate_relays = s.into_iter().collect();
-                        }
-                        for r in candidate_relays.iter().cloned() {
-                            let _ = client.add_relay(r).await;
-                        }
-                        client.connect().await;
-                        client.wait_for_connection(Duration::from_secs(4)).await;
-
-                        let kp_filter = Filter::new()
-                            .author(*pk)
-                            .kind(Kind::MlsKeyPackage)
-                            .limit(10);
-                        let res = match client
-                            .fetch_events_from(
-                                candidate_relays.clone(),
-                                kp_filter.clone(),
-                                Duration::from_secs(8),
-                            )
-                            .await
-                        {
-                            Ok(v) => Ok(v),
-                            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
-                        };
-                        match res {
-                            Ok(events) => {
-                                if let Some(ev) = events.into_iter().max_by_key(|e| e.created_at) {
-                                    kp_events.push(ev);
-                                } else {
-                                    failed.push((*pk, "No key package found".into()));
-                                }
-                            }
-                            Err(e) => failed.push((*pk, format!("Fetch failed: {e}"))),
-                        }
-                        for r in candidate_relays {
-                            if !all_candidate_relays.contains(&r) {
-                                all_candidate_relays.push(r);
-                            }
-                        }
-                    }
-
-                    if !failed.is_empty() {
-                        let names: Vec<String> = failed
+                    if !fetched.failed_peers.is_empty() {
+                        let names: Vec<String> = fetched
+                            .failed_peers
                             .iter()
                             .map(|(pk, e)| format!("{}: {e}", &pk.to_hex()[..8]))
                             .collect();
@@ -4520,22 +4476,21 @@ impl AppCore {
                         ))));
                     }
 
-                    if kp_events.is_empty() {
+                    if fetched.key_package_events.is_empty() {
                         let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
                             "No key packages found for any peer".into(),
                         ))));
                         return;
                     }
 
-                    // Send fetched KP events back to the actor thread for MDK mutation.
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
                             peer_pubkeys,
                             group_name: String::new(),
                             existing_chat_id: Some(chat_id_clone),
-                            key_package_events: kp_events,
-                            failed_peers: failed,
-                            candidate_kp_relays: all_candidate_relays,
+                            key_package_events: fetched.key_package_events,
+                            failed_peers: fetched.failed_peers,
+                            candidate_kp_relays: fetched.candidate_kp_relays,
                         },
                     )));
                 });

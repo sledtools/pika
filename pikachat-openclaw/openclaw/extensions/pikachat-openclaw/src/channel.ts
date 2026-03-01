@@ -724,9 +724,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     handleAction: async ({ action, params, accountId }): Promise<any> => {
       if (action === "react") {
         const messageId = typeof params.messageId === "string" ? params.messageId : "";
-        const emoji = typeof params.emoji === "string" ? params.emoji : "";
+        const emoji = (typeof params.emoji === "string" && params.emoji.trim()) ? params.emoji.trim() : "❤️";
         if (!messageId) return { content: [{ type: "text", text: "messageId is required." }] };
-        if (!emoji) return { content: [{ type: "text", text: "emoji is required." }] };
         const handle = activeSidecars.get(accountId ?? DEFAULT_ACCOUNT_ID);
         if (!handle) return { content: [{ type: "text", text: "Sidecar not running." }] };
         const groupId = findGroupIdForAccount(accountId ?? DEFAULT_ACCOUNT_ID);

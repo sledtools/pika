@@ -486,7 +486,7 @@ async function dispatchInboundToAgent(params: {
     RawBody: text,
     CommandBody: text,
     BodyForCommands: text,
-    BodyForAgent: params.eventId ? `${text}\n\n[pikachat_event_id: ${params.eventId}]` : text,
+    BodyForAgent: text,
     From: senderId,
     To: chatId,
     SessionKey: route.sessionKey,
@@ -722,11 +722,15 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   actions: {
     listActions: () => ["react"] as any[],
     supportsAction: ({ action }: { action: string }) => action === "react",
-    handleAction: async ({ action, params, accountId }): Promise<any> => {
+    handleAction: async ({ action, params, accountId, toolContext }): Promise<any> => {
       if (action === "react") {
-        const messageId = typeof params.messageId === "string" ? params.messageId : "";
+        // Fall back to current inbound message id (like Telegram does) when not explicitly provided
+        const inboundMessageId = typeof toolContext?.currentMessageId === "string" ? toolContext.currentMessageId : "";
+        const messageId = (typeof params.messageId === "string" && params.messageId.trim())
+          ? params.messageId.trim()
+          : inboundMessageId;
         const emoji = (typeof params.emoji === "string" && params.emoji.trim()) ? params.emoji.trim() : "❤️";
-        if (!messageId) return { content: [{ type: "text", text: "messageId is required." }] };
+        if (!messageId) return { content: [{ type: "text", text: "messageId is required (or use in reply to a message)." }] };
         const handle = activeSidecars.get(accountId ?? DEFAULT_ACCOUNT_ID);
         if (!handle) return { content: [{ type: "text", text: "Sidecar not running." }] };
         const groupId = findGroupIdForAccount(accountId ?? DEFAULT_ACCOUNT_ID);
@@ -743,7 +747,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton. The tool returns a `[pikachat_event_id: <id>]` you can use immediately with `submit_hypernote_action` to vote on your own poll.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
-      "- Each inbound message includes a `[pikachat_event_id: <id>]` line. Use this id with the `react` action or `submit_hypernote_action` to reference that message.",
+      "- To react to the current inbound message, use the `react` action with no messageId — it defaults to the current message automatically.",
+      "- To react to a specific past message, pass its event_id as messageId to the `react` action.",
     ],
   },
 

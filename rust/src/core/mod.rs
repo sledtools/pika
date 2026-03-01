@@ -1325,6 +1325,10 @@ impl AppCore {
             if event.kind != Kind::NostrConnect {
                 continue;
             }
+            if event.verify().is_err() {
+                tracing::debug!("nostr_connect: ignoring event with invalid signature");
+                continue;
+            }
 
             let decrypted = match nip44::decrypt(
                 client_keys.secret_key(),
@@ -4234,7 +4238,10 @@ impl AppCore {
 
                     match client.fetch_events(kp_filter, Duration::from_secs(8)).await {
                         Ok(events) => {
-                            let best = events.into_iter().max_by_key(|e| e.created_at);
+                            let best = events
+                                .into_iter()
+                                .filter(|e| e.verify().is_ok())
+                                .max_by_key(|e| e.created_at);
                             let _ = tx.send(CoreMsg::Internal(Box::new(
                                 InternalEvent::PeerKeyPackageFetched {
                                     peer_pubkey,

@@ -231,7 +231,7 @@ impl AppCore {
 
                     // Keep only the newest event per author.
                     let mut best: HashMap<String, Event> = HashMap::new();
-                    for ev in events.into_iter() {
+                    for ev in events.into_iter().filter(|e| e.verify().is_ok()) {
                         let author_hex = ev.pubkey.to_hex();
                         let dominated = best
                             .get(&author_hex)

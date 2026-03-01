@@ -1257,11 +1257,30 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           }
 
           // NIP-25 reactions arrive as kind=7 message_received events.
-          // Don't dispatch to the agent — just log and move on.
+          // Surface as a brief contextual message so the agent is aware, but
+          // don't trigger a full reply (wasMentioned=false keeps it passive context).
           if (ev.kind === REACTION_KIND) {
             ctx.log?.debug(
               `[${resolved.accountId}] reaction received from=${ev.from_pubkey} emoji=${JSON.stringify(ev.content)} target=${ev.event_id}`,
             );
+            const senderName = await resolveMemberNameAsync(ev.from_pubkey, runtime.config.loadConfig());
+            const reactionText = `${senderName} reacted ${ev.content || "?"} to a message`;
+            await dispatchInboundToAgent({
+              runtime,
+              accountId: resolved.accountId,
+              senderId: ev.from_pubkey,
+              eventId: ev.event_id,
+              chatId: ev.nostr_group_id,
+              text: reactionText,
+              isOwner: isOwnerPubkey(String(ev.from_pubkey).trim().toLowerCase()),
+              isGroupChat: !isOneOnOneGroup(ev.nostr_group_id.toLowerCase()),
+              wasMentioned: false,
+              stateDir: baseStateDir,
+              deliverText: async (responseText: string) => {
+                sidecar.sendMessage(ev.nostr_group_id, responseText);
+              },
+              log: ctx.log,
+            });
             return;
           }
 

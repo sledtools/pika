@@ -4,16 +4,16 @@ set -Eeuo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-if [[ -n "${STATE_DIR:-}" || -n "${RELAY_URL:-}" ]]; then
-  echo "note: STATE_DIR/RELAY_URL are ignored by selector wrappers; use selector environment and prerequisites." >&2
+if [[ -n "${STATE_DIR:-}" ]]; then
+  export PIKAHUT_OPENCLAW_E2E_STATE_DIR="$STATE_DIR"
+fi
+
+if [[ -n "${RELAY_URL:-}" ]]; then
+  export PIKAHUT_OPENCLAW_E2E_RELAY_URL="$RELAY_URL"
 fi
 
 if [[ -n "${OPENCLAW_DIR:-}" ]]; then
-  export OPENCLAW_DIR
-fi
-
-if [[ $# -gt 0 ]]; then
-  echo "note: positional args are ignored by selector wrappers: $*" >&2
+  export PIKAHUT_OPENCLAW_E2E_OPENCLAW_DIR="$OPENCLAW_DIR"
 fi
 
 exec cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture

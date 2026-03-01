@@ -328,7 +328,7 @@ fn load_dotenv_defaults(root: &Path) -> Result<HashMap<String, String>> {
                 .map(str::trim_start)
                 .unwrap_or(raw_key)
                 .trim();
-            if key.is_empty() || defaults.contains_key(key) || std::env::var_os(key).is_some() {
+            if key.is_empty() || std::env::var_os(key).is_some() {
                 continue;
             }
 

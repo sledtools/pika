@@ -32,12 +32,25 @@ case "$SCENARIO" in
     ;;
 esac
 
-if [[ -n "${STATE_DIR:-}" || -n "${RELAY_URL:-}" ]]; then
-  echo "note: STATE_DIR/RELAY_URL are ignored by selector wrappers; configure environment expected by selectors instead." >&2
+if [[ -n "${STATE_DIR:-}" ]]; then
+  export PIKAHUT_SCENARIO_STATE_DIR="$STATE_DIR"
+fi
+
+if [[ -n "${RELAY_URL:-}" ]]; then
+  export PIKAHUT_SCENARIO_RELAY_URL="$RELAY_URL"
 fi
 
 if [[ $# -gt 0 ]]; then
-  echo "note: extra scenario args are not supported by selector wrappers and will be ignored: $*" >&2
+  sep=$'\x1f'
+  extra_args=""
+  for arg in "$@"; do
+    if [[ -z "$extra_args" ]]; then
+      extra_args="$arg"
+    else
+      extra_args+="${sep}${arg}"
+    fi
+  done
+  export PIKAHUT_SCENARIO_EXTRA_ARGS="$extra_args"
 fi
 
 exec cargo test -p pikahut --test integration_deterministic "$selector" -- --ignored --nocapture

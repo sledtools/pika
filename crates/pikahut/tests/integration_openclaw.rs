@@ -12,6 +12,17 @@ fn workspace_root() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
+fn env_opt(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_path(name: &str) -> Option<std::path::PathBuf> {
+    env_opt(name).map(std::path::PathBuf::from)
+}
+
 #[tokio::test]
 #[ignore = "heavy integration lane (OpenClaw checkout + network)"]
 async fn openclaw_gateway_e2e() -> Result<()> {
@@ -27,9 +38,10 @@ async fn openclaw_gateway_e2e() -> Result<()> {
         .build()?;
 
     let result = scenarios::run_openclaw_e2e(OpenclawE2eRequest {
-        state_dir: Some(context.state_dir().to_path_buf()),
-        relay_url: None,
-        openclaw_dir: None,
+        state_dir: env_path("PIKAHUT_OPENCLAW_E2E_STATE_DIR")
+            .or_else(|| Some(context.state_dir().to_path_buf())),
+        relay_url: env_opt("PIKAHUT_OPENCLAW_E2E_RELAY_URL"),
+        openclaw_dir: env_path("PIKAHUT_OPENCLAW_E2E_OPENCLAW_DIR"),
         keep_state: false,
     })
     .await;

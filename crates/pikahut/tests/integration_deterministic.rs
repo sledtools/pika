@@ -17,16 +17,47 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
+fn env_opt(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env_opt(name).map(PathBuf::from)
+}
+
+fn cli_smoke_request(with_media: bool) -> CliSmokeRequest {
+    CliSmokeRequest {
+        relay: env_opt("PIKAHUT_CLI_SMOKE_RELAY"),
+        with_media,
+        state_dir: env_path("PIKAHUT_CLI_SMOKE_STATE_DIR"),
+    }
+}
+
+fn scenario_extra_args() -> Vec<String> {
+    const SEP: char = '\u{1f}';
+    env_opt("PIKAHUT_SCENARIO_EXTRA_ARGS")
+        .map(|raw| raw.split(SEP).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+fn scenario_request(name: &str) -> ScenarioRequest {
+    ScenarioRequest {
+        scenario: name.to_string(),
+        state_dir: env_path("PIKAHUT_SCENARIO_STATE_DIR"),
+        relay: env_opt("PIKAHUT_SCENARIO_RELAY_URL"),
+        extra_args: scenario_extra_args(),
+    }
+}
+
 #[tokio::test]
 #[ignore = "integration scenario; run in deterministic lane"]
 async fn cli_smoke_local() -> Result<()> {
-    scenarios::run_cli_smoke(CliSmokeRequest {
-        relay: None,
-        with_media: false,
-        state_dir: None,
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_cli_smoke(cli_smoke_request(false))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -36,13 +67,9 @@ async fn cli_smoke_media_local() -> Result<()> {
         return Ok(());
     }
 
-    scenarios::run_cli_smoke(CliSmokeRequest {
-        relay: None,
-        with_media: true,
-        state_dir: None,
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_cli_smoke(cli_smoke_request(true))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -119,53 +146,33 @@ async fn interop_rust_baseline() -> Result<()> {
 #[tokio::test]
 #[ignore = "deterministic OpenClaw scenario"]
 async fn openclaw_scenario_invite_and_chat() -> Result<()> {
-    scenarios::run_scenario(ScenarioRequest {
-        scenario: "invite-and-chat".to_string(),
-        state_dir: None,
-        relay: None,
-        extra_args: Vec::new(),
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_scenario(scenario_request("invite-and-chat"))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
 #[ignore = "deterministic OpenClaw scenario"]
 async fn openclaw_scenario_invite_and_chat_rust_bot() -> Result<()> {
-    scenarios::run_scenario(ScenarioRequest {
-        scenario: "invite-and-chat-rust-bot".to_string(),
-        state_dir: None,
-        relay: None,
-        extra_args: Vec::new(),
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_scenario(scenario_request("invite-and-chat-rust-bot"))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
 #[ignore = "deterministic OpenClaw scenario"]
 async fn openclaw_scenario_invite_and_chat_daemon() -> Result<()> {
-    scenarios::run_scenario(ScenarioRequest {
-        scenario: "invite-and-chat-daemon".to_string(),
-        state_dir: None,
-        relay: None,
-        extra_args: Vec::new(),
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_scenario(scenario_request("invite-and-chat-daemon"))
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
 #[ignore = "deterministic OpenClaw scenario"]
 async fn openclaw_scenario_audio_echo() -> Result<()> {
-    scenarios::run_scenario(ScenarioRequest {
-        scenario: "audio-echo".to_string(),
-        state_dir: None,
-        relay: None,
-        extra_args: Vec::new(),
-    })
-    .await
-    .map(|_| ())
+    scenarios::run_scenario(scenario_request("audio-echo"))
+        .await
+        .map(|_| ())
 }
 
 #[test]

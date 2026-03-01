@@ -4,19 +4,64 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ "$#" -eq 0 ]; then
-  exec cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+with_media=0
+relay=""
+state_dir=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-media)
+      with_media=1
+      shift
+      ;;
+    --relay)
+      relay="${2:-}"
+      if [[ -z "$relay" ]]; then
+        echo "error: --relay requires a value" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --relay=*)
+      relay="${1#*=}"
+      shift
+      ;;
+    --state-dir)
+      state_dir="${2:-}"
+      if [[ -z "$state_dir" ]]; then
+        echo "error: --state-dir requires a value" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --state-dir=*)
+      state_dir="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      cat >&2 <<USAGE
+usage:
+  ./tools/cli-smoke [--with-media] [--relay URL] [--state-dir PATH]
+USAGE
+      exit 0
+      ;;
+    *)
+      echo "error: unsupported argument: $1" >&2
+      echo "hint: supported flags are --with-media, --relay, --state-dir" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$relay" ]]; then
+  export PIKAHUT_CLI_SMOKE_RELAY="$relay"
+fi
+if [[ -n "$state_dir" ]]; then
+  export PIKAHUT_CLI_SMOKE_STATE_DIR="$state_dir"
 fi
 
-if [ "$#" -eq 1 ] && [ "$1" = "--with-media" ]; then
+if [[ "$with_media" -eq 1 ]]; then
   exec cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 fi
 
-cat >&2 <<USAGE
-usage:
-  ./tools/cli-smoke
-  ./tools/cli-smoke --with-media
-
-note: this wrapper now dispatches Rust selectors only.
-USAGE
-exit 2
+exec cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture

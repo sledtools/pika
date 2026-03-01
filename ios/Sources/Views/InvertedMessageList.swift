@@ -41,6 +41,7 @@ struct InvertedMessageList: UIViewRepresentable {
         tableView.separatorStyle = .none
         tableView.backgroundColor = .clear
         tableView.showsVerticalScrollIndicator = true
+        tableView.alwaysBounceVertical = false
         tableView.keyboardDismissMode = .interactive
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 80

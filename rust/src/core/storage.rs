@@ -335,6 +335,23 @@ impl AppCore {
         }
     }
 
+    /// Lightweight refresh that only updates typing indicators without re-fetching messages.
+    pub(super) fn refresh_typing_if_open(&mut self, chat_id: &str) {
+        let is_open = self
+            .state
+            .current_chat
+            .as_ref()
+            .map(|c| c.chat_id == chat_id)
+            .unwrap_or(false);
+        if is_open {
+            let typing = self.get_active_typers(chat_id);
+            if let Some(cur) = self.state.current_chat.as_mut() {
+                cur.typing_members = typing;
+            }
+            self.emit_current_chat();
+        }
+    }
+
     pub(super) fn refresh_current_chat(&mut self, chat_id: &str) {
         let Some(sess) = self.session.as_ref() else {
             self.state.current_chat = None;

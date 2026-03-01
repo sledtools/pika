@@ -23,12 +23,12 @@ struct ChatView: View {
     let onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)?
     let onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)?
     let onSendPoll: (@MainActor (String, String, [String]) -> Void)?
+    let onLoadOlderMessages: (@MainActor (String, String, UInt32) -> Void)?
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showFileImporter = false
     @State private var messageText = ""
     @State private var isAtBottom = true
     @State private var shouldStickToBottom = true
-    @State private var isUserScrolling = false
     @State private var activeReactionMessageId: String?
     @State private var contextMenuMessage: ChatMessage?
     @State private var contextMenuAnchorFrame: CGRect = .zero
@@ -40,13 +40,12 @@ struct ChatView: View {
     @State private var replyDraftMessage: ChatMessage?
     @State private var fullscreenImageAttachment: ChatMediaAttachment?
     @State private var showPollComposer = false
+    @State private var scrollToBottomTrigger = 0
     @State private var voiceRecorder: VoiceRecorder
     @State private var showMicPermissionDenied = false
     @FocusState private var isInputFocused: Bool
 
     private let scrollButtonBottomPadding: CGFloat = 12
-    private let bottomVisibilityTolerance: CGFloat = 100
-    private let bottomAnchorId = "bottom-anchor"
 
     init(
         chatId: String,
@@ -66,7 +65,8 @@ struct ChatView: View {
         onDownloadMedia: (@MainActor (String, String, String) -> Void)? = nil,
         onSendMedia: (@MainActor (String, Data, String, String, String) -> Void)? = nil,
         onHypernoteAction: (@MainActor (String, String, String, [String: String]) -> Void)? = nil,
-        onSendPoll: (@MainActor (String, String, [String]) -> Void)? = nil
+        onSendPoll: (@MainActor (String, String, [String]) -> Void)? = nil,
+        onLoadOlderMessages: (@MainActor (String, String, UInt32) -> Void)? = nil
     ) {
         self.chatId = chatId
         self.state = state
@@ -86,6 +86,7 @@ struct ChatView: View {
         self.onSendMedia = onSendMedia
         self.onHypernoteAction = onHypernoteAction
         self.onSendPoll = onSendPoll
+        self.onLoadOlderMessages = onLoadOlderMessages
         _voiceRecorder = State(initialValue: VoiceRecorder(dispatchAction: onVoiceRecordingAction))
     }
 
@@ -287,158 +288,75 @@ struct ChatView: View {
     @ViewBuilder
     private func messageList(_ chat: ChatViewState) -> some View {
         let messagesById = Dictionary(uniqueKeysWithValues: chat.messages.map { ($0.id, $0) })
-        GeometryReader { scrollGeo in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        LazyVStack(spacing: 8) {
-                            ForEach(timelineRows(chat)) { row in
-                                switch row {
-                                case .messageGroup(let group):
-                                    MessageGroupRow(
-                                        group: group,
-                                        showSender: chat.isGroup,
-                                        onSendMessage: onSendMessage,
-                                        replyTargetsById: messagesById,
-                                        onTapSender: onTapSender,
-                                        onJumpToMessage: { messageId in
-                                            withAnimation(.easeOut(duration: 0.2)) {
-                                                proxy.scrollTo(messageId, anchor: .center)
-                                            }
-                                        },
-                                        onReact: onReact,
-                                        activeReactionMessageId: $activeReactionMessageId,
-                                        onLongPressMessage: { message, frame in
-                                            isInputFocused = false
-                                            contextMenuAnchorFrame = frame
-                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
-                                                activeReactionMessageId = message.id
-                                                contextMenuMessage = message
-                                                showContextActionCard = true
-                                            }
-                                        },
-                                        onDownloadMedia: onDownloadMedia.map { callback in
-                                            { messageId, hash in callback(chatId, messageId, hash) }
-                                        },
-                                        onTapImage: { attachment in
-                                            fullscreenImageAttachment = attachment
-                                        },
-                                        onHypernoteAction: onHypernoteAction.map { callback in
-                                            { actionName, messageId, form in
-                                                callback(chatId, actionName, messageId, form)
-                                            }
-                                        }
-                                    )
-                                case .unreadDivider:
-                                    UnreadDividerRow()
-                                case .callEvent(let event):
-                                    CallTimelineEventRow(event: event)
-                                }
-                            }
-
-                            if !chat.typingMembers.isEmpty {
-                                TypingIndicatorRow(
-                                    typingMembers: chat.typingMembers,
-                                    members: chat.members
-                                )
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .animation(.easeInOut(duration: 0.2), value: chat.typingMembers.map(\.pubkey))
-
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: BottomVisibleKey.self,
-                                value: geo.frame(in: .named("chatScroll")).minY
-                            )
-                        }
-                        .frame(height: 1)
-                        .id(bottomAnchorId)
-                    }
+        InvertedMessageList(
+            rows: timelineRows(chat),
+            chat: chat,
+            messagesById: messagesById,
+            isGroup: chat.isGroup,
+            onSendMessage: onSendMessage,
+            onTapSender: onTapSender,
+            onReact: onReact,
+            onDownloadMedia: onDownloadMedia.map { callback in
+                { messageId, hash in callback(chatId, messageId, hash) }
+            },
+            onTapImage: { attachment in
+                fullscreenImageAttachment = attachment
+            },
+            onHypernoteAction: onHypernoteAction.map { callback in
+                { actionName, messageId, form in
+                    callback(chatId, actionName, messageId, form)
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .coordinateSpace(name: "chatScroll")
-                .defaultScrollAnchor(.bottom)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { _ in
-                            if !isUserScrolling {
-                                isUserScrolling = true
-                            }
-                        }
-                        .onEnded { _ in
-                            isUserScrolling = false
-                        }
-                )
-                .onDisappear {
-                    isUserScrolling = false
+            },
+            onLongPressMessage: { message, frame in
+                isInputFocused = false
+                contextMenuAnchorFrame = frame
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                    activeReactionMessageId = message.id
+                    contextMenuMessage = message
+                    showContextActionCard = true
                 }
-                .onPreferenceChange(BottomVisibleKey.self) { minY in
-                    guard let minY else { return }
-                    let isNearBottom = minY < scrollGeo.size.height + bottomVisibilityTolerance
-                    if isAtBottom != isNearBottom {
-                        isAtBottom = isNearBottom
-                    }
-                    // Only user-initiated scrolling can disable sticky mode.
-                    if isNearBottom {
-                        if !shouldStickToBottom {
-                            shouldStickToBottom = true
-                        }
-                    } else if isUserScrolling, shouldStickToBottom {
-                        shouldStickToBottom = false
-                    }
+            },
+            onLoadOlderMessages: onLoadOlderMessages.map { callback in
+                {
+                    guard let oldestId = chat.messages.first?.id else { return }
+                    callback(chatId, oldestId, 30)
                 }
-                .onChange(of: chat.messages.last?.id) { oldMessageId, newMessageId in
-                    guard newMessageId != oldMessageId else { return }
-                    guard shouldStickToBottom else { return }
-                    scrollToBottom(using: proxy, animated: true)
-                }
-                .onChange(of: chat.chatId) { _, _ in
-                    shouldStickToBottom = true
-                    scrollToBottom(using: proxy, animated: false)
-                }
-                .onAppear {
-                    if shouldStickToBottom {
-                        scrollToBottom(using: proxy, animated: false)
-                    }
-                }
-                .onChange(of: isInputFocused) { _, focused in
-                    guard focused else { return }
-                    guard shouldStickToBottom else { return }
-                    scrollToBottom(using: proxy, animated: false)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if !isAtBottom {
-                        Button {
-                            shouldStickToBottom = true
-                            scrollToBottom(using: proxy, animated: true)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.footnote.weight(.semibold))
-                                .padding(10)
-                        }
-                        .foregroundStyle(.primary)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-                        .padding(.trailing, 16)
-                        .padding(.bottom, scrollButtonBottomPadding)
-                        .accessibilityLabel("Scroll to bottom")
-                    }
-                }
-            }
+            },
+            isAtBottom: $isAtBottom,
+            shouldStickToBottom: $shouldStickToBottom,
+            activeReactionMessageId: activeReactionMessageId,
+            scrollToBottomTrigger: scrollToBottomTrigger
+        )
+        .onChange(of: chat.messages.last?.id) { oldMessageId, newMessageId in
+            guard newMessageId != oldMessageId else { return }
+            guard shouldStickToBottom else { return }
+            scrollToBottomTrigger += 1
         }
-    }
-
-    private func scrollToBottom(using proxy: ScrollViewProxy, animated: Bool) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+        .onChange(of: chat.chatId) { _, _ in
+            shouldStickToBottom = true
+            scrollToBottomTrigger += 1
+        }
+        .onChange(of: isInputFocused) { _, focused in
+            guard focused else { return }
+            guard shouldStickToBottom else { return }
+            scrollToBottomTrigger += 1
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !isAtBottom {
+                Button {
+                    shouldStickToBottom = true
+                    scrollToBottomTrigger += 1
+                } label: {
+                    Image(systemName: "arrow.down")
+                        .font(.footnote.weight(.semibold))
+                        .padding(10)
                 }
-            } else {
-                proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+                .foregroundStyle(.primary)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
+                .padding(.trailing, 16)
+                .padding(.bottom, scrollButtonBottomPadding)
+                .accessibilityLabel("Scroll to bottom")
             }
         }
     }
@@ -524,7 +442,7 @@ struct ChatView: View {
         return rows
     }
 
-    private enum ChatTimelineEntry {
+    enum ChatTimelineEntry {
         case message(index: Int, message: ChatMessage)
         case callEvent(index: Int, event: CallTimelineEvent)
 
@@ -556,7 +474,7 @@ struct ChatView: View {
         }
     }
 
-    private enum ChatTimelineRow: Identifiable {
+    enum ChatTimelineRow: Identifiable {
         case messageGroup(GroupedChatMessage)
         case unreadDivider
         case callEvent(CallTimelineEvent)
@@ -1141,7 +1059,7 @@ private struct EmojiPickerSheet: View {
     }
 }
 
-private struct UnreadDividerRow: View {
+struct UnreadDividerRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Divider()
@@ -1154,12 +1072,7 @@ private struct UnreadDividerRow: View {
     }
 }
 
-private struct BottomVisibleKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        value = nextValue() ?? value
-    }
-}
+
 
 private struct FloatingInputBarModifier<Bar: View>: ViewModifier {
     @ViewBuilder var content: Bar
@@ -1378,7 +1291,7 @@ private enum ChatViewPreviewData {
 
 // MARK: - Typing Indicator
 
-private struct TypingIndicatorRow: View {
+struct TypingIndicatorRow: View {
     let typingMembers: [TypingMember]
     let members: [MemberInfo]
 

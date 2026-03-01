@@ -91,6 +91,20 @@ fn resize_to_jpeg(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Resize and save raw image bytes directly to the profile pic cache.
+/// Used by the upload path to avoid re-downloading an image we already have.
+pub fn save_image_bytes(data_dir: &str, pubkey_hex: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
+    let output = match resize_to_jpeg(bytes) {
+        Ok(resized) => resized,
+        Err(_) => bytes.to_vec(),
+    };
+    let dest = cached_path(data_dir, pubkey_hex);
+    let tmp = dest.with_extension("tmp");
+    std::fs::write(&tmp, &output)?;
+    std::fs::rename(&tmp, &dest)?;
+    Ok(dest)
+}
+
 pub fn clear_cache(data_dir: &str) {
     let dir = std::path::Path::new(data_dir).join("profile_pics");
     if dir.exists() {

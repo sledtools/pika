@@ -343,11 +343,24 @@ impl ProfileCache {
 
     /// Returns a `file://` URL for the cached picture if the file exists on disk,
     /// otherwise falls back to the remote `picture_url`.
+    ///
+    /// A `?v=<mtime>` query parameter is appended so that the UI image loader
+    /// treats a re-written file (same path, new content) as a distinct URL.
     fn display_picture_url(&self, data_dir: &str, pubkey_hex: &str) -> Option<String> {
         if self.picture_url.is_some() {
             let path = profile_pics::cached_path(data_dir, pubkey_hex);
-            if path.exists() {
-                return Some(profile_pics::path_to_file_url(&path));
+            if let Ok(meta) = path.metadata() {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                return Some(format!(
+                    "{}?v={}",
+                    profile_pics::path_to_file_url(&path),
+                    mtime
+                ));
             }
         }
         self.picture_url.clone()
@@ -2986,10 +2999,13 @@ impl AppCore {
                 }
             }
             InternalEvent::MyProfileFetched { metadata } => {
-                self.apply_my_profile_metadata(metadata);
+                self.apply_my_profile_metadata(metadata, None);
             }
-            InternalEvent::MyProfileSaved { metadata } => {
-                self.apply_my_profile_metadata(Some(metadata));
+            InternalEvent::MyProfileSaved {
+                metadata,
+                image_bytes,
+            } => {
+                self.apply_my_profile_metadata(Some(metadata), image_bytes);
                 self.toast("Profile updated");
             }
             InternalEvent::MyProfileError { message, toast } => {

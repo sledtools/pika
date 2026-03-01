@@ -2794,7 +2794,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
+                        let mut rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
                         let inner_id = rumor.id().to_hex();
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send").await {
                             Ok(_) => {
@@ -2826,7 +2826,7 @@ pub async fn daemon_main(
                         if let Some(ref s) = state {
                             tags.push(Tag::custom(TagKind::custom("state"), vec![s.clone()]));
                         }
-                        let rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
+                        let mut rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
                             .tags(tags)
                             .build(keys.public_key());
                         // Save the inner rumor ID before MLS wrapping — this is the ID

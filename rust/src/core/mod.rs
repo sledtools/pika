@@ -3646,7 +3646,7 @@ impl AppCore {
                 let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
                 if my_hex.as_deref() != Some(sender_hex.as_str()) {
                     self.update_typing(chat_id, &sender_hex, msg.created_at.as_secs() as i64 + 10);
-                    self.refresh_current_chat_if_open(chat_id);
+                    self.refresh_typing_if_open(chat_id);
                 }
             }
             AppMessageKind::CallSignal => {

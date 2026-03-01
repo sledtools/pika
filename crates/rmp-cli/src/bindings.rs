@@ -516,7 +516,7 @@ fn build_ios_xcframework(
 
     // Assemble xcframework.
     let build_dir = root.join("ios/.build");
-    let headers_dir = build_dir.join("headers/pika_coreFFI");
+    let headers_dir = build_dir.join(format!("headers/{core_lib}FFI"));
     let frameworks_dir = root.join("ios/Frameworks");
     let _ = std::fs::remove_dir_all(&build_dir);
     let _ = std::fs::remove_dir_all(&frameworks_dir);

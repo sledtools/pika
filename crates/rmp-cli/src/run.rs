@@ -3,8 +3,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
-
 use crate::bindings;
 use crate::bindings::BuildProfile;
 use crate::cli::{human_log, json_print, CliError, JsonOk};
@@ -24,47 +22,6 @@ pub fn run(
         }
         crate::cli::RunPlatform::Iced => run_iced(root, json, verbose, args.release),
     }
-}
-
-fn default_app_relay_csv() -> String {
-    app_default_message_relays().join(",")
-}
-
-fn default_app_kp_relay_csv() -> String {
-    app_default_key_package_relays().join(",")
-}
-
-fn csv_override_from_env_with<F>(
-    get: F,
-    primary_key: &str,
-    secondary_key: &str,
-    default_csv: fn() -> String,
-) -> String
-where
-    F: Fn(&str) -> Option<String>,
-{
-    get(primary_key)
-        .or_else(|| get(secondary_key))
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(default_csv)
-}
-
-fn relay_csv_from_env() -> String {
-    csv_override_from_env_with(
-        |key| std::env::var(key).ok(),
-        "PIKA_RELAY_URLS",
-        "PIKA_RELAY_URL",
-        default_app_relay_csv,
-    )
-}
-
-fn kp_relay_csv_from_env() -> String {
-    csv_override_from_env_with(
-        |key| std::env::var(key).ok(),
-        "PIKA_KEY_PACKAGE_RELAY_URLS",
-        "PIKA_KP_RELAY_URLS",
-        default_app_kp_relay_csv,
-    )
 }
 
 fn run_ios(
@@ -172,11 +129,6 @@ fn run_ios(
         .map_err(|e| CliError::operational(format!("failed to run simctl install: {e}")))?;
     if !status.success() {
         return Err(CliError::operational("simctl install failed"));
-    }
-
-    // Write relay config into app container (Pika-specific; skipped for generic apps).
-    if std::env::var("PIKA_RELAY_URLS").is_ok() || std::env::var("PIKA_RELAY_URL").is_ok() {
-        maybe_write_ios_relay_config(&dev_dir, &udid, &bundle_id, verbose)?;
     }
 
     // Launch.
@@ -431,73 +383,6 @@ fn simulator_is_booted(dev_dir: &Path, udid: &str) -> Result<bool, CliError> {
     Ok(false)
 }
 
-fn maybe_write_ios_relay_config(
-    dev_dir: &Path,
-    udid: &str,
-    bundle_id: &str,
-    verbose: bool,
-) -> Result<(), CliError> {
-    if std::env::var("PIKA_NO_RELAY_OVERRIDE").ok().as_deref() == Some("1") {
-        human_log(
-            verbose,
-            "PIKA_NO_RELAY_OVERRIDE=1; not writing relay config",
-        );
-        return Ok(());
-    }
-
-    let relays = relay_csv_from_env();
-    let kp_relays = kp_relay_csv_from_env();
-
-    let relay_items: Vec<String> = relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    let kp_items: Vec<String> = kp_relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-
-    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items, "key_package_relay_urls": kp_items});
-
-    // container path
-    let mut cmd = Command::new("/usr/bin/xcrun");
-    cmd.env("DEVELOPER_DIR", dev_dir)
-        .arg("simctl")
-        .arg("get_app_container")
-        .arg(udid)
-        .arg(bundle_id)
-        .arg("data");
-    let out = run_capture(cmd)?;
-    if !out.status.success() {
-        return Err(CliError::operational(
-            "failed to locate simulator app container (simctl get_app_container)",
-        ));
-    }
-    let container = String::from_utf8_lossy(&out.stdout).replace('\r', "");
-    let container = container.lines().last().unwrap_or("").trim().to_string();
-    if container.is_empty() {
-        return Err(CliError::operational(
-            "simctl get_app_container returned empty path",
-        ));
-    }
-
-    let support_dir = PathBuf::from(container).join("Library/Application Support");
-    std::fs::create_dir_all(&support_dir)
-        .map_err(|e| CliError::operational(format!("failed to create support dir: {e}")))?;
-    let path = support_dir.join("pika_config.json");
-    std::fs::write(&path, serde_json::to_vec(&json).unwrap())
-        .map_err(|e| CliError::operational(format!("failed to write config: {e}")))?;
-    human_log(
-        verbose,
-        format!("wrote relay override to: {}", path.to_string_lossy()),
-    );
-    Ok(())
-}
-
 fn run_android(
     root: &Path,
     json: bool,
@@ -513,7 +398,7 @@ fn run_android(
     let avd = args
         .avd
         .or(android.avd_name)
-        .unwrap_or_else(|| "pika_api35".into());
+        .unwrap_or_else(|| "rmp_api35".into());
 
     let serial = ensure_android_emulator(root, &avd, args.serial.as_deref(), verbose)?;
     let abi = detect_android_abi(&serial, verbose)?;
@@ -573,11 +458,6 @@ fn run_android(
 
     if let Some(rev) = args.adb_reverse {
         setup_adb_reverse(&serial, &rev, verbose)?;
-    }
-
-    // Write relay config (Pika-specific; skipped for generic apps).
-    if std::env::var("PIKA_RELAY_URLS").is_ok() || std::env::var("PIKA_RELAY_URL").is_ok() {
-        maybe_write_android_relay_config(&serial, &pkg, verbose)?;
     }
 
     launch_android(&serial, &pkg, verbose)?;
@@ -1007,84 +887,6 @@ fn setup_adb_reverse(serial: &str, spec: &str, verbose: bool) -> Result<(), CliE
     Ok(())
 }
 
-fn maybe_write_android_relay_config(
-    serial: &str,
-    pkg: &str,
-    verbose: bool,
-) -> Result<(), CliError> {
-    if std::env::var("PIKA_NO_RELAY_OVERRIDE").ok().as_deref() == Some("1") {
-        human_log(
-            verbose,
-            "PIKA_NO_RELAY_OVERRIDE=1; not writing relay config",
-        );
-        return Ok(());
-    }
-
-    let relays = relay_csv_from_env();
-    let kp_relays = kp_relay_csv_from_env();
-
-    let relay_items: Vec<String> = relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    let kp_items: Vec<String> = kp_relays
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    let json = serde_json::json!({"disable_network": false, "relay_urls": relay_items, "key_package_relay_urls": kp_items});
-    let json_s = serde_json::to_string(&json).unwrap();
-
-    human_log(
-        verbose,
-        "writing relay override to app config (pika_config.json)",
-    );
-    let _ = Command::new("adb")
-        .arg("-s")
-        .arg(serial)
-        .arg("shell")
-        .arg("am")
-        .arg("force-stop")
-        .arg(pkg)
-        .status();
-
-    let mut child = Command::new("adb")
-        .arg("-s")
-        .arg(serial)
-        .arg("shell")
-        // NOTE: `adb shell` concatenates argv into a single string; without careful quoting,
-        // `sh -c ...` will receive the wrong argv and do the wrong thing.
-        .arg(format!(
-            "run-as {pkg} sh -c 'mkdir -p files && cat > files/pika_config.json'"
-        ))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| CliError::operational(format!("failed to run adb run-as: {e}")))?;
-    {
-        use std::io::Write;
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(CliError::operational("failed to open stdin for adb run-as"));
-        };
-        stdin
-            .write_all(json_s.as_bytes())
-            .map_err(|e| CliError::operational(format!("failed to write config: {e}")))?;
-    }
-    let status = child
-        .wait()
-        .map_err(|e| CliError::operational(format!("failed to wait for adb: {e}")))?;
-    if !status.success() {
-        return Err(CliError::operational(
-            "could not write app config via run-as (is this a debuggable build?)",
-        ));
-    }
-    Ok(())
-}
-
 fn launch_android(serial: &str, pkg: &str, verbose: bool) -> Result<(), CliError> {
     human_log(verbose, format!("launching {pkg}"));
 
@@ -1236,63 +1038,4 @@ fn read_xcode_project_name(root: &Path) -> Option<String> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_default_csv_helpers_match_profile_defaults() {
-        assert_eq!(
-            default_app_relay_csv(),
-            app_default_message_relays().join(",")
-        );
-        assert_eq!(
-            default_app_kp_relay_csv(),
-            app_default_key_package_relays().join(",")
-        );
-    }
-
-    #[test]
-    fn csv_override_prefers_primary_then_secondary_then_default() {
-        let from_primary = csv_override_from_env_with(
-            |key| match key {
-                "A" => Some("wss://primary.example".to_string()),
-                _ => None,
-            },
-            "A",
-            "B",
-            default_app_relay_csv,
-        );
-        assert_eq!(from_primary, "wss://primary.example");
-
-        let from_secondary = csv_override_from_env_with(
-            |key| match key {
-                "B" => Some("wss://secondary.example".to_string()),
-                _ => None,
-            },
-            "A",
-            "B",
-            default_app_relay_csv,
-        );
-        assert_eq!(from_secondary, "wss://secondary.example");
-
-        let from_default = csv_override_from_env_with(|_| None, "A", "B", default_app_relay_csv);
-        assert_eq!(from_default, default_app_relay_csv());
-    }
-
-    #[test]
-    fn csv_override_ignores_empty_values_and_uses_default() {
-        let from_empty_primary = csv_override_from_env_with(
-            |key| match key {
-                "A" => Some("   ".to_string()),
-                _ => None,
-            },
-            "A",
-            "B",
-            default_app_kp_relay_csv,
-        );
-        assert_eq!(from_empty_primary, default_app_kp_relay_csv());
-    }
 }

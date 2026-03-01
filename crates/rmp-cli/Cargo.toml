@@ -17,4 +17,3 @@ thiserror = "2"
 toml = "0.8"
 tempfile = "3"
 walkdir = "2"
-pika-relay-profiles = { path = "../pika-relay-profiles" }

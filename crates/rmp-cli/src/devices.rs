@@ -347,7 +347,7 @@ pub fn devices_start(
                 .android
                 .avd
                 .or(android.avd_name)
-                .unwrap_or_else(|| "pika_api35".into());
+                .unwrap_or_else(|| "rmp_api35".into());
             let serial =
                 ensure_android_emulator(root, &avd, args.android.serial.as_deref(), verbose)?;
 

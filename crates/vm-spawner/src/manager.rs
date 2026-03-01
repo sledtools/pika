@@ -134,7 +134,7 @@ impl VmManager {
     pub async fn list(&self) -> Vec<PersistedVm> {
         let guard = self.inner.lock().await;
         let mut values: Vec<_> = guard.vms.values().cloned().collect();
-        values.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        values.sort_by_key(|a| a.created_at);
         values
     }
 

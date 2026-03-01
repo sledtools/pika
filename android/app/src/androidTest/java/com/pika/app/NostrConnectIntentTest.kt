@@ -11,7 +11,11 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NostrConnectIntentTest {
-    private val scheme = AppManager.NOSTR_CONNECT_CALLBACK_SCHEME
+    // Read scheme inside each test method body rather than at class-init time.
+    // On some emulator configs, accessing `AppManager.NOSTR_CONNECT_CALLBACK_SCHEME`
+    // during test class construction resolves to null because the app's BuildConfig
+    // hasn't been class-loaded yet.
+    private fun scheme(): String = AppManager.NOSTR_CONNECT_CALLBACK_SCHEME
 
     @Test
     fun withNostrConnectCallback_addsCallbackToNostrConnectUrls() {
@@ -48,25 +52,27 @@ class NostrConnectIntentTest {
 
     @Test
     fun extractNostrConnectCallback_returnsCallbackUrlForMatchingIntent() {
+        val s = scheme()
         val intent =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("$scheme://nostrconnect-return?result=ok")
+                data = Uri.parse("$s://nostrconnect-return?result=ok")
             }
 
         val callback = AppManager.extractNostrConnectCallback(intent)
 
-        assertEquals("$scheme://nostrconnect-return?result=ok", callback)
+        assertEquals("$s://nostrconnect-return?result=ok", callback)
     }
 
     @Test
     fun extractNostrConnectCallback_rejectsNonCallbackIntents() {
+        val s = scheme()
         val wrongHost =
             Intent(Intent.ACTION_VIEW).apply {
-                data = Uri.parse("$scheme://other-host?result=ok")
+                data = Uri.parse("$s://other-host?result=ok")
             }
         val wrongAction =
             Intent(Intent.ACTION_MAIN).apply {
-                data = Uri.parse("$scheme://nostrconnect-return?result=ok")
+                data = Uri.parse("$s://nostrconnect-return?result=ok")
             }
 
         assertNull(AppManager.extractNostrConnectCallback(wrongHost))
@@ -80,40 +86,45 @@ class NostrConnectIntentTest {
 
     @Test
     fun extractChatDeepLinkNpub_returnsNpubForValidChatIntent() {
+        val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("$scheme://chat/$validHexPubkey")
+            data = Uri.parse("$s://chat/$validHexPubkey")
         }
         assertEquals(validHexPubkey, AppManager.extractChatDeepLinkNpub(intent))
     }
 
     @Test
     fun extractChatDeepLinkNpub_returnsNullForWrongHost() {
+        val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("$scheme://nostrconnect-return/$validHexPubkey")
+            data = Uri.parse("$s://nostrconnect-return/$validHexPubkey")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
 
     @Test
     fun extractChatDeepLinkNpub_returnsNullForInvalidNpub() {
+        val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("$scheme://chat/garbage")
+            data = Uri.parse("$s://chat/garbage")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
 
     @Test
     fun extractChatDeepLinkNpub_returnsNullForMissingPath() {
+        val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse("$scheme://chat")
+            data = Uri.parse("$s://chat")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }
 
     @Test
     fun extractChatDeepLinkNpub_returnsNullForWrongAction() {
+        val s = scheme()
         val intent = Intent(Intent.ACTION_MAIN).apply {
-            data = Uri.parse("$scheme://chat/$validHexPubkey")
+            data = Uri.parse("$s://chat/$validHexPubkey")
         }
         assertNull(AppManager.extractChatDeepLinkNpub(intent))
     }

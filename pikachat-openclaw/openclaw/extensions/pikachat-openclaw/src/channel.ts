@@ -224,6 +224,7 @@ const profileCache = new Map<string, CachedProfile>();
 const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const pendingFetches = new Set<string>();
 const HYPERNOTE_ACTION_RESPONSE_KIND = 9468;
+const REACTION_KIND = 7; // NIP-25
 
 async function fetchNostrProfileName(pubkeyHex: string, relays: string[]): Promise<string | null> {
   if (pendingFetches.has(pubkeyHex)) return null;
@@ -485,7 +486,7 @@ async function dispatchInboundToAgent(params: {
     RawBody: text,
     CommandBody: text,
     BodyForCommands: text,
-    BodyForAgent: text,
+    BodyForAgent: params.eventId ? `${text}\n\n[pikachat_event_id: ${params.eventId}]` : text,
     From: senderId,
     To: chatId,
     SessionKey: route.sessionKey,
@@ -497,7 +498,7 @@ async function dispatchInboundToAgent(params: {
     SenderName: senderName,
     SenderUsername: hexToNpub(senderId.toLowerCase()),
     SenderTag: isOwner ? "owner" : "friend",
-    EventId: params.eventId,
+    MessageSid: params.eventId,
     CommandAuthorized: isOwner,
     WasMentioned: params.wasMentioned ?? !isGroupChat,
     ...(isGroupChat ? {
@@ -742,6 +743,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
+      "- Each inbound message includes a `[pikachat_event_id: <id>]` line. Use this id with the `react` action or `submit_hypernote_action` to reference that message.",
     ],
   },
 
@@ -1252,6 +1254,15 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               );
               return;
             }
+          }
+
+          // NIP-25 reactions arrive as kind=7 message_received events.
+          // Don't dispatch to the agent — just log and move on.
+          if (ev.kind === REACTION_KIND) {
+            ctx.log?.debug(
+              `[${resolved.accountId}] reaction received from=${ev.from_pubkey} emoji=${JSON.stringify(ev.content)} target=${ev.event_id}`,
+            );
+            return;
           }
 
           // Debug: if a call signal fails to parse in the sidecar, it will fall back to

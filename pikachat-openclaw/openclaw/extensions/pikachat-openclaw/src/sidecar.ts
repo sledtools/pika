@@ -344,10 +344,15 @@ export class PikachatSidecar {
     return await this.request({ cmd: "hypernote_catalog" } as any);
   }
 
-  sendMessage(nostrGroupId: string, content: string): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({ cmd: "send_message", nostr_group_id: nostrGroupId, content } as any),
-    );
+  async sendMessage(nostrGroupId: string, content: string): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({ cmd: "send_message", nostr_group_id: nostrGroupId, content } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
   async sendHypernote(
@@ -373,32 +378,37 @@ export class PikachatSidecar {
     });
   }
 
-  sendReaction(nostrGroupId: string, eventId: string, emoji: string): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "react",
-        nostr_group_id: nostrGroupId,
-        event_id: eventId,
-        emoji,
-      } as any),
-    );
+  async sendReaction(nostrGroupId: string, eventId: string, emoji: string): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({ cmd: "react", nostr_group_id: nostrGroupId, event_id: eventId, emoji } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
-  submitHypernoteAction(
+  async submitHypernoteAction(
     nostrGroupId: string,
     eventId: string,
     action: string,
     form?: Record<string, string>,
-  ): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "submit_hypernote_action",
-        nostr_group_id: nostrGroupId,
-        event_id: eventId,
-        action,
-        form,
-      } as any),
-    );
+  ): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({
+            cmd: "submit_hypernote_action",
+            nostr_group_id: nostrGroupId,
+            event_id: eventId,
+            action,
+            form,
+          } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
   sendMedia(

@@ -762,8 +762,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
-      handle.sidecar.sendMessage(groupId, text ?? "");
-      return { channel: "pikachat-openclaw", to: groupId };
+      const result = await handle.sidecar.sendMessage(groupId, text ?? "");
+      return { channel: "pikachat-openclaw", to: groupId, messageId: result?.event_id ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
@@ -1548,8 +1548,9 @@ export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => 
       async execute(_id: string, params: { event_id: string; action: string; form?: Record<string, string> }) {
         const target = resolveToolTarget(ctx);
         if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
-        target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
-        return { content: [{ type: "text" as const, text: "Hypernote action submitted." }] };
+        const result = await target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
+        const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
+        return { content: [{ type: "text" as const, text: `Hypernote action submitted.${eventIdNote}` }] };
       },
     };
   };

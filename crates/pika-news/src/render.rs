@@ -87,3 +87,50 @@ pub fn escape_html(input: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::tutorial::{TutorialDoc, TutorialStep};
+
+    use super::{render_tutorial_html, write_tutorial_html};
+
+    #[test]
+    fn renders_local_artifact_html() {
+        let doc = TutorialDoc {
+            executive_summary: "summary".to_string(),
+            media_links: vec![],
+            steps: vec![TutorialStep {
+                title: "Step".to_string(),
+                intent: "Intent".to_string(),
+                affected_files: vec!["src/main.rs".to_string()],
+                evidence_snippets: vec!["@@ -1 +1 @@".to_string()],
+                body_markdown: "body".to_string(),
+            }],
+        };
+
+        let html = render_tutorial_html(
+            "pika-news local tutorial",
+            "origin/main",
+            "@@ -1 +1 @@",
+            &doc,
+        );
+        assert!(html.contains("pika-news local tutorial"));
+        assert!(html.contains("origin/main"));
+        assert!(html.contains("Step"));
+    }
+
+    #[test]
+    fn writes_local_artifact_file() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let output = dir.path().join("artifact.html");
+        let doc = TutorialDoc {
+            executive_summary: "summary".to_string(),
+            media_links: vec![],
+            steps: vec![],
+        };
+
+        write_tutorial_html(&output, "page", "base", "diff", &doc).expect("write tutorial HTML");
+        let written = std::fs::read_to_string(&output).expect("read written artifact");
+        assert!(written.contains("summary"));
+    }
+}

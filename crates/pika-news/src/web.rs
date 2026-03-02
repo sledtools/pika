@@ -258,3 +258,15 @@ fn markdown_to_safe_html(markdown: &str) -> String {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::markdown_to_safe_html;
+
+    #[test]
+    fn sanitizes_markdown_html_output() {
+        let rendered = markdown_to_safe_html("ok<script>alert('xss')</script>");
+        assert!(rendered.contains("ok"));
+        assert!(!rendered.contains("<script>"));
+    }
+}

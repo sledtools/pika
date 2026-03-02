@@ -80,3 +80,36 @@ fn default_worker_concurrency() -> usize {
 fn default_retry_backoff_secs() -> u64 {
     DEFAULT_RETRY_BACKOFF_SECS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn parses_repo_config_contract() {
+        let raw = r#"
+repos = ["sledtools/pika", "openclaw/openclaw"]
+poll_interval_secs = 30
+model = "claude-sonnet-4-5-20250929"
+api_key_env = "ANTHROPIC_API_KEY"
+github_token_env = "GITHUB_TOKEN"
+merged_lookback_hours = 48
+worker_concurrency = 3
+retry_backoff_secs = 90
+bind_address = "0.0.0.0"
+bind_port = 8080
+"#;
+
+        let parsed: Config = toml::from_str(raw).expect("parse config TOML");
+        assert_eq!(parsed.repos.len(), 2);
+        assert_eq!(parsed.poll_interval_secs, 30);
+        assert_eq!(parsed.model, "claude-sonnet-4-5-20250929");
+        assert_eq!(parsed.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(parsed.github_token_env, "GITHUB_TOKEN");
+        assert_eq!(parsed.merged_lookback_hours, 48);
+        assert_eq!(parsed.worker_concurrency, 3);
+        assert_eq!(parsed.retry_backoff_secs, 90);
+        assert_eq!(parsed.bind_address, "0.0.0.0");
+        assert_eq!(parsed.bind_port, 8080);
+    }
+}

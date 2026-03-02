@@ -1,0 +1,102 @@
+name: iOS TestFlight
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Build xcframework and Xcode project
+        env:
+          PIKA_IOS_RUST_TARGETS: aarch64-apple-ios
+        run: nix develop .#default -c just ios-xcframework ios-xcodeproj
+
+      - name: Stamp build number
+        run: echo "${{ github.run_number }}" > ios/.build-number
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          KEY_DIR="$HOME/private_keys"
+          mkdir -p "$KEY_DIR"
+          printf '%s\n' "$ASC_KEY_P8" > "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          ./tools/xcode-run xcodebuild archive \
+            -project ios/Pika.xcodeproj \
+            -scheme Pika \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Pika.xcarchive" \
+            -destination "generic/platform=iOS" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PIKA_APP_BUNDLE_ID=org.pikachat.pika \
+            CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Generate ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>destination</key>
+            <string>upload</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Export IPA
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          ./tools/xcode-run xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Pika.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pika-${{ github.run_number }}.ipa
+          path: ${{ runner.temp }}/export/*.ipa
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          ./tools/xcode-run xcrun altool --upload-app \
+            --type ios \
+            --file "$RUNNER_TEMP/export/Pika.ipa" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"

@@ -397,6 +397,12 @@ struct PendingSend {
     rumor_id_hex: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RelayPublishBackoff {
+    consecutive_failures: u32,
+    muted_until_unix: i64,
+}
+
 #[derive(Debug, Clone)]
 struct LocalOutgoing {
     content: String,
@@ -532,6 +538,7 @@ pub struct AppCore {
     unread_counts: HashMap<String, u32>,
     delivery_overrides: HashMap<String, HashMap<String, MessageDeliveryState>>, // chat_id -> message_id -> delivery
     pending_sends: HashMap<String, HashMap<String, PendingSend>>, // chat_id -> rumor_id -> wrapper event
+    relay_publish_backoff: Arc<Mutex<HashMap<String, RelayPublishBackoff>>>, // relay url -> cooldown state
     // When MDK storage is eventually consistent, keep a local optimistic outbox so UI can render
     // immediately and reliably (e.g., offline note-to-self).
     local_outbox: HashMap<String, HashMap<String, LocalOutgoing>>, // chat_id -> message_id -> message
@@ -650,6 +657,7 @@ impl AppCore {
             unread_counts: HashMap::new(),
             delivery_overrides: HashMap::new(),
             pending_sends: HashMap::new(),
+            relay_publish_backoff: Arc::new(Mutex::new(HashMap::new())),
             local_outbox: HashMap::new(),
             profiles,
             profile_db,
@@ -2433,6 +2441,9 @@ impl AppCore {
             self.unread_counts.clear();
             self.delivery_overrides.clear();
             self.pending_sends.clear();
+            if let Ok(mut state) = self.relay_publish_backoff.lock() {
+                state.clear();
+            }
             self.pending_media_sends.clear();
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
@@ -4432,26 +4443,20 @@ impl AppCore {
                     let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
                         InternalEvent::PublishMessageResult {
                             chat_id,
-                            rumor_id: message_id,
+                            rumor_id: ps.rumor_id_hex,
                             ok: true,
                             error: None,
                         },
                     )));
                     return;
                 }
-                let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                    InternalEvent::PublishMessageResult {
-                        chat_id,
-                        rumor_id: ps.rumor_id_hex,
-                        ok: true,
-                        error: None,
-                    },
-                )));
-                self.runtime.spawn(async move {
-                    if let Err(e) = client.send_event_to(relays, &ps.wrapper_event).await {
-                        tracing::warn!(%e, "message retry broadcast failed");
-                    }
-                });
+                self.spawn_message_publish(
+                    client,
+                    chat_id,
+                    ps.rumor_id_hex,
+                    relays,
+                    ps.wrapper_event,
+                );
             }
             AppAction::StartCall { chat_id } => {
                 self.handle_start_call_action(&chat_id);

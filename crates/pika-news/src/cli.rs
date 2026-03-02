@@ -28,6 +28,9 @@ pub struct ServeArgs {
     /// Bind port for the hosted web server.
     #[arg(long, default_value_t = 8787)]
     pub port: u16,
+    /// SQLite database path for hosted mode state.
+    #[arg(long, default_value = "pika-news.db")]
+    pub db: PathBuf,
 }
 
 impl ServeArgs {

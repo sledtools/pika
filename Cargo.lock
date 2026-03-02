@@ -5841,8 +5841,10 @@ dependencies = [
  "anyhow",
  "clap",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.23",
 ]
 

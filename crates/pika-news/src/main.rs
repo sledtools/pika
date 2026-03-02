@@ -12,8 +12,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Serve(args) => {
             let config = config::load(&args.config).context("load config file")?;
             println!(
-                "serve mode scaffold ready: bind={} repos={} poll_interval_secs={} model={} api_key_env={}",
+                "serve mode scaffold ready: cli_bind={} config_bind={}:{} repos={} poll_interval_secs={} model={} api_key_env={}",
                 args.bind(),
+                config.bind_address,
+                config.bind_port,
                 config.repos.len(),
                 config.poll_interval_secs,
                 config.model,

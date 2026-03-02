@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 2rem 1rem; background: radial-gradient(circle at top right, #ecf6ff, #f7fafc 45%, #eef2f7); }
+      .shell { max-width: 1050px; margin: 0 auto; }
+      .meta { color: #334155; font-size: 0.92rem; }
+      .status { display: inline-block; border-radius: 999px; border: 1px solid #afc2d8; padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
+      .panel { background: #ffffffeb; border: 1px solid #d4deea; border-radius: 14px; padding: 1rem; margin-top: 1rem; }
+      .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+      button { border-radius: 10px; border: 1px solid #9eb3cb; background: #f3f8ff; padding: 0.45rem 0.8rem; cursor: pointer; }
+      .step { display: none; }
+      .step.active { display: block; }
+      .evidence { background: #f7fafc; border-radius: 10px; padding: 0.75rem; }
+      .diff { max-height: 360px; overflow: auto; background: #f7fafc; border-radius: 10px; padding: 0.75rem; white-space: pre-wrap; }
+      a { color: #0f4c81; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      @media (max-width: 640px) { body { padding: 1rem 0.75rem; } }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <p><a href="/news">Back to feed</a></p>
+      <h1>{{ page_title }}</h1>
+      <p class="meta">{{ repo }} #{{ pr_number }} · Updated {{ updated_at }}</p>
+      <p>
+        <span class="status">pr: {{ pr_state }}</span>
+        <span class="status">gen: {{ generation_status }}</span>
+      </p>
+      <p><a href="{{ github_url }}">Open PR on GitHub</a></p>
+
+      {% match error_message %}
+      {% when Some with (msg) %}
+      <section class="panel">
+        <h2>Generation Error</h2>
+        <p>{{ msg }}</p>
+      </section>
+      {% when None %}{% endmatch %}
+
+      {% match executive_html %}
+      {% when Some with (summary_html) %}
+      <section class="panel">
+        <h2>Executive Summary</h2>
+        <div>{{ summary_html|safe }}</div>
+      </section>
+
+      <section class="panel">
+        <h2>Tutorial Steps</h2>
+        {% if steps.is_empty() %}
+        <p>No steps available yet.</p>
+        {% else %}
+        <div class="steps-nav">
+          <button id="prev-step" type="button">Prev</button>
+          <button id="next-step" type="button">Next</button>
+          <span id="step-index"></span>
+        </div>
+        {% for step in steps %}
+        <article class="step" data-step-index="{{ loop.index0 }}">
+          <h3>{{ step.title }}</h3>
+          <p><strong>Intent:</strong> {{ step.intent }}</p>
+          <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
+          <div class="evidence">
+            <strong>Evidence</strong>
+            <ul>
+              {% for evidence in step.evidence_snippets %}
+              <li><code>{{ evidence }}</code></li>
+              {% endfor %}
+            </ul>
+          </div>
+          <div>{{ step.body_html|safe }}</div>
+        </article>
+        {% endfor %}
+        {% endif %}
+      </section>
+      {% when None %}
+      <section class="panel">
+        <h2>Tutorial</h2>
+        <p>Summary is not ready yet. Refresh shortly.</p>
+      </section>
+      {% endmatch %}
+
+      {% if media_links.len() > 0 %}
+      <section class="panel">
+        <h2>Media Links</h2>
+        <ul>
+          {% for link in media_links %}
+          <li><a href="{{ link }}">{{ link }}</a></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+
+      {% match raw_diff %}
+      {% when Some with (diff_text) %}
+      <section class="panel">
+        <h2>Diff Snapshot</h2>
+        <pre class="diff">{{ diff_text }}</pre>
+      </section>
+      {% when None %}{% endmatch %}
+    </main>
+    <script>
+      (function () {
+        const steps = Array.from(document.querySelectorAll('.step'));
+        if (steps.length === 0) return;
+        const prev = document.getElementById('prev-step');
+        const next = document.getElementById('next-step');
+        const label = document.getElementById('step-index');
+        let index = 0;
+
+        function render() {
+          steps.forEach((step, i) => step.classList.toggle('active', i === index));
+          label.textContent = `Step ${index + 1} / ${steps.length}`;
+          prev.disabled = index === 0;
+          next.disabled = index === steps.length - 1;
+        }
+
+        prev.addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
+        next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; render(); } });
+        window.addEventListener('keydown', (event) => {
+          if (event.key === 'ArrowLeft' && index > 0) { index -= 1; render(); }
+          if (event.key === 'ArrowRight' && index < steps.length - 1) { index += 1; render(); }
+        });
+        render();
+      })();
+    </script>
+  </body>
+</html>

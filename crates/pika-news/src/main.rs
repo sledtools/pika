@@ -7,6 +7,7 @@ mod poller;
 mod render;
 mod storage;
 mod tutorial;
+mod web;
 mod worker;
 
 use anyhow::Context;
@@ -24,9 +25,10 @@ fn main() -> anyhow::Result<()> {
                 poller::poll_once(&store, &config).context("run initial poller sync")?;
             let worker_result = worker::run_generation_pass(&store, &config)
                 .context("run initial hosted generation pass")?;
+            let bind_addr = args.bind();
             println!(
                 "serve mode scaffold ready: cli_bind={} config_bind={}:{} db={} repos={} poll_interval_secs={} model={} api_key_env={} prs_seen={} queued={} head_sha_changes={} worker_claimed={} worker_ready={} worker_failed={} worker_retry_scheduled={}",
-                args.bind(),
+                bind_addr,
                 config.bind_address,
                 config.bind_port,
                 store.db_path().display(),
@@ -42,6 +44,11 @@ fn main() -> anyhow::Result<()> {
                 worker_result.failed,
                 worker_result.retry_scheduled
             );
+
+            let runtime = tokio::runtime::Runtime::new().context("create tokio runtime")?;
+            runtime
+                .block_on(web::serve(store, config, bind_addr))
+                .context("run hosted web server")?;
         }
         Commands::Local(args) => {
             local::run(&args)?;

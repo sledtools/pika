@@ -9,12 +9,17 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+ammonia = "4.1"
+askama = "0.12"
+axum = "0.7"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
+pulldown-cmark = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "signal", "time"] }
 toml = "0.8"
 
 [dev-dependencies]

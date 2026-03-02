@@ -40,6 +40,33 @@ pub struct GenerationJob {
     pub base_ref: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FeedItem {
+    pub pr_id: i64,
+    pub repo: String,
+    pub pr_number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub updated_at: String,
+    pub generation_status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrDetailRecord {
+    pub repo: String,
+    pub pr_number: i64,
+    pub title: String,
+    pub url: String,
+    pub pr_state: String,
+    pub updated_at: String,
+    pub base_ref: String,
+    pub head_sha: String,
+    pub generation_status: String,
+    pub tutorial_json: Option<String>,
+    pub error_message: Option<String>,
+}
+
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db_path = path.to_path_buf();
@@ -223,6 +250,74 @@ impl Store {
                 .with_context(|| format!("mark artifact {} failed", artifact_id))?;
             }
             Ok(())
+        })
+    }
+
+    pub fn list_feed_items(&self) -> anyhow::Result<Vec<FeedItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pr.id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, ga.status
+                     FROM pull_requests pr
+                     JOIN repos r ON r.id = pr.repo_id
+                     LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                     ORDER BY CASE pr.state WHEN 'open' THEN 0 WHEN 'merged' THEN 1 ELSE 2 END, pr.updated_at DESC",
+                )
+                .context("prepare feed query")?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(FeedItem {
+                        pr_id: row.get(0)?,
+                        repo: row.get(1)?,
+                        pr_number: row.get(2)?,
+                        title: row.get(3)?,
+                        url: row.get(4)?,
+                        state: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        generation_status: row
+                            .get::<_, Option<String>>(7)?
+                            .unwrap_or_else(|| "pending".to_string()),
+                    })
+                })
+                .context("query feed items")?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.context("read feed item row")?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_pr_detail(&self, pr_id: i64) -> anyhow::Result<Option<PrDetailRecord>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, pr.base_ref, pr.head_sha,
+                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.error_message
+                 FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                 WHERE pr.id = ?1",
+                params![pr_id],
+                |row| {
+                    Ok(PrDetailRecord {
+                        repo: row.get(0)?,
+                        pr_number: row.get(1)?,
+                        title: row.get(2)?,
+                        url: row.get(3)?,
+                        pr_state: row.get(4)?,
+                        updated_at: row.get(5)?,
+                        base_ref: row.get(6)?,
+                        head_sha: row.get(7)?,
+                        generation_status: row.get(8)?,
+                        tutorial_json: row.get(9)?,
+                        error_message: row.get(10)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query PR detail")
         })
     }
 }

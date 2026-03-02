@@ -1,0 +1,260 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use askama::Template;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse};
+use axum::routing::get;
+use axum::Router;
+use pulldown_cmark::{html, Parser};
+
+use crate::config::Config;
+use crate::poller;
+use crate::storage::{FeedItem, PrDetailRecord, Store};
+use crate::tutorial::TutorialDoc;
+use crate::worker;
+
+#[derive(Clone)]
+struct AppState {
+    store: Store,
+    config: Config,
+}
+
+#[derive(Template)]
+#[template(path = "feed.html")]
+struct FeedTemplate {
+    open_items: Vec<FeedItemView>,
+    merged_items: Vec<FeedItemView>,
+}
+
+#[derive(Template)]
+#[template(path = "detail.html")]
+struct DetailTemplate {
+    page_title: String,
+    repo: String,
+    pr_number: i64,
+    github_url: String,
+    updated_at: String,
+    pr_state: String,
+    generation_status: String,
+    executive_html: Option<String>,
+    media_links: Vec<String>,
+    error_message: Option<String>,
+    steps: Vec<StepView>,
+    raw_diff: Option<String>,
+}
+
+#[derive(Clone)]
+struct FeedItemView {
+    pr_id: i64,
+    repo: String,
+    pr_number: i64,
+    title: String,
+    url: String,
+    state: String,
+    updated_at: String,
+    generation_status: String,
+}
+
+#[derive(Clone)]
+struct StepView {
+    title: String,
+    intent: String,
+    affected_files: String,
+    evidence_snippets: Vec<String>,
+    body_html: String,
+}
+
+pub async fn serve(store: Store, config: Config, bind_addr: String) -> anyhow::Result<()> {
+    let state = Arc::new(AppState {
+        store,
+        config: config.clone(),
+    });
+
+    let background_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        loop {
+            let state = Arc::clone(&background_state);
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = poller::poll_once(&state.store, &state.config);
+                let _ = worker::run_generation_pass(&state.store, &state.config);
+            })
+            .await;
+            tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)).await;
+        }
+    });
+
+    let app = Router::new()
+        .route("/", get(feed_handler))
+        .route("/news", get(feed_handler))
+        .route("/news/pr/:pr_id", get(detail_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .with_context(|| format!("bind hosted server on {}", bind_addr))?;
+
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("serve hosted UI")?;
+
+    Ok(())
+}
+
+async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let store = state.store.clone();
+    let items = match tokio::task::spawn_blocking(move || store.list_feed_items()).await {
+        Ok(Ok(items)) => items,
+        Ok(Err(err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to query feed items: {}", err),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("feed worker task failed: {}", err),
+            )
+                .into_response();
+        }
+    };
+
+    let mut open_items = Vec::new();
+    let mut merged_items = Vec::new();
+
+    for item in items {
+        let view = map_feed_item(item);
+        if view.state == "open" {
+            open_items.push(view);
+        } else if view.state == "merged" {
+            merged_items.push(view);
+        }
+    }
+
+    let template = FeedTemplate {
+        open_items,
+        merged_items,
+    };
+
+    match template.render() {
+        Ok(rendered) => Html(rendered).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to render feed template: {}", err),
+        )
+            .into_response(),
+    }
+}
+
+async fn detail_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+) -> impl IntoResponse {
+    let store = state.store.clone();
+    let detail = match tokio::task::spawn_blocking(move || store.get_pr_detail(pr_id)).await {
+        Ok(Ok(Some(record))) => record,
+        Ok(Ok(None)) => {
+            return (StatusCode::NOT_FOUND, format!("PR {} not found", pr_id)).into_response();
+        }
+        Ok(Err(err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to query PR detail: {}", err),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("detail worker task failed: {}", err),
+            )
+                .into_response();
+        }
+    };
+
+    match render_detail_template(detail) {
+        Ok(template) => match template.render() {
+            Ok(rendered) => Html(rendered).into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to render detail template: {}", err),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to build detail view: {}", err),
+        )
+            .into_response(),
+    }
+}
+
+fn map_feed_item(item: FeedItem) -> FeedItemView {
+    FeedItemView {
+        pr_id: item.pr_id,
+        repo: item.repo,
+        pr_number: item.pr_number,
+        title: item.title,
+        url: item.url,
+        state: item.state,
+        updated_at: item.updated_at,
+        generation_status: item.generation_status,
+    }
+}
+
+fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTemplate> {
+    let mut steps = Vec::new();
+    let mut executive_html = None;
+    let mut media_links = Vec::new();
+
+    if let Some(tutorial_json) = &record.tutorial_json {
+        let tutorial: TutorialDoc = serde_json::from_str(tutorial_json)
+            .context("parse stored tutorial JSON for detail page")?;
+
+        executive_html = Some(markdown_to_safe_html(&tutorial.executive_summary));
+        media_links = tutorial.media_links;
+        for step in tutorial.steps {
+            steps.push(StepView {
+                title: step.title,
+                intent: step.intent,
+                affected_files: step.affected_files.join(", "),
+                evidence_snippets: step.evidence_snippets,
+                body_html: markdown_to_safe_html(&step.body_markdown),
+            });
+        }
+    }
+
+    Ok(DetailTemplate {
+        page_title: format!("{} #{}: {}", record.repo, record.pr_number, record.title),
+        repo: record.repo,
+        pr_number: record.pr_number,
+        github_url: record.url,
+        updated_at: record.updated_at,
+        pr_state: record.pr_state,
+        generation_status: record.generation_status,
+        executive_html,
+        media_links,
+        error_message: record.error_message,
+        steps,
+        raw_diff: Some(format!(
+            "base_ref={}\nhead_sha={}\n(diff text is stored in generated artifact HTML for now)",
+            record.base_ref, record.head_sha
+        )),
+    })
+}
+
+fn markdown_to_safe_html(markdown: &str) -> String {
+    let parser = Parser::new(markdown);
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+    ammonia::clean(&html_output)
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}

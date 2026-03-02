@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pika-news feed</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 2rem 1rem; background: linear-gradient(180deg, #f8fbff 0%, #f2f5f9 100%); }
+      .shell { max-width: 1050px; margin: 0 auto; }
+      .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+      .card { background: #ffffffee; border: 1px solid #d6dde8; border-radius: 14px; padding: 1rem; }
+      .meta { font-size: 0.88rem; color: #334155; margin-bottom: 0.4rem; }
+      .status { display: inline-block; border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.75rem; border: 1px solid #b8c5d8; margin-right: 0.4rem; }
+      .empty { color: #475569; font-style: italic; }
+      h1 { margin-top: 0; }
+      h2 { margin-top: 2rem; }
+      a { color: #0f4c81; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      @media (max-width: 640px) { body { padding: 1rem 0.75rem; } }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <h1>pika-news</h1>
+      <p>Browser-first PR tutorial feed across configured repositories.</p>
+
+      <h2>Open PRs</h2>
+      {% if open_items.is_empty() %}
+      <p class="empty">No open PRs found.</p>
+      {% else %}
+      <div class="grid">
+        {% for item in open_items %}
+        <article class="card">
+          <div class="meta">{{ item.repo }} #{{ item.pr_number }} · {{ item.updated_at }}</div>
+          <h3><a href="/news/pr/{{ item.pr_id }}">{{ item.title }}</a></h3>
+          <p>
+            <span class="status">pr: {{ item.state }}</span>
+            <span class="status">gen: {{ item.generation_status }}</span>
+          </p>
+          <p><a href="{{ item.url }}">View on GitHub</a></p>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <h2>Merged PRs</h2>
+      {% if merged_items.is_empty() %}
+      <p class="empty">No merged PRs in lookback window.</p>
+      {% else %}
+      <div class="grid">
+        {% for item in merged_items %}
+        <article class="card">
+          <div class="meta">{{ item.repo }} #{{ item.pr_number }} · {{ item.updated_at }}</div>
+          <h3><a href="/news/pr/{{ item.pr_id }}">{{ item.title }}</a></h3>
+          <p>
+            <span class="status">pr: {{ item.state }}</span>
+            <span class="status">gen: {{ item.generation_status }}</span>
+          </p>
+          <p><a href="{{ item.url }}">View on GitHub</a></p>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </main>
+  </body>
+</html>

@@ -5835,6 +5835,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-news"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "pika-nse"
 version = "0.1.0"
 dependencies = [

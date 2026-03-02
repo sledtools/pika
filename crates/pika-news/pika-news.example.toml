@@ -1,0 +1,4 @@
+repos = ["sledtools/pika"]
+poll_interval_secs = 60
+model = "claude-sonnet-4-5-20250929"
+api_key_env = "ANTHROPIC_API_KEY"

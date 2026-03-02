@@ -39,7 +39,9 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
-use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
+use mdk_core::encrypted_media::types::{
+    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
+};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
 
@@ -333,6 +335,11 @@ struct ProfileCache {
     // In-memory only (not persisted) — prevents re-fetching within a session.
     // Starts at 0 on load from DB so profiles are always re-checked on app launch.
     last_checked_at: i64,
+    // Encrypted group profile picture metadata (from imeta tag).
+    // Present when the picture was uploaded encrypted via MLS media encryption.
+    picture_nonce_hex: Option<String>,
+    picture_original_hash_hex: Option<String>,
+    picture_scheme_version: Option<String>,
 }
 
 impl ProfileCache {
@@ -369,6 +376,9 @@ impl ProfileCache {
             picture_url,
             event_created_at,
             last_checked_at,
+            picture_nonce_hex: None,
+            picture_original_hash_hex: None,
+            picture_scheme_version: None,
         }
     }
 
@@ -1139,6 +1149,11 @@ impl AppCore {
         let chat_profiles = self.group_profiles.entry(chat_id.to_string()).or_default();
         let mut need_pic_download: Option<String> = None;
         let mut need_pic_delete = false;
+        let encrypted_pic_info = new.picture_nonce_hex.as_ref().and_then(|nonce| {
+            let hash = new.picture_original_hash_hex.as_ref()?;
+            let scheme = new.picture_scheme_version.as_ref()?;
+            Some((nonce.clone(), hash.clone(), scheme.clone()))
+        });
 
         if let Some(existing) = chat_profiles.get(&pubkey) {
             if existing.event_created_at > new.event_created_at {
@@ -1173,7 +1188,7 @@ impl AppCore {
 
         // Trigger pic download/delete after all borrows are released.
         if let Some(url) = need_pic_download {
-            self.spawn_group_pfp_download(chat_id.to_string(), pubkey, url);
+            self.spawn_group_pfp_download(chat_id.to_string(), pubkey, url, encrypted_pic_info);
         } else if need_pic_delete {
             let _ = std::fs::remove_file(profile_pics::group_cached_path(
                 &self.data_dir,
@@ -1183,28 +1198,149 @@ impl AppCore {
         }
     }
 
-    fn spawn_group_pfp_download(&self, chat_id: String, pubkey: String, url: String) {
+    fn spawn_group_pfp_download(
+        &self,
+        chat_id: String,
+        pubkey: String,
+        url: String,
+        encrypted: Option<(String, String, String)>, // (nonce_hex, original_hash_hex, scheme_version)
+    ) {
         let client = self.http_client.clone();
         let data_dir = self.data_dir.clone();
         let semaphore = self.pfp_semaphore.clone();
         let tx = self.core_sender.clone();
         profile_pics::ensure_group_dir(&data_dir, &chat_id);
-        self.runtime.spawn(async move {
-            match profile_pics::download_group_image(
-                &client, &data_dir, &chat_id, &pubkey, &url, &semaphore,
-            )
-            .await
-            {
-                Ok(_) => {
-                    let _ = tx.send(CoreMsg::Internal(Box::new(
-                        InternalEvent::GroupProfilePicCached { chat_id, pubkey },
-                    )));
+
+        if let Some((nonce_hex, original_hash_hex, scheme_version)) = encrypted {
+            // Encrypted: download raw bytes, send back for sync decryption via MDK.
+            self.runtime.spawn(async move {
+                let _permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                let resp = client
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(15))
+                    .send()
+                    .await;
+                let encrypted_data = match resp.and_then(|r| r.error_for_status()) {
+                    Ok(r) => match r.bytes().await {
+                        Ok(b) => b.to_vec(),
+                        Err(e) => {
+                            tracing::debug!(%pubkey, %chat_id, %url, %e, "encrypted group pfp download failed");
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        tracing::debug!(%pubkey, %chat_id, %url, %e, "encrypted group pfp download failed");
+                        return;
+                    }
+                };
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::GroupProfilePicDownloaded {
+                        chat_id,
+                        pubkey,
+                        encrypted_data,
+                        nonce_hex,
+                        original_hash_hex,
+                        scheme_version,
+                        url,
+                    },
+                )));
+            });
+        } else {
+            // Unencrypted: plain download (backwards compat).
+            self.runtime.spawn(async move {
+                match profile_pics::download_group_image(
+                    &client, &data_dir, &chat_id, &pubkey, &url, &semaphore,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupProfilePicCached { chat_id, pubkey },
+                        )));
+                    }
+                    Err(e) => {
+                        tracing::debug!(%pubkey, %chat_id, %url, %e, "group profile pic download failed");
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!(%pubkey, %chat_id, %url, %e, "group profile pic download failed");
-                }
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decrypt_and_cache_group_pfp(
+        &mut self,
+        chat_id: &str,
+        pubkey: &str,
+        encrypted_data: &[u8],
+        nonce_hex: &str,
+        original_hash_hex: &str,
+        scheme_version: &str,
+        url: &str,
+    ) {
+        let Some(sess) = self.session.as_ref() else {
+            return;
+        };
+        let Some(group) = sess.groups.get(chat_id) else {
+            return;
+        };
+
+        // Build a MediaReference for decryption.
+        let nonce: [u8; 12] = match hex::decode(nonce_hex) {
+            Ok(b) if b.len() == 12 => {
+                let mut arr = [0u8; 12];
+                arr.copy_from_slice(&b);
+                arr
             }
-        });
+            _ => {
+                tracing::debug!(%pubkey, %chat_id, "invalid nonce for encrypted group pfp");
+                return;
+            }
+        };
+        let original_hash: [u8; 32] = match hex::decode(original_hash_hex) {
+            Ok(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                tracing::debug!(%pubkey, %chat_id, "invalid hash for encrypted group pfp");
+                return;
+            }
+        };
+
+        let reference = MediaReference {
+            url: url.to_string(),
+            original_hash,
+            nonce,
+            mime_type: "image/jpeg".to_string(),
+            filename: "profile.jpg".to_string(),
+            scheme_version: scheme_version.to_string(),
+            dimensions: None,
+        };
+
+        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+        let decrypted = match manager.decrypt_from_download(encrypted_data, &reference) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::debug!(%pubkey, %chat_id, %e, "group pfp decrypt failed");
+                return;
+            }
+        };
+
+        // Save decrypted image to cache.
+        profile_pics::ensure_group_dir(&self.data_dir, chat_id);
+        if let Err(e) =
+            profile_pics::save_group_image_bytes(&self.data_dir, chat_id, pubkey, &decrypted)
+        {
+            tracing::debug!(%pubkey, %chat_id, %e, "failed to save decrypted group pfp");
+            return;
+        }
+
+        self.refresh_chat_list_from_storage();
+        self.refresh_current_chat_if_open(chat_id);
     }
 
     fn cache_missing_profile_pics(&self) {
@@ -2831,12 +2967,39 @@ impl AppCore {
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(&chat_id);
             }
+            InternalEvent::GroupProfilePicDownloaded {
+                chat_id,
+                pubkey,
+                encrypted_data,
+                nonce_hex,
+                original_hash_hex,
+                scheme_version,
+                url,
+            } => {
+                self.decrypt_and_cache_group_pfp(
+                    &chat_id,
+                    &pubkey,
+                    &encrypted_data,
+                    &nonce_hex,
+                    &original_hash_hex,
+                    &scheme_version,
+                    &url,
+                );
+            }
             InternalEvent::GroupProfileImageUploaded {
                 chat_id,
                 metadata_json,
                 image_bytes,
+                upload,
+                uploaded_url,
             } => {
-                self.handle_group_profile_image_uploaded(chat_id, metadata_json, image_bytes);
+                self.handle_group_profile_image_uploaded(
+                    chat_id,
+                    metadata_json,
+                    image_bytes,
+                    upload,
+                    uploaded_url,
+                );
             }
             InternalEvent::ContactListModifyFailed { pubkey, revert_to } => {
                 self.handle_contact_list_modify_failed(pubkey, revert_to)
@@ -3822,11 +3985,30 @@ impl AppCore {
                     .find(|t| t.kind() == nostr_sdk::TagKind::p())
                     .and_then(|t| t.content().map(|s| s.to_string()))
                     .unwrap_or_else(|| msg.pubkey.to_hex());
-                let cache = ProfileCache::from_metadata_json(
+                let mut cache = ProfileCache::from_metadata_json(
                     Some(msg.content.clone()),
                     msg.created_at.as_secs() as i64,
                     now_seconds(),
                 );
+
+                // Extract encrypted picture metadata from imeta tag if present.
+                if let Some(sess) = self.session.as_ref() {
+                    if let Some(group) = sess.groups.get(chat_id) {
+                        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+                        if let Some(reference) = msg
+                            .tags
+                            .iter()
+                            .filter(|t| chat_media::is_imeta_tag(t))
+                            .find_map(|t| manager.parse_imeta_tag(t).ok())
+                        {
+                            cache.picture_nonce_hex = Some(hex::encode(reference.nonce));
+                            cache.picture_original_hash_hex =
+                                Some(hex::encode(reference.original_hash));
+                            cache.picture_scheme_version = Some(reference.scheme_version);
+                        }
+                    }
+                }
+
                 self.upsert_group_profile(chat_id, owner_hex, cache);
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(chat_id);
@@ -5450,6 +5632,9 @@ mod tests {
                 picture_url: picture_url.map(String::from),
                 event_created_at: 0,
                 last_checked_at: 0,
+                picture_nonce_hex: None,
+                picture_original_hash_hex: None,
+                picture_scheme_version: None,
             }
         }
 

@@ -41,11 +41,41 @@ impl AppCore {
         metadata.picture = existing_picture;
 
         let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-        self.publish_group_kind0(&chat_id, &group.mls_group_id, &metadata_json, None);
+
+        // Preserve encrypted pic metadata when only changing name/about.
+        let existing_enc = self
+            .group_profiles
+            .get(&chat_id)
+            .and_then(|m| m.get(&my_hex));
+        let extra_tags: Vec<Tag> = Vec::new();
+        let mut pic_nonce = None;
+        let mut pic_hash = None;
+        let mut pic_scheme = None;
+        if let Some(ep) = existing_enc {
+            pic_nonce.clone_from(&ep.picture_nonce_hex);
+            pic_hash.clone_from(&ep.picture_original_hash_hex);
+            pic_scheme.clone_from(&ep.picture_scheme_version);
+            // Re-create imeta tag from stored fields if present.
+            // The imeta tag is needed for receivers to decrypt the picture.
+            // We don't store the full tag, so recipients will get the encrypted
+            // pic metadata from the kind-0 they receive. For rebroadcasts,
+            // the metadata_json is preserved which contains the picture URL.
+        }
+
+        self.publish_group_kind0(
+            &chat_id,
+            &group.mls_group_id,
+            &metadata_json,
+            None,
+            extra_tags,
+        );
 
         // Update local cache immediately.
-        let cache =
+        let mut cache =
             ProfileCache::from_metadata_json(Some(metadata_json), now_seconds(), now_seconds());
+        cache.picture_nonce_hex = pic_nonce;
+        cache.picture_original_hash_hex = pic_hash;
+        cache.picture_scheme_version = pic_scheme;
         self.upsert_group_profile(&chat_id, my_hex, cache);
         self.refresh_chat_list_from_storage();
         self.refresh_current_chat_if_open(&chat_id);
@@ -78,19 +108,37 @@ impl AppCore {
             return;
         }
 
-        let Some(sess) = self.session.as_ref() else {
+        let Some(sess) = self.session.as_mut() else {
             return;
         };
-        if !sess.groups.contains_key(&chat_id) {
+        let Some(group) = sess.groups.get(&chat_id).cloned() else {
             self.toast("Chat not found");
             return;
-        }
+        };
         let Some(local_keys) = sess.local_keys.clone() else {
             self.toast("Profile image upload requires local key signer");
             return;
         };
 
         let my_hex = sess.pubkey.to_hex();
+
+        // Encrypt the image using MLS group media encryption.
+        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+        let mut upload = match manager.encrypt_for_upload_with_options(
+            &image_bytes,
+            &mime_type,
+            "profile.jpg",
+            &MediaProcessingOptions::default(),
+        ) {
+            Ok(u) => u,
+            Err(e) => {
+                self.toast(format!("Profile image encryption failed: {e}"));
+                return;
+            }
+        };
+
+        let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+        let expected_hash_hex = hex::encode(upload.encrypted_hash);
 
         // Build metadata preserving existing name/about.
         let existing = self
@@ -109,11 +157,10 @@ impl AppCore {
             }
         }
 
-        let mime_type = mime_type.trim().to_string();
         let blossom_servers = self.blossom_servers();
         let tx = self.core_sender.clone();
 
-        // Upload to Blossom async, then send result back to main thread for MLS publish.
+        // Upload encrypted data to Blossom async.
         self.runtime.spawn(async move {
             if blossom_servers.is_empty() {
                 let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
@@ -134,16 +181,15 @@ impl AppCore {
                 };
 
                 let blossom = BlossomClient::new(base_url);
-                let upload = blossom
+                let descriptor = match blossom
                     .upload_blob(
-                        image_bytes.clone(),
-                        Some(mime_type.clone()),
+                        encrypted_data.clone(),
+                        Some("application/octet-stream".to_string()),
                         None,
                         Some(&local_keys),
                     )
-                    .await;
-
-                let descriptor = match upload {
+                    .await
+                {
                     Ok(d) => d,
                     Err(e) => {
                         last_error = Some(format!("{server}: {e}"));
@@ -151,15 +197,25 @@ impl AppCore {
                     }
                 };
 
-                metadata.picture = Some(descriptor.url.to_string());
+                // Verify hash.
+                let descriptor_hash_hex = descriptor.sha256.to_string();
+                if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
+                    last_error = Some("uploaded hash mismatch".to_string());
+                    continue;
+                }
+
+                let uploaded_url = descriptor.url.to_string();
+                metadata.picture = Some(uploaded_url.clone());
                 let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
 
-                // Send back to main thread for MLS publish + cache update.
+                // Send back to main thread for MLS publish + imeta tag creation.
                 let _ = tx.send(CoreMsg::Internal(Box::new(
                     InternalEvent::GroupProfileImageUploaded {
                         chat_id,
                         metadata_json,
                         image_bytes,
+                        upload,
+                        uploaded_url,
                     },
                 )));
                 return;
@@ -172,14 +228,16 @@ impl AppCore {
         });
     }
 
-    /// Handle result of async Blossom upload for group profile image.
+    /// Handle result of async Blossom upload for encrypted group profile image.
     pub(super) fn handle_group_profile_image_uploaded(
         &mut self,
         chat_id: String,
         metadata_json: String,
         image_bytes: Vec<u8>,
+        upload: EncryptedMediaUpload,
+        uploaded_url: String,
     ) {
-        let Some(sess) = self.session.as_ref() else {
+        let Some(sess) = self.session.as_mut() else {
             return;
         };
         let my_hex = sess.pubkey.to_hex();
@@ -187,17 +245,31 @@ impl AppCore {
             return;
         };
 
-        // Publish the kind-0 with picture URL via MLS.
-        self.publish_group_kind0(&chat_id, &group.mls_group_id, &metadata_json, None);
+        // Create imeta tag from the upload + URL.
+        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+        let imeta_tag = manager.create_imeta_tag(&upload, &uploaded_url);
+        let reference = manager.create_media_reference(&upload, uploaded_url);
 
-        // Cache the image locally.
+        // Publish kind-0 with picture URL and imeta tag.
+        self.publish_group_kind0(
+            &chat_id,
+            &group.mls_group_id,
+            &metadata_json,
+            None,
+            vec![imeta_tag],
+        );
+
+        // Cache the plaintext image locally.
         profile_pics::ensure_group_dir(&self.data_dir, &chat_id);
         let _ =
             profile_pics::save_group_image_bytes(&self.data_dir, &chat_id, &my_hex, &image_bytes);
 
-        // Update local cache.
-        let cache =
+        // Update local cache with encrypted pic metadata.
+        let mut cache =
             ProfileCache::from_metadata_json(Some(metadata_json), now_seconds(), now_seconds());
+        cache.picture_nonce_hex = Some(hex::encode(reference.nonce));
+        cache.picture_original_hash_hex = Some(hex::encode(reference.original_hash));
+        cache.picture_scheme_version = Some(reference.scheme_version);
         self.upsert_group_profile(&chat_id, my_hex, cache);
         self.refresh_chat_list_from_storage();
         self.refresh_current_chat_if_open(&chat_id);
@@ -211,12 +283,13 @@ impl AppCore {
         mls_group_id: &GroupId,
         metadata_json: &str,
         p_tag_pubkey: Option<&str>,
+        extra_tags: Vec<Tag>,
     ) {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
 
-        let mut tags: Vec<Tag> = Vec::new();
+        let mut tags = extra_tags;
         if let Some(pk_hex) = p_tag_pubkey {
             if let Ok(pk) = PublicKey::from_hex(pk_hex) {
                 tags.push(Tag::public_key(pk));
@@ -276,7 +349,13 @@ impl AppCore {
         }
 
         for (pubkey_hex, metadata_json) in profiles_to_broadcast {
-            self.publish_group_kind0(chat_id, mls_group_id, &metadata_json, Some(&pubkey_hex));
+            self.publish_group_kind0(
+                chat_id,
+                mls_group_id,
+                &metadata_json,
+                Some(&pubkey_hex),
+                vec![],
+            );
         }
     }
 
@@ -302,6 +381,6 @@ impl AppCore {
         };
 
         // Self-set: no p tag needed.
-        self.publish_group_kind0(chat_id, mls_group_id, &json, None);
+        self.publish_group_kind0(chat_id, mls_group_id, &json, None, vec![]);
     }
 }

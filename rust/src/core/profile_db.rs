@@ -12,7 +12,10 @@ const SCHEMA: &str = "
         name TEXT,
         about TEXT,
         picture_url TEXT,
-        event_created_at INTEGER NOT NULL DEFAULT 0
+        event_created_at INTEGER NOT NULL DEFAULT 0,
+        picture_nonce_hex TEXT,
+        picture_original_hash_hex TEXT,
+        picture_scheme_version TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_unique
         ON profiles(pubkey, IFNULL(chat_id, ''));
@@ -97,6 +100,9 @@ pub fn load_profiles(conn: &Connection) -> HashMap<String, ProfileCache> {
                 picture_url: picture_url.filter(|s| !s.is_empty()),
                 event_created_at,
                 last_checked_at: 0,
+                picture_nonce_hex: None,
+                picture_original_hash_hex: None,
+                picture_scheme_version: None,
             },
         );
     }
@@ -134,8 +140,8 @@ pub fn save_profile(conn: &Connection, pubkey: &str, cache: &ProfileCache) {
 
 pub fn save_group_profile(conn: &Connection, pubkey: &str, chat_id: &str, cache: &ProfileCache) {
     if let Err(e) = conn.execute(
-        "INSERT OR REPLACE INTO profiles (pubkey, chat_id, metadata, name, about, picture_url, event_created_at)
-         VALUES (?1, ?2, jsonb(?3), ?4, ?5, ?6, ?7)",
+        "INSERT OR REPLACE INTO profiles (pubkey, chat_id, metadata, name, about, picture_url, event_created_at, picture_nonce_hex, picture_original_hash_hex, picture_scheme_version)
+         VALUES (?1, ?2, jsonb(?3), ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             pubkey,
             chat_id,
@@ -144,6 +150,9 @@ pub fn save_group_profile(conn: &Connection, pubkey: &str, chat_id: &str, cache:
             cache.about,
             cache.picture_url,
             cache.event_created_at,
+            cache.picture_nonce_hex,
+            cache.picture_original_hash_hex,
+            cache.picture_scheme_version,
         ],
     ) {
         tracing::warn!(%e, pubkey, chat_id, "failed to save group profile to cache db");
@@ -158,7 +167,10 @@ pub fn load_group_profiles(conn: &Connection, chat_id: &str) -> HashMap<String, 
                 json_extract(metadata, '$.name'),
                 about,
                 picture_url,
-                event_created_at
+                event_created_at,
+                picture_nonce_hex,
+                picture_original_hash_hex,
+                picture_scheme_version
          FROM profiles
          WHERE chat_id = ?1",
     ) {
@@ -176,6 +188,9 @@ pub fn load_group_profiles(conn: &Connection, chat_id: &str) -> HashMap<String, 
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, i64>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
         ))
     }) {
         Ok(r) => r,
@@ -185,7 +200,8 @@ pub fn load_group_profiles(conn: &Connection, chat_id: &str) -> HashMap<String, 
         }
     };
     for row in rows.flatten() {
-        let (pubkey, display_name, name, about, picture_url, event_created_at) = row;
+        let (pubkey, display_name, name, about, picture_url, event_created_at, nonce, hash, scheme) =
+            row;
         let display_name = display_name.filter(|s| !s.is_empty());
         let name = name.filter(|s| !s.is_empty());
         map.insert(
@@ -198,6 +214,9 @@ pub fn load_group_profiles(conn: &Connection, chat_id: &str) -> HashMap<String, 
                 picture_url: picture_url.filter(|s| !s.is_empty()),
                 event_created_at,
                 last_checked_at: 0,
+                picture_nonce_hex: nonce,
+                picture_original_hash_hex: hash,
+                picture_scheme_version: scheme,
             },
         );
     }

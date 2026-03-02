@@ -137,7 +137,7 @@ fn path_if_exists(path: &Path) -> Option<String> {
     }
 }
 
-fn is_imeta_tag(tag: &Tag) -> bool {
+pub(super) fn is_imeta_tag(tag: &Tag) -> bool {
     matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
 }
 

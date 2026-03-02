@@ -165,11 +165,24 @@ pub enum InternalEvent {
         pubkey: String,
     },
 
-    // Per-group profile image uploaded to Blossom — need to publish kind-0 via MLS.
+    // Encrypted group profile picture downloaded — needs sync decryption via MDK.
+    GroupProfilePicDownloaded {
+        chat_id: String,
+        pubkey: String,
+        encrypted_data: Vec<u8>,
+        nonce_hex: String,
+        original_hash_hex: String,
+        scheme_version: String,
+        url: String,
+    },
+
+    // Per-group profile image uploaded (encrypted) to Blossom — need to publish kind-0 via MLS.
     GroupProfileImageUploaded {
         chat_id: String,
         metadata_json: String,
         image_bytes: Vec<u8>,
+        upload: mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        uploaded_url: String,
     },
 
     // Peer profile fetch result

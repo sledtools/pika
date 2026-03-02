@@ -4,6 +4,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 
+#[derive(Clone)]
 pub struct GitHubClient {
     client: Client,
     token: Option<String>,
@@ -94,6 +95,66 @@ impl GitHubClient {
 
         Ok(parsed.into_iter().map(PullRequest::from).collect())
     }
+
+    pub fn fetch_pull_diff(&self, repo: &str, pr_number: i64) -> anyhow::Result<PullDiff> {
+        let url = format!(
+            "https://api.github.com/repos/{}/pulls/{}/files?per_page=100",
+            repo, pr_number
+        );
+
+        let mut req = self
+            .client
+            .get(&url)
+            .header(USER_AGENT, "pika-news/0.1")
+            .header(ACCEPT, "application/vnd.github+json");
+
+        if let Some(token) = &self.token {
+            req = req.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = req
+            .send()
+            .with_context(|| format!("fetch pull files for {}/{}", repo, pr_number))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .with_context(|| format!("read pull files body for {}/{}", repo, pr_number))?;
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "GitHub pull files error for {}/{}: HTTP {} body={}",
+                repo,
+                pr_number,
+                status,
+                truncate(&body, 400)
+            ));
+        }
+
+        let files: Vec<GitHubPullFileResponse> = serde_json::from_str(&body)
+            .with_context(|| format!("parse pull files JSON for {}/{}", repo, pr_number))?;
+
+        let mut unified_diff = String::new();
+        let mut file_list = Vec::with_capacity(files.len());
+        for file in files {
+            file_list.push(file.filename.clone());
+            unified_diff.push_str(&format!(
+                "diff --git a/{0} b/{0}\n--- a/{0}\n+++ b/{0}\n",
+                file.filename
+            ));
+            if let Some(patch) = file.patch {
+                unified_diff.push_str(&patch);
+                unified_diff.push('\n');
+            } else {
+                unified_diff.push_str("@@ binary or large diff omitted by GitHub @@\n");
+            }
+            unified_diff.push('\n');
+        }
+
+        Ok(PullDiff {
+            files: file_list,
+            unified_diff,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +179,18 @@ struct GitRef {
 #[derive(Debug, Deserialize)]
 struct GitUser {
     login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubPullFileResponse {
+    filename: String,
+    patch: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PullDiff {
+    pub files: Vec<String>,
+    pub unified_diff: String,
 }
 
 impl From<GitHubPullResponse> for PullRequest {

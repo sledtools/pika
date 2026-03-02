@@ -11,6 +11,8 @@ model = "claude-sonnet-4-5-20250929"
 api_key_env = "ANTHROPIC_API_KEY"
 github_token_env = "GITHUB_TOKEN"
 merged_lookback_hours = 72
+worker_concurrency = 2
+retry_backoff_secs = 120
 bind_address = "127.0.0.1"
 bind_port = 8787
 ```
@@ -21,6 +23,8 @@ bind_port = 8787
 - `api_key_env`: environment variable containing the API key.
 - `github_token_env`: environment variable containing GitHub API token.
 - `merged_lookback_hours`: merged PR lookback window used by poller.
+- `worker_concurrency`: max hosted generation jobs claimed per pass.
+- `retry_backoff_secs`: delay before retrying retry-safe generation failures.
 - `bind_address`: hosted server bind address.
 - `bind_port`: hosted server bind port.
 

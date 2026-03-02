@@ -4,6 +4,7 @@ use anyhow::Context;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
+#[derive(Clone)]
 pub struct Store {
     db_path: PathBuf,
 }
@@ -27,6 +28,16 @@ pub struct UpsertOutcome {
     pub inserted: bool,
     pub head_changed: bool,
     pub queued: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenerationJob {
+    pub artifact_id: i64,
+    pub repo: String,
+    pub pr_number: i64,
+    pub title: String,
+    pub head_sha: String,
+    pub base_ref: String,
 }
 
 impl Store {
@@ -97,6 +108,117 @@ impl Store {
             .with_context(|| format!("update poll markers for {}", repo))?;
 
             tx.commit().context("commit poll-marker transaction")?;
+            Ok(())
+        })
+    }
+
+    pub fn claim_pending_generation_jobs(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<GenerationJob>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .context("start generation-claim transaction")?;
+
+            let mut jobs = Vec::new();
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT ga.id, r.repo, pr.pr_number, pr.title, pr.head_sha, pr.base_ref
+                         FROM generated_artifacts ga
+                         JOIN pull_requests pr ON pr.id = ga.pr_id
+                         JOIN repos r ON r.id = pr.repo_id
+                         WHERE ga.status = 'pending'
+                           AND (ga.next_retry_at IS NULL OR ga.next_retry_at <= CURRENT_TIMESTAMP)
+                         ORDER BY ga.updated_at ASC
+                         LIMIT ?1",
+                    )
+                    .context("prepare generation-claim query")?;
+
+                let rows = stmt
+                    .query_map(params![limit as i64], |row| {
+                        Ok(GenerationJob {
+                            artifact_id: row.get(0)?,
+                            repo: row.get(1)?,
+                            pr_number: row.get(2)?,
+                            title: row.get(3)?,
+                            head_sha: row.get(4)?,
+                            base_ref: row.get(5)?,
+                        })
+                    })
+                    .context("query pending generation jobs")?;
+
+                for row in rows {
+                    let job = row.context("read generation job row")?;
+                    tx.execute(
+                        "UPDATE generated_artifacts SET status='generating', updated_at=CURRENT_TIMESTAMP WHERE id = ?1",
+                        params![job.artifact_id],
+                    )
+                    .with_context(|| format!("mark artifact {} as generating", job.artifact_id))?;
+                    jobs.push(job);
+                }
+            }
+
+            tx.commit().context("commit generation claim transaction")?;
+            Ok(jobs)
+        })
+    }
+
+    pub fn mark_generation_ready(
+        &self,
+        artifact_id: i64,
+        tutorial_json: &str,
+        html: &str,
+        generated_head_sha: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE generated_artifacts
+                 SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
+                     generated_head_sha=?3, updated_at=CURRENT_TIMESTAMP
+                 WHERE id = ?4",
+                params![tutorial_json, html, generated_head_sha, artifact_id],
+            )
+            .with_context(|| format!("mark artifact {} ready", artifact_id))?;
+            Ok(())
+        })
+    }
+
+    pub fn mark_generation_failed(
+        &self,
+        artifact_id: i64,
+        error_message: &str,
+        retry_safe: bool,
+        retry_backoff_secs: u64,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            let current_retry: i64 = conn
+                .query_row(
+                    "SELECT retry_count FROM generated_artifacts WHERE id = ?1",
+                    params![artifact_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("read retry_count for artifact {}", artifact_id))?;
+
+            let next_retry_count = current_retry + 1;
+            let should_retry = retry_safe && next_retry_count <= 5;
+            let next_retry_at = if should_retry {
+                Some(Utc::now() + chrono::Duration::seconds(retry_backoff_secs as i64))
+            } else {
+                None
+            };
+
+            let status = if should_retry { "pending" } else { "failed" };
+            let next_retry_at = next_retry_at.map(|ts| ts.to_rfc3339());
+
+            conn.execute(
+                "UPDATE generated_artifacts
+                 SET status=?1, error_message=?2, retry_count=?3, next_retry_at=?4, updated_at=CURRENT_TIMESTAMP
+                 WHERE id = ?5",
+                params![status, error_message, next_retry_count, next_retry_at, artifact_id],
+            )
+            .with_context(|| format!("mark artifact {} failed", artifact_id))?;
             Ok(())
         })
     }

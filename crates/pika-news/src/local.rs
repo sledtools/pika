@@ -1,6 +1,5 @@
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context};
@@ -8,7 +7,8 @@ use anyhow::{anyhow, bail, Context};
 use crate::cli::LocalArgs;
 use crate::config;
 use crate::model::{self, GenerationError, PromptInput, PromptPrMetadata};
-use crate::tutorial::{self, TutorialDoc};
+use crate::render;
+use crate::tutorial;
 
 pub fn run(args: &LocalArgs) -> anyhow::Result<()> {
     let cwd = env::current_dir().context("resolve current working directory")?;
@@ -76,7 +76,7 @@ pub fn run(args: &LocalArgs) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| cwd.join("pika-news-local.html"));
 
-    write_local_html(&output, &base_ref, &diff, &doc)?;
+    render::write_tutorial_html(&output, "pika-news local tutorial", &base_ref, &diff, &doc)?;
 
     if !args.no_open {
         open_in_browser(&output)?;
@@ -157,69 +157,6 @@ fn git<const N: usize>(cwd: &Path, args: [&str; N]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn write_local_html(
-    output: &PathBuf,
-    base_ref: &str,
-    diff: &str,
-    doc: &TutorialDoc,
-) -> anyhow::Result<()> {
-    let mut html = String::new();
-    html.push_str("<!doctype html><html><head><meta charset=\"utf-8\">\n");
-    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    html.push_str("<title>pika-news local tutorial</title>\n");
-    html.push_str("<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;line-height:1.5}pre{white-space:pre-wrap;background:#f5f5f5;padding:1rem;border-radius:8px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.step{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:1rem 0}</style></head><body>");
-    html.push_str("<h1>pika-news local tutorial</h1>");
-    html.push_str(&format!(
-        "<p><strong>Base ref:</strong> <code>{}</code></p>",
-        escape_html(base_ref)
-    ));
-    html.push_str(&format!("<p>{}</p>", escape_html(&doc.executive_summary)));
-
-    if !doc.media_links.is_empty() {
-        html.push_str("<h2>Media Links</h2><ul>");
-        for link in &doc.media_links {
-            let escaped = escape_html(link);
-            html.push_str(&format!("<li><a href=\"{0}\">{0}</a></li>", escaped));
-        }
-        html.push_str("</ul>");
-    }
-
-    html.push_str("<h2>Tutorial Steps</h2>");
-    for (idx, step) in doc.steps.iter().enumerate() {
-        html.push_str("<section class=\"step\">");
-        html.push_str(&format!(
-            "<h3>{}. {}</h3>",
-            idx + 1,
-            escape_html(&step.title)
-        ));
-        html.push_str(&format!(
-            "<p><strong>Intent:</strong> {}</p>",
-            escape_html(&step.intent)
-        ));
-        html.push_str("<p><strong>Affected files:</strong> ");
-        for (file_idx, file) in step.affected_files.iter().enumerate() {
-            if file_idx > 0 {
-                html.push_str(", ");
-            }
-            html.push_str(&format!("<code>{}</code>", escape_html(file)));
-        }
-        html.push_str("</p><ul>");
-        for evidence in &step.evidence_snippets {
-            html.push_str(&format!("<li><code>{}</code></li>", escape_html(evidence)));
-        }
-        html.push_str("</ul><pre><code>");
-        html.push_str(&escape_html(&step.body_markdown));
-        html.push_str("</code></pre></section>");
-    }
-
-    html.push_str("<h2>Unified Diff</h2><pre><code>");
-    html.push_str(&escape_html(diff));
-    html.push_str("</code></pre></body></html>");
-
-    fs::write(output, html).with_context(|| format!("write local HTML to {}", output.display()))?;
-    Ok(())
-}
-
 fn open_in_browser(path: &Path) -> anyhow::Result<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"
@@ -238,15 +175,6 @@ fn open_in_browser(path: &Path) -> anyhow::Result<()> {
         bail!("browser opener `{}` failed with status {}", opener, status);
     }
     Ok(())
-}
-
-fn escape_html(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]

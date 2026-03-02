@@ -59,7 +59,7 @@ struct ChatListView: View {
                     row
                 }
             }
-            .buttonStyle(.plain)
+            .tint(.primary)
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) {
                     onArchiveChat(chat.chatId)

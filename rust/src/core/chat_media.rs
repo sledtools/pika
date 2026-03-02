@@ -141,7 +141,274 @@ fn is_imeta_tag(tag: &Tag) -> bool {
     matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
 }
 
+fn is_retryable_publish_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("no relays")
+        || lower.contains("not ready")
+        || lower.contains("not connected")
+        || lower.contains("auth")
+        || lower.contains("protected")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection reset")
+        || lower.contains("temporarily unavailable")
+}
+
+fn relay_cooldown_secs(consecutive_failures: u32) -> i64 {
+    if consecutive_failures < 3 {
+        return 0;
+    }
+    let shift = consecutive_failures.saturating_sub(3).min(6);
+    let secs = 5i64.saturating_mul(1i64 << shift);
+    secs.min(300)
+}
+
+fn usable_publish_relays(
+    backoff_state: &Arc<Mutex<HashMap<String, RelayPublishBackoff>>>,
+    relays: &[RelayUrl],
+) -> Vec<RelayUrl> {
+    let now = now_seconds();
+    let Ok(backoff) = backoff_state.lock() else {
+        return relays.to_vec();
+    };
+    relays
+        .iter()
+        .filter(|relay| {
+            let key = relay.to_string();
+            backoff
+                .get(&key)
+                .map(|state| state.muted_until_unix <= now)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+fn mark_publish_success_relays(
+    backoff_state: &Arc<Mutex<HashMap<String, RelayPublishBackoff>>>,
+    relays: impl IntoIterator<Item = String>,
+) {
+    let Ok(mut backoff) = backoff_state.lock() else {
+        return;
+    };
+    for relay in relays {
+        backoff.remove(&relay);
+    }
+}
+
+fn mark_publish_failed_relays(
+    backoff_state: &Arc<Mutex<HashMap<String, RelayPublishBackoff>>>,
+    relays: impl IntoIterator<Item = String>,
+) {
+    let now = now_seconds();
+    let Ok(mut backoff) = backoff_state.lock() else {
+        return;
+    };
+    for relay in relays {
+        let state = backoff.entry(relay).or_default();
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        let cooldown_secs = relay_cooldown_secs(state.consecutive_failures);
+        if cooldown_secs > 0 {
+            state.muted_until_unix = now.saturating_add(cooldown_secs);
+        } else {
+            state.muted_until_unix = 0;
+        }
+    }
+}
+
 impl AppCore {
+    pub(super) fn spawn_message_publish(
+        &self,
+        client: Client,
+        chat_id: String,
+        rumor_id_hex: String,
+        relays: Vec<RelayUrl>,
+        wrapper: Event,
+    ) {
+        const MAX_ATTEMPTS: u8 = 5;
+        const BASE_BACKOFF_MS: u64 = 250;
+        const PER_ATTEMPT_TIMEOUT_SECS: u64 = 8;
+
+        let tx = self.core_sender.clone();
+        let diag = diag_nostr_publish_enabled();
+        let wrapper_id = wrapper.id.to_hex();
+        let wrapper_kind = wrapper.kind.as_u16();
+        let relay_list: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
+        let relay_publish_backoff = self.relay_publish_backoff.clone();
+
+        self.runtime.spawn(async move {
+            let mut last_err: Option<String> = None;
+            for attempt in 0..MAX_ATTEMPTS {
+                let attempt_relays = usable_publish_relays(&relay_publish_backoff, &relays);
+                let attempt_relay_list: Vec<String> =
+                    attempt_relays.iter().map(|r| r.to_string()).collect();
+                if attempt_relays.is_empty() {
+                    last_err = Some(
+                        "all relays are temporarily muted after repeated failures".to_string(),
+                    );
+                    if diag {
+                        tracing::info!(
+                            target: "pika_core::nostr_publish",
+                            context = "group_message",
+                            rumor_id = %rumor_id_hex,
+                            event_id = %wrapper_id,
+                            kind = wrapper_kind,
+                            relays = ?relay_list,
+                            attempt = attempt + 1,
+                            error = "all relays are temporarily muted after repeated failures",
+                        );
+                    }
+                    break;
+                }
+                let send_result = tokio::time::timeout(
+                    Duration::from_secs(PER_ATTEMPT_TIMEOUT_SECS),
+                    client.send_event_to(&attempt_relays, &wrapper),
+                )
+                .await;
+
+                let retry = match send_result {
+                    Ok(Ok(output)) if !output.success.is_empty() => {
+                        mark_publish_success_relays(
+                            &relay_publish_backoff,
+                            output.success.iter().map(|relay| relay.to_string()),
+                        );
+                        mark_publish_failed_relays(
+                            &relay_publish_backoff,
+                            output.failed.keys().map(|relay| relay.to_string()),
+                        );
+                        if diag {
+                            tracing::info!(
+                                target: "pika_core::nostr_publish",
+                                context = "group_message",
+                                rumor_id = %rumor_id_hex,
+                                event_id = %wrapper_id,
+                                kind = wrapper_kind,
+                                relays = ?relay_list,
+                                attempt_relays = ?attempt_relay_list,
+                                success = ?output.success,
+                                failed = ?output.failed,
+                                attempt = attempt + 1,
+                            );
+                        }
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::PublishMessageResult {
+                                chat_id: chat_id.clone(),
+                                rumor_id: rumor_id_hex.clone(),
+                                ok: true,
+                                error: None,
+                            },
+                        )));
+                        return;
+                    }
+                    Ok(Ok(output)) => {
+                        mark_publish_failed_relays(
+                            &relay_publish_backoff,
+                            output.failed.keys().map(|relay| relay.to_string()),
+                        );
+                        let errors: Vec<String> = output.failed.values().cloned().collect();
+                        let summary = if errors.is_empty() {
+                            "no relay accepted event".to_string()
+                        } else {
+                            errors.join("; ")
+                        };
+                        let retry = errors.iter().any(|e| is_retryable_publish_error(e));
+                        last_err = Some(summary.clone());
+                        if diag {
+                            tracing::info!(
+                                target: "pika_core::nostr_publish",
+                                context = "group_message",
+                                rumor_id = %rumor_id_hex,
+                                event_id = %wrapper_id,
+                                kind = wrapper_kind,
+                                relays = ?relay_list,
+                                attempt_relays = ?attempt_relay_list,
+                                success = ?output.success,
+                                failed = ?output.failed,
+                                attempt = attempt + 1,
+                                retry,
+                            );
+                        }
+                        retry
+                    }
+                    Ok(Err(e)) => {
+                        mark_publish_failed_relays(
+                            &relay_publish_backoff,
+                            attempt_relay_list.iter().cloned(),
+                        );
+                        let err = e.to_string();
+                        let retry = is_retryable_publish_error(&err);
+                        last_err = Some(err.clone());
+                        if diag {
+                            tracing::info!(
+                                target: "pika_core::nostr_publish",
+                                context = "group_message",
+                                rumor_id = %rumor_id_hex,
+                                event_id = %wrapper_id,
+                                kind = wrapper_kind,
+                                relays = ?relay_list,
+                                attempt_relays = ?attempt_relay_list,
+                                error = %err,
+                                attempt = attempt + 1,
+                                retry,
+                            );
+                        }
+                        retry
+                    }
+                    Err(_) => {
+                        mark_publish_failed_relays(
+                            &relay_publish_backoff,
+                            attempt_relay_list.iter().cloned(),
+                        );
+                        let err = "publish timed out waiting for relay acknowledgement".to_string();
+                        let retry = true;
+                        last_err = Some(err.clone());
+                        if diag {
+                            tracing::info!(
+                                target: "pika_core::nostr_publish",
+                                context = "group_message",
+                                rumor_id = %rumor_id_hex,
+                                event_id = %wrapper_id,
+                                kind = wrapper_kind,
+                                relays = ?relay_list,
+                                attempt_relays = ?attempt_relay_list,
+                                error = %err,
+                                attempt = attempt + 1,
+                                retry,
+                            );
+                        }
+                        retry
+                    }
+                };
+
+                if !retry {
+                    break;
+                }
+                if attempt + 1 < MAX_ATTEMPTS {
+                    let delay_ms = BASE_BACKOFF_MS.saturating_mul(1u64 << attempt);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                }
+            }
+
+            if !diag {
+                tracing::warn!(
+                    rumor_id = %rumor_id_hex,
+                    event_id = %wrapper_id,
+                    relays = ?relay_list,
+                    error = ?last_err,
+                    "message broadcast failed after retries"
+                );
+            }
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::PublishMessageResult {
+                    chat_id,
+                    rumor_id: rumor_id_hex,
+                    ok: false,
+                    error: Some(last_err.unwrap_or_else(|| "publish failed".to_string())),
+                },
+            )));
+        });
+    }
+
     fn attachment_from_reference(
         &self,
         chat_id: &str,
@@ -621,53 +888,7 @@ impl AppCore {
             return;
         }
 
-        let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-            InternalEvent::PublishMessageResult {
-                chat_id: chat_id.clone(),
-                rumor_id: rumor_id_hex.clone(),
-                ok: true,
-                error: None,
-            },
-        )));
-
-        let diag = diag_nostr_publish_enabled();
-        let wrapper_id = wrapper.id.to_hex();
-        let wrapper_kind = wrapper.kind.as_u16();
-        let relay_list: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
-        self.runtime.spawn(async move {
-            let out = client.send_event_to(relays, &wrapper).await;
-            match out {
-                Ok(output) => {
-                    if diag {
-                        tracing::info!(
-                            target: "pika_core::nostr_publish",
-                            context = "group_message",
-                            rumor_id = %rumor_id_hex,
-                            event_id = %wrapper_id,
-                            kind = wrapper_kind,
-                            relays = ?relay_list,
-                            success = ?output.success,
-                            failed = ?output.failed,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if diag {
-                        tracing::info!(
-                            target: "pika_core::nostr_publish",
-                            context = "group_message",
-                            rumor_id = %rumor_id_hex,
-                            event_id = %wrapper_id,
-                            kind = wrapper_kind,
-                            relays = ?relay_list,
-                            error = %e,
-                        );
-                    } else {
-                        tracing::warn!(%e, "message broadcast failed");
-                    }
-                }
-            }
-        });
+        self.spawn_message_publish(client, chat_id, rumor_id_hex, relays, wrapper);
     }
 
     pub(super) fn download_chat_media(
@@ -913,5 +1134,28 @@ mod tests {
             infer_media_kind("application/octet-stream", "doc.pdf"),
             ChatMediaKind::File
         ));
+    }
+
+    #[test]
+    fn retryable_publish_error_matches_reconnect_conditions() {
+        assert!(is_retryable_publish_error("not connected"));
+        assert!(is_retryable_publish_error("AUTH required"));
+        assert!(is_retryable_publish_error(
+            "Connection reset without closing handshake"
+        ));
+    }
+
+    #[test]
+    fn retryable_publish_error_excludes_permanent_failures() {
+        assert!(!is_retryable_publish_error("invalid event signature"));
+        assert!(!is_retryable_publish_error("event too large"));
+    }
+
+    #[test]
+    fn relay_cooldown_secs_escalates_after_three_failures() {
+        assert_eq!(relay_cooldown_secs(1), 0);
+        assert_eq!(relay_cooldown_secs(2), 0);
+        assert_eq!(relay_cooldown_secs(3), 5);
+        assert_eq!(relay_cooldown_secs(4), 10);
     }
 }

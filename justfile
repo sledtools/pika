@@ -576,12 +576,11 @@ ios-rust:
     base_env=(env -u LIBRARY_PATH -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u CC -u CXX -u AR -u RANLIB -u LD \
       DEVELOPER_DIR="$DEV_DIR" CC="$CC_BIN" CXX="$CXX_BIN" AR="$AR_BIN" RANLIB="$RANLIB_BIN" IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN" \
       CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$CC_BIN" \
-      CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$CC_BIN" \
-      CARGO_TARGET_X86_64_APPLE_IOS_LINKER="$CC_BIN"); \
+      CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$CC_BIN"); \
     for target in $TARGETS; do \
       case "$target" in \
         aarch64-apple-ios) SDKROOT="$SDKROOT_IOS"; MIN_FLAG="-miphoneos-version-min=" ;; \
-        aarch64-apple-ios-sim|x86_64-apple-ios) SDKROOT="$SDKROOT_SIM"; MIN_FLAG="-mios-simulator-version-min=" ;; \
+        aarch64-apple-ios-sim) SDKROOT="$SDKROOT_SIM"; MIN_FLAG="-mios-simulator-version-min=" ;; \
         *) echo "error: unsupported iOS Rust target: $target"; exit 2 ;; \
       esac; \
       if [ "$PROFILE" = "release" ]; then \
@@ -641,7 +640,7 @@ ios-appstore: ios-xcframework ios-xcodeproj
 
 # Build iOS app for simulator.
 ios-build-sim: ios-xcframework ios-xcodeproj
-    SIM_ARCH="${PIKA_IOS_SIM_ARCH:-$( [ "$(uname -m)" = "x86_64" ] && echo x86_64 || echo arm64 )}"; \
+    SIM_ARCH="${PIKA_IOS_SIM_ARCH:-arm64}"; \
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build build ARCHS="$SIM_ARCH" ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
 
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).

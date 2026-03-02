@@ -383,18 +383,10 @@ fi
 
 # Faster dev loop defaults: debug Rust and only the required simulator target.
 if [ -z "${PIKA_IOS_SIM_ARCH:-}" ]; then
-  if [ "$(uname -m)" = "x86_64" ]; then
-    export PIKA_IOS_SIM_ARCH="x86_64"
-  else
-    export PIKA_IOS_SIM_ARCH="arm64"
-  fi
+  export PIKA_IOS_SIM_ARCH="arm64"
 fi
 if [ -z "${PIKA_IOS_RUST_TARGETS:-}" ]; then
-  if [ "$PIKA_IOS_SIM_ARCH" = "x86_64" ]; then
-    export PIKA_IOS_RUST_TARGETS="x86_64-apple-ios"
-  else
-    export PIKA_IOS_RUST_TARGETS="aarch64-apple-ios-sim"
-  fi
+  export PIKA_IOS_RUST_TARGETS="aarch64-apple-ios-sim"
 fi
 
 just ios-build-sim

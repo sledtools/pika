@@ -887,7 +887,6 @@ fn default_iced_package_name(project_name: &str) -> String {
 fn ios_sim_target_for_host() -> Result<(&'static str, &'static str), CliError> {
     match std::env::consts::ARCH {
         "aarch64" => Ok(("aarch64-apple-ios-sim", "arm64")),
-        "x86_64" => Ok(("x86_64-apple-ios", "x86_64")),
         arch => Err(CliError::operational(format!(
             "unsupported host arch for iOS simulator builds: {arch}"
         ))),

@@ -538,38 +538,6 @@ fn build_ios_xcframework(
     }
 
     let mut libraries: Vec<PathBuf> = vec![];
-    let has_sim_arm64 = selected.contains(&"aarch64-apple-ios-sim");
-    let has_sim_x86_64 = selected.contains(&"x86_64-apple-ios");
-    if has_sim_arm64 && has_sim_x86_64 {
-        let sim_a = build_dir.join(format!("lib{core_lib}_sim.a"));
-        let status = Command::new("/usr/bin/xcrun")
-            .env("DEVELOPER_DIR", &dev_dir)
-            .arg("lipo")
-            .arg("-create")
-            .arg(ios_staticlib_path(
-                root,
-                "aarch64-apple-ios-sim",
-                core_lib,
-                profile,
-            ))
-            .arg(ios_staticlib_path(
-                root,
-                "x86_64-apple-ios",
-                core_lib,
-                profile,
-            ))
-            .arg("-output")
-            .arg(&sim_a)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
-            .map_err(|e| CliError::operational(format!("failed to run lipo: {e}")))?;
-        if !status.success() {
-            return Err(CliError::operational("lipo failed"));
-        }
-        libraries.push(sim_a);
-        selected.retain(|t| *t != "aarch64-apple-ios-sim" && *t != "x86_64-apple-ios");
-    }
     for target in selected {
         libraries.push(ios_staticlib_path(root, target, core_lib, profile));
     }
@@ -663,9 +631,7 @@ fn build_ios_staticlibs(
     for target in targets {
         let (sdkroot, min_flag) = match *target {
             "aarch64-apple-ios" => (sdk_ios.as_str(), "-miphoneos-version-min="),
-            "aarch64-apple-ios-sim" | "x86_64-apple-ios" => {
-                (sdk_sim.as_str(), "-mios-simulator-version-min=")
-            }
+            "aarch64-apple-ios-sim" => (sdk_sim.as_str(), "-mios-simulator-version-min="),
             _ => {
                 return Err(CliError::user(format!(
                     "unsupported iOS Rust target: {target}"
@@ -722,9 +688,6 @@ fn build_ios_staticlibs(
             }
             "aarch64-apple-ios-sim" => {
                 cmd.env("CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER", &cc);
-            }
-            "x86_64-apple-ios" => {
-                cmd.env("CARGO_TARGET_X86_64_APPLE_IOS_LINKER", &cc);
             }
             _ => {}
         }

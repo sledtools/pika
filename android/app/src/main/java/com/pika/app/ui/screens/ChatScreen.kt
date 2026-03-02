@@ -218,6 +218,7 @@ fun ChatScreen(
     var replyDraft by remember(chat.chatId) { mutableStateOf<ChatMessage?>(null) }
     var showAttachmentSheet by remember(chat.chatId) { mutableStateOf(false) }
     var showPaymentDialog by remember(chat.chatId) { mutableStateOf(false) }
+    var payingInvoiceBolt11 by remember(chat.chatId) { mutableStateOf<String?>(null) }
     var fullscreenImageAttachment by remember(chat.chatId) { mutableStateOf<ChatMediaAttachment?>(null) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -702,6 +703,9 @@ fun ChatScreen(
                                         ),
                                     )
                                 },
+                                onPayInvoice = { bolt11 ->
+                                    payingInvoiceBolt11 = bolt11
+                                },
                             )
                         }
                         is ChatListItem.NewMessagesDivider -> {
@@ -999,6 +1003,26 @@ fun ChatScreen(
                 showPaymentDialog = false
                 val payMsg = "⚡ Paying invoice: ${invoice.take(40)}..."
                 manager.dispatch(AppAction.SendMessage(chat.chatId, payMsg, null, null))
+            },
+        )
+    }
+
+    // Pay invoice confirmation dialog
+    if (payingInvoiceBolt11 != null) {
+        PayInvoiceDialog(
+            bolt11 = payingInvoiceBolt11!!,
+            lightningConfig = remember { LightningConfigStore(ctx).load() },
+            onDismiss = { payingInvoiceBolt11 = null },
+            onPaymentSuccess = {
+                payingInvoiceBolt11 = null
+                manager.dispatch(
+                    AppAction.SendMessage(
+                        chat.chatId,
+                        "⚡ Payment sent! ✅",
+                        null,
+                        null,
+                    ),
+                )
             },
         )
     }
@@ -1510,6 +1534,7 @@ private fun MessageBubble(
     onDownloadMedia: (String, String) -> Unit,
     onOpenImage: (ChatMediaAttachment) -> Unit,
     onHypernoteAction: (messageId: String, actionName: String, form: Map<String, String>) -> Unit,
+    onPayInvoice: (bolt11: String) -> Unit = {},
 ) {
     val isMine = message.isMine
     val bubbleColor =
@@ -1597,6 +1622,7 @@ private fun MessageBubble(
                 InvoiceMessageCard(
                     invoiceText = message.displayContent,
                     isMine = isMine,
+                    onPayInvoice = onPayInvoice,
                 )
             } else for (segment in segments) {
                 when (segment) {
@@ -2223,6 +2249,7 @@ private val LIGHTNING_INVOICE_REGEX = Regex("""(lnbc\w{20,})""", RegexOption.IGN
 internal fun InvoiceMessageCard(
     invoiceText: String,
     isMine: Boolean,
+    onPayInvoice: (bolt11: String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val amountMatch = Regex("""(\d+) sats""").find(invoiceText)
@@ -2284,6 +2311,23 @@ internal fun InvoiceMessageCard(
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 )
                 Spacer(Modifier.height(8.dp))
+                if (!isMine) {
+                    // Received invoice — show Pay button
+                    androidx.compose.material3.Button(
+                        onClick = { onPayInvoice(bolt11) },
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ElectricBolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Pay Invoice", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
                 OutlinedButton(
                     onClick = {
                         clipboardManager.setText(AnnotatedString(bolt11))
@@ -2293,6 +2337,147 @@ internal fun InvoiceMessageCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text("Copy Invoice", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    }
+}
+
+// ─── Pay Invoice Confirmation Dialog ────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PayInvoiceDialog(
+    bolt11: String,
+    lightningConfig: LightningConfig?,
+    onDismiss: () -> Unit,
+    onPaymentSuccess: () -> Unit,
+) {
+    var isPaying by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var paid by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    ModalBottomSheet(
+        onDismissRequest = { if (!isPaying) onDismiss() },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 8.dp)
+                .padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                imageVector = Icons.Default.ElectricBolt,
+                contentDescription = null,
+                tint = Color(0xFFFFA500),
+                modifier = Modifier.size(48.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            if (paid) {
+                Text("Payment Sent! ✅", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(16.dp))
+                androidx.compose.material3.Button(
+                    onClick = onPaymentSuccess,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("Done")
+                }
+            } else {
+                Text("Pay Lightning Invoice", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(16.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Invoice",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "${bolt11.take(30)}...${bolt11.takeLast(10)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+
+                if (lightningConfig == null || !lightningConfig.isComplete) {
+                    Spacer(Modifier.height(12.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "⚠️ No Lightning wallet configured. Set one up in Settings first.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                }
+
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                androidx.compose.material3.Button(
+                    onClick = {
+                        if (lightningConfig == null || !lightningConfig.isComplete) return@Button
+                        isPaying = true
+                        error = null
+                        coroutineScope.launch {
+                            val service = LightningService(lightningConfig)
+                            service.payInvoice(bolt11)
+                                .onSuccess {
+                                    isPaying = false
+                                    paid = true
+                                }
+                                .onFailure { e ->
+                                    isPaying = false
+                                    error = "Payment failed: ${e.message}"
+                                }
+                        }
+                    },
+                    enabled = lightningConfig?.isComplete == true && !isPaying,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    if (isPaying) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Paying...", style = MaterialTheme.typography.titleMedium)
+                    } else {
+                        Icon(Icons.Default.ElectricBolt, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Confirm & Pay", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
                 }
             }
         }

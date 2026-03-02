@@ -84,13 +84,27 @@ struct InvertedMessageList: UIViewRepresentable {
         let newInverted = buildInvertedRows()
         let newIDs = newInverted.map(\.id)
 
-        // Only apply snapshot when row IDs actually change.
         if newIDs != coordinator.currentIDs {
+            // Structural change — apply new snapshot.
             let stickyBottom = shouldStickToBottom
             coordinator.applyRows(newInverted, animated: false) {
                 if stickyBottom {
                     coordinator.scrollToBottom(animated: false)
                 }
+            }
+        } else if let dataSource = coordinator.dataSource {
+            // Same structure — reconfigure visible cells for content changes
+            // (delivery state, reactions, typing indicator updates, etc.)
+            // Use the diffable data source's reconfigure API which is safe
+            // during layout passes, unlike UITableView.reconfigureRows.
+            coordinator.rowsByID = Dictionary(uniqueKeysWithValues: newInverted.map { ($0.id, $0) })
+            var snapshot = dataSource.snapshot()
+            let visibleIDs = tableView.indexPathsForVisibleRows?
+                .compactMap { snapshot.itemIdentifiers(inSection: 0).indices.contains($0.row) ? snapshot.itemIdentifiers(inSection: 0)[$0.row] : nil }
+                ?? []
+            if !visibleIDs.isEmpty {
+                snapshot.reconfigureItems(visibleIDs)
+                dataSource.apply(snapshot, animatingDifferences: false)
             }
         }
 

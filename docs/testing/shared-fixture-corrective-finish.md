@@ -30,3 +30,15 @@ Status legend:
 | Shared fixture infra validation (candidate) | Relay + MoQ + Postgres shared infra validation in deterministic harness | `Experimental` | Allowed only as explicit validation runs with recorded evidence artifacts. |
 
 Current default policy: no lane/profile is `SharedSupported` yet in this finish cycle.
+
+## Immediate Remove/De-Scope List (Step 2)
+
+The following corrective actions are intentionally scoped as immediate removals/de-scopes while shared evidence is incomplete.
+
+| Action | Scope | File-Level References | Rationale |
+| --- | --- | --- | --- |
+| De-scope shared defaults from deterministic lane contracts | Keep deterministic lane invocations strict-only | `justfile`, `docs/testing/ci-selectors.md`, `docs/testing/integration-matrix.md` | Shared mode must not be implied as default before parity/isolation/reliability evidence exists. |
+| Remove ambiguity that manual/public flows are shared candidates | Treat manual and public-network selectors as strict-only | `docs/testing/ci-selectors.md`, `docs/testing/integration-matrix.md` | Nondeterministic/manual flows are not valid promotion evidence for shared defaults. |
+| De-scope legacy negotiated shared-fixture spec from active implementation source of truth | Treat prior spec as historical context only | `todos/pikahut-shared-fixture-pool-negotiated.md` | Active corrective implementation source is `todos/shared-fixture-corrective-finish.md`. |
+| Remove overlap between older corrective todo files and active finish todo | Keep old files as superseded pointers only | `todos/pikahut-shared-fixture-corrective.md`, `todos/shared-fixture-closeout-corrective.md` | Prevents dual-scope implementation drift and conflicting completion claims. |
+| De-scope unsupported shared-promotion assumptions from current cycle | No lane/profile may claim `SharedSupported` status yet | `docs/testing/shared-fixture-corrective-finish.md` | Promotion remains explicitly evidence-gated in later steps. |

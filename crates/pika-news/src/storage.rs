@@ -203,22 +203,25 @@ impl Store {
 
             let next_retry_count = current_retry + 1;
             let should_retry = retry_safe && next_retry_count <= 5;
-            let next_retry_at = if should_retry {
-                Some(Utc::now() + chrono::Duration::seconds(retry_backoff_secs as i64))
+            if should_retry {
+                let modifier = format!("+{} seconds", retry_backoff_secs);
+                conn.execute(
+                    "UPDATE generated_artifacts
+                     SET status='pending', error_message=?1, retry_count=?2,
+                         next_retry_at=datetime('now', ?3), updated_at=CURRENT_TIMESTAMP
+                     WHERE id = ?4",
+                    params![error_message, next_retry_count, modifier, artifact_id],
+                )
+                .with_context(|| format!("schedule retry for artifact {}", artifact_id))?;
             } else {
-                None
-            };
-
-            let status = if should_retry { "pending" } else { "failed" };
-            let next_retry_at = next_retry_at.map(|ts| ts.to_rfc3339());
-
-            conn.execute(
-                "UPDATE generated_artifacts
-                 SET status=?1, error_message=?2, retry_count=?3, next_retry_at=?4, updated_at=CURRENT_TIMESTAMP
-                 WHERE id = ?5",
-                params![status, error_message, next_retry_count, next_retry_at, artifact_id],
-            )
-            .with_context(|| format!("mark artifact {} failed", artifact_id))?;
+                conn.execute(
+                    "UPDATE generated_artifacts
+                     SET status='failed', error_message=?1, retry_count=?2, next_retry_at=NULL, updated_at=CURRENT_TIMESTAMP
+                     WHERE id = ?3",
+                    params![error_message, next_retry_count, artifact_id],
+                )
+                .with_context(|| format!("mark artifact {} failed", artifact_id))?;
+            }
             Ok(())
         })
     }
@@ -513,5 +516,42 @@ mod tests {
                 Ok(())
             })
             .expect("verify pending state");
+    }
+
+    #[test]
+    fn retry_safe_failure_is_reclaimable_when_backoff_elapses() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 77,
+            title: "Retryable".to_string(),
+            url: "https://github.com/sledtools/pika/pull/77".to_string(),
+            state: "open".to_string(),
+            head_sha: "retry-sha".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-02T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).expect("upsert PR");
+
+        let claimed = store
+            .claim_pending_generation_jobs(1)
+            .expect("claim pending job");
+        assert_eq!(claimed.len(), 1);
+        let artifact_id = claimed[0].artifact_id;
+
+        store
+            .mark_generation_failed(artifact_id, "transient error", true, 0)
+            .expect("mark retry-safe failure");
+
+        let reclaimed = store
+            .claim_pending_generation_jobs(1)
+            .expect("reclaim pending job");
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].artifact_id, artifact_id);
     }
 }

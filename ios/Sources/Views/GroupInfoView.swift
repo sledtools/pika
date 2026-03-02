@@ -276,7 +276,7 @@ struct GroupProfileSheet: View {
             .task {
                 syncDraftsIfNeeded(force: false)
             }
-            .onChange(of: selectedPhoto) { _, item in
+            .onChangeCompat(of: selectedPhoto) { item in
                 handlePhotoSelection(item)
             }
         }

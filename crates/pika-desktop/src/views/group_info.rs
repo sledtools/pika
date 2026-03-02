@@ -12,6 +12,9 @@ use crate::views::avatar::avatar_circle;
 pub struct State {
     pub name_draft: String,
     pub npub_input: String,
+    pub editing_group_profile: bool,
+    pub group_profile_name_draft: String,
+    pub group_profile_about_draft: String,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -26,6 +29,11 @@ pub enum Message {
     LeaveGroup,
     Close,
     OpenPeerProfile(String),
+    EditGroupProfile,
+    GroupProfileNameChanged(String),
+    GroupProfileAboutChanged(String),
+    SaveGroupProfile,
+    CancelEditGroupProfile,
 }
 
 // ── Events ──────────────────────────────────────────────────────────────────
@@ -37,6 +45,7 @@ pub enum Event {
     LeaveGroup,
     Close,
     OpenPeerProfile { pubkey: String },
+    SaveGroupProfile { name: String, about: String },
 }
 
 // ── Implementation ──────────────────────────────────────────────────────────
@@ -46,10 +55,13 @@ impl State {
         Self {
             name_draft: group_name.unwrap_or_default().to_string(),
             npub_input: String::new(),
+            editing_group_profile: false,
+            group_profile_name_draft: String::new(),
+            group_profile_about_draft: String::new(),
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Event> {
+    pub fn update(&mut self, message: Message, chat: Option<&ChatViewState>) -> Option<Event> {
         match message {
             Message::NameChanged(value) => {
                 self.name_draft = value;
@@ -74,6 +86,36 @@ impl State {
             Message::LeaveGroup => Some(Event::LeaveGroup),
             Message::Close => Some(Event::Close),
             Message::OpenPeerProfile(pubkey) => Some(Event::OpenPeerProfile { pubkey }),
+            Message::EditGroupProfile => {
+                self.editing_group_profile = true;
+                if let Some(profile) = chat.and_then(|c| c.my_group_profile.as_ref()) {
+                    self.group_profile_name_draft = profile.name.clone();
+                    self.group_profile_about_draft = profile.about.clone();
+                } else {
+                    self.group_profile_name_draft.clear();
+                    self.group_profile_about_draft.clear();
+                }
+                None
+            }
+            Message::GroupProfileNameChanged(value) => {
+                self.group_profile_name_draft = value;
+                None
+            }
+            Message::GroupProfileAboutChanged(value) => {
+                self.group_profile_about_draft = value;
+                None
+            }
+            Message::SaveGroupProfile => {
+                self.editing_group_profile = false;
+                Some(Event::SaveGroupProfile {
+                    name: self.group_profile_name_draft.clone(),
+                    about: self.group_profile_about_draft.clone(),
+                })
+            }
+            Message::CancelEditGroupProfile => {
+                self.editing_group_profile = false;
+                None
+            }
         }
     }
 
@@ -163,6 +205,84 @@ impl State {
             });
 
         content = content.push(scrollable(member_list).height(Fill).width(Fill));
+
+        // ── Inline group profile editor ──────────────────────────────
+        if self.editing_group_profile {
+            content = content.push(container(rule::horizontal(1)).padding([4, 24]));
+
+            content = content.push(
+                container(
+                    text("Edit Group Profile")
+                        .size(14)
+                        .font(icons::BOLD)
+                        .color(theme::text_primary()),
+                )
+                .padding([8, 24]),
+            );
+
+            // Name field
+            content = content.push(
+                container(
+                    row![
+                        text(icons::USER)
+                            .font(icons::LUCIDE_FONT)
+                            .size(18)
+                            .color(theme::text_secondary()),
+                        text_input("Display name\u{2026}", &self.group_profile_name_draft)
+                            .on_input(Message::GroupProfileNameChanged)
+                            .on_submit(Message::SaveGroupProfile)
+                            .padding(10)
+                            .width(Fill)
+                            .style(theme::dark_input_style),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+                )
+                .padding([4, 24]),
+            );
+
+            // About field
+            content = content.push(
+                container(
+                    row![
+                        text(icons::PEN)
+                            .font(icons::LUCIDE_FONT)
+                            .size(18)
+                            .color(theme::text_secondary()),
+                        text_input("About\u{2026}", &self.group_profile_about_draft)
+                            .on_input(Message::GroupProfileAboutChanged)
+                            .on_submit(Message::SaveGroupProfile)
+                            .padding(10)
+                            .width(Fill)
+                            .style(theme::dark_input_style),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+                )
+                .padding([4, 24]),
+            );
+
+            // Save / Cancel buttons
+            content = content.push(
+                container(
+                    row![
+                        button(text("Save").size(14).font(icons::MEDIUM).center())
+                            .on_press(Message::SaveGroupProfile)
+                            .padding([10, 24])
+                            .style(theme::primary_button_style),
+                        button(text("Cancel").size(14).font(icons::MEDIUM).center())
+                            .on_press(Message::CancelEditGroupProfile)
+                            .padding([10, 24])
+                            .style(theme::icon_button_style(false)),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .width(Fill)
+                .center_x(Fill)
+                .padding([8, 24]),
+            );
+        }
 
         content = content.push(container(rule::horizontal(1)).padding([4, 24]));
 
@@ -324,7 +444,7 @@ fn member_row<'a>(
     let pubkey_for_profile = member.pubkey.clone();
     button(row_content)
         .on_press_maybe(if is_me {
-            None
+            Some(Message::EditGroupProfile)
         } else {
             Some(Message::OpenPeerProfile(pubkey_for_profile))
         })

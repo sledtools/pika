@@ -593,7 +593,7 @@ impl State {
             // ── Group info ────────────────────────────────────────────
             Message::GroupInfo(msg) => {
                 if let Some(ref mut gi_state) = self.group_info {
-                    if let Some(event) = gi_state.update(msg) {
+                    if let Some(event) = gi_state.update(msg, state.current_chat.as_ref()) {
                         match event {
                             views::group_info::Event::RenameGroup { name } => {
                                 if let Some(chat) = &state.current_chat {
@@ -638,6 +638,15 @@ impl State {
                             }
                             views::group_info::Event::OpenPeerProfile { pubkey } => {
                                 manager.dispatch(AppAction::OpenPeerProfile { pubkey });
+                            }
+                            views::group_info::Event::SaveGroupProfile { name, about } => {
+                                if let Some(chat) = &state.current_chat {
+                                    manager.dispatch(AppAction::SaveGroupProfile {
+                                        chat_id: chat.chat_id.clone(),
+                                        name,
+                                        about,
+                                    });
+                                }
                             }
                         }
                     }

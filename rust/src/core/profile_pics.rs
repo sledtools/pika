@@ -33,6 +33,30 @@ pub fn cached_path(data_dir: &str, pubkey_hex: &str) -> PathBuf {
         .join(pubkey_hex)
 }
 
+/// Per-group profile pic cache path: profile_pics/group_{chat_id}/{pubkey_hex}
+pub fn group_cached_path(data_dir: &str, chat_id: &str, pubkey_hex: &str) -> PathBuf {
+    std::path::Path::new(data_dir)
+        .join("profile_pics")
+        .join(format!("group_{chat_id}"))
+        .join(pubkey_hex)
+}
+
+pub fn ensure_group_dir(data_dir: &str, chat_id: &str) {
+    let dir = std::path::Path::new(data_dir)
+        .join("profile_pics")
+        .join(format!("group_{chat_id}"));
+    let _ = std::fs::create_dir_all(&dir);
+}
+
+pub fn delete_group_cache(data_dir: &str, chat_id: &str) {
+    let dir = std::path::Path::new(data_dir)
+        .join("profile_pics")
+        .join(format!("group_{chat_id}"));
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 pub fn path_to_file_url(path: &std::path::Path) -> String {
     format!("file://{}", path.display())
 }
@@ -105,6 +129,57 @@ pub fn save_image_bytes(data_dir: &str, pubkey_hex: &str, bytes: &[u8]) -> anyho
     Ok(dest)
 }
 
+pub async fn download_group_image(
+    client: &reqwest::Client,
+    data_dir: &str,
+    chat_id: &str,
+    pubkey_hex: &str,
+    url: &str,
+    semaphore: &Arc<Semaphore>,
+) -> anyhow::Result<PathBuf> {
+    let _permit = semaphore.acquire().await?;
+
+    let resp = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let bytes = resp.bytes().await?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        anyhow::bail!("image too large ({} bytes)", bytes.len());
+    }
+
+    let output = match resize_to_jpeg(&bytes) {
+        Ok(resized) => resized,
+        Err(_) => bytes.to_vec(),
+    };
+
+    let dest = group_cached_path(data_dir, chat_id, pubkey_hex);
+    let tmp = dest.with_extension("tmp");
+    std::fs::write(&tmp, &output)?;
+    std::fs::rename(&tmp, &dest)?;
+    Ok(dest)
+}
+
+pub fn save_group_image_bytes(
+    data_dir: &str,
+    chat_id: &str,
+    pubkey_hex: &str,
+    bytes: &[u8],
+) -> anyhow::Result<PathBuf> {
+    let output = match resize_to_jpeg(bytes) {
+        Ok(resized) => resized,
+        Err(_) => bytes.to_vec(),
+    };
+    let dest = group_cached_path(data_dir, chat_id, pubkey_hex);
+    let tmp = dest.with_extension("tmp");
+    std::fs::write(&tmp, &output)?;
+    std::fs::rename(&tmp, &dest)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 fn tiny_png() -> Vec<u8> {
     // 1x1 red PNG.
@@ -126,6 +201,41 @@ pub fn clear_cache(data_dir: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_cached_path_is_separate() {
+        let path = group_cached_path("/data", "chat_abc", "pk123");
+        assert_eq!(
+            path,
+            PathBuf::from("/data/profile_pics/group_chat_abc/pk123")
+        );
+        assert_ne!(path, cached_path("/data", "pk123"));
+    }
+
+    #[test]
+    fn save_group_image_bytes_creates_cached_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_str().unwrap();
+        ensure_group_dir(data_dir, "chat1");
+
+        let dest = save_group_image_bytes(data_dir, "chat1", "pk1", &tiny_png()).unwrap();
+        assert!(dest.exists());
+        assert_eq!(dest, group_cached_path(data_dir, "chat1", "pk1"));
+        // Should be JPEG
+        let bytes = std::fs::read(&dest).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn delete_group_cache_removes_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_str().unwrap();
+        ensure_group_dir(data_dir, "chat1");
+        save_group_image_bytes(data_dir, "chat1", "pk1", &tiny_png()).unwrap();
+
+        delete_group_cache(data_dir, "chat1");
+        assert!(!group_cached_path(data_dir, "chat1", "pk1").exists());
+    }
 
     #[test]
     fn save_image_bytes_creates_cached_file() {

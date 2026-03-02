@@ -66,6 +66,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
@@ -109,6 +110,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pika.app.AppManager
+import com.pika.app.LightningConfig
+import com.pika.app.LightningConfigStore
+import com.pika.app.LightningService
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.ChatMediaAttachment
 import com.pika.app.rust.ChatMediaKind
@@ -978,17 +982,22 @@ fun ChatScreen(
     }
 
     if (showPaymentDialog) {
+        val lightningStore = remember { LightningConfigStore(ctx) }
+        val lightningConfig = remember { lightningStore.load() }
+
         LightningPaymentDialog(
+            lightningConfig = lightningConfig,
             onDismiss = { showPaymentDialog = false },
-            onSendInvoiceRequest = { amountSats, memo ->
+            onSendInvoice = { bolt11, amountSats, memo ->
                 showPaymentDialog = false
-                val invoiceRequestMsg = "⚡ Lightning payment request: $amountSats sats" +
-                    if (memo.isNotBlank()) "\nMemo: $memo" else ""
-                manager.dispatch(AppAction.SendMessage(chat.chatId, invoiceRequestMsg, null, null))
+                val invoiceMsg = "⚡ Lightning invoice: $amountSats sats" +
+                    (if (!memo.isNullOrBlank()) "\nMemo: $memo" else "") +
+                    "\n\n$bolt11"
+                manager.dispatch(AppAction.SendMessage(chat.chatId, invoiceMsg, null, null))
             },
             onPayInvoice = { invoice ->
                 showPaymentDialog = false
-                val payMsg = "⚡ Paying invoice: ${invoice.take(30)}..."
+                val payMsg = "⚡ Paying invoice: ${invoice.take(40)}..."
                 manager.dispatch(AppAction.SendMessage(chat.chatId, payMsg, null, null))
             },
         )
@@ -1577,7 +1586,11 @@ private fun MessageBubble(
 
             // Check if this is a lightning payment message
             val isLightningMessage = segments.any { seg ->
-                seg is MessageSegment.Markdown && seg.text.startsWith("⚡ Lightning payment")
+                seg is MessageSegment.Markdown && (
+                    seg.text.startsWith("⚡ Lightning invoice") ||
+                    seg.text.startsWith("⚡ Lightning payment") ||
+                    seg.text.trim().lowercase().startsWith("lnbc")
+                )
             }
 
             if (isLightningMessage) {
@@ -1908,14 +1921,18 @@ private fun ReplyComposerPreview(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LightningPaymentDialog(
+    lightningConfig: LightningConfig?,
     onDismiss: () -> Unit,
-    onSendInvoiceRequest: (amountSats: Long, memo: String) -> Unit,
+    onSendInvoice: (bolt11: String, amountSats: Long, memo: String?) -> Unit,
     onPayInvoice: (invoice: String) -> Unit,
 ) {
     var selectedTab by remember { mutableStateOf(0) } // 0 = Request, 1 = Pay
     var amountText by remember { mutableStateOf("") }
     var memo by remember { mutableStateOf("") }
     var invoiceText by remember { mutableStateOf("") }
+    var isCreatingInvoice by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -2054,26 +2071,68 @@ private fun LightningPaymentDialog(
                     }
                 }
 
+                if (errorMessage != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = errorMessage!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
                 Spacer(Modifier.height(20.dp))
+
+                if (lightningConfig == null || !lightningConfig.isComplete) {
+                    Text(
+                        text = "⚠️ No Lightning wallet configured. Go to Settings → Lightning Wallet to set one up.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
 
                 androidx.compose.material3.Button(
                     onClick = {
-                        val sats = amountText.toLongOrNull()
-                        if (sats != null && sats > 0) {
-                            onSendInvoiceRequest(sats, memo)
+                        val sats = amountText.toLongOrNull() ?: return@Button
+                        if (lightningConfig == null || !lightningConfig.isComplete) return@Button
+                        isCreatingInvoice = true
+                        errorMessage = null
+                        coroutineScope.launch {
+                            val service = LightningService(lightningConfig)
+                            service.createInvoice(sats, memo.ifBlank { null })
+                                .onSuccess { invoice ->
+                                    isCreatingInvoice = false
+                                    onSendInvoice(invoice.bolt11, sats, memo.ifBlank { null })
+                                }
+                                .onFailure { e ->
+                                    isCreatingInvoice = false
+                                    errorMessage = e.message ?: "Failed to create invoice"
+                                }
                         }
                     },
-                    enabled = amountText.toLongOrNull()?.let { it > 0 } == true,
+                    enabled = amountText.toLongOrNull()?.let { it > 0 } == true &&
+                        lightningConfig?.isComplete == true &&
+                        !isCreatingInvoice,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(14.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ElectricBolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                    )
+                    if (isCreatingInvoice) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.ElectricBolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                     Spacer(Modifier.width(8.dp))
-                    Text("Request Payment", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (isCreatingInvoice) "Creating Invoice..." else "Request Payment",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                 }
             } else {
                 // Pay tab — paste an invoice
@@ -2148,10 +2207,14 @@ internal fun InvoiceMessageCard(
     isMine: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val amountMatch = Regex("""⚡ Lightning payment request: (\d+) sats""").find(invoiceText)
+    val amountMatch = Regex("""(\d+) sats""").find(invoiceText)
     val memoMatch = Regex("""Memo: (.+)""").find(invoiceText)
+    val bolt11Match = LIGHTNING_INVOICE_REGEX.find(invoiceText)
     val amountSats = amountMatch?.groupValues?.get(1)
     val memoStr = memoMatch?.groupValues?.get(1)
+    val bolt11 = bolt11Match?.groupValues?.get(1)
+    val clipboardManager = LocalClipboardManager.current
+    val ctx = LocalContext.current
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -2193,6 +2256,26 @@ internal fun InvoiceMessageCard(
                     color = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (bolt11 != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${bolt11.take(20)}...${bolt11.takeLast(8)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(bolt11))
+                        Toast.makeText(ctx, "Invoice copied", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Text("Copy Invoice", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
     }

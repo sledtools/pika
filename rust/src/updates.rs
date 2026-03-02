@@ -159,6 +159,19 @@ pub enum InternalEvent {
         url: String,
     },
 
+    // Per-group profile picture downloaded and cached to disk.
+    GroupProfilePicCached {
+        chat_id: String,
+        pubkey: String,
+    },
+
+    // Per-group profile image uploaded to Blossom — need to publish kind-0 via MLS.
+    GroupProfileImageUploaded {
+        chat_id: String,
+        metadata_json: String,
+        image_bytes: Vec<u8>,
+    },
+
     // Peer profile fetch result
     PeerProfileFetched {
         pubkey: String,

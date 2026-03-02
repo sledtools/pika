@@ -1,0 +1,23 @@
+Manual QA Evidence - 2026-03-02
+
+Local mode checks
+- Command: cargo run -q -p pika-news -- local --base origin/master --include-uncommitted --no-open --out /tmp/pika-news-manualqa-local.html
+- Output file exists: yes
+- Output contains tutorial heading: yes
+
+Hosted mode checks
+- Command: cargo run -q -p pika-news -- serve --config <temp> --db /tmp/pika-news-manualqa.db --bind 127.0.0.1 --port 8890
+- Feed rendered: yes
+- Ingested configured repo sledtools/pika: yes
+- Sample PR id used for checks: 1
+
+Generating/ready transition check
+- After DB status=generating, feed shows generating badge: yes
+- After DB status=ready with tutorial JSON, detail renders executive summary: yes
+- After DB status=ready, detail renders tutorial step: yes
+
+Merged/open refresh check
+- After DB state=merged, feed shows merged badge: yes
+
+Notes
+- Step-9 acceptance says user-run QA; this log is implementer best-effort verification in-session without external user input.

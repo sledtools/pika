@@ -744,7 +744,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 
   agentPrompt: {
     messageToolHints: () => [
-      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton. The tool returns a `[pikachat_event_id: <id>]` you can use immediately with `submit_hypernote_action` to vote on your own poll.",
+      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton. The tool returns an event_id you can pass immediately to `submit_hypernote_action` to vote on your own poll.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
       "- To react to the current inbound message, use the `react` action with no messageId — it defaults to the current message automatically.",

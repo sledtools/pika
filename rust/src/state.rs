@@ -305,6 +305,7 @@ pub struct ChatViewState {
     pub first_unread_message_id: Option<String>,
     pub can_load_older: bool,
     pub typing_members: Vec<TypingMember>,
+    pub my_group_profile: Option<MyProfileState>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

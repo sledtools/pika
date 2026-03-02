@@ -45,6 +45,7 @@ import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.AuthState
 import com.pika.app.rust.MemberInfo
+import com.pika.app.rust.MyProfileState
 import com.pika.app.rust.isValidPeerKey
 import com.pika.app.rust.normalizePeerKey
 import com.pika.app.ui.Avatar
@@ -68,6 +69,7 @@ fun GroupInfoScreen(manager: AppManager, chatId: String, padding: PaddingValues)
     var editedName by remember { mutableStateOf(groupName) }
     var npubInput by remember { mutableStateOf("") }
     var showLeaveDialog by remember { mutableStateOf(false) }
+    var showGroupProfileEditor by remember { mutableStateOf(false) }
     var memberToRemove by remember { mutableStateOf<MemberInfo?>(null) }
 
     val (myPubkey, myNpub) = when (val a = manager.state.auth) {
@@ -173,7 +175,9 @@ fun GroupInfoScreen(manager: AppManager, chatId: String, padding: PaddingValues)
             // "You" row
             item {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                        .clickable { showGroupProfileEditor = true }
+                        .padding(vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -264,6 +268,18 @@ fun GroupInfoScreen(manager: AppManager, chatId: String, padding: PaddingValues)
                 }
             }
         }
+    }
+
+    // Group profile editor dialog
+    if (showGroupProfileEditor) {
+        GroupProfileEditorDialog(
+            currentProfile = chat.myGroupProfile,
+            onSave = { name, about ->
+                manager.dispatch(AppAction.SaveGroupProfile(chatId, name, about))
+                showGroupProfileEditor = false
+            },
+            onDismiss = { showGroupProfileEditor = false },
+        )
     }
 
     // Leave confirmation dialog
@@ -365,6 +381,50 @@ private fun MemberRow(
             }
         }
     }
+}
+
+@Composable
+private fun GroupProfileEditorDialog(
+    currentProfile: MyProfileState?,
+    onSave: (name: String, about: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var nameDraft by remember { mutableStateOf(currentProfile?.name ?: "") }
+    var aboutDraft by remember { mutableStateOf(currentProfile?.about ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Group Profile") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = nameDraft,
+                    onValueChange = { nameDraft = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = aboutDraft,
+                    onValueChange = { aboutDraft = it },
+                    label = { Text("About") },
+                    singleLine = false,
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(nameDraft.trim(), aboutDraft.trim()) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 private fun truncatedNpub(npub: String): String {

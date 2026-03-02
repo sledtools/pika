@@ -341,6 +341,16 @@ private func screenView(
             },
             onTapMember: { pubkey in
                 manager.dispatch(.openPeerProfile(pubkey: pubkey))
+            },
+            onSaveGroupProfile: { name, about in
+                manager.dispatch(.saveGroupProfile(chatId: chatId, name: name, about: about))
+            },
+            onUploadGroupProfilePhoto: { data, mimeType in
+                manager.dispatch(.uploadGroupProfileImage(
+                    chatId: chatId,
+                    imageBase64: data.base64EncodedString(),
+                    mimeType: mimeType
+                ))
             }
         )
         .sheet(isPresented: Binding(

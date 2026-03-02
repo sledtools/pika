@@ -554,6 +554,16 @@ impl AppCore {
 
         let typing = self.get_active_typers(chat_id);
 
+        let my_group_profile = self
+            .group_profiles
+            .get(chat_id)
+            .and_then(|m| m.get(&my_pubkey_hex))
+            .map(|p| crate::state::MyProfileState {
+                name: p.name.clone().unwrap_or_default(),
+                about: p.about.clone().unwrap_or_default(),
+                picture_url: p.display_group_picture_url(&self.data_dir, chat_id, &my_pubkey_hex),
+            });
+
         self.state.current_chat = Some(ChatViewState {
             chat_id: chat_id.to_string(),
             is_group: entry.is_group,
@@ -564,6 +574,7 @@ impl AppCore {
             first_unread_message_id,
             can_load_older,
             typing_members: typing,
+            my_group_profile,
         });
         self.emit_current_chat();
     }

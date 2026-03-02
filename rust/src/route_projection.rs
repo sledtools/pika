@@ -261,6 +261,7 @@ mod tests {
             first_unread_message_id: None,
             can_load_older: false,
             typing_members: vec![],
+            my_group_profile: None,
         });
         let route = project_desktop(&state);
         assert_eq!(route.selected_chat_id, Some("c9".into()));

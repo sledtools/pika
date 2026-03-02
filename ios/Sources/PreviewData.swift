@@ -224,7 +224,8 @@ enum PreviewAppState {
                 messages: [],
                 firstUnreadMessageId: nil,
                 canLoadOlder: false,
-                typingMembers: []
+                typingMembers: [],
+                myGroupProfile: nil
             )
         )
     }
@@ -389,7 +390,8 @@ enum PreviewAppState {
             messages: messages,
             firstUnreadMessageId: nil,
             canLoadOlder: true,
-            typingMembers: []
+            typingMembers: [],
+            myGroupProfile: nil
         )
     }
 
@@ -427,7 +429,8 @@ enum PreviewAppState {
             messages: messages,
             firstUnreadMessageId: nil,
             canLoadOlder: true,
-            typingMembers: []
+            typingMembers: [],
+            myGroupProfile: nil
         )
     }
 
@@ -585,7 +588,8 @@ enum PreviewAppState {
             messages: messages,
             firstUnreadMessageId: nil,
             canLoadOlder: true,
-            typingMembers: []
+            typingMembers: [],
+            myGroupProfile: nil
         )
     }
 
@@ -701,7 +705,8 @@ enum PreviewAppState {
             messages: messages,
             firstUnreadMessageId: nil,
             canLoadOlder: false,
-            typingMembers: []
+            typingMembers: [],
+            myGroupProfile: nil
         )
     }
 

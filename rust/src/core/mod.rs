@@ -5728,6 +5728,7 @@ mod tests {
                 first_unread_message_id: None,
                 can_load_older: false,
                 typing_members: vec![],
+                my_group_profile: None,
             });
             let other = Keys::generate();
             let msg = make_test_message(

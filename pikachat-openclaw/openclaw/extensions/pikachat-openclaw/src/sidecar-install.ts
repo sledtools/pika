@@ -46,7 +46,7 @@ function getPluginVersion(): string {
   } catch {
     _pluginVersion = "0.0.0";
   }
-  return _pluginVersion;
+  return _pluginVersion ?? "0.0.0";
 }
 
 // ---------------------------------------------------------------------------

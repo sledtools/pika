@@ -1,7 +1,11 @@
 import {
   DEFAULT_ACCOUNT_ID,
   formatPairingApproveHint,
+  type AnyAgentTool,
+  type ChannelMessageActionContext,
+  type ChannelMessageActionName,
   type ChannelPlugin,
+  type ChannelThreadingToolContext,
 } from "openclaw/plugin-sdk";
 import { getPikachatRuntime } from "./runtime.js";
 import {
@@ -224,6 +228,8 @@ const profileCache = new Map<string, CachedProfile>();
 const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const pendingFetches = new Set<string>();
 const HYPERNOTE_ACTION_RESPONSE_KIND = 9468;
+const REACTION_KIND = 7; // NIP-25
+const DEFAULT_REACTION_EMOJI = "❤️";
 
 async function fetchNostrProfileName(pubkeyHex: string, relays: string[]): Promise<string | null> {
   if (pendingFetches.has(pubkeyHex)) return null;
@@ -406,6 +412,46 @@ function resolveGroupSystemPrompt(chatId: string, cfg: any): string | null {
   return null;
 }
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function resolveReactionMessageId(
+  params: Record<string, unknown>,
+  toolContext?: ChannelThreadingToolContext,
+): string {
+  const explicitMessageId = readNonEmptyString(params.messageId);
+  if (explicitMessageId) return explicitMessageId;
+  const inboundMessageId = toolContext?.currentMessageId;
+  if (typeof inboundMessageId === "number" && Number.isFinite(inboundMessageId)) {
+    return String(inboundMessageId);
+  }
+  return typeof inboundMessageId === "string" && inboundMessageId.trim()
+    ? inboundMessageId.trim()
+    : "";
+}
+
+export function resolveReactionEmoji(rawEmoji: unknown): string {
+  const explicitEmoji = readNonEmptyString(rawEmoji);
+  return explicitEmoji ?? DEFAULT_REACTION_EMOJI;
+}
+
+export function buildReactionSystemEventText(params: {
+  senderName: string;
+  emoji: string;
+  isGroupChat: boolean;
+  groupName?: string;
+}): string {
+  if (!params.isGroupChat) {
+    return `Pikachat reaction added: ${params.emoji} by ${params.senderName}.`;
+  }
+  const groupLabel = params.groupName?.trim();
+  if (!groupLabel) {
+    return `Pikachat reaction added in group chat: ${params.emoji} by ${params.senderName}.`;
+  }
+  return `Pikachat reaction added in ${groupLabel}: ${params.emoji} by ${params.senderName}.`;
+}
+
 function isSenderAllowedInGroup(senderPk: string, chatId: string, cfg: any): boolean {
   const groupUsers = resolveGroupUsers(chatId, cfg);
   if (!groupUsers) return true; // No per-group restriction
@@ -497,7 +543,7 @@ async function dispatchInboundToAgent(params: {
     SenderName: senderName,
     SenderUsername: hexToNpub(senderId.toLowerCase()),
     SenderTag: isOwner ? "owner" : "friend",
-    EventId: params.eventId,
+    MessageSid: params.eventId,
     CommandAuthorized: isOwner,
     WasMentioned: params.wasMentioned ?? !isGroupChat,
     ...(isGroupChat ? {
@@ -658,7 +704,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     quickstartAllowFrom: true,
   },
   capabilities: {
-    chatTypes: ["dm", "group"],
+    chatTypes: ["direct", "group"],
     media: true,
     reactions: true,
     nativeCommands: false,
@@ -669,10 +715,10 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     listAccountIds: (cfg) => listPikachatAccountIds(cfg),
     resolveAccount: (cfg, accountId) => resolvePikachatAccount({ cfg, accountId }),
     defaultAccountId: (cfg) => resolveDefaultPikachatAccountId(cfg),
-    setAccountEnabled: async () => {
+    setAccountEnabled: () => {
       throw new Error("pikachat: multi-account enable/disable not implemented yet");
     },
-    deleteAccount: async () => {
+    deleteAccount: () => {
       throw new Error("pikachat: multi-account delete not implemented yet");
     },
     isConfigured: (account) => account.configured,
@@ -719,29 +765,65 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   },
 
   actions: {
-    listActions: () => ["react"] as any[],
-    handleAction: async ({ action, params, accountId }): Promise<any> => {
+    listActions: (): ChannelMessageActionName[] => ["react"],
+    supportsAction: ({ action }: { action: ChannelMessageActionName }) => action === "react",
+    handleAction: async ({
+      action,
+      params,
+      accountId,
+      toolContext,
+    }: ChannelMessageActionContext) => {
       if (action === "react") {
-        const messageId = typeof params.messageId === "string" ? params.messageId : "";
-        const emoji = typeof params.emoji === "string" ? params.emoji : "";
-        if (!messageId) return { content: [{ type: "text", text: "messageId is required." }] };
-        if (!emoji) return { content: [{ type: "text", text: "emoji is required." }] };
+        // Fall back to current inbound message id (like Telegram does) when not explicitly provided
+        const actionParams = (params ?? {}) as Record<string, unknown>;
+        const messageId = resolveReactionMessageId(actionParams, toolContext);
+        const emoji = resolveReactionEmoji(actionParams.emoji);
+        if (!messageId) {
+          return {
+            content: [{ type: "text", text: "messageId is required (or use in reply to a message)." }],
+            details: { ok: false, reason: "missing_message_id" },
+          };
+        }
         const handle = activeSidecars.get(accountId ?? DEFAULT_ACCOUNT_ID);
-        if (!handle) return { content: [{ type: "text", text: "Sidecar not running." }] };
+        if (!handle) {
+          return {
+            content: [{ type: "text", text: "Sidecar not running." }],
+            details: { ok: false, reason: "sidecar_not_running" },
+          };
+        }
         const groupId = findGroupIdForAccount(accountId ?? DEFAULT_ACCOUNT_ID);
-        if (!groupId) return { content: [{ type: "text", text: "No target group." }] };
-        handle.sidecar.sendReaction(groupId, messageId, emoji);
-        return { content: [{ type: "text", text: "Reaction sent." }] };
+        if (!groupId) {
+          return {
+            content: [{ type: "text", text: "No target group." }],
+            details: { ok: false, reason: "missing_target_group" },
+          };
+        }
+        const result = await handle.sidecar.sendReaction(groupId, messageId, emoji);
+        const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
+        return {
+          content: [{ type: "text", text: `Reaction sent.${eventIdNote}` }],
+          details: {
+            ok: true,
+            messageId,
+            emoji,
+            event_id: result?.event_id,
+          },
+        };
       }
-      return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
+      return {
+        content: [{ type: "text", text: `Unknown action: ${action}` }],
+        details: { ok: false, reason: "unknown_action", action },
+      };
     },
   },
 
   agentPrompt: {
     messageToolHints: () => [
-      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton.",
+      "- Use `send_hypernote` to send interactive UI cards. Compose MDX content using components: Card, VStack, HStack, Heading, Body, Caption, TextInput, ChecklistItem, SubmitButton. The tool returns an event_id you can pass immediately to `submit_hypernote_action` to vote on your own poll.",
       '- User responses to hypernote buttons arrive as structured text: [Hypernote action "action_name" submitted] with optional form fields.',
       "- Use `submit_hypernote_action` to interact with another user's or bot's hypernote (e.g. vote in a poll). Requires the event_id and action name.",
+      "- To react to the current inbound message, use the `react` action with no messageId — it defaults to the current message automatically.",
+      "- To react to a specific past message, pass its event_id as messageId to the `react` action.",
     ],
   },
 
@@ -760,8 +842,8 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
-      handle.sidecar.sendMessage(groupId, text ?? "");
-      return { channel: "pikachat-openclaw", to: groupId };
+      const result = await handle.sidecar.sendMessage(groupId, text ?? "");
+      return { channel: "pikachat-openclaw", to: groupId, messageId: result?.event_id ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
@@ -813,7 +895,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       // framework considers this channel alive (prevents auto-restart loops).
       const existingHandle = activeSidecars.get(resolved.accountId);
       if (existingHandle) {
-        ctx.log?.info(
+        ctx.log?.info?.(
           `[${resolved.accountId}] sidecar already running, skipping duplicate startAccount`,
         );
         ctx.setStatus({
@@ -828,7 +910,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               activeSidecars.delete(resolved.accountId);
               void handle.sidecar.shutdown();
             }
-            ctx.log?.info(`[${resolved.accountId}] pikachat sidecar stopped`);
+            ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar stopped`);
             finish();
           }, { once: true });
           existingHandle.sidecar.waitForExit().then(finish);
@@ -865,7 +947,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       const sidecarAutoAcceptWelcomes =
         sidecarArgsLookLikeDaemon && sidecarArgs.includes("--auto-accept-welcomes");
 
-      ctx.log?.info(
+      ctx.log?.info?.(
         `[${resolved.accountId}] 🦞 MOLTATHON PIKACHAT v0.2.0 — starting sidecar cmd=${JSON.stringify(sidecarCmd)} args=${JSON.stringify(sidecarArgs)}`,
       );
 
@@ -913,16 +995,16 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               if (gid) groupMemberCounts.set(gid, mc);
             }
             if (ownerPk && groups.length === 0) {
-              ctx.log?.info(
+              ctx.log?.info?.(
                 `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
               );
               const created = await sidecar.initGroup(ownerPk);
-              ctx.log?.info(
+              ctx.log?.info?.(
                 `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
               );
             }
           } catch (err) {
-            ctx.log?.warn(
+            ctx.log?.warn?.(
               `[${resolved.accountId}] failed to seed groups / init owner DM: ${err}`,
             );
           }
@@ -978,13 +1060,13 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         if (batch.length === 0) return;
 
         const uniqueSenders = new Set(batch.map((w) => w.from));
-        ctx.log?.info(
+        ctx.log?.info?.(
           `[${resolved.accountId}] welcome_received count=${batch.length} senders=${uniqueSenders.size}`,
         );
 
         if (!resolved.config.autoAcceptWelcomes) return;
         if (sidecarAutoAcceptWelcomes) {
-          ctx.log?.debug(
+          ctx.log?.debug?.(
             `[${resolved.accountId}] auto-accept welcomes handled by sidecar count=${batch.length}`,
           );
           return;
@@ -1001,11 +1083,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           }
         }
         if (failed > 0) {
-          ctx.log?.debug(
+          ctx.log?.debug?.(
             `[${resolved.accountId}] auto-accept welcomes: accepted=${accepted} stale=${failed}`,
           );
         } else if (accepted > 0) {
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] auto-accept welcomes: accepted=${accepted}`,
           );
         }
@@ -1030,28 +1112,28 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         }
         if (ev.type === "group_joined") {
           groupMemberCounts.set(ev.nostr_group_id.toLowerCase(), ev.member_count);
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] group_joined nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} members=${ev.member_count}`,
           );
           return;
         }
         if (ev.type === "group_created") {
           groupMemberCounts.set(ev.nostr_group_id.toLowerCase(), ev.member_count);
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] group_created nostr_group_id=${ev.nostr_group_id} mls_group_id=${ev.mls_group_id} peer=${ev.peer_pubkey} members=${ev.member_count}`,
           );
           return;
         }
         if (ev.type === "call_invite_received") {
           if (!isGroupAllowed(ev.nostr_group_id)) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] reject call invite (group not allowed) group=${ev.nostr_group_id} call_id=${ev.call_id}`,
             );
             await sidecar.rejectCall(ev.call_id, "group_not_allowed");
             return;
           }
           if (!isSenderAllowed(ev.from_pubkey)) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] reject call invite (sender not allowed) sender=${ev.from_pubkey} call_id=${ev.call_id}`,
             );
             await sidecar.rejectCall(ev.call_id, "sender_not_allowed");
@@ -1062,14 +1144,14 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           {
             const currentCfgForCall = runtime.config.loadConfig();
             if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForCall)) {
-              ctx.log?.debug(
+              ctx.log?.debug?.(
                 `[${resolved.accountId}] reject call invite (sender not in group users) sender=${ev.from_pubkey} group=${ev.nostr_group_id} call_id=${ev.call_id}`,
               );
               await sidecar.rejectCall(ev.call_id, "sender_not_allowed_in_group");
               return;
             }
           }
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] accept call invite group=${ev.nostr_group_id} from=${ev.from_pubkey} call_id=${ev.call_id}`,
           );
           await sidecar.acceptCall(ev.call_id);
@@ -1081,11 +1163,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 	            senderId: ev.from_pubkey,
 	            responding: false,
 	          });
-	          ctx.log?.info(
+	          ctx.log?.info?.(
 	            `[${resolved.accountId}] call_session_started group=${ev.nostr_group_id} from=${ev.from_pubkey} call_id=${ev.call_id}`,
 	          );
 	          if (callStartTtsText) {
-	            ctx.log?.info(
+	            ctx.log?.info?.(
 	              `[${resolved.accountId}] call_start_tts scheduled call_id=${ev.call_id} delay_ms=${callStartTtsDelayMs} text=${JSON.stringify(callStartTtsText)}`,
 	            );
 	            const callId = ev.call_id;
@@ -1095,12 +1177,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 	                .sendAudioResponse(callId, callStartTtsText)
 	                .then((stats) => {
 	                  const publish = stats.publish_path ? ` publish_path=${stats.publish_path}` : "";
-	                  ctx.log?.info(
+	                  ctx.log?.info?.(
 	                    `[${resolved.accountId}] call_start_tts ok call_id=${callId} frames_published=${stats.frames_published}${publish}`,
 	                  );
 	                })
 	                .catch((err) => {
-	                  ctx.log?.error(
+	                  ctx.log?.error?.(
 	                    `[${resolved.accountId}] call_start_tts failed call_id=${callId}: ${err}`,
 	                  );
 	                });
@@ -1110,30 +1192,30 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 	        }
         if (ev.type === "call_session_ended") {
           activeCalls.delete(ev.call_id);
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] call_session_ended call_id=${ev.call_id} reason=${ev.reason}`,
           );
           return;
         }
         if (ev.type === "call_debug") {
-          ctx.log?.debug(
+          ctx.log?.debug?.(
             `[${resolved.accountId}] call_debug call_id=${ev.call_id} tx=${ev.tx_frames} rx=${ev.rx_frames} drop=${ev.rx_dropped}`,
           );
           return;
         }
         if (ev.type === "call_audio_chunk") {
-          ctx.log?.info(
+          ctx.log?.info?.(
             `[${resolved.accountId}] call_audio_chunk call_id=${ev.call_id} path=${ev.audio_path}`,
           );
           const callCtx = activeCalls.get(ev.call_id);
           if (!callCtx) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] call_audio_chunk with no active call context call_id=${ev.call_id}`,
             );
             return;
           }
           if (callCtx.responding) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] skip audio chunk while responding call_id=${ev.call_id}`,
             );
             return;
@@ -1149,7 +1231,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               callId: ev.call_id,
             });
           } catch (err) {
-            ctx.log?.error(
+            ctx.log?.error?.(
               `[${resolved.accountId}] audio transcription failed call_id=${ev.call_id}: ${err}`,
             );
             return;
@@ -1172,7 +1254,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               isOwner: isOwnerPubkey(callCtx.senderId.toLowerCase()),
               isGroupChat: false,
               deliverText: async (responseText: string) => {
-                ctx.log?.info(
+                ctx.log?.info?.(
                   `[${resolved.accountId}] call TTS response call_id=${ev.call_id} text_len=${responseText.length}`,
                 );
                 // Use openclaw's config-driven TTS (OpenAI, ElevenLabs, Edge)
@@ -1195,11 +1277,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   (timer as any).unref?.();
                   const sampleRate = ttsResult.sampleRate ?? 24000;
                   await sidecar.sendAudioFile(ev.call_id, pcmPath, sampleRate);
-                  ctx.log?.info(
+                  ctx.log?.info?.(
                     `[${resolved.accountId}] call audio sent call_id=${ev.call_id} path=${pcmPath} sample_rate=${sampleRate} provider=${ttsResult.provider ?? "unknown"}`,
                   );
                 } catch (openclawTtsErr) {
-                  ctx.log?.info(
+                  ctx.log?.info?.(
                     `[${resolved.accountId}] openclaw_tts error call_id=${ev.call_id}: ${openclawTtsErr}, falling back to sidecar TTS`,
                   );
                   await sidecar.sendAudioResponse(ev.call_id, responseText);
@@ -1208,7 +1290,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               log: ctx.log,
             });
           } catch (err) {
-            ctx.log?.error(
+            ctx.log?.error?.(
               `[${resolved.accountId}] voice transcript dispatch failed call_id=${ev.call_id}: ${err}`,
             );
           } finally {
@@ -1220,20 +1302,20 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           // Self-message filter: skip our own messages echoed back
           const handle = activeSidecars.get(resolved.accountId);
           if (handle && ev.from_pubkey.toLowerCase() === handle.pubkey.toLowerCase()) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] skip self-message group=${ev.nostr_group_id}`,
             );
             return;
           }
 
           if (!isGroupAllowed(ev.nostr_group_id)) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] drop message (group not allowed) group=${ev.nostr_group_id}`,
             );
             return;
           }
           if (!isSenderAllowed(ev.from_pubkey)) {
-            ctx.log?.debug(
+            ctx.log?.debug?.(
               `[${resolved.accountId}] drop message (sender not allowed) sender=${ev.from_pubkey}`,
             );
             return;
@@ -1247,11 +1329,55 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           {
             const currentCfgForGroupCheck = runtime.config.loadConfig();
             if (!isSenderAllowedInGroup(ev.from_pubkey, ev.nostr_group_id, currentCfgForGroupCheck)) {
-              ctx.log?.debug(
+              ctx.log?.debug?.(
                 `[${resolved.accountId}] drop message (sender not in group users allowlist) sender=${ev.from_pubkey} group=${ev.nostr_group_id}`,
               );
               return;
             }
+          }
+
+          // NIP-25 reactions arrive as kind=7 message_received events.
+          // Surface as passive context for the session, matching OpenClaw's
+          // default extension pattern for reaction notifications.
+          if (ev.kind === REACTION_KIND) {
+            ctx.log?.debug?.(
+              `[${resolved.accountId}] reaction received from=${ev.from_pubkey} emoji=${JSON.stringify(ev.content)} event_id=${ev.event_id}`,
+            );
+            const currentCfg = runtime.config.loadConfig();
+            const senderName = await resolveMemberNameAsync(ev.from_pubkey, currentCfg);
+            const emoji = resolveReactionEmoji(ev.content);
+            const groupId = ev.nostr_group_id.toLowerCase();
+            const isGroupChat = !isOneOnOneGroup(groupId);
+            const route = runtime.channel.routing.resolveAgentRoute({
+              cfg: currentCfg,
+              channel: "pikachat-openclaw",
+              accountId: resolved.accountId,
+              peer: {
+                kind: isGroupChat ? "group" : "direct",
+                id: isGroupChat ? ev.nostr_group_id : ev.from_pubkey,
+              },
+            });
+            const reactionText = buildReactionSystemEventText({
+              senderName,
+              emoji,
+              isGroupChat,
+              groupName: groupNames.get(groupId),
+            });
+            runtime.system.enqueueSystemEvent(reactionText, {
+              sessionKey: route.sessionKey,
+              contextKey: [
+                "pikachat",
+                "reaction",
+                ev.event_id,
+                ev.from_pubkey,
+                emoji,
+                ev.nostr_group_id,
+              ]
+                .filter(Boolean)
+                .join(":")
+                .toLowerCase(),
+            });
+            return;
           }
 
           // Debug: if a call signal fails to parse in the sidecar, it will fall back to
@@ -1268,7 +1394,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               ev.content.trim().startsWith("{"))
           ) {
             const redacted = ev.content.replace(/capv1_[0-9a-f]{64}/gi, "capv1_REDACTED");
-            ctx.log?.warn(
+            ctx.log?.warn?.(
               `[${resolved.accountId}] debug_message_received group=${ev.nostr_group_id} from=${ev.from_pubkey} content=${JSON.stringify(redacted.slice(0, 800))}`,
             );
           }
@@ -1276,7 +1402,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           const e2ePingNonce = parseE2ePingNonce(ev.content) ?? parseLegacyPikaE2eNonce(ev.content);
           if (e2ePingNonce !== null) {
             const ack = `pong:${e2ePingNonce}`;
-            ctx.log?.info(
+            ctx.log?.info?.(
               `[${resolved.accountId}] e2e ping/pong hook reply group=${ev.nostr_group_id} from=${ev.from_pubkey} nonce=${e2ePingNonce}`,
             );
             await sidecar.sendMessage(ev.nostr_group_id, ack);
@@ -1339,7 +1465,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   body: messageText,
                   timestamp: ev.created_at ? ev.created_at * 1000 : Date.now(),
                 });
-                ctx.log?.debug(
+                ctx.log?.debug?.(
                   `[${resolved.accountId}] group message buffered (no mention) group=${ev.nostr_group_id} from=${senderPk}`,
                 );
                 return;
@@ -1352,7 +1478,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               setTimeout(() => { if (!groupTypingSent) { groupTypingSent = true; sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
 
               const pendingHistory = flushPendingHistory(historyKey);
-              ctx.log?.info(
+              ctx.log?.info?.(
                 `[${resolved.accountId}] group message dispatching (mentioned=${wasMentioned}) group=${ev.nostr_group_id} from=${senderPk} pendingHistory=${pendingHistory.length}`,
               );
 
@@ -1370,10 +1496,10 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 groupName: groupNames.get(groupId),
                 stateDir: baseStateDir,
                 deliverText: async (responseText: string) => {
-                  ctx.log?.info(
+                  ctx.log?.info?.(
                     `[${resolved.accountId}] send group=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   if (groupTypingSent) return; // only fire once per inbound message
@@ -1399,10 +1525,10 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 isOwner: senderIsOwner,
                 isGroupChat: false,
                 deliverText: async (responseText: string) => {
-                  ctx.log?.info(
+                  ctx.log?.info?.(
                     `[${resolved.accountId}] send dm=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   if (dmTypingSent) return; // only fire once per inbound message
@@ -1415,7 +1541,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               });
             }
           } catch (err) {
-            ctx.log?.error(
+            ctx.log?.error?.(
               `[${resolved.accountId}] dispatchInboundToAgent failed: ${err}`,
             );
           } finally {
@@ -1445,12 +1571,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             activeSidecars.delete(resolved.accountId);
             void handle.sidecar.shutdown();
           }
-          ctx.log?.info(`[${resolved.accountId}] pikachat sidecar stopped`);
+          ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar stopped`);
           finish();
         }, { once: true });
         sidecar.waitForExit().then(() => {
           activeSidecars.delete(resolved.accountId);
-          ctx.log?.info(`[${resolved.accountId}] pikachat sidecar exited`);
+          ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar exited`);
           finish();
         });
       });
@@ -1478,9 +1604,10 @@ function resolveToolTarget(ctx: ToolContext): { handle: PikachatSidecarHandle; g
   return { handle, groupId: session.groupId };
 }
 
-export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
+export function createSendHypernoteToolFactory(): (ctx: ToolContext) => AnyAgentTool {
   return (ctx) => {
     return {
+      label: "Send Hypernote",
       name: "send_hypernote",
       description: "Send interactive UI (hypernote) to the current chat. Use MDX components from the hypernote catalog.",
       parameters: {
@@ -1494,20 +1621,33 @@ export function createSendHypernoteToolFactory(): (ctx: ToolContext) => any {
       },
       async execute(_id: string, params: { content: string; title?: string; state?: string }) {
         const target = resolveToolTarget(ctx);
-        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
-        target.handle.sidecar.sendHypernote(target.groupId, params.content, {
+        if (!target) {
+          return {
+            content: [{ type: "text" as const, text: "Sidecar not running or no target group." }],
+            details: { ok: false, reason: "sidecar_not_running_or_missing_target" },
+          };
+        }
+        const result = await target.handle.sidecar.sendHypernote(target.groupId, params.content, {
           title: params.title,
           state: params.state,
         });
-        return { content: [{ type: "text" as const, text: "Hypernote sent." }] };
+        const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
+        return {
+          content: [{ type: "text" as const, text: `Hypernote sent.${eventIdNote}` }],
+          details: {
+            ok: true,
+            event_id: result?.event_id,
+          },
+        };
       },
     };
   };
 }
 
-export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => any {
+export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => AnyAgentTool {
   return (ctx) => {
     return {
+      label: "Submit Hypernote Action",
       name: "submit_hypernote_action",
       description: "Submit a hypernote action response (e.g. vote in a poll or interact with a form). Requires the event_id of the hypernote.",
       parameters: {
@@ -1521,9 +1661,21 @@ export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => 
       },
       async execute(_id: string, params: { event_id: string; action: string; form?: Record<string, string> }) {
         const target = resolveToolTarget(ctx);
-        if (!target) return { content: [{ type: "text" as const, text: "Sidecar not running or no target group." }] };
-        target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
-        return { content: [{ type: "text" as const, text: "Hypernote action submitted." }] };
+        if (!target) {
+          return {
+            content: [{ type: "text" as const, text: "Sidecar not running or no target group." }],
+            details: { ok: false, reason: "sidecar_not_running_or_missing_target" },
+          };
+        }
+        const result = await target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
+        const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
+        return {
+          content: [{ type: "text" as const, text: `Hypernote action submitted.${eventIdNote}` }],
+          details: {
+            ok: true,
+            event_id: result?.event_id,
+          },
+        };
       },
     };
   };

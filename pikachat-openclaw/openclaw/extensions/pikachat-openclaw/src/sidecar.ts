@@ -5,6 +5,19 @@ import path from "node:path";
 import readline from "node:readline";
 import { getPikachatRuntime } from "./runtime.js";
 
+type LegacyRuntimeLogger = {
+  debug?: (message: string) => void;
+  info?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+};
+
+function runtimeLogger(): LegacyRuntimeLogger | undefined {
+  // OpenClaw's current PluginRuntime typing exposes logger via context log sinks.
+  // Keep compatibility with existing plugin behavior when runtime.logger exists.
+  return (getPikachatRuntime() as unknown as { logger?: LegacyRuntimeLogger }).logger;
+}
+
 type SidecarOutMsg =
   | { type: "ready"; protocol_version: number; pubkey: string; npub: string }
   | { type: "ok"; request_id?: string | null; result?: unknown }
@@ -200,7 +213,7 @@ export class PikachatSidecar {
   #exitResolve: (() => void) | null = null;
   #exitPromise: Promise<void>;
   #sendThrottle = new SendThrottle(1000, (err) => {
-    getPikachatRuntime().logger?.error(`[pikachat] throttled send failed: ${err}`);
+    runtimeLogger()?.error?.(`[pikachat] throttled send failed: ${err}`);
   });
 
   constructor(params: { cmd: string; args: string[]; env?: NodeJS.ProcessEnv }) {
@@ -213,7 +226,7 @@ export class PikachatSidecar {
     const rl = readline.createInterface({ input: this.#proc.stdout });
     rl.on("line", (line) => {
       this.#handleLine(line).catch((err) => {
-        getPikachatRuntime().logger?.error(`[pikachat] unhandled error in handleLine: ${err}`);
+        runtimeLogger()?.error?.(`[pikachat] unhandled error in handleLine: ${err}`);
       });
     });
 
@@ -231,11 +244,11 @@ export class PikachatSidecar {
             trimmed.includes("call.invite") ||
             trimmed.includes("call.accept") ||
             trimmed.includes("call signal");
-          const log = getPikachatRuntime().logger;
+          const log = runtimeLogger();
           if (looksLikeCallSignalIssue) {
-            log?.warn(`[pikachat] ${trimmed}`);
+            log?.warn?.(`[pikachat] ${trimmed}`);
           } else {
-            log?.debug(`[pikachat] ${trimmed}`);
+            log?.debug?.(`[pikachat] ${trimmed}`);
           }
         }
       }
@@ -312,7 +325,7 @@ export class PikachatSidecar {
       this.#pending.set(requestId, { cmd: cmdName, resolve, reject, startedAt });
     });
     if (logRequests) {
-      getPikachatRuntime().logger?.info(
+      runtimeLogger()?.info?.(
         `[pikachat] sidecar_request_start cmd=${cmdName} request_id=${requestId}`,
       );
     }
@@ -344,54 +357,71 @@ export class PikachatSidecar {
     return await this.request({ cmd: "hypernote_catalog" } as any);
   }
 
-  sendMessage(nostrGroupId: string, content: string): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({ cmd: "send_message", nostr_group_id: nostrGroupId, content } as any),
-    );
+  async sendMessage(nostrGroupId: string, content: string): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({ cmd: "send_message", nostr_group_id: nostrGroupId, content } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
-  sendHypernote(
+  async sendHypernote(
     nostrGroupId: string,
     content: string,
     opts?: { title?: string; state?: string },
-  ): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "send_hypernote",
-        nostr_group_id: nostrGroupId,
-        content,
-        title: opts?.title,
-        state: opts?.state,
-      } as any),
-    );
+  ): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({
+            cmd: "send_hypernote",
+            nostr_group_id: nostrGroupId,
+            content,
+            title: opts?.title,
+            state: opts?.state,
+          } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
   }
 
-  sendReaction(nostrGroupId: string, eventId: string, emoji: string): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "react",
-        nostr_group_id: nostrGroupId,
-        event_id: eventId,
-        emoji,
-      } as any),
-    );
+  async sendReaction(nostrGroupId: string, eventId: string, emoji: string): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({ cmd: "react", nostr_group_id: nostrGroupId, event_id: eventId, emoji } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
-  submitHypernoteAction(
+  async submitHypernoteAction(
     nostrGroupId: string,
     eventId: string,
     action: string,
     form?: Record<string, string>,
-  ): void {
-    this.#sendThrottle.enqueue(() =>
-      this.request({
-        cmd: "submit_hypernote_action",
-        nostr_group_id: nostrGroupId,
-        event_id: eventId,
-        action,
-        form,
-      } as any),
-    );
+  ): Promise<{ event_id?: string }> {
+    return await new Promise<{ event_id?: string }>((resolve, reject) => {
+      this.#sendThrottle.enqueue(async () => {
+        try {
+          const result = await this.request({
+            cmd: "submit_hypernote_action",
+            nostr_group_id: nostrGroupId,
+            event_id: eventId,
+            action,
+            form,
+          } as any);
+          resolve((result as { event_id?: string }) ?? {});
+        } catch (e) { reject(e); }
+      });
+    });
   }
 
   sendMedia(
@@ -497,7 +527,7 @@ export class PikachatSidecar {
     try {
       msg = JSON.parse(trimmed) as SidecarOutMsg;
     } catch {
-      getPikachatRuntime().logger?.warn(`[pikachat] invalid JSON from sidecar: ${trimmed}`);
+      runtimeLogger()?.warn?.(`[pikachat] invalid JSON from sidecar: ${trimmed}`);
       return;
     }
 
@@ -521,14 +551,14 @@ export class PikachatSidecar {
           const elapsedMs = Date.now() - pending.startedAt;
           if (msg.type === "ok") {
             if (logRequests) {
-              getPikachatRuntime().logger?.info(
+              runtimeLogger()?.info?.(
                 `[pikachat] sidecar_request_ok cmd=${pending.cmd} request_id=${requestId} elapsed_ms=${elapsedMs}`,
               );
             }
             pending.resolve((msg as any).result ?? null);
           } else {
             if (logRequests) {
-              getPikachatRuntime().logger?.warn(
+              runtimeLogger()?.warn?.(
                 `[pikachat] sidecar_request_error cmd=${pending.cmd} request_id=${requestId} elapsed_ms=${elapsedMs} code=${msg.code} message=${JSON.stringify(msg.message)}`,
               );
             }

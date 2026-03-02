@@ -2083,11 +2083,29 @@ private fun LightningPaymentDialog(
                 Spacer(Modifier.height(20.dp))
 
                 if (lightningConfig == null || !lightningConfig.isComplete) {
-                    Text(
-                        text = "⚠️ No Lightning wallet configured. Go to Settings → Lightning Wallet to set one up.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ElectricBolt,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "No Lightning wallet configured.\nGo to your Profile → ⚡ Lightning Wallet to set one up.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
                 }
 
                 androidx.compose.material3.Button(
@@ -2105,7 +2123,7 @@ private fun LightningPaymentDialog(
                                 }
                                 .onFailure { e ->
                                     isCreatingInvoice = false
-                                    errorMessage = e.message ?: "Failed to create invoice"
+                                    errorMessage = "Error: ${e.message ?: "Failed to create invoice"}"
                                 }
                         }
                     },

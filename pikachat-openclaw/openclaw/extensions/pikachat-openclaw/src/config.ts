@@ -7,6 +7,7 @@ export type PikachatGroupConfig = {
 
 export type PikachatChannelConfig = {
   relays: string[];
+  owner?: string | string[];
   stateDir?: string;
   sidecarCmd?: string;
   sidecarArgs?: string[];
@@ -33,6 +34,16 @@ export function resolvePikachatChannelConfig(raw: unknown): PikachatChannelConfi
   const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 
   const relays = asStringArray(obj.relays) ?? [];
+  const owner = (() => {
+    if (typeof obj.owner === "string" && obj.owner.trim()) {
+      return obj.owner.trim().toLowerCase();
+    }
+    const ownerList = asStringArray(obj.owner);
+    if (ownerList && ownerList.length > 0) {
+      return ownerList.map((entry) => entry.toLowerCase());
+    }
+    return undefined;
+  })();
 
   const stateDir = typeof obj.stateDir === "string" && obj.stateDir.trim() ? obj.stateDir.trim() : undefined;
   const sidecarCmd =
@@ -61,6 +72,7 @@ export function resolvePikachatChannelConfig(raw: unknown): PikachatChannelConfi
 
   return {
     relays,
+    owner,
     stateDir,
     sidecarCmd,
     sidecarArgs,

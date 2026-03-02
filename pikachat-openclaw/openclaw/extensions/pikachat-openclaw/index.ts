@@ -15,8 +15,8 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     setPikachatRuntime(api.runtime);
     api.registerChannel({ plugin: pikachatPlugin });
-    api.registerTool(createSendHypernoteToolFactory() as any);
-    api.registerTool(createSubmitHypernoteActionToolFactory() as any);
+    api.registerTool(createSendHypernoteToolFactory());
+    api.registerTool(createSubmitHypernoteActionToolFactory());
   },
 };
 

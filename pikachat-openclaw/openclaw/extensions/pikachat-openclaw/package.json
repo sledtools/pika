@@ -13,6 +13,7 @@
     "bech32": "^2.0.0"
   },
   "devDependencies": {
+    "openclaw": "^2026.2.26",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {

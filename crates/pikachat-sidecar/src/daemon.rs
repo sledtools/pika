@@ -2794,10 +2794,11 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        let rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
+                        let mut rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
+                        let inner_id = rumor.id().to_hex();
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send").await {
-                            Ok(ev) => {
-                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
+                            Ok(_) => {
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
                             Err(e) => {
                                 let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
@@ -2825,12 +2826,16 @@ pub async fn daemon_main(
                         if let Some(ref s) = state {
                             tags.push(Tag::custom(TagKind::custom("state"), vec![s.clone()]));
                         }
-                        let rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
+                        let mut rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
                             .tags(tags)
                             .build(keys.public_key());
+                        // Save the inner rumor ID before MLS wrapping — this is the ID
+                        // that receivers see in message_received.event_id and that
+                        // submit_hypernote_action must reference.
+                        let inner_id = rumor.id().to_hex();
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_hypernote").await {
-                            Ok(ev) => {
-                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": ev.id.to_hex()}))));
+                            Ok(_) => {
+                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
                             Err(e) => {
                                 let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));

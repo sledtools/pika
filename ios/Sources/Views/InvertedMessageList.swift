@@ -92,12 +92,19 @@ struct InvertedMessageList: UIViewRepresentable {
                     coordinator.scrollToBottom(animated: false)
                 }
             }
-        } else {
+        } else if let dataSource = coordinator.dataSource {
             // Same structure — reconfigure visible cells for content changes
             // (delivery state, reactions, typing indicator updates, etc.)
+            // Use the diffable data source's reconfigure API which is safe
+            // during layout passes, unlike UITableView.reconfigureRows.
             coordinator.rowsByID = Dictionary(uniqueKeysWithValues: newInverted.map { ($0.id, $0) })
-            if let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty {
-                tableView.reconfigureRows(at: visible)
+            var snapshot = dataSource.snapshot()
+            let visibleIDs = tableView.indexPathsForVisibleRows?
+                .compactMap { snapshot.itemIdentifiers(inSection: 0).indices.contains($0.row) ? snapshot.itemIdentifiers(inSection: 0)[$0.row] : nil }
+                ?? []
+            if !visibleIDs.isEmpty {
+                snapshot.reconfigureItems(visibleIDs)
+                dataSource.apply(snapshot, animatingDifferences: false)
             }
         }
 

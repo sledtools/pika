@@ -60,8 +60,17 @@ fn resolve_base_ref(explicit_base: Option<&str>, cwd: &Path) -> anyhow::Result<S
     if git_ref_exists(cwd, "main")? {
         return Ok("main".to_string());
     }
+    // Compatibility fallback for repositories that still use master.
+    if git_ref_exists(cwd, "origin/master")? {
+        return Ok("origin/master".to_string());
+    }
+    if git_ref_exists(cwd, "master")? {
+        return Ok("master".to_string());
+    }
 
-    bail!("could not resolve base ref: neither origin/main nor main exists. Pass --base <ref>.")
+    bail!(
+        "could not resolve base ref: none of origin/main, main, origin/master, or master exists. Pass --base <ref>."
+    )
 }
 
 fn git_ref_exists(cwd: &Path, r#ref: &str) -> anyhow::Result<bool> {

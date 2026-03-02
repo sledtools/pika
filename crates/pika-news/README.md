@@ -24,7 +24,7 @@ bind_port = 8787
 
 `pika-news local` runs against the current git repo/worktree.
 
-- Default diff base: `origin/main`, fallback `main`.
+- Default diff base: `origin/main`, fallback `main`, then compatibility fallback to `origin/master` and `master`.
 - Override base: `--base <ref>`.
 - Append local staged/unstaged changes: `--include-uncommitted`.
 - Output path: `--out <path>` (defaults to `./pika-news-local.html`).

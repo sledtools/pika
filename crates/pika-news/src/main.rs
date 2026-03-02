@@ -1,5 +1,7 @@
 mod cli;
 mod config;
+mod local;
+mod tutorial;
 
 use anyhow::Context;
 use clap::Parser;
@@ -23,10 +25,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::Local(args) => {
-            println!(
-                "local mode scaffold ready: base={:?} include_uncommitted={} out={:?} no_open={}",
-                args.base, args.include_uncommitted, args.out, args.no_open
-            );
+            local::run(&args)?;
         }
     }
 

@@ -19,3 +19,13 @@ bind_port = 8787
 - `api_key_env`: environment variable containing the API key.
 - `bind_address`: hosted server bind address.
 - `bind_port`: hosted server bind port.
+
+## Local mode
+
+`pika-news local` runs against the current git repo/worktree.
+
+- Default diff base: `origin/main`, fallback `main`.
+- Override base: `--base <ref>`.
+- Append local staged/unstaged changes: `--include-uncommitted`.
+- Output path: `--out <path>` (defaults to `./pika-news-local.html`).
+- Auto-open: enabled by default; disable with `--no-open`.

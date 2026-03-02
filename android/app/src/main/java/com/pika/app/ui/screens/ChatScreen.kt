@@ -134,6 +134,7 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -212,6 +213,7 @@ fun ChatScreen(
     var draft by remember { mutableStateOf("") }
     var replyDraft by remember(chat.chatId) { mutableStateOf<ChatMessage?>(null) }
     var showAttachmentSheet by remember(chat.chatId) { mutableStateOf(false) }
+    var showPaymentDialog by remember(chat.chatId) { mutableStateOf(false) }
     var fullscreenImageAttachment by remember(chat.chatId) { mutableStateOf<ChatMediaAttachment?>(null) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -951,10 +953,45 @@ fun ChatScreen(
                     .clickable {
                         showAttachmentSheet = false
                         pickFileLauncher.launch(arrayOf("*/*"))
-                    }
-                    .padding(bottom = 16.dp),
+                    },
             )
+            if (!chat.isGroup) {
+                ListItem(
+                    headlineContent = { Text("Pay") },
+                    supportingContent = { Text("Send a Lightning payment") },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.ElectricBolt,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    },
+                    modifier = Modifier
+                        .clickable {
+                            showAttachmentSheet = false
+                            showPaymentDialog = true
+                        }
+                        .padding(bottom = 16.dp),
+                )
+            }
         }
+    }
+
+    if (showPaymentDialog) {
+        LightningPaymentDialog(
+            onDismiss = { showPaymentDialog = false },
+            onSendInvoiceRequest = { amountSats, memo ->
+                showPaymentDialog = false
+                val invoiceRequestMsg = "⚡ Lightning payment request: $amountSats sats" +
+                    if (memo.isNotBlank()) "\nMemo: $memo" else ""
+                manager.dispatch(AppAction.SendMessage(chat.chatId, invoiceRequestMsg, null, null))
+            },
+            onPayInvoice = { invoice ->
+                showPaymentDialog = false
+                val payMsg = "⚡ Paying invoice: ${invoice.take(30)}..."
+                manager.dispatch(AppAction.SendMessage(chat.chatId, payMsg, null, null))
+            },
+        )
     }
 }
 
@@ -1538,7 +1575,17 @@ private fun MessageBubble(
                 }
             }
 
-            for (segment in segments) {
+            // Check if this is a lightning payment message
+            val isLightningMessage = segments.any { seg ->
+                seg is MessageSegment.Markdown && seg.text.startsWith("⚡ Lightning payment")
+            }
+
+            if (isLightningMessage) {
+                InvoiceMessageCard(
+                    invoiceText = message.displayContent,
+                    isMine = isMine,
+                )
+            } else for (segment in segments) {
                 when (segment) {
                     is MessageSegment.Markdown -> {
                         Box(
@@ -1852,6 +1899,301 @@ private fun ReplyComposerPreview(
         }
         TextButton(onClick = onClear) {
             Text("Cancel")
+        }
+    }
+}
+
+// ─── Lightning Payment Dialog ───────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LightningPaymentDialog(
+    onDismiss: () -> Unit,
+    onSendInvoiceRequest: (amountSats: Long, memo: String) -> Unit,
+    onPayInvoice: (invoice: String) -> Unit,
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0 = Request, 1 = Pay
+    var amountText by remember { mutableStateOf("") }
+    var memo by remember { mutableStateOf("") }
+    var invoiceText by remember { mutableStateOf("") }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 8.dp)
+                .padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(bottom = 16.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ElectricBolt,
+                    contentDescription = null,
+                    tint = Color(0xFFFFA500),
+                    modifier = Modifier.size(28.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Lightning Payment",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+
+            // Tab row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                listOf("Request", "Pay").forEachIndexed { index, label ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (selectedTab == index) MaterialTheme.colorScheme.primary
+                                else Color.Transparent,
+                            )
+                            .clickable { selectedTab = index }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (selectedTab == index)
+                                MaterialTheme.colorScheme.onPrimary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            if (selectedTab == 0) {
+                // Request tab — enter amount + memo
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Amount (sats)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        BasicTextField(
+                            value = amountText,
+                            onValueChange = { amountText = it.filter { c -> c.isDigit() } },
+                            textStyle = MaterialTheme.typography.headlineMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            decorationBox = { inner ->
+                                if (amountText.isBlank()) {
+                                    Text(
+                                        "0",
+                                        style = MaterialTheme.typography.headlineMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                }
+                                inner()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Memo (optional)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        BasicTextField(
+                            value = memo,
+                            onValueChange = { memo = it },
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            singleLine = true,
+                            decorationBox = { inner ->
+                                if (memo.isBlank()) {
+                                    Text(
+                                        "What's this for?",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                }
+                                inner()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                androidx.compose.material3.Button(
+                    onClick = {
+                        val sats = amountText.toLongOrNull()
+                        if (sats != null && sats > 0) {
+                            onSendInvoiceRequest(sats, memo)
+                        }
+                    },
+                    enabled = amountText.toLongOrNull()?.let { it > 0 } == true,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ElectricBolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Request Payment", style = MaterialTheme.typography.titleMedium)
+                }
+            } else {
+                // Pay tab — paste an invoice
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Lightning Invoice",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        BasicTextField(
+                            value = invoiceText,
+                            onValueChange = { invoiceText = it.trim() },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            singleLine = false,
+                            decorationBox = { inner ->
+                                if (invoiceText.isBlank()) {
+                                    Text(
+                                        "Paste lnbc1... invoice",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    )
+                                }
+                                inner()
+                            },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                androidx.compose.material3.Button(
+                    onClick = {
+                        if (invoiceText.isNotBlank()) {
+                            onPayInvoice(invoiceText)
+                        }
+                    },
+                    enabled = invoiceText.lowercase().startsWith("lnbc") ||
+                        invoiceText.lowercase().startsWith("lightning:"),
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ElectricBolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Pay Invoice", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+    }
+}
+
+// ─── Lightning Invoice Message Card ─────────────────────────────────────────────
+
+private val LIGHTNING_INVOICE_REGEX = Regex("""(lnbc\w{20,})""", RegexOption.IGNORE_CASE)
+
+@Composable
+internal fun InvoiceMessageCard(
+    invoiceText: String,
+    isMine: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val amountMatch = Regex("""⚡ Lightning payment request: (\d+) sats""").find(invoiceText)
+    val memoMatch = Regex("""Memo: (.+)""").find(invoiceText)
+    val amountSats = amountMatch?.groupValues?.get(1)
+    val memoStr = memoMatch?.groupValues?.get(1)
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (isMine) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        modifier = modifier.widthIn(max = 280.dp),
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.ElectricBolt,
+                    contentDescription = null,
+                    tint = Color(0xFFFFA500),
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Lightning Payment",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (amountSats != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "$amountSats sats",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            if (!memoStr.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = memoStr,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

@@ -7,6 +7,8 @@ use serde::Deserialize;
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
 pub const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
 pub const DEFAULT_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub const DEFAULT_GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
+pub const DEFAULT_MERGED_LOOKBACK_HOURS: u64 = 72;
 pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 pub const DEFAULT_BIND_PORT: u16 = 8787;
 
@@ -19,6 +21,10 @@ pub struct Config {
     pub model: String,
     #[serde(default = "default_api_key_env")]
     pub api_key_env: String,
+    #[serde(default = "default_github_token_env")]
+    pub github_token_env: String,
+    #[serde(default = "default_merged_lookback_hours")]
+    pub merged_lookback_hours: u64,
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
     #[serde(default = "default_bind_port")]
@@ -51,4 +57,12 @@ fn default_bind_address() -> String {
 
 fn default_bind_port() -> u16 {
     DEFAULT_BIND_PORT
+}
+
+fn default_github_token_env() -> String {
+    DEFAULT_GITHUB_TOKEN_ENV.to_string()
+}
+
+fn default_merged_lookback_hours() -> u64 {
+    DEFAULT_MERGED_LOOKBACK_HOURS
 }

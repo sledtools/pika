@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod local;
+mod model;
 mod tutorial;
 
 use anyhow::Context;

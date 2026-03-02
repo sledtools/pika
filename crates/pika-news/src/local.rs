@@ -6,6 +6,8 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context};
 
 use crate::cli::LocalArgs;
+use crate::config;
+use crate::model::{self, GenerationError, PromptInput, PromptPrMetadata};
 use crate::tutorial::{self, TutorialDoc};
 
 pub fn run(args: &LocalArgs) -> anyhow::Result<()> {
@@ -33,7 +35,42 @@ pub fn run(args: &LocalArgs) -> anyhow::Result<()> {
         }
     }
 
-    let doc = tutorial::heuristic_from_diff(&diff);
+    let files = tutorial::extract_files(&diff);
+    let prompt_input = PromptInput {
+        pr: PromptPrMetadata {
+            repo: detect_repo_slug(&cwd).unwrap_or_else(|| "local/repo".to_string()),
+            number: None,
+            title: "Local worktree analysis".to_string(),
+            head_sha: git(&cwd, ["rev-parse", "HEAD"])
+                .ok()
+                .map(|sha| sha.trim().to_string())
+                .filter(|sha| !sha.is_empty()),
+            base_ref: base_ref.clone(),
+        },
+        files,
+        unified_diff: model::bounded_diff(&diff, 60_000),
+    };
+
+    let doc = match model::generate_with_anthropic(
+        config::DEFAULT_MODEL,
+        config::DEFAULT_API_KEY_ENV,
+        &prompt_input,
+    ) {
+        Ok(generated) => generated,
+        Err(GenerationError::MissingApiKey { env_var }) => {
+            eprintln!(
+                "warning: {} is not set; using local heuristic tutorial generation",
+                env_var
+            );
+            tutorial::heuristic_from_diff(&diff)
+        }
+        Err(GenerationError::RetrySafe(message)) => {
+            return Err(anyhow!("retry-safe generation error: {}", message));
+        }
+        Err(GenerationError::Fatal(message)) => {
+            return Err(anyhow!("fatal generation error: {}", message));
+        }
+    };
     let output = args
         .out
         .clone()
@@ -82,6 +119,27 @@ fn git_ref_exists(cwd: &Path, r#ref: &str) -> anyhow::Result<bool> {
         .output()
         .with_context(|| format!("check git ref {}", r#ref))?;
     Ok(output.status.success())
+}
+
+fn detect_repo_slug(cwd: &Path) -> Option<String> {
+    let remote = git(cwd, ["config", "--get", "remote.origin.url"]).ok()?;
+    let remote = remote.trim();
+    if remote.is_empty() {
+        return None;
+    }
+
+    let without_suffix = remote.trim_end_matches(".git");
+    if let Some((_, tail)) = without_suffix.rsplit_once(':') {
+        if tail.contains('/') {
+            return Some(tail.to_string());
+        }
+    }
+    if let Some((_, tail)) = without_suffix.split_once("github.com/") {
+        if tail.contains('/') {
+            return Some(tail.to_string());
+        }
+    }
+    None
 }
 
 fn git<const N: usize>(cwd: &Path, args: [&str; N]) -> anyhow::Result<String> {

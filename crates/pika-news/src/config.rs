@@ -4,6 +4,12 @@ use std::path::Path;
 use anyhow::Context;
 use serde::Deserialize;
 
+pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
+pub const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
+pub const DEFAULT_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
+pub const DEFAULT_BIND_PORT: u16 = 8787;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub repos: Vec<String>,
@@ -28,21 +34,21 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
 }
 
 fn default_poll_interval_secs() -> u64 {
-    60
+    DEFAULT_POLL_INTERVAL_SECS
 }
 
 fn default_model() -> String {
-    "claude-sonnet-4-5-20250929".to_string()
+    DEFAULT_MODEL.to_string()
 }
 
 fn default_api_key_env() -> String {
-    "ANTHROPIC_API_KEY".to_string()
+    DEFAULT_API_KEY_ENV.to_string()
 }
 
 fn default_bind_address() -> String {
-    "127.0.0.1".to_string()
+    DEFAULT_BIND_ADDRESS.to_string()
 }
 
 fn default_bind_port() -> u16 {
-    8787
+    DEFAULT_BIND_PORT
 }

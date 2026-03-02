@@ -63,7 +63,7 @@ pub fn heuristic_from_diff(diff: &str) -> TutorialDoc {
     }
 }
 
-fn extract_files(diff: &str) -> Vec<String> {
+pub fn extract_files(diff: &str) -> Vec<String> {
     let mut files = Vec::new();
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("diff --git a/") {

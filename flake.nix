@@ -81,6 +81,9 @@
             "Cargo\\.toml"
             "Cargo\\.lock"
             "crates(/.*)?"
+            "rust(/.*)?"
+            "cli(/.*)?"
+            "uniffi-bindgen(/.*)?"
           ];
           filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
         };

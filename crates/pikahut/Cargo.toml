@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 pika-marmot-runtime = { path = "../pika-marmot-runtime" }
+pika-relay-profiles = { path = "../pika-relay-profiles" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

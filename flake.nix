@@ -168,10 +168,15 @@
           ];
         };
 
-        hasAndroidSdk = builtins.hasAttr system android-nixpkgs.sdk;
+        androidNixpkgsCompat = import "${android-nixpkgs.outPath}/default.nix" {
+          # android-nixpkgs still references `hostPlatform`; provide a non-deprecated alias.
+          pkgs = pkgs // { hostPlatform = pkgs.stdenv.hostPlatform; };
+          inherit system;
+        };
+        hasAndroidSdk = androidNixpkgsCompat ? sdk;
         hasMoqRelay = builtins.hasAttr system moq.packages;
 
-        androidSdk = if hasAndroidSdk then android-nixpkgs.sdk.${system} (sdkPkgs: with sdkPkgs; [
+        androidSdk = if hasAndroidSdk then androidNixpkgsCompat.sdk (sdkPkgs: with sdkPkgs; [
           cmdline-tools-latest
           platform-tools
           build-tools-34-0-0
@@ -295,9 +300,9 @@
           pkgs.vulkan-loader
         ];
         linuxGuiRuntimeLibraryPath = pkgs.lib.makeLibraryPath linuxGuiRuntimeLibraries;
-        linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
-        linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
-        linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
+        linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa}/lib/dri" else "";
+        linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa}/share/glvnd/egl_vendor.d" else "";
+        linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa}/share/vulkan/icd.d" else "";
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [

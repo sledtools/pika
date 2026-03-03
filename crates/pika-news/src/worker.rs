@@ -11,6 +11,7 @@ use crate::render;
 use crate::storage::{GenerationJob, Store};
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct WorkerPassResult {
     pub claimed: usize,
     pub ready: usize,

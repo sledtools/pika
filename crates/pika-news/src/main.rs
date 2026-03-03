@@ -22,28 +22,14 @@ fn main() -> anyhow::Result<()> {
             let config = config::load(&args.config).context("load config file")?;
             let store = storage::Store::open(&args.db).context("initialize sqlite storage")?;
             let max_prs = args.max_prs;
-            let poll_result = poller::poll_once_limited(&store, &config, max_prs)
-                .context("run initial poller sync")?;
-            let worker_result = worker::run_generation_pass(&store, &config)
-                .context("run initial hosted generation pass")?;
             let bind_addr = args.bind_with_config(&config.bind_address, config.bind_port);
             println!(
-                "serve mode scaffold ready: cli_bind={} config_bind={}:{} db={} repos={} poll_interval_secs={} model={} api_key_env={} prs_seen={} queued={} head_sha_changes={} worker_claimed={} worker_ready={} worker_failed={} worker_retry_scheduled={}",
+                "serve: bind={} db={} repos={} poll_interval={}s model={}",
                 bind_addr,
-                config.bind_address,
-                config.bind_port,
                 store.db_path().display(),
                 config.repos.len(),
                 config.poll_interval_secs,
                 config.model,
-                config.api_key_env,
-                poll_result.prs_seen,
-                poll_result.queued_regenerations,
-                poll_result.head_sha_changes,
-                worker_result.claimed,
-                worker_result.ready,
-                worker_result.failed,
-                worker_result.retry_scheduled
             );
 
             let runtime = tokio::runtime::Runtime::new().context("create tokio runtime")?;

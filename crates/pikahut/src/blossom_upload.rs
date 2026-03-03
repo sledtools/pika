@@ -3,8 +3,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Args;
 use nostr_blossom::client::BlossomClient;
+use nostr_sdk::Keys;
 use pika_marmot_runtime::media::mime_from_extension;
+use pika_relay_profiles::blossom_servers_or_default;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 #[derive(Debug, Args)]
 pub struct BlossomUploadArgs {
@@ -18,8 +21,8 @@ pub struct BlossomUploadArgs {
 }
 
 pub async fn run(args: BlossomUploadArgs) -> Result<()> {
-    let servers = pika_relay_profiles::blossom_servers_or_default(&args.server);
-    let keys = nostr_sdk::Keys::generate();
+    let servers = blossom_servers_or_default(&args.server);
+    let keys = Keys::generate();
 
     let mut failed = Vec::new();
 
@@ -53,12 +56,12 @@ async fn try_upload(
     data: Vec<u8>,
     mime_type: &str,
     expected_hash: &str,
-    keys: &nostr_sdk::Keys,
+    keys: &Keys,
 ) -> Result<String, String> {
     let mut last_error: Option<String> = None;
 
     for server in servers {
-        let base_url = match url::Url::parse(server) {
+        let base_url = match Url::parse(server) {
             Ok(url) => url,
             Err(e) => {
                 last_error = Some(format!("{server}: {e}"));

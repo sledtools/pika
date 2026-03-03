@@ -13,11 +13,10 @@ Status for Phase-1 closeout (`todos/pikahut-phase1-library-migration-closeout.md
 
 - [x] Deterministic selector target exists: `integration_deterministic`.
 - [x] Heavy selector target exists: `integration_openclaw`.
-- [x] Nondeterministic selector target exists: `integration_public`.
+- [x] ~~Nondeterministic selector target exists: `integration_public`.~~ Removed: public-infra tests de-scoped (see `docs/testing/public-removal-coverage-parity.md`).
 - [x] Primal/nightly selector target exists: `integration_primal`.
 - [x] Manual selector target exists: `integration_manual`.
 - [x] OpenClaw deterministic scenarios are selector-backed (`openclaw_scenario_*`).
-- [x] Public UI and deployed-bot flows are selector-backed (`integration_public::*`).
 - [x] `just` recipes invoke selectors as lane contracts (not ad-hoc CLI orchestration).
 - [x] Compatibility wrappers in `tools/` and `pikachat-openclaw/scripts/` dispatch into selectors/scenario library.
 

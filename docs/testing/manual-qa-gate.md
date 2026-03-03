@@ -19,13 +19,10 @@ Run the following representative matrix and confirm behavior + artifacts:
 2. Full OpenClaw E2E
 - `just openclaw-pikachat-e2e`
 
-3. One public-relay UI E2E run
-- `just ios-ui-e2e` or `just android-ui-e2e`
-
-4. Primal nightly smoke path
+3. Primal nightly smoke path
 - `just nightly-primal-ios-interop`
 
-5. One manual debug lab flow
+4. One manual debug lab flow
 - `just primal-ios-lab`
 - Optional helpers: `just primal-ios-lab-dump-debug`, `just primal-ios-lab-patch-primal`, `just primal-ios-lab-seed-capture`, `just primal-ios-lab-seed-reset`
 

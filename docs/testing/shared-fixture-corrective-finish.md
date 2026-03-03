@@ -24,7 +24,6 @@ Status legend:
 | Local deterministic OpenClaw selectors | `integration_deterministic::openclaw_scenario_*` | `StrictOnly` | Shared default is rolled back pending explicit parity/isolation/reliability evidence. |
 | Local deterministic UI selectors | `integration_deterministic::{ui_e2e_local_android,ui_e2e_local_ios,ui_e2e_local_desktop}` | `StrictOnly` | Heavy deterministic fixtures remain strict by default. |
 | OpenClaw gateway E2E selector | `integration_openclaw::openclaw_gateway_e2e` | `StrictOnly` | No shared-mode promotion in this corrective cycle. |
-| Public relay selectors | `integration_public::ui_e2e_public_*`, `integration_public::deployed_bot_call_flow` | `StrictOnly` | Nondeterministic/public-network flows are outside shared-mode promotion scope. |
 | Primal interop selector | `integration_primal::primal_nostrconnect_smoke` | `StrictOnly` | Nightly interop remains strict pending dedicated shared evidence. |
 | Manual runbook selectors | `integration_manual::{manual_interop_rust_runbook_contract,manual_primal_lab_runbook_contract}` | `StrictOnly` | Manual selectors remain strict-only contracts. |
 | Shared fixture infra validation (candidate) | Relay + MoQ + Postgres shared infra validation in deterministic harness | `Experimental` | Allowed only as explicit validation runs with recorded evidence artifacts. |

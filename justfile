@@ -311,14 +311,9 @@ nightly:
     just nightly-pikachat
     @echo "nightly complete"
 
-# Nightly E2E (Rust): public selectors + focused call-path regression boundaries.
+# Nightly E2E (Rust): local-only deterministic + heavy call-path regression boundaries.
 nightly-pika-e2e:
-    set -euo pipefail; \
-    if [ -z "${PIKA_UI_E2E_NSEC:-}" ] && [ -z "${PIKA_TEST_NSEC:-}" ]; then \
-      echo "note: neither PIKA_UI_E2E_NSEC nor PIKA_TEST_NSEC is set in the shell; deployed-bot selector may still run if .env defaults provide credentials"; \
-    fi; \
-    cargo test -p pikahut --test integration_public -- --ignored --nocapture; \
-    cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture; \
+    cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic call_with_pikachat_daemon_boundary -- --ignored --nocapture
 
 # Nightly lane: full OpenClaw integration E2E (gateway + real sidecar wiring).
@@ -379,15 +374,6 @@ qa: fmt clippy test android-assemble ios-build-sim
 e2e-local-relay:
     just ios-ui-e2e-local
     just android-ui-e2e-local
-
-# E2E against public relays + deployed bot (nondeterministic).
-e2e-public-relays:
-    cargo test -p pikahut --test integration_public ui_e2e_public_all -- --ignored --nocapture
-
-# E2E call test against the deployed bot (requires PIKA_TEST_NSEC).
-e2e-deployed-bot:
-    source .env 2>/dev/null || true; \
-    cargo test -p pikahut --test integration_public deployed_bot_call_flow -- --ignored --nocapture
 
 # Build Rust core + NSE for the host platform.
 rust-build-host:
@@ -507,10 +493,6 @@ android-ui-e2e-local:
 # Desktop E2E: local Nostr relay + local Rust bot.
 desktop-e2e-local:
     cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
-
-# Android E2E: public relays + deployed bot (nondeterministic). Requires emulator.
-android-ui-e2e:
-    cargo test -p pikahut --test integration_public ui_e2e_public_android -- --ignored --nocapture
 
 # Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
 release VERSION:
@@ -677,10 +659,6 @@ ios-ui-test: ios-xcframework ios-xcodeproj
 # iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:
     cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture
-
-# iOS E2E: public relays + deployed bot (nondeterministic). Requires PIKA_UI_E2E=1.
-ios-ui-e2e:
-    cargo test -p pikahut --test integration_public ui_e2e_public_ios -- --ignored --nocapture
 
 # Optional: device automation (npx). Not required for building.
 device:

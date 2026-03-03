@@ -8,7 +8,6 @@ mod deterministic;
 mod interop;
 mod openclaw;
 pub mod primal;
-pub mod public;
 pub mod types;
 
 pub use deterministic::{run_cli_smoke, run_scenario, run_ui_e2e_local};

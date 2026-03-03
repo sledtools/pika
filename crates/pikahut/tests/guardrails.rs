@@ -102,8 +102,6 @@ fn ci_just_recipes_use_selector_contracts() -> Result<()> {
         "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
         "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
         "cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture",
-        "cargo test -p pikahut --test integration_public ui_e2e_public_all -- --ignored --nocapture",
-        "cargo test -p pikahut --test integration_public deployed_bot_call_flow -- --ignored --nocapture",
         "cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture",
         "cargo test -p pikahut --test integration_deterministic call_with_pikachat_daemon_boundary -- --ignored --nocapture",
         "cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture",
@@ -126,6 +124,7 @@ fn ci_just_recipes_use_selector_contracts() -> Result<()> {
         "cargo run -q -p pikahut -- test interop-rust-baseline --manual",
         "./tools/ui-e2e-public --platform all",
         "cargo test -p pika_core --tests -- --ignored --nocapture",
+        "--test integration_public",
     ];
 
     for needle in forbidden {
@@ -201,10 +200,10 @@ fn required_lanes_do_not_regress_to_cli_test_harness() -> Result<()> {
 fn integration_wrapper_scripts_dispatch_to_selectors() -> Result<()> {
     let root = workspace_root();
 
-    let ui_public = fs::read_to_string(root.join("tools/ui-e2e-public"))?;
-    assert!(ui_public.contains("--test integration_public ui_e2e_public_all"));
-    assert!(ui_public.contains("--test integration_public ui_e2e_public_ios"));
-    assert!(ui_public.contains("--test integration_public ui_e2e_public_android"));
+    assert!(
+        !root.join("tools/ui-e2e-public").exists(),
+        "tools/ui-e2e-public must not exist (public-infra tests removed)"
+    );
 
     let ui_local = fs::read_to_string(root.join("tools/ui-e2e-local"))?;
     assert!(ui_local.contains("--test integration_deterministic ui_e2e_local_ios"));
@@ -276,6 +275,37 @@ fn migration_docs_do_not_reference_legacy_cli_harness_paths() -> Result<()> {
             );
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn no_public_infra_selectors_in_ci_lanes() -> Result<()> {
+    let root = workspace_root();
+
+    for path in [
+        root.join("justfile"),
+        root.join(".github/workflows/pre-merge.yml"),
+    ] {
+        let text = fs::read_to_string(&path)?;
+        assert!(
+            !text.contains("integration_public"),
+            "public-infra selector reference found in {}: integration_public selectors have been removed",
+            path.display()
+        );
+    }
+
+    assert!(
+        !root
+            .join("crates/pikahut/tests/integration_public.rs")
+            .exists(),
+        "integration_public.rs must not exist (public-infra tests removed)"
+    );
+
+    assert!(
+        !root.join("tools/ui-e2e-public").exists(),
+        "tools/ui-e2e-public must not exist (public-infra wrapper removed)"
+    );
 
     Ok(())
 }

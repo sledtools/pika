@@ -12,7 +12,6 @@ This repo's integration contract is library-first: new flows should be authored 
 
 - Deterministic/local flow: `crates/pikahut/tests/integration_deterministic.rs`
 - Heavy OpenClaw gateway flow: `crates/pikahut/tests/integration_openclaw.rs`
-- Public/deployed nondeterministic flow: `crates/pikahut/tests/integration_public.rs`
 - Primal nightly smoke: `crates/pikahut/tests/integration_primal.rs`
 - Manual/debug-only flow: add a selector under a dedicated manual test target.
 

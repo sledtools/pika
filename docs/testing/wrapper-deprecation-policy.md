@@ -23,7 +23,6 @@ Compatibility wrappers are kept only when they improve developer ergonomics and 
 | `tools/cli-smoke` | retained (thin) | `integration_deterministic::{cli_smoke_local,cli_smoke_media_local}` |
 | `tools/interop-rust-baseline` | retained (thin) | `integration_deterministic::interop_rust_baseline`, `integration_manual::manual_interop_rust_runbook_contract` |
 | `tools/ui-e2e-local` | retained (thin) | `integration_deterministic::ui_e2e_local_*` |
-| `tools/ui-e2e-public` | retained (thin) | `integration_public::ui_e2e_public_*` |
 | `tools/primal-ios-interop-nightly` | retained (thin) | `integration_primal::primal_nostrconnect_smoke` |
 | `pikachat-openclaw/scripts/run-scenario.sh` | retained (thin) | `integration_deterministic::openclaw_scenario_*` |
 | `pikachat-openclaw/scripts/run-openclaw-e2e.sh` | retained (thin) | `integration_openclaw::openclaw_gateway_e2e` |

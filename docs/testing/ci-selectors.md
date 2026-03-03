@@ -29,7 +29,7 @@ This document defines the selector contract for integration coverage in CI and n
 
 | Lane / recipe | Canonical selectors |
 | --- | --- |
-| `nightly-pika-e2e` | `integration_public::ui_e2e_public_android`, `integration_public::ui_e2e_public_ios`, `integration_public::ui_e2e_public_all`, `integration_public::deployed_bot_call_flow`, `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary` |
+| `nightly-pika-e2e` | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | `integration_deterministic::ui_e2e_local_android` |
 | `nightly-primal-ios-interop` | `integration_primal::primal_nostrconnect_smoke` |

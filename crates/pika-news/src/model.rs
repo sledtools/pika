@@ -199,7 +199,7 @@ fn truncate(input: &str, max: usize) -> String {
     if input.len() <= max {
         input.to_string()
     } else {
-        format!("{}...", &input[..max])
+        format!("{}...", safe_prefix(input, max))
     }
 }
 
@@ -209,10 +209,18 @@ pub fn bounded_diff(diff: &str, max_chars: usize) -> String {
     } else {
         format!(
             "{}\n\n[diff truncated to {} characters]",
-            &diff[..max_chars],
+            safe_prefix(diff, max_chars),
             max_chars
         )
     }
+}
+
+fn safe_prefix(input: &str, max: usize) -> &str {
+    let mut end = max.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
 }
 
 #[derive(Debug, Serialize)]

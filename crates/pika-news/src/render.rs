@@ -38,8 +38,16 @@ pub fn render_tutorial_html(
     if !doc.media_links.is_empty() {
         html.push_str("<h2>Media Links</h2><ul>");
         for link in &doc.media_links {
-            let escaped = escape_html(link);
-            html.push_str(&format!("<li><a href=\"{0}\">{0}</a></li>", escaped));
+            let escaped_label = escape_html(link);
+            let escaped_href = if is_safe_http_url(link) {
+                escape_html(link)
+            } else {
+                "#".to_string()
+            };
+            html.push_str(&format!(
+                "<li><a href=\"{}\">{}</a></li>",
+                escaped_href, escaped_label
+            ));
         }
         html.push_str("</ul>");
     }
@@ -86,6 +94,11 @@ pub fn escape_html(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+pub fn is_safe_http_url(link: &str) -> bool {
+    let normalized = link.trim().to_ascii_lowercase();
+    normalized.starts_with("https://") || normalized.starts_with("http://")
 }
 
 #[cfg(test)]

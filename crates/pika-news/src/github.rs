@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context};
 use chrono::{DateTime, Duration, Utc};
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 #[derive(Clone)]
@@ -56,82 +57,59 @@ impl GitHubClient {
     }
 
     fn fetch_prs(&self, repo: &str, state: &str) -> anyhow::Result<Vec<PullRequest>> {
-        let url = format!(
-            "https://api.github.com/repos/{}/pulls?state={}&sort=updated&direction=desc&per_page=100",
-            repo, state
-        );
+        let mut all = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = format!(
+                "https://api.github.com/repos/{}/pulls?state={}&sort=updated&direction=desc&per_page={}&page={}",
+                repo, state, PER_PAGE, page
+            );
+            let parsed: Vec<GitHubPullResponse> = self.get_json(&url).with_context(|| {
+                format!("fetch PR list for {} state {} page {}", repo, state, page)
+            })?;
 
-        let mut req = self
-            .client
-            .get(&url)
-            .header(USER_AGENT, "pika-news/0.1")
-            .header(ACCEPT, "application/vnd.github+json");
-
-        if let Some(token) = &self.token {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", token));
+            let count = parsed.len();
+            if count == 0 {
+                break;
+            }
+            all.extend(parsed.into_iter().map(PullRequest::from));
+            if count < PER_PAGE {
+                break;
+            }
         }
-
-        let response = req
-            .send()
-            .with_context(|| format!("send GitHub request for repo {} state {}", repo, state))?;
-
-        let status = response.status();
-        let body = response
-            .text()
-            .with_context(|| format!("read GitHub response body for {}", repo))?;
-
-        if !status.is_success() {
-            return Err(anyhow!(
-                "GitHub API error for {} state {}: HTTP {} body={} ",
-                repo,
-                state,
-                status,
-                truncate(&body, 400)
-            ));
+        if all.len() >= PER_PAGE * MAX_PAGES {
+            eprintln!(
+                "warning: reached GitHub PR page limit for {} state {}, results may be truncated",
+                repo, state
+            );
         }
-
-        let parsed: Vec<GitHubPullResponse> = serde_json::from_str(&body)
-            .with_context(|| format!("parse GitHub pull list JSON for {}", repo))?;
-
-        Ok(parsed.into_iter().map(PullRequest::from).collect())
+        Ok(all)
     }
 
     pub fn fetch_pull_diff(&self, repo: &str, pr_number: i64) -> anyhow::Result<PullDiff> {
-        let url = format!(
-            "https://api.github.com/repos/{}/pulls/{}/files?per_page=100",
-            repo, pr_number
-        );
-
-        let mut req = self
-            .client
-            .get(&url)
-            .header(USER_AGENT, "pika-news/0.1")
-            .header(ACCEPT, "application/vnd.github+json");
-
-        if let Some(token) = &self.token {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", token));
+        let mut files = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = format!(
+                "https://api.github.com/repos/{}/pulls/{}/files?per_page={}&page={}",
+                repo, pr_number, PER_PAGE, page
+            );
+            let parsed: Vec<GitHubPullFileResponse> = self.get_json(&url).with_context(|| {
+                format!("fetch pull files for {}/{} page {}", repo, pr_number, page)
+            })?;
+            let count = parsed.len();
+            if count == 0 {
+                break;
+            }
+            files.extend(parsed);
+            if count < PER_PAGE {
+                break;
+            }
         }
-
-        let response = req
-            .send()
-            .with_context(|| format!("fetch pull files for {}/{}", repo, pr_number))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .with_context(|| format!("read pull files body for {}/{}", repo, pr_number))?;
-
-        if !status.is_success() {
-            return Err(anyhow!(
-                "GitHub pull files error for {}/{}: HTTP {} body={}",
-                repo,
-                pr_number,
-                status,
-                truncate(&body, 400)
-            ));
+        if files.len() >= PER_PAGE * MAX_PAGES {
+            eprintln!(
+                "warning: reached GitHub file page limit for {}/{}, diff may be truncated",
+                repo, pr_number
+            );
         }
-
-        let files: Vec<GitHubPullFileResponse> = serde_json::from_str(&body)
-            .with_context(|| format!("parse pull files JSON for {}/{}", repo, pr_number))?;
 
         let mut unified_diff = String::new();
         let mut file_list = Vec::with_capacity(files.len());
@@ -154,6 +132,36 @@ impl GitHubClient {
             files: file_list,
             unified_diff,
         })
+    }
+
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> anyhow::Result<T> {
+        let mut req = self
+            .client
+            .get(url)
+            .header(USER_AGENT, "pika-news/0.1")
+            .header(ACCEPT, "application/vnd.github+json");
+
+        if let Some(token) = &self.token {
+            req = req.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = req
+            .send()
+            .with_context(|| format!("send GitHub request {}", url))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .with_context(|| format!("read GitHub response body for {}", url))?;
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "GitHub API error: HTTP {} body={}",
+                status,
+                truncate(&body, 400)
+            ));
+        }
+
+        serde_json::from_str(&body).with_context(|| format!("parse GitHub JSON for {}", url))
     }
 }
 
@@ -217,6 +225,17 @@ fn truncate(input: &str, max: usize) -> String {
     if input.len() <= max {
         input.to_string()
     } else {
-        format!("{}...", &input[..max])
+        format!("{}...", safe_prefix(input, max))
     }
 }
+
+fn safe_prefix(input: &str, max: usize) -> &str {
+    let mut end = max.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
+}
+
+const PER_PAGE: usize = 100;
+const MAX_PAGES: usize = 50;

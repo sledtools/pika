@@ -22,12 +22,12 @@ pub struct ServeArgs {
     /// Config file path with repo list, model, and polling settings.
     #[arg(long, default_value = "pika-news.toml")]
     pub config: PathBuf,
-    /// Bind address for the hosted web server.
-    #[arg(long, default_value = "127.0.0.1")]
-    pub bind: String,
-    /// Bind port for the hosted web server.
-    #[arg(long, default_value_t = 8787)]
-    pub port: u16,
+    /// Override bind address from config file.
+    #[arg(long)]
+    pub bind: Option<String>,
+    /// Override bind port from config file.
+    #[arg(long)]
+    pub port: Option<u16>,
     /// SQLite database path for hosted mode state.
     #[arg(long, default_value = "pika-news.db")]
     pub db: PathBuf,
@@ -37,8 +37,10 @@ pub struct ServeArgs {
 }
 
 impl ServeArgs {
-    pub fn bind(&self) -> String {
-        format!("{}:{}", self.bind, self.port)
+    pub fn bind_with_config(&self, config_bind: &str, config_port: u16) -> String {
+        let bind = self.bind.as_deref().unwrap_or(config_bind);
+        let port = self.port.unwrap_or(config_port);
+        format!("{}:{}", bind, port)
     }
 }
 

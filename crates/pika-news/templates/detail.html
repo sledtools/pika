@@ -88,7 +88,7 @@
         <h2>Media Links</h2>
         <ul>
           {% for link in media_links %}
-          <li><a href="{{ link }}">{{ link }}</a></li>
+          <li><a href="{{ link.href }}">{{ link.label }}</a></li>
           {% endfor %}
         </ul>
       </section>

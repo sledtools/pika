@@ -12,6 +12,7 @@ use pulldown_cmark::{html, Parser};
 
 use crate::config::Config;
 use crate::poller;
+use crate::render::is_safe_http_url;
 use crate::storage::{FeedItem, PrDetailRecord, Store};
 use crate::tutorial::TutorialDoc;
 use crate::worker;
@@ -41,7 +42,7 @@ struct DetailTemplate {
     pr_state: String,
     generation_status: String,
     executive_html: Option<String>,
-    media_links: Vec<String>,
+    media_links: Vec<MediaLinkView>,
     error_message: Option<String>,
     steps: Vec<StepView>,
     raw_diff: Option<String>,
@@ -68,6 +69,12 @@ struct StepView {
     body_html: String,
 }
 
+#[derive(Clone)]
+struct MediaLinkView {
+    href: String,
+    label: String,
+}
+
 pub async fn serve(
     store: Store,
     config: Config,
@@ -84,11 +91,26 @@ pub async fn serve(
     tokio::spawn(async move {
         loop {
             let state = Arc::clone(&background_state);
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = poller::poll_once_limited(&state.store, &state.config, state.max_prs);
-                let _ = worker::run_generation_pass(&state.store, &state.config);
+            match tokio::task::spawn_blocking(move || {
+                (
+                    poller::poll_once_limited(&state.store, &state.config, state.max_prs),
+                    worker::run_generation_pass(&state.store, &state.config),
+                )
             })
-            .await;
+            .await
+            {
+                Ok((poll_result, worker_result)) => {
+                    if let Err(err) = poll_result {
+                        eprintln!("pika-news background poller error: {}", err);
+                    }
+                    if let Err(err) = worker_result {
+                        eprintln!("pika-news background worker error: {}", err);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pika-news background task join error: {}", err);
+                }
+            }
             tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)).await;
         }
     });
@@ -224,7 +246,18 @@ fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTempla
             .context("parse stored tutorial JSON for detail page")?;
 
         executive_html = Some(markdown_to_safe_html(&tutorial.executive_summary));
-        media_links = tutorial.media_links;
+        media_links = tutorial
+            .media_links
+            .into_iter()
+            .map(|link| MediaLinkView {
+                href: if is_safe_http_url(&link) {
+                    link.clone()
+                } else {
+                    "#".to_string()
+                },
+                label: link,
+            })
+            .collect();
         for step in tutorial.steps {
             steps.push(StepView {
                 title: step.title,
@@ -240,7 +273,11 @@ fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTempla
         page_title: format!("{} #{}: {}", record.repo, record.pr_number, record.title),
         repo: record.repo,
         pr_number: record.pr_number,
-        github_url: record.url,
+        github_url: if is_safe_http_url(&record.url) {
+            record.url
+        } else {
+            "#".to_string()
+        },
         updated_at: record.updated_at,
         pr_state: record.pr_state,
         generation_status: record.generation_status,

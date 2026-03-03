@@ -1,12 +1,8 @@
-use std::env;
+use std::process::Command;
 
-use reqwest::blocking::Client;
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::tutorial::{TutorialDoc, TutorialStep};
-
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptInput {
@@ -25,6 +21,7 @@ pub struct PromptPrMetadata {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum GenerationError {
     MissingApiKey { env_var: String },
     RetrySafe(String),
@@ -46,74 +43,45 @@ impl std::fmt::Display for GenerationError {
 impl std::error::Error for GenerationError {}
 
 pub fn generate_with_anthropic(
-    model: &str,
-    api_key_env: &str,
+    _model: &str,
+    _api_key_env: &str,
     input: &PromptInput,
 ) -> Result<TutorialDoc, GenerationError> {
-    let api_key = env::var(api_key_env).map_err(|_| GenerationError::MissingApiKey {
-        env_var: api_key_env.to_string(),
-    })?;
+    let prompt = format!("{}\n\n{}", SYSTEM_PROMPT, build_user_prompt(input));
 
-    let body = AnthropicRequest {
-        model,
-        max_tokens: 2400,
-        temperature: 0.0,
-        top_p: 1.0,
-        system: SYSTEM_PROMPT,
-        messages: vec![AnthropicMessage {
-            role: "user",
-            content: vec![AnthropicContent {
-                r#type: "text",
-                text: build_user_prompt(input),
-            }],
-        }],
-    };
+    let output = Command::new("claude")
+        .args(["-p", &prompt, "--output-format", "json", "--max-turns", "1"])
+        .output()
+        .map_err(|err| GenerationError::RetrySafe(format!("spawn claude CLI: {}", err)))?;
 
-    let client = Client::builder()
-        .build()
-        .map_err(|err| GenerationError::RetrySafe(format!("build HTTP client: {}", err)))?;
-
-    let response = client
-        .post(ANTHROPIC_API_URL)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|err| GenerationError::RetrySafe(format!("send Anthropic request: {}", err)))?;
-
-    let status = response.status();
-    let response_body = response.text().map_err(|err| {
-        GenerationError::RetrySafe(format!("read Anthropic response body: {}", err))
-    })?;
-
-    if !status.is_success() {
-        return Err(classify_http_error(status, response_body));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI exited {}: {}",
+            output.status,
+            truncate(&stderr, 600)
+        )));
     }
 
-    let parsed: AnthropicResponse = serde_json::from_str(&response_body).map_err(|err| {
-        GenerationError::RetrySafe(format!("parse Anthropic envelope JSON: {}", err))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {
+        GenerationError::RetrySafe(format!("parse claude CLI JSON envelope: {}", err))
     })?;
 
-    let text = parsed
-        .content
-        .iter()
-        .find(|part| part.r#type == "text")
-        .map(|part| part.text.clone())
-        .ok_or_else(|| {
-            GenerationError::RetrySafe("Anthropic response had no text content block".to_string())
-        })?;
+    if envelope.is_error {
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI returned error: {}",
+            truncate(&envelope.result, 600)
+        )));
+    }
 
-    parse_and_validate_tutorial(&text)
+    parse_and_validate_tutorial(&envelope.result)
 }
 
-fn classify_http_error(status: StatusCode, body: String) -> GenerationError {
-    let trimmed = truncate(&body, 600);
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        GenerationError::RetrySafe(format!("Anthropic HTTP {}: {}", status, trimmed))
-    } else {
-        GenerationError::Fatal(format!("Anthropic HTTP {}: {}", status, trimmed))
-    }
+#[derive(Debug, Deserialize)]
+struct ClaudeCliResponse {
+    result: String,
+    is_error: bool,
 }
 
 fn parse_and_validate_tutorial(raw_output: &str) -> Result<TutorialDoc, GenerationError> {
@@ -221,39 +189,6 @@ fn safe_prefix(input: &str, max: usize) -> &str {
         end -= 1;
     }
     &input[..end]
-}
-
-#[derive(Debug, Serialize)]
-struct AnthropicRequest<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    temperature: f32,
-    top_p: f32,
-    system: &'a str,
-    messages: Vec<AnthropicMessage>,
-}
-
-#[derive(Debug, Serialize)]
-struct AnthropicMessage {
-    role: &'static str,
-    content: Vec<AnthropicContent>,
-}
-
-#[derive(Debug, Serialize)]
-struct AnthropicContent {
-    r#type: &'static str,
-    text: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicResponse {
-    content: Vec<AnthropicResponseContent>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicResponseContent {
-    r#type: String,
-    text: String,
 }
 
 const SYSTEM_PROMPT: &str =

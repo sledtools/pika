@@ -846,3 +846,14 @@ agent-replay-test:
     export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"
     export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"
     just agent-fly
+
+# Run pika-news hosted mode (feed + tutorial generation for sledtools/pika).
+news MAX_PRS="2":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source .env; set +a
+    export GITHUB_TOKEN="$(gh auth token)"
+    cargo run -p pika-news -- serve \
+      --config crates/pika-news/pika-news.toml \
+      --db .tmp/pika-news.db \
+      --max-prs {{ MAX_PRS }}

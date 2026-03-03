@@ -21,8 +21,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Serve(args) => {
             let config = config::load(&args.config).context("load config file")?;
             let store = storage::Store::open(&args.db).context("initialize sqlite storage")?;
-            let poll_result =
-                poller::poll_once(&store, &config).context("run initial poller sync")?;
+            let max_prs = args.max_prs;
+            let poll_result = poller::poll_once_limited(&store, &config, max_prs)
+                .context("run initial poller sync")?;
             let worker_result = worker::run_generation_pass(&store, &config)
                 .context("run initial hosted generation pass")?;
             let bind_addr = args.bind();
@@ -47,7 +48,7 @@ fn main() -> anyhow::Result<()> {
 
             let runtime = tokio::runtime::Runtime::new().context("create tokio runtime")?;
             runtime
-                .block_on(web::serve(store, config, bind_addr))
+                .block_on(web::serve(store, config, bind_addr, max_prs))
                 .context("run hosted web server")?;
         }
         Commands::Local(args) => {

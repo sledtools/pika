@@ -31,6 +31,9 @@ pub struct ServeArgs {
     /// SQLite database path for hosted mode state.
     #[arg(long, default_value = "pika-news.db")]
     pub db: PathBuf,
+    /// Maximum number of PRs to ingest per repo per poll cycle. 0 means unlimited.
+    #[arg(long, default_value_t = 0)]
+    pub max_prs: usize,
 }
 
 impl ServeArgs {

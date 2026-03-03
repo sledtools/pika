@@ -15,7 +15,11 @@ pub struct PollResult {
     pub head_sha_changes: usize,
 }
 
-pub fn poll_once(store: &Store, config: &Config) -> anyhow::Result<PollResult> {
+pub fn poll_once_limited(
+    store: &Store,
+    config: &Config,
+    max_prs: usize,
+) -> anyhow::Result<PollResult> {
     let token = env::var(&config.github_token_env).ok();
     let github = GitHubClient::new(token).context("initialize GitHub client")?;
 
@@ -36,6 +40,10 @@ pub fn poll_once(store: &Store, config: &Config) -> anyhow::Result<PollResult> {
             if seen.insert(pr.number) {
                 processed.push(pr);
             }
+        }
+
+        if max_prs > 0 {
+            processed.truncate(max_prs);
         }
 
         for pr in &processed {

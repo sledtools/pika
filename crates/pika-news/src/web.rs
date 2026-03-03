@@ -20,6 +20,7 @@ use crate::worker;
 struct AppState {
     store: Store,
     config: Config,
+    max_prs: usize,
 }
 
 #[derive(Template)]
@@ -67,10 +68,16 @@ struct StepView {
     body_html: String,
 }
 
-pub async fn serve(store: Store, config: Config, bind_addr: String) -> anyhow::Result<()> {
+pub async fn serve(
+    store: Store,
+    config: Config,
+    bind_addr: String,
+    max_prs: usize,
+) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
+        max_prs,
     });
 
     let background_state = Arc::clone(&state);
@@ -78,7 +85,7 @@ pub async fn serve(store: Store, config: Config, bind_addr: String) -> anyhow::R
         loop {
             let state = Arc::clone(&background_state);
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = poller::poll_once(&state.store, &state.config);
+                let _ = poller::poll_once_limited(&state.store, &state.config, state.max_prs);
                 let _ = worker::run_generation_pass(&state.store, &state.config);
             })
             .await;

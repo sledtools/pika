@@ -636,3 +636,71 @@ setup:
     @echo "   just relay-create-all"
     @echo "   just relay-initial-deploy-all"
     @echo "   just relay-deploy-all"
+
+# ── Secrets (sops + age-plugin-yubikey) ─────────────────────────────────
+# YubiKey identities are stored in ~/configs/yubikeys/keys.txt
+# See ~/configs/yubikeys/ for per-key identity files.
+
+SOPS_KEY_FILE := env_var("HOME") + "/configs/yubikeys/keys.txt"
+
+# List all encrypted secrets
+secret-list:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    files=(secrets/*.yaml)
+    if [[ ! -e "${files[0]}" ]]; then
+        echo "No secrets found"
+        exit 0
+    fi
+    for f in "${files[@]}"; do
+        base="$(basename "$f")"
+        if [[ "$base" == ".sops.yaml" ]]; then
+            continue
+        fi
+        echo "  ${base%.yaml}"
+    done
+
+# Create a new encrypted secret file
+secret-init name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SECRET_FILE="secrets/{{name}}.yaml"
+    if [[ -f "$SECRET_FILE" ]]; then
+        echo "Secret already exists: $SECRET_FILE"
+        exit 1
+    fi
+    if [[ ! -f "secrets/.sops.yaml" ]]; then
+        echo "Missing secrets/.sops.yaml"
+        exit 1
+    fi
+    printf 'PLACEHOLDER: ""\n' > "$SECRET_FILE"
+    tmp="$(mktemp)"
+    sops --config secrets/.sops.yaml --encrypt --input-type yaml --output-type yaml "$SECRET_FILE" > "$tmp"
+    mv "$tmp" "$SECRET_FILE"
+    echo "Created $SECRET_FILE (encrypted)"
+    echo "Edit with: just secret-edit {{name}}"
+
+# Edit a secret (opens $EDITOR, requires YubiKey tap)
+secret-edit name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SECRET_FILE="secrets/{{name}}.yaml"
+    if [[ ! -f "$SECRET_FILE" ]]; then
+        echo "Secret not found: $SECRET_FILE"
+        echo "Available:"
+        just secret-list
+        exit 1
+    fi
+    echo "Opening {{name}}... (tap YubiKey)"
+    SOPS_AGE_KEY_FILE="{{ SOPS_KEY_FILE }}" sops --config secrets/.sops.yaml "$SECRET_FILE"
+
+# Decrypt and print a secret (requires YubiKey tap)
+secret-show name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SECRET_FILE="secrets/{{name}}.yaml"
+    if [[ ! -f "$SECRET_FILE" ]]; then
+        echo "Secret not found: $SECRET_FILE"
+        exit 1
+    fi
+    SOPS_AGE_KEY_FILE="{{ SOPS_KEY_FILE }}" sops --config secrets/.sops.yaml --decrypt "$SECRET_FILE"

@@ -92,6 +92,8 @@ in
     "claude-code"
   ];
 
+  environment.systemPackages = [ pkgs.claude-code ];
+
   systemd.tmpfiles.rules = [
     "d ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
   ];

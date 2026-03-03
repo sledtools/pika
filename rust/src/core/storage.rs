@@ -1809,4 +1809,163 @@ mod tests {
         let hn = cm.hypernote.unwrap();
         assert!(!hn.ast_json.is_empty());
     }
+
+    // --- truncated_npub tests ---
+
+    #[test]
+    fn truncated_npub_short_unchanged() {
+        assert_eq!(truncated_npub("npub1short"), "npub1short");
+    }
+
+    #[test]
+    fn truncated_npub_exactly_16_unchanged() {
+        let s = "npub1exactly16ch"; // 16 chars
+        assert_eq!(s.len(), 16);
+        assert_eq!(truncated_npub(s), s);
+    }
+
+    #[test]
+    fn truncated_npub_long_truncated() {
+        let s = "npub1qqqqqqqqqqqqqqqqqqqqqqqq"; // 28 chars
+        let result = truncated_npub(s);
+        assert_eq!(result, "npub1qqqqqqq...");
+        assert_eq!(result.len(), 15); // 12 + "..."
+    }
+
+    #[test]
+    fn truncated_npub_17_truncated() {
+        let s = "npub1exactly17cha"; // 17 chars
+        assert_eq!(s.len(), 17);
+        let result = truncated_npub(s);
+        assert_eq!(result, "npub1exactly...");
+    }
+
+    // --- format_display_timestamp tests ---
+
+    #[test]
+    fn format_display_timestamp_produces_am_pm() {
+        let result = format_display_timestamp(1_700_000_000);
+        assert!(
+            result.contains("AM") || result.contains("PM"),
+            "expected AM/PM in '{result}'"
+        );
+    }
+
+    #[test]
+    fn format_display_timestamp_zero_ok() {
+        let result = format_display_timestamp(0);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn format_display_timestamp_result_is_trimmed() {
+        let result = format_display_timestamp(1_700_000_000);
+        assert_eq!(result, result.trim());
+    }
+
+    // --- classify_app_message tests ---
+
+    #[test]
+    fn classify_chat_message() {
+        let msg = make_stored_msg(1, Kind::ChatMessage, "hello", Tags::new(), 100);
+        assert_eq!(
+            super::classify_app_message(&msg),
+            Some(super::AppMessageKind::Chat)
+        );
+    }
+
+    #[test]
+    fn classify_reaction() {
+        let msg = make_stored_msg(1, Kind::Reaction, "+", Tags::new(), 100);
+        assert_eq!(
+            super::classify_app_message(&msg),
+            Some(super::AppMessageKind::Reaction)
+        );
+    }
+
+    #[test]
+    fn classify_metadata_as_group_profile() {
+        let msg = make_stored_msg(1, Kind::Metadata, "{}", Tags::new(), 100);
+        assert_eq!(
+            super::classify_app_message(&msg),
+            Some(super::AppMessageKind::GroupProfile)
+        );
+    }
+
+    #[test]
+    fn classify_unknown_kind_returns_none() {
+        let msg = make_stored_msg(1, Kind::Custom(59999), "x", Tags::new(), 100);
+        assert_eq!(super::classify_app_message(&msg), None);
+    }
+
+    // --- separate_messages edge cases ---
+
+    #[test]
+    fn separate_messages_empty_reaction_becomes_heart() {
+        let msgs = vec![make_stored_msg(
+            1,
+            Kind::Reaction,
+            "",
+            {
+                let mut t = Tags::new();
+                t.push(Tag::parse(vec!["e", "target1"]).unwrap());
+                t
+            },
+            100,
+        )];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        let rxns = &separated.reaction_map["target1"];
+        assert_eq!(rxns[0].0, "\u{2764}\u{FE0F}"); // empty → heart
+    }
+
+    #[test]
+    fn separate_messages_drops_reaction_without_e_tag() {
+        let msgs = vec![make_stored_msg(
+            1,
+            Kind::Reaction,
+            "🔥",
+            Tags::new(), // no e-tag
+            100,
+        )];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        assert!(
+            separated.reaction_map.is_empty(),
+            "reaction without e-tag target should be dropped"
+        );
+    }
+
+    // --- build_chat_message edge cases ---
+
+    #[test]
+    fn build_chat_message_sets_is_mine_false_for_other() {
+        let msg = make_stored_msg(1, Kind::ChatMessage, "hello", Tags::new(), 100);
+        let sender_names = HashMap::new();
+        let reaction_map = HashMap::new();
+
+        let cm = build_chat_message(&msg, "different_pubkey", &sender_names, &reaction_map);
+
+        assert!(!cm.is_mine);
+    }
+
+    #[test]
+    fn build_chat_message_reply_to_from_last_e_tag() {
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(vec!["e", "first_ref"]).unwrap());
+        tags.push(Tag::parse(vec!["p", "somepubkey"]).unwrap());
+        tags.push(Tag::parse(vec!["e", "reply_target"]).unwrap());
+
+        let msg = make_stored_msg(1, Kind::ChatMessage, "reply", tags, 100);
+        let sender_names = HashMap::new();
+        let reaction_map = HashMap::new();
+
+        let cm = build_chat_message(&msg, "other", &sender_names, &reaction_map);
+
+        assert_eq!(cm.reply_to_message_id.as_deref(), Some("reply_target"));
+    }
 }

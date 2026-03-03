@@ -923,4 +923,201 @@ mod tests {
             ChatMediaKind::File
         ));
     }
+
+    #[test]
+    fn infer_media_kind_image_from_mime() {
+        assert!(matches!(
+            infer_media_kind("image/png", "file.bin"),
+            ChatMediaKind::Image
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_file_for_unknown() {
+        assert!(matches!(
+            infer_media_kind("application/octet-stream", "data.bin"),
+            ChatMediaKind::File
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_image_from_filename_when_mime_empty() {
+        assert!(matches!(
+            infer_media_kind("", "photo.jpg"),
+            ChatMediaKind::Image
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_voice_note_from_filename_pattern() {
+        assert!(matches!(
+            infer_media_kind("application/octet-stream", "voice_1234567890.m4a"),
+            ChatMediaKind::VoiceNote
+        ));
+    }
+
+    // --- sanitize_filename tests ---
+
+    #[test]
+    fn sanitize_preserves_valid_chars() {
+        assert_eq!(sanitize_filename("photo-2024_01.jpg"), "photo-2024_01.jpg");
+    }
+
+    #[test]
+    fn sanitize_replaces_special_chars() {
+        assert_eq!(sanitize_filename("my photo (1).jpg"), "my_photo__1_.jpg");
+    }
+
+    #[test]
+    fn sanitize_truncates_at_120() {
+        let long = "a".repeat(200) + ".jpg";
+        let result = sanitize_filename(&long);
+        assert!(
+            result.len() <= 120,
+            "expected <= 120 chars, got {}",
+            result.len()
+        );
+    }
+
+    #[test]
+    fn sanitize_empty_returns_default() {
+        assert_eq!(sanitize_filename(""), "file.bin");
+    }
+
+    #[test]
+    fn sanitize_all_special_returns_default() {
+        assert_eq!(sanitize_filename("@#$%^&*()"), "file.bin");
+    }
+
+    #[test]
+    fn sanitize_trims_underscores() {
+        assert_eq!(sanitize_filename("___photo.jpg___"), "photo.jpg");
+    }
+
+    // --- mime_type_for_extension tests ---
+
+    #[test]
+    fn mime_known_image_types() {
+        assert_eq!(mime_type_for_extension("jpg"), "image/jpeg");
+        assert_eq!(mime_type_for_extension("jpeg"), "image/jpeg");
+        assert_eq!(mime_type_for_extension("png"), "image/png");
+        assert_eq!(mime_type_for_extension("gif"), "image/gif");
+        assert_eq!(mime_type_for_extension("webp"), "image/webp");
+        assert_eq!(mime_type_for_extension("avif"), "image/avif");
+    }
+
+    #[test]
+    fn mime_known_audio_types() {
+        assert_eq!(mime_type_for_extension("mp3"), "audio/mpeg");
+        assert_eq!(mime_type_for_extension("m4a"), "audio/mp4");
+        assert_eq!(mime_type_for_extension("ogg"), "audio/ogg");
+        assert_eq!(mime_type_for_extension("wav"), "audio/wav");
+        assert_eq!(mime_type_for_extension("flac"), "audio/flac");
+    }
+
+    #[test]
+    fn mime_known_video_types() {
+        assert_eq!(mime_type_for_extension("mp4"), "video/mp4");
+        assert_eq!(mime_type_for_extension("mov"), "video/quicktime");
+        assert_eq!(mime_type_for_extension("mkv"), "video/x-matroska");
+        assert_eq!(mime_type_for_extension("webm"), "video/webm");
+    }
+
+    #[test]
+    fn mime_known_doc_types() {
+        assert_eq!(mime_type_for_extension("pdf"), "application/pdf");
+        assert_eq!(mime_type_for_extension("txt"), "text/plain");
+    }
+
+    #[test]
+    fn mime_unknown_is_octet_stream() {
+        assert_eq!(mime_type_for_extension("xyz"), "application/octet-stream");
+        assert_eq!(mime_type_for_extension("docx"), "application/octet-stream");
+    }
+
+    #[test]
+    fn mime_case_insensitive() {
+        assert_eq!(mime_type_for_extension("JPG"), "image/jpeg");
+        assert_eq!(mime_type_for_extension("PNG"), "image/png");
+        assert_eq!(mime_type_for_extension("Mp4"), "video/mp4");
+    }
+
+    // --- mime_type_for_filename tests ---
+
+    #[test]
+    fn mime_from_filename_with_ext() {
+        assert_eq!(mime_type_for_filename("photo.jpg"), "image/jpeg");
+    }
+
+    #[test]
+    fn mime_from_filename_no_ext() {
+        assert_eq!(mime_type_for_filename("README"), "application/octet-stream");
+    }
+
+    // --- normalized_mime_type tests ---
+
+    #[test]
+    fn normalized_lowercases_and_trims() {
+        assert_eq!(normalized_mime_type(" Image/JPEG "), "image/jpeg");
+        assert_eq!(normalized_mime_type("APPLICATION/PDF"), "application/pdf");
+    }
+
+    // --- is_voice_note_filename tests ---
+
+    #[test]
+    fn voice_note_matches_pattern() {
+        assert!(is_voice_note_filename("voice_123.m4a"));
+    }
+
+    #[test]
+    fn voice_note_case_insensitive() {
+        assert!(is_voice_note_filename("VOICE_123.M4A"));
+    }
+
+    #[test]
+    fn voice_note_rejects_non_voice() {
+        assert!(!is_voice_note_filename("audio.m4a"));
+    }
+
+    #[test]
+    fn voice_note_rejects_non_m4a() {
+        assert!(!is_voice_note_filename("voice_123.mp3"));
+    }
+
+    // --- media_file_path tests ---
+
+    #[test]
+    fn media_path_constructs_hierarchy() {
+        let path = media_file_path("/data", "acc", "chat", "hash", "photo.jpg");
+        assert_eq!(
+            path,
+            PathBuf::from("/data/chat_media/acc/chat/hash/photo.jpg")
+        );
+    }
+
+    #[test]
+    fn media_path_sanitizes_filename() {
+        let path = media_file_path("/data", "acc", "chat", "hash", "my photo (1).jpg");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            !filename.contains(' '),
+            "filename should be sanitized: {filename}"
+        );
+    }
+
+    // --- is_imeta_tag tests ---
+
+    #[test]
+    fn imeta_tag_detected() {
+        use nostr_sdk::prelude::*;
+        let tag = Tag::parse(vec!["imeta", "url https://example.com/file.jpg"]).unwrap();
+        assert!(is_imeta_tag(&tag));
+    }
+
+    #[test]
+    fn non_imeta_tag_rejected() {
+        use nostr_sdk::prelude::*;
+        let tag = Tag::parse(vec!["e", "abc123"]).unwrap();
+        assert!(!is_imeta_tag(&tag));
+    }
 }

@@ -263,21 +263,8 @@ impl AppCore {
     /// Called by the admin after adding new members.
     pub(super) fn rebroadcast_group_profiles(&mut self, chat_id: &str, mls_group_id: &GroupId) {
         let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
-        let profiles_to_broadcast: Vec<(String, String)> = self
-            .group_profiles
-            .get(chat_id)
-            .map(|m| {
-                m.iter()
-                    .filter(|(pk, _)| my_hex.as_deref() != Some(pk.as_str()))
-                    .filter_map(|(pk, cache)| {
-                        cache
-                            .metadata_json
-                            .as_ref()
-                            .map(|json| (pk.clone(), json.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let profiles_to_broadcast =
+            profiles_to_rebroadcast(self.group_profiles.get(chat_id), my_hex.as_deref());
 
         if profiles_to_broadcast.is_empty() {
             return;
@@ -317,5 +304,146 @@ impl AppCore {
 
         // Self-set: no p tag needed.
         self.publish_group_kind0(chat_id, mls_group_id, &json, None, vec![]);
+    }
+}
+
+/// Extract the list of (pubkey_hex, metadata_json) pairs that should be
+/// rebroadcast for a group. Excludes `my_hex` (own profile) and entries
+/// without `metadata_json`.
+fn profiles_to_rebroadcast(
+    group_map: Option<&HashMap<String, ProfileCache>>,
+    my_hex: Option<&str>,
+) -> Vec<(String, String)> {
+    group_map
+        .map(|m| {
+            m.iter()
+                .filter(|(pk, _)| my_hex != Some(pk.as_str()))
+                .filter_map(|(pk, cache)| {
+                    cache
+                        .metadata_json
+                        .as_ref()
+                        .map(|json| (pk.clone(), json.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- profiles_to_rebroadcast filtering tests ---
+
+    fn make_cache(metadata_json: Option<&str>, name: Option<&str>) -> ProfileCache {
+        ProfileCache {
+            metadata_json: metadata_json.map(String::from),
+            name: name.map(String::from),
+            username: None,
+            about: None,
+            picture_url: None,
+            event_created_at: 1,
+            last_checked_at: 1,
+        }
+    }
+
+    #[test]
+    fn rebroadcast_filter_excludes_own_profile() {
+        let mut map = HashMap::new();
+        map.insert(
+            "my_pk".to_string(),
+            make_cache(Some(r#"{"name":"Me"}"#), Some("Me")),
+        );
+        map.insert(
+            "other_pk".to_string(),
+            make_cache(Some(r#"{"name":"Other"}"#), Some("Other")),
+        );
+
+        let result = profiles_to_rebroadcast(Some(&map), Some("my_pk"));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "other_pk");
+    }
+
+    #[test]
+    fn rebroadcast_filter_skips_no_metadata() {
+        let mut map = HashMap::new();
+        map.insert("pk1".to_string(), make_cache(None, Some("NoMeta")));
+        map.insert(
+            "pk2".to_string(),
+            make_cache(Some(r#"{"name":"HasMeta"}"#), Some("HasMeta")),
+        );
+
+        let result = profiles_to_rebroadcast(Some(&map), None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "pk2");
+    }
+
+    #[test]
+    fn rebroadcast_filter_empty_map_returns_empty() {
+        let result = profiles_to_rebroadcast(None, Some("my_pk"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn rebroadcast_filter_all_own_returns_empty() {
+        let mut map = HashMap::new();
+        map.insert(
+            "my_pk".to_string(),
+            make_cache(Some(r#"{"name":"Me"}"#), Some("Me")),
+        );
+
+        let result = profiles_to_rebroadcast(Some(&map), Some("my_pk"));
+        assert!(result.is_empty());
+    }
+
+    // --- metadata construction tests ---
+
+    #[test]
+    fn metadata_preserves_picture_when_name_changes() {
+        let json = r#"{"name":"Alice","picture":"https://example.com/pic.jpg"}"#;
+        let cache = ProfileCache::from_metadata_json(Some(json.to_string()), 1, 1);
+        assert_eq!(cache.name.as_deref(), Some("Alice"));
+        assert_eq!(
+            cache.picture_url.as_deref(),
+            Some("https://example.com/pic.jpg")
+        );
+
+        // Rebuild with different name but same picture via Metadata struct.
+        let mut metadata = Metadata::new();
+        metadata.name = Some("Bob".to_string());
+        metadata.display_name = Some("Bob".to_string());
+        metadata.picture = cache.picture_url.clone();
+        let new_json = serde_json::to_string(&metadata).unwrap();
+        let new_cache = ProfileCache::from_metadata_json(Some(new_json), 2, 2);
+        assert_eq!(new_cache.name.as_deref(), Some("Bob"));
+        assert_eq!(
+            new_cache.picture_url.as_deref(),
+            Some("https://example.com/pic.jpg")
+        );
+    }
+
+    #[test]
+    fn metadata_trims_name_and_about() {
+        let mut metadata = Metadata::new();
+        let name = "  Alice  ".trim();
+        if !name.is_empty() {
+            metadata.name = Some(name.to_string());
+        }
+        let about = "  bio  ".trim();
+        if !about.is_empty() {
+            metadata.about = Some(about.to_string());
+        }
+        let json = serde_json::to_string(&metadata).unwrap();
+        let cache = ProfileCache::from_metadata_json(Some(json), 1, 1);
+        assert_eq!(cache.name.as_deref(), Some("Alice"));
+        assert_eq!(cache.about.as_deref(), Some("bio"));
+    }
+
+    #[test]
+    fn metadata_empty_name_becomes_none() {
+        let cache =
+            ProfileCache::from_metadata_json(Some(r#"{"about":"just about"}"#.to_string()), 1, 1);
+        assert!(cache.name.is_none());
+        assert_eq!(cache.about.as_deref(), Some("just about"));
     }
 }

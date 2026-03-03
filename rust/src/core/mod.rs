@@ -6713,4 +6713,287 @@ mod tests {
             );
         }
     }
+
+    mod message_handler_validation {
+        use super::*;
+        use crate::actions::AppAction;
+
+        /// Create a core with a minimal session (logged in, no groups registered).
+        fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir.clone());
+            let keys = nostr_sdk::Keys::generate();
+            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+            let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
+            core.session = Some(super::super::Session {
+                pubkey: keys.public_key(),
+                local_keys: Some(keys),
+                mdk,
+                client,
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups: std::collections::HashMap::new(),
+            });
+            (core, tmp)
+        }
+
+        #[test]
+        fn send_message_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::SendMessage {
+                chat_id: "chat1".into(),
+                content: "hello".into(),
+                kind: None,
+                reply_to_message_id: None,
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn send_message_ignores_empty_content() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::SendMessage {
+                chat_id: "chat1".into(),
+                content: "".into(),
+                kind: None,
+                reply_to_message_id: None,
+            });
+
+            // No toast — just silently returns.
+            assert!(core.state.toast.is_none());
+            assert!(core.local_outbox.is_empty());
+        }
+
+        #[test]
+        fn send_message_ignores_whitespace_only() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::SendMessage {
+                chat_id: "chat1".into(),
+                content: "   \n\t  ".into(),
+                kind: None,
+                reply_to_message_id: None,
+            });
+
+            assert!(core.state.toast.is_none());
+            assert!(core.local_outbox.is_empty());
+        }
+
+        #[test]
+        fn retry_message_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::RetryMessage {
+                chat_id: "chat1".into(),
+                message_id: "m1".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn retry_message_toasts_when_no_pending_send() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::RetryMessage {
+                chat_id: "chat1".into(),
+                message_id: "nonexistent".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Nothing to retry"));
+        }
+    }
+
+    mod group_management_validation {
+        use super::*;
+        use crate::actions::AppAction;
+
+        /// Create a core with a minimal session (logged in, no groups registered).
+        fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
+            let tmp = tempfile::tempdir().unwrap();
+            let data_dir = tmp.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir.clone());
+            let keys = nostr_sdk::Keys::generate();
+            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+            let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
+            core.session = Some(super::super::Session {
+                pubkey: keys.public_key(),
+                local_keys: Some(keys),
+                mdk,
+                client,
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups: std::collections::HashMap::new(),
+            });
+            (core, tmp)
+        }
+
+        #[test]
+        fn create_group_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::CreateGroupChat {
+                peer_npubs: vec!["npub1fake".into()],
+                group_name: "Test".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn create_group_rejects_empty_peers() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::CreateGroupChat {
+                peer_npubs: vec![],
+                group_name: "Test".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Add at least one member"));
+        }
+
+        #[test]
+        fn create_group_rejects_empty_group_name() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::CreateGroupChat {
+                peer_npubs: vec!["npub1fake".into()],
+                group_name: "   ".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Enter a group name"));
+        }
+
+        #[test]
+        fn create_group_rejects_invalid_npub() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::CreateGroupChat {
+                peer_npubs: vec!["not-a-valid-npub".into()],
+                group_name: "Group".into(),
+            });
+
+            assert!(core
+                .state
+                .toast
+                .as_deref()
+                .unwrap()
+                .contains("Invalid npub"));
+        }
+
+        #[test]
+        fn add_members_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::AddGroupMembers {
+                chat_id: "some_chat".into(),
+                peer_npubs: vec!["npub1fake".into()],
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn add_members_rejects_invalid_npub() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::AddGroupMembers {
+                chat_id: "some_chat".into(),
+                peer_npubs: vec!["bad-npub".into()],
+            });
+
+            assert!(core
+                .state
+                .toast
+                .as_deref()
+                .unwrap()
+                .contains("Invalid npub"));
+        }
+
+        #[test]
+        fn remove_members_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::RemoveGroupMembers {
+                chat_id: "some_chat".into(),
+                member_pubkeys: vec!["aabb".into()],
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn remove_members_rejects_unknown_chat() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::RemoveGroupMembers {
+                chat_id: "nonexistent".into(),
+                member_pubkeys: vec!["aabb".into()],
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+        }
+
+        #[test]
+        fn remove_members_rejects_invalid_pubkey() {
+            let (mut core, _tmp) = make_logged_in_core();
+            // Register a group in the session so the "Chat not found" check passes.
+            core.session.as_mut().unwrap().groups.insert(
+                "chat1".to_string(),
+                super::super::GroupIndexEntry {
+                    mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                    is_group: true,
+                    group_name: Some("Test".into()),
+                    members: vec![],
+                    admin_pubkeys: vec![],
+                },
+            );
+
+            core.handle_action(AppAction::RemoveGroupMembers {
+                chat_id: "chat1".into(),
+                member_pubkeys: vec!["not-hex!".into()],
+            });
+
+            assert!(core
+                .state
+                .toast
+                .as_deref()
+                .unwrap()
+                .contains("Invalid pubkey"));
+        }
+
+        #[test]
+        fn leave_group_rejects_when_not_logged_in() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut core = make_core(tmp.path().to_string_lossy().into_owned());
+
+            core.handle_action(AppAction::LeaveGroup {
+                chat_id: "some_chat".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Please log in first"));
+        }
+
+        #[test]
+        fn leave_group_rejects_unknown_chat() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_action(AppAction::LeaveGroup {
+                chat_id: "nonexistent".into(),
+            });
+
+            assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+        }
+    }
 }

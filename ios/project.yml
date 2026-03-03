@@ -27,7 +27,7 @@ packages:
     from: "2.4.0"
   Perception:
     url: https://github.com/pointfreeco/swift-perception
-    from: "1.0.0"
+    from: "2.0.0"
 
 targets:
   Pika:

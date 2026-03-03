@@ -130,12 +130,10 @@ def ios_connected_devices() -> List[Dict[str, Any]]:
         if ln.strip() == "== Devices ==":
             in_devices = True
             continue
-        if ln.strip() == "== Simulators ==":
+        if ln.strip() in ("== Simulators ==", "== Devices Offline =="):
             in_devices = False
             continue
         if not in_devices:
-            continue
-        if "iPhone" not in ln and "iPad" not in ln:
             continue
         m = _XCTRACE_LINE_RE.match(ln.strip())
         if not m:

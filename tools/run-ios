@@ -100,10 +100,12 @@ callback_scheme_for_bundle_id() {
 }
 
 list_connected_iphones() {
+  # Match lines with two sets of parentheses: (OS version) (UDID).
+  # This excludes Macs which only have (UDID).
   ./tools/xcode-run xcrun xctrace list devices 2>/dev/null | awk '
     $0 == "== Devices ==" { in_devices = 1; next }
-    $0 == "== Simulators ==" { in_devices = 0; next }
-    in_devices && $0 ~ /iPhone/ {
+    $0 == "== Simulators ==" || $0 == "== Devices Offline ==" { in_devices = 0; next }
+    in_devices && /\([0-9]+\.[0-9]+/ && /\([0-9A-Fa-f-]{25,}\)/ {
       print $0
     }
   '

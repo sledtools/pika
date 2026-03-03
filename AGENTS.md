@@ -1,3 +1,6 @@
+Run `./scripts/agent-brief` once at the start of each new agent session in this worktree (not every turn).
+Rerun only if asked, if you switch worktrees, or if the first run failed.
+
 ## Related codebases
 
 | Repo | Description |

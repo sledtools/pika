@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -91,6 +91,41 @@ fn run_pikachat_allow_failure(
 
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn next_screen_recording_path(root: &Path, prefix: &str) -> Result<PathBuf> {
+    let dir = root.join("screen_recordings");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("create screen recording dir {}", dir.display()))?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok(dir.join(format!("{prefix}-{ts}.mp4")))
+}
+
+fn stop_spawned_recorder_gracefully(
+    mut handle: crate::testing::command::SpawnHandle,
+    grace_period: Duration,
+) {
+    let deadline = Instant::now() + grace_period;
+    loop {
+        match handle.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("warn: failed to poll recorder process status: {err:#}");
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = handle.kill();
+    let _ = handle.wait();
 }
 
 pub async fn run_scenario(args: ScenarioRequest) -> Result<ScenarioRunOutput> {
@@ -741,9 +776,7 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
 
             let mut android_video_recorder = None;
             let android_video_path = if record_video {
-                let video_path = context
-                    .ensure_artifact_subdir("videos")?
-                    .join("android-ui-e2e-local.mp4");
+                let video_path = next_screen_recording_path(&root, "android-ui-e2e-local")?;
                 match runner.spawn(
                     &CommandSpec::new(&adb_bin)
                         .args([
@@ -796,14 +829,13 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                     .capture_name("android-ui-e2e-local"),
             );
 
-            if let Some(mut recorder) = android_video_recorder {
+            if let Some(recorder) = android_video_recorder {
                 let _ = runner.run(
                     &CommandSpec::new(&adb_bin)
                         .args(["shell", "pkill", "-INT", "screenrecord"])
                         .capture_name("android-ui-video-stop"),
                 );
-                let _ = recorder.kill();
-                let _ = recorder.wait();
+                stop_spawned_recorder_gracefully(recorder, Duration::from_secs(10));
             }
 
             if let Some(video_path) = android_video_path {
@@ -874,9 +906,7 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
 
             let mut ios_video_recorder = None;
             let ios_video_path = if record_video {
-                let video_path = context
-                    .ensure_artifact_subdir("videos")?
-                    .join("ios-ui-e2e-local.mp4");
+                let video_path = next_screen_recording_path(&root, "ios-ui-e2e-local")?;
                 match runner.spawn(
                     &CommandSpec::new("xcrun")
                         .cwd(&root)
@@ -926,9 +956,13 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                     .capture_name("ios-ui-e2e-local"),
             );
 
-            if let Some(mut recorder) = ios_video_recorder {
-                let _ = recorder.kill();
-                let _ = recorder.wait();
+            if let Some(recorder) = ios_video_recorder {
+                let _ = runner.run(
+                    &CommandSpec::new("pkill")
+                        .args(["-INT", "-f", &format!("simctl io {udid} recordVideo")])
+                        .capture_name("ios-ui-video-stop"),
+                );
+                stop_spawned_recorder_gracefully(recorder, Duration::from_secs(10));
             }
 
             if let Some(video_path) = ios_video_path {

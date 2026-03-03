@@ -88,6 +88,10 @@ in
     };
   };
 
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
+    "claude-code"
+  ];
+
   systemd.tmpfiles.rules = [
     "d ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
   ];

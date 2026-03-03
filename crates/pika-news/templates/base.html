@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}pika-news{% endblock %}</title>
+    {% block head_extra %}{% endblock %}
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 0; background: linear-gradient(180deg, #f8fbff 0%, #f2f5f9 100%); color: #1e293b; min-height: 100vh; }
+      a { color: #0f4c81; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+
+      /* Nav */
+      .site-nav { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1.5rem; background: #fff; border-bottom: 1px solid #d4deea; }
+      .site-nav .nav-brand { font-weight: 700; font-size: 1rem; color: #0f4c81; text-decoration: none; }
+      .site-nav .nav-brand:hover { text-decoration: none; }
+      .site-nav .nav-right { display: flex; align-items: center; gap: 0.75rem; }
+      .nostr-btn { background: #7b3fe4; color: #fff; border: none; padding: 0.38rem 1rem; font-size: 0.85rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .nostr-btn:hover { background: #6930c3; }
+      .nostr-btn:disabled { opacity: 0.6; cursor: default; }
+      .nav-user { display: flex; align-items: center; gap: 0.6rem; font-size: 0.84rem; color: #334155; }
+      .nav-user .npub-display { font-family: monospace; font-size: 0.8rem; background: #f0f4f9; padding: 0.2rem 0.5rem; border-radius: 6px; }
+      .regen-btn { background: #e2e8f0; border: 1px solid #9eb3cb; color: #334155; font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .regen-btn:hover { background: #cbd5e1; }
+
+      {% block styles %}{% endblock %}
+    </style>
+  </head>
+  <body>
+    <nav class="site-nav">
+      <a href="/news" class="nav-brand">pika-news</a>
+      <div class="nav-right">
+        {% if chat_enabled %}
+        <span id="auth-actions">
+          <button id="nostr-login" type="button" class="nostr-btn">Sign in with Nostr</button>
+        </span>
+        <span id="user-actions" style="display:none;">
+          <span class="nav-user">
+            <span class="npub-display" id="user-npub"></span>
+            <button id="regen-btn" class="regen-btn" type="button" style="display:none;">Regenerate</button>
+          </span>
+        </span>
+        {% endif %}
+      </div>
+    </nav>
+
+    {% block body %}{% endblock %}
+
+    {% block scripts %}{% endblock %}
+
+    {% if chat_enabled %}
+    <script>
+      // --- Global Nostr auth (shared across pages) ---
+      (function () {
+        const loginBtn = document.getElementById('nostr-login');
+        const authActions = document.getElementById('auth-actions');
+        const userActions = document.getElementById('user-actions');
+        const npubDisplay = document.getElementById('user-npub');
+
+        if (!loginBtn) return;
+
+        // Use a global token stored per-site (not per-PR)
+        let authToken = sessionStorage.getItem('pika_news_token');
+        let savedNpub = sessionStorage.getItem('pika_news_npub');
+
+        window.pikaAuth = {
+          getToken: function () { return sessionStorage.getItem('pika_news_token'); },
+          getNpub: function () { return sessionStorage.getItem('pika_news_npub'); },
+          isAuthed: function () { return !!sessionStorage.getItem('pika_news_token'); },
+        };
+
+        function showAuthed(npub) {
+          authActions.style.display = 'none';
+          userActions.style.display = 'inline';
+          const short = npub && npub.length > 20 ? npub.slice(0, 10) + '...' + npub.slice(-6) : (npub || '');
+          npubDisplay.textContent = short;
+          npubDisplay.title = npub || '';
+          // Dispatch event so page-specific JS can react
+          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub } }));
+        }
+
+        // We need a pr_id for the challenge endpoint; use any PR or a dedicated auth route
+        // For now, use the current page's PR id if available, or the first PR link on the page
+        function getPrIdForAuth() {
+          const m = window.location.pathname.match(/\/news\/pr\/(\d+)/);
+          if (m) return m[1];
+          const link = document.querySelector('a[href*="/news/pr/"]');
+          if (link) {
+            const m2 = link.getAttribute('href').match(/\/news\/pr\/(\d+)/);
+            if (m2) return m2[1];
+          }
+          return null;
+        }
+
+        async function doLogin() {
+          if (!window.nostr) {
+            alert('No Nostr extension found. Install nos2x, Alby, or another NIP-07 signer.');
+            return;
+          }
+          const prId = getPrIdForAuth();
+          if (!prId) {
+            alert('Navigate to a PR detail page first to sign in.');
+            return;
+          }
+          try {
+            loginBtn.textContent = 'Signing...';
+            loginBtn.disabled = true;
+            const challengeRes = await fetch('/news/pr/' + prId + '/auth/challenge', { method: 'POST' });
+            if (!challengeRes.ok) throw new Error('Challenge request failed');
+            const { challenge } = await challengeRes.json();
+
+            const pubkey = await window.nostr.getPublicKey();
+            const event = {
+              kind: 27235,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['u', window.location.href], ['method', 'POST']],
+              content: challenge,
+              pubkey: pubkey,
+            };
+            const signed = await window.nostr.signEvent(event);
+
+            const verifyRes = await fetch('/news/pr/' + prId + '/auth/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: JSON.stringify(signed) }),
+            });
+            if (!verifyRes.ok) {
+              const err = await verifyRes.json();
+              throw new Error(err.error || 'Verification failed');
+            }
+            const { token, npub } = await verifyRes.json();
+            sessionStorage.setItem('pika_news_token', token);
+            sessionStorage.setItem('pika_news_npub', npub || pubkey);
+            showAuthed(npub || pubkey);
+          } catch (e) {
+            loginBtn.textContent = 'Sign in with Nostr';
+            loginBtn.disabled = false;
+            alert('Auth error: ' + e.message);
+          }
+        }
+
+        loginBtn.addEventListener('click', doLogin);
+
+        if (authToken && savedNpub) {
+          showAuthed(savedNpub);
+        }
+      })();
+    </script>
+    {% endif %}
+  </body>
+</html>

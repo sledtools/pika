@@ -32,6 +32,7 @@ struct AppState {
 struct FeedTemplate {
     open_items: Vec<FeedItemView>,
     merged_items: Vec<FeedItemView>,
+    chat_enabled: bool,
 }
 
 #[derive(Template)]
@@ -184,6 +185,7 @@ async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let template = FeedTemplate {
         open_items,
         merged_items,
+        chat_enabled: state.auth.chat_enabled(),
     };
 
     match template.render() {

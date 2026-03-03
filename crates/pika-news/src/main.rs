@@ -1,3 +1,4 @@
+mod auth;
 mod cli;
 mod config;
 mod github;

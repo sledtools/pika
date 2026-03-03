@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct Store {
@@ -66,6 +67,7 @@ pub struct PrDetailRecord {
     pub generation_status: String,
     pub tutorial_json: Option<String>,
     pub unified_diff: Option<String>,
+    pub claude_session_id: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -201,14 +203,22 @@ impl Store {
         html: &str,
         generated_head_sha: &str,
         unified_diff: &str,
+        claude_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE generated_artifacts
                  SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
-                     generated_head_sha=?3, unified_diff=?4, updated_at=CURRENT_TIMESTAMP
-                 WHERE id = ?5",
-                params![tutorial_json, html, generated_head_sha, unified_diff, artifact_id],
+                     generated_head_sha=?3, unified_diff=?4, claude_session_id=?5, updated_at=CURRENT_TIMESTAMP
+                 WHERE id = ?6",
+                params![
+                    tutorial_json,
+                    html,
+                    generated_head_sha,
+                    unified_diff,
+                    claude_session_id,
+                    artifact_id
+                ],
             )
             .with_context(|| format!("mark artifact {} ready", artifact_id))?;
             Ok(())
@@ -297,7 +307,7 @@ impl Store {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, pr.base_ref, pr.head_sha,
-                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.unified_diff, ga.error_message
+                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.unified_diff, ga.claude_session_id, ga.error_message
                  FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
                  LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
@@ -316,7 +326,8 @@ impl Store {
                         generation_status: row.get(8)?,
                         tutorial_json: row.get(9)?,
                         unified_diff: row.get(10)?,
-                        error_message: row.get(11)?,
+                        claude_session_id: row.get(11)?,
+                        error_message: row.get(12)?,
                     })
                 },
             )
@@ -324,6 +335,128 @@ impl Store {
             .context("query PR detail")
         })
     }
+    pub fn get_artifact_session_id(&self, pr_id: i64) -> anyhow::Result<Option<String>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT claude_session_id FROM generated_artifacts WHERE pr_id = ?1 AND status = 'ready'",
+                params![pr_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("query artifact session id")
+            .map(|opt| opt.flatten())
+        })
+    }
+
+    pub fn get_or_create_chat_session(
+        &self,
+        pr_id: i64,
+        npub: &str,
+        claude_session_id: &str,
+    ) -> anyhow::Result<(i64, Vec<ChatMessage>)> {
+        self.with_connection(|conn| {
+            let artifact_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM generated_artifacts WHERE pr_id = ?1",
+                    params![pr_id],
+                    |row| row.get(0),
+                )
+                .context("lookup artifact for chat session")?;
+
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM chat_sessions WHERE artifact_id = ?1 AND npub = ?2",
+                    params![artifact_id, npub],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup existing chat session")?;
+
+            let session_id = match existing {
+                Some(id) => id,
+                None => {
+                    conn.execute(
+                        "INSERT INTO chat_sessions(artifact_id, npub, claude_session_id) VALUES (?1, ?2, ?3)",
+                        params![artifact_id, npub, claude_session_id],
+                    )
+                    .context("insert chat session")?;
+                    conn.last_insert_rowid()
+                }
+            };
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT role, content, created_at FROM chat_messages WHERE session_id = ?1 ORDER BY created_at ASC",
+                )
+                .context("prepare chat messages query")?;
+
+            let rows = stmt
+                .query_map(params![session_id], |row| {
+                    Ok(ChatMessage {
+                        role: row.get(0)?,
+                        content: row.get(1)?,
+                        created_at: row.get(2)?,
+                    })
+                })
+                .context("query chat messages")?;
+
+            let mut messages = Vec::new();
+            for row in rows {
+                messages.push(row.context("read chat message row")?);
+            }
+
+            Ok((session_id, messages))
+        })
+    }
+
+    pub fn get_chat_claude_session_id(&self, session_id: i64) -> anyhow::Result<String> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT claude_session_id FROM chat_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .context("query chat claude session id")
+        })
+    }
+
+    pub fn update_chat_claude_session_id(
+        &self,
+        session_id: i64,
+        claude_session_id: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE chat_sessions SET claude_session_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                params![claude_session_id, session_id],
+            )
+            .context("update chat claude session id")?;
+            Ok(())
+        })
+    }
+
+    pub fn append_chat_message(
+        &self,
+        session_id: i64,
+        role: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO chat_messages(session_id, role, content) VALUES (?1, ?2, ?3)",
+                params![session_id, role, content],
+            )
+            .context("insert chat message")?;
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
 }
 
 fn ensure_repo(conn: &Connection, repo: &str) -> anyhow::Result<i64> {
@@ -514,6 +647,11 @@ fn migrations() -> Vec<Migration> {
             version: 2,
             name: "0002_add_unified_diff",
             sql: include_str!("../migrations/0002_add_unified_diff.sql"),
+        },
+        Migration {
+            version: 3,
+            name: "0003_chat_sessions",
+            sql: include_str!("../migrations/0003_chat_sessions.sql"),
         },
     ]
 }

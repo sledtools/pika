@@ -28,10 +28,30 @@
       .d2h-wrapper { border-radius: 10px; overflow: hidden; }
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .diff-view-toggle button.active { background: #0f4c81; color: #fff; border-color: #0f4c81; }
-      @media (max-width: 640px) { body { padding: 1rem 0.75rem; } }
+
+      /* Chat sidebar */
+      .page-layout { display: flex; gap: 1.5rem; }
+      .page-layout .shell { flex: 1; min-width: 0; }
+      .chat-sidebar { width: 360px; flex-shrink: 0; position: sticky; top: 2rem; height: calc(100vh - 4rem); display: flex; flex-direction: column; background: #ffffffeb; border: 1px solid #d4deea; border-radius: 14px; overflow: hidden; }
+      .chat-sidebar h3 { margin: 0; padding: 0.75rem 1rem; border-bottom: 1px solid #d4deea; font-size: 0.95rem; background: #f0f4f9; }
+      .chat-messages { flex: 1; overflow-y: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+      .chat-msg { padding: 0.5rem 0.75rem; border-radius: 10px; font-size: 0.88rem; line-height: 1.4; max-width: 90%; word-wrap: break-word; }
+      .chat-msg.user { background: #0f4c81; color: #fff; align-self: flex-end; }
+      .chat-msg.assistant { background: #f0f4f9; color: #1e293b; align-self: flex-start; }
+      .chat-input-row { display: flex; gap: 0.5rem; padding: 0.75rem; border-top: 1px solid #d4deea; }
+      .chat-input-row input { flex: 1; border: 1px solid #9eb3cb; border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 0.88rem; }
+      .chat-input-row button { flex-shrink: 0; }
+      .chat-auth { padding: 1rem; text-align: center; }
+      .chat-auth button { background: #7b3fe4; color: #fff; border: none; padding: 0.5rem 1.2rem; font-size: 0.9rem; cursor: pointer; border-radius: 10px; }
+      .chat-status { padding: 0.5rem 1rem; font-size: 0.82rem; color: #64748b; text-align: center; }
+      @media (max-width: 900px) { .chat-sidebar { width: 300px; } }
+      @media (max-width: 640px) { body { padding: 1rem 0.75rem; } .page-layout { flex-direction: column; } .chat-sidebar { width: 100%; position: static; height: 400px; } }
     </style>
   </head>
   <body>
+    {% if chat_enabled && has_session %}
+    <div class="page-layout" style="max-width:1500px;margin:0 auto;padding:2rem 1rem;">
+    {% endif %}
     <main class="shell">
       <p><a href="/news">Back to feed</a></p>
       <h1>{{ page_title }}</h1>
@@ -116,6 +136,26 @@
       </section>
       {% when None %}{% endmatch %}
     </main>
+
+    {% if chat_enabled && has_session %}
+    <aside class="chat-sidebar" id="chat-sidebar">
+      <h3>Chat with Tutorial</h3>
+      <div id="chat-auth" class="chat-auth">
+        <p style="font-size:0.85rem;color:#64748b;">Sign in with your Nostr extension to ask questions about this PR.</p>
+        <button id="nostr-login" type="button">Sign in with Nostr</button>
+      </div>
+      <div id="chat-main" style="display:none;flex:1;flex-direction:column;">
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Ask about this PR..." autocomplete="off" />
+          <button id="chat-send" type="button">Send</button>
+        </div>
+      </div>
+      <div id="chat-status" class="chat-status" style="display:none;"></div>
+    </aside>
+    </div>
+    {% endif %}
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/js/diff2html.min.js"></script>
     <script>
@@ -175,6 +215,137 @@
             });
           });
         }
+      })();
+
+      // --- Chat / NIP-07 auth ---
+      (function () {
+        const sidebar = document.getElementById('chat-sidebar');
+        if (!sidebar) return;
+
+        const prId = window.location.pathname.split('/').pop();
+        let authToken = sessionStorage.getItem('pika_news_token_' + prId);
+        const authSection = document.getElementById('chat-auth');
+        const chatMain = document.getElementById('chat-main');
+        const messagesDiv = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const chatSend = document.getElementById('chat-send');
+        const chatStatus = document.getElementById('chat-status');
+
+        function showStatus(msg) {
+          chatStatus.textContent = msg;
+          chatStatus.style.display = 'block';
+        }
+        function hideStatus() { chatStatus.style.display = 'none'; }
+
+        function addMessage(role, content) {
+          const div = document.createElement('div');
+          div.className = 'chat-msg ' + role;
+          div.textContent = content;
+          messagesDiv.appendChild(div);
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function showChat() {
+          authSection.style.display = 'none';
+          chatMain.style.display = 'flex';
+          loadHistory();
+        }
+
+        async function loadHistory() {
+          try {
+            const res = await fetch('/news/pr/' + prId + '/chat', {
+              headers: { 'Authorization': 'Bearer ' + authToken }
+            });
+            if (!res.ok) throw new Error('Failed to load history');
+            const data = await res.json();
+            messagesDiv.innerHTML = '';
+            (data.messages || []).forEach(m => addMessage(m.role, m.content));
+          } catch (e) {
+            console.error('load history error:', e);
+          }
+        }
+
+        async function doLogin() {
+          if (!window.nostr) {
+            alert('No Nostr extension found. Install nos2x, Alby, or another NIP-07 signer.');
+            return;
+          }
+          try {
+            showStatus('Requesting challenge...');
+            const challengeRes = await fetch('/news/pr/' + prId + '/auth/challenge', { method: 'POST' });
+            if (!challengeRes.ok) throw new Error('Challenge request failed');
+            const { challenge } = await challengeRes.json();
+
+            showStatus('Sign with your Nostr extension...');
+            const pubkey = await window.nostr.getPublicKey();
+            const event = {
+              kind: 27235,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['u', window.location.href], ['method', 'POST']],
+              content: challenge,
+              pubkey: pubkey,
+            };
+            const signed = await window.nostr.signEvent(event);
+
+            showStatus('Verifying...');
+            const verifyRes = await fetch('/news/pr/' + prId + '/auth/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: JSON.stringify(signed) }),
+            });
+            if (!verifyRes.ok) {
+              const err = await verifyRes.json();
+              throw new Error(err.error || 'Verification failed');
+            }
+            const { token } = await verifyRes.json();
+            authToken = token;
+            sessionStorage.setItem('pika_news_token_' + prId, token);
+            hideStatus();
+            showChat();
+          } catch (e) {
+            showStatus('Auth error: ' + e.message);
+          }
+        }
+
+        async function sendMessage() {
+          const msg = chatInput.value.trim();
+          if (!msg) return;
+          chatInput.value = '';
+          chatSend.disabled = true;
+          addMessage('user', msg);
+          showStatus('Thinking...');
+
+          try {
+            const res = await fetch('/news/pr/' + prId + '/chat', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + authToken,
+              },
+              body: JSON.stringify({ message: msg }),
+            });
+            hideStatus();
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.error || 'Send failed');
+            }
+            const data = await res.json();
+            addMessage('assistant', data.content);
+          } catch (e) {
+            showStatus('Error: ' + e.message);
+          } finally {
+            chatSend.disabled = false;
+            chatInput.focus();
+          }
+        }
+
+        document.getElementById('nostr-login').addEventListener('click', doLogin);
+        chatSend.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        });
+
+        if (authToken) showChat();
       })();
     </script>
   </body>

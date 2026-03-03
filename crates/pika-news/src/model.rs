@@ -42,11 +42,16 @@ impl std::fmt::Display for GenerationError {
 
 impl std::error::Error for GenerationError {}
 
+pub struct GenerationOutput {
+    pub tutorial: TutorialDoc,
+    pub session_id: Option<String>,
+}
+
 pub fn generate_with_anthropic(
     _model: &str,
     _api_key_env: &str,
     input: &PromptInput,
-) -> Result<TutorialDoc, GenerationError> {
+) -> Result<GenerationOutput, GenerationError> {
     let prompt = format!("{}\n\n{}", SYSTEM_PROMPT, build_user_prompt(input));
 
     let output = Command::new("claude")
@@ -75,13 +80,68 @@ pub fn generate_with_anthropic(
         )));
     }
 
-    parse_and_validate_tutorial(&envelope.result)
+    let tutorial = parse_and_validate_tutorial(&envelope.result)?;
+    Ok(GenerationOutput {
+        tutorial,
+        session_id: envelope.session_id,
+    })
+}
+
+pub fn chat_with_session(
+    base_session_id: &str,
+    message: &str,
+) -> Result<ChatResponse, GenerationError> {
+    let output = Command::new("claude")
+        .args([
+            "-r",
+            base_session_id,
+            "-p",
+            message,
+            "--output-format",
+            "json",
+            "--max-turns",
+            "1",
+        ])
+        .output()
+        .map_err(|err| GenerationError::RetrySafe(format!("spawn claude CLI: {}", err)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI exited {}: {}",
+            output.status,
+            truncate(&stderr, 600)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {
+        GenerationError::RetrySafe(format!("parse claude CLI JSON envelope: {}", err))
+    })?;
+
+    if envelope.is_error {
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI returned error: {}",
+            truncate(&envelope.result, 600)
+        )));
+    }
+
+    Ok(ChatResponse {
+        text: envelope.result,
+        session_id: envelope.session_id.unwrap_or_default(),
+    })
+}
+
+pub struct ChatResponse {
+    pub text: String,
+    pub session_id: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ClaudeCliResponse {
     result: String,
     is_error: bool,
+    session_id: Option<String>,
 }
 
 fn parse_and_validate_tutorial(raw_output: &str) -> Result<TutorialDoc, GenerationError> {

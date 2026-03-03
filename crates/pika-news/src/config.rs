@@ -35,6 +35,8 @@ pub struct Config {
     pub bind_address: String,
     #[serde(default = "default_bind_port")]
     pub bind_port: u16,
+    #[serde(default)]
+    pub allowed_npubs: Vec<String>,
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {

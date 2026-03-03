@@ -124,8 +124,8 @@ fn process_job(
 
     let generated = model::generate_with_anthropic(model_name, api_key_env, &prompt_input);
 
-    let doc = match generated {
-        Ok(doc) => doc,
+    let gen_output = match generated {
+        Ok(output) => output,
         Err(GenerationError::RetrySafe(message)) => {
             store
                 .mark_generation_failed(job.artifact_id, &message, true, retry_backoff_secs)
@@ -167,10 +167,11 @@ fn process_job(
         &format!("{}#{} tutorial", job.repo, job.pr_number),
         &job.base_ref,
         &diff.unified_diff,
-        &doc,
+        &gen_output.tutorial,
     );
 
-    let tutorial_json = serde_json::to_string(&doc).context("serialize tutorial JSON")?;
+    let tutorial_json =
+        serde_json::to_string(&gen_output.tutorial).context("serialize tutorial JSON")?;
     store
         .mark_generation_ready(
             job.artifact_id,
@@ -178,6 +179,7 @@ fn process_job(
             &html,
             &job.head_sha,
             &diff.unified_diff,
+            gen_output.session_id.as_deref(),
         )
         .with_context(|| format!("mark artifact {} ready", job.artifact_id))?;
 

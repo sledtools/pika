@@ -5,12 +5,14 @@ use anyhow::Context;
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
-use axum::routing::get;
+use axum::response::{Html, IntoResponse, Json};
+use axum::routing::{get, post};
 use axum::Router;
 use pulldown_cmark::{html, Options, Parser};
 
+use crate::auth::AuthState;
 use crate::config::Config;
+use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
 use crate::storage::{FeedItem, PrDetailRecord, Store};
@@ -22,6 +24,7 @@ struct AppState {
     store: Store,
     config: Config,
     max_prs: usize,
+    auth: Arc<AuthState>,
 }
 
 #[derive(Template)]
@@ -46,6 +49,8 @@ struct DetailTemplate {
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
+    chat_enabled: bool,
+    has_session: bool,
 }
 
 #[derive(Clone)]
@@ -81,10 +86,12 @@ pub async fn serve(
     bind_addr: String,
     max_prs: usize,
 ) -> anyhow::Result<()> {
+    let auth = Arc::new(AuthState::new(&config.allowed_npubs));
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
         max_prs,
+        auth,
     });
 
     let background_state = Arc::clone(&state);
@@ -119,6 +126,15 @@ pub async fn serve(
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
         .route("/news/pr/:pr_id", get(detail_handler))
+        .route(
+            "/news/pr/:pr_id/auth/challenge",
+            post(auth_challenge_handler),
+        )
+        .route("/news/pr/:pr_id/auth/verify", post(auth_verify_handler))
+        .route(
+            "/news/pr/:pr_id/chat",
+            get(chat_history_handler).post(chat_send_handler),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -206,7 +222,9 @@ async fn detail_handler(
         }
     };
 
-    match render_detail_template(detail) {
+    let chat_enabled = state.auth.chat_enabled();
+    let has_session = detail.claude_session_id.is_some();
+    match render_detail_template(detail, chat_enabled, has_session) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -236,7 +254,11 @@ fn map_feed_item(item: FeedItem) -> FeedItemView {
     }
 }
 
-fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTemplate> {
+fn render_detail_template(
+    record: PrDetailRecord,
+    chat_enabled: bool,
+    has_session: bool,
+) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
     let mut executive_html = None;
     let mut media_links = Vec::new();
@@ -288,7 +310,313 @@ fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTempla
         diff_json: record
             .unified_diff
             .map(|d| serde_json::to_string(&d).unwrap_or_default()),
+        chat_enabled,
+        has_session,
     })
+}
+
+// --- Auth handlers ---
+
+async fn auth_challenge_handler(
+    State(state): State<Arc<AppState>>,
+    Path(_pr_id): Path<i64>,
+) -> impl IntoResponse {
+    if !state.auth.chat_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "chat not enabled"})),
+        )
+            .into_response();
+    }
+    let nonce = state.auth.create_challenge();
+    Json(serde_json::json!({"challenge": nonce})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct VerifyRequest {
+    event: String,
+}
+
+async fn auth_verify_handler(
+    State(state): State<Arc<AppState>>,
+    Path(_pr_id): Path<i64>,
+    Json(body): Json<VerifyRequest>,
+) -> impl IntoResponse {
+    if !state.auth.chat_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "chat not enabled"})),
+        )
+            .into_response();
+    }
+    match state.auth.verify_event(&body.event) {
+        Ok(token) => Json(serde_json::json!({"token": token})).into_response(),
+        Err(msg) => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": msg})),
+        )
+            .into_response(),
+    }
+}
+
+// --- Chat handlers ---
+
+fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+}
+
+async fn chat_history_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let token = match extract_token(&headers) {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing auth token"})),
+            )
+                .into_response()
+        }
+    };
+    let npub = match state.auth.validate_token(&token) {
+        Some(n) => n,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid or expired token"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = state.store.clone();
+    let base_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_artifact_session_id(pr_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(sid))) => sid,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no session for this tutorial"})),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    let result = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let npub = npub.clone();
+        move || store.get_or_create_chat_session(pr_id, &npub, &base_session_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok((_session_id, messages))) => {
+            Json(serde_json::json!({"messages": messages})).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ChatSendRequest {
+    message: String,
+}
+
+async fn chat_send_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ChatSendRequest>,
+) -> impl IntoResponse {
+    let token = match extract_token(&headers) {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing auth token"})),
+            )
+                .into_response()
+        }
+    };
+    let npub = match state.auth.validate_token(&token) {
+        Some(n) => n,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "invalid or expired token"})),
+            )
+                .into_response()
+        }
+    };
+
+    let store = state.store.clone();
+
+    // Get the artifact's base session id
+    let base_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_artifact_session_id(pr_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(sid))) => sid,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no session for this tutorial"})),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    // Get or create chat session
+    let (session_id, _messages) = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        let npub = npub.clone();
+        let base_session_id = base_session_id.clone();
+        move || store.get_or_create_chat_session(pr_id, &npub, &base_session_id)
+    })
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    // Get the current claude session id for this user's chat
+    let claude_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_chat_claude_session_id(session_id)
+    })
+    .await
+    {
+        Ok(Ok(sid)) => sid,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+
+    // Save user message
+    if let Err(e) = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let msg = body.message.clone();
+        move || store.append_chat_message(session_id, "user", &msg)
+    })
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Call claude -r with the session
+    let message = body.message.clone();
+    let chat_result =
+        tokio::task::spawn_blocking(move || model::chat_with_session(&claude_session_id, &message))
+            .await;
+
+    match chat_result {
+        Ok(Ok(response)) => {
+            // Update the claude session id for next turn
+            let new_session_id = response.session_id.clone();
+            let response_text = response.text.clone();
+            let _ = tokio::task::spawn_blocking({
+                let store = store.clone();
+                move || {
+                    let _ = store.update_chat_claude_session_id(session_id, &new_session_id);
+                    let _ = store.append_chat_message(session_id, "assistant", &response_text);
+                }
+            })
+            .await;
+
+            Json(serde_json::json!({
+                "role": "assistant",
+                "content": response.text
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("claude error: {}", e)})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 fn markdown_to_safe_html(markdown: &str) -> String {

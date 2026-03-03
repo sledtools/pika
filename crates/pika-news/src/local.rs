@@ -56,7 +56,7 @@ pub fn run(args: &LocalArgs) -> anyhow::Result<()> {
         config::DEFAULT_API_KEY_ENV,
         &prompt_input,
     ) {
-        Ok(generated) => generated,
+        Ok(output) => output.tutorial,
         Err(GenerationError::MissingApiKey { env_var }) => {
             eprintln!(
                 "warning: {} is not set; using local heuristic tutorial generation",

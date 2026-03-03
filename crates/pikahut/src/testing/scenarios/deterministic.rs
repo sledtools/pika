@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -91,6 +91,41 @@ fn run_pikachat_allow_failure(
 
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn next_screen_recording_path(root: &Path, prefix: &str) -> Result<PathBuf> {
+    let dir = root.join("screen_recordings");
+    fs::create_dir_all(&dir)
+        .with_context(|| format!("create screen recording dir {}", dir.display()))?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok(dir.join(format!("{prefix}-{ts}.mp4")))
+}
+
+fn stop_spawned_recorder_gracefully(
+    mut handle: crate::testing::command::SpawnHandle,
+    grace_period: Duration,
+) {
+    let deadline = Instant::now() + grace_period;
+    loop {
+        match handle.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("warn: failed to poll recorder process status: {err:#}");
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = handle.kill();
+    let _ = handle.wait();
 }
 
 pub async fn run_scenario(args: ScenarioRequest) -> Result<ScenarioRunOutput> {
@@ -686,6 +721,8 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
     let client_nsec = resolve_ui_client_nsec(&root)?;
     let runner = CommandRunner::new(&context);
     let mut command_outcomes = Vec::new();
+    let record_video = env_truthy("PIKA_UI_E2E_RECORD_VIDEO");
+    let mut captured_videos: Vec<PathBuf> = Vec::new();
 
     match args.platform {
         UiPlatform::Android => {
@@ -694,6 +731,8 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
             let test_suffix = std::env::var("PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX")
                 .unwrap_or_else(|_| ".test".to_string());
             let test_app_id = format!("org.pikachat.pika{test_suffix}");
+            let adb_bin = std::env::var("ADB").unwrap_or_else(|_| "adb".to_string());
+            let android_video_remote_path = "/sdcard/pika-ui-e2e-local.mp4";
 
             let emulator_ensure = runner.run(
                 &CommandSpec::new(
@@ -735,7 +774,36 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                 &ensure_installable,
             ));
 
-            let android_ui = runner.run(
+            let mut android_video_recorder = None;
+            let android_video_path = if record_video {
+                let video_path = next_screen_recording_path(&root, "android-ui-e2e-local")?;
+                match runner.spawn(
+                    &CommandSpec::new(&adb_bin)
+                        .args([
+                            "shell",
+                            "screenrecord",
+                            "--bit-rate",
+                            "3000000",
+                            "--time-limit",
+                            "180",
+                            android_video_remote_path,
+                        ])
+                        .capture_name("android-ui-video-record"),
+                ) {
+                    Ok(handle) => {
+                        android_video_recorder = Some(handle);
+                        Some(video_path)
+                    }
+                    Err(err) => {
+                        eprintln!("warn: failed to start android UI video recording: {err:#}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let android_ui_result = runner.run(
                 &CommandSpec::gradlew()
                     .cwd(root.join("android"))
                     .arg(":app:connectedDebugAndroidTest")
@@ -759,7 +827,44 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                         "-Pandroid.testInstrumentationRunnerArguments.pika_nsec={client_nsec}"
                     ))
                     .capture_name("android-ui-e2e-local"),
-            )?;
+            );
+
+            if let Some(recorder) = android_video_recorder {
+                let _ = runner.run(
+                    &CommandSpec::new(&adb_bin)
+                        .args(["shell", "pkill", "-INT", "screenrecord"])
+                        .capture_name("android-ui-video-stop"),
+                );
+                stop_spawned_recorder_gracefully(recorder, Duration::from_secs(10));
+            }
+
+            if let Some(video_path) = android_video_path {
+                match runner.run(
+                    &CommandSpec::new(&adb_bin)
+                        .args(["pull", android_video_remote_path, &path_arg(&video_path)])
+                        .capture_name("android-ui-video-pull"),
+                ) {
+                    Ok(video_pull) => {
+                        command_outcomes.push(CommandOutcomeRecord::from_output(
+                            "android-ui-video-pull",
+                            &video_pull,
+                        ));
+                        if video_path.exists() {
+                            captured_videos.push(video_path);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("warn: failed to pull android UI video recording: {err:#}");
+                    }
+                }
+                let _ = runner.run(
+                    &CommandSpec::new(&adb_bin)
+                        .args(["shell", "rm", "-f", android_video_remote_path])
+                        .capture_name("android-ui-video-rm"),
+                );
+            }
+
+            let android_ui = android_ui_result?;
             command_outcomes.push(CommandOutcomeRecord::from_output(
                 "android-ui-e2e-local",
                 &android_ui,
@@ -799,7 +904,37 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                 anyhow!("could not determine simulator udid from ios-sim-ensure output")
             })?;
 
-            let ios_ui = runner.run(
+            let mut ios_video_recorder = None;
+            let ios_video_path = if record_video {
+                let video_path = next_screen_recording_path(&root, "ios-ui-e2e-local")?;
+                match runner.spawn(
+                    &CommandSpec::new("xcrun")
+                        .cwd(&root)
+                        .args([
+                            "simctl",
+                            "io",
+                            &udid,
+                            "recordVideo",
+                            "--codec=h264",
+                            "--force",
+                        ])
+                        .arg(path_arg(&video_path))
+                        .capture_name("ios-ui-video-record"),
+                ) {
+                    Ok(handle) => {
+                        ios_video_recorder = Some(handle);
+                        Some(video_path)
+                    }
+                    Err(err) => {
+                        eprintln!("warn: failed to start iOS UI video recording: {err:#}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let ios_ui_result = runner.run(
                 &CommandSpec::new(root.join("tools/xcode-run").to_string_lossy().to_string())
                     .cwd(&root)
                     .env("PIKA_UI_E2E", "1")
@@ -814,10 +949,34 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
                     .args([
                         "test",
                         "CODE_SIGNING_ALLOWED=NO",
+                        "EXCLUDED_ARCHS=x86_64",
                         "-only-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
+                        "-only-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock",
                     ])
                     .capture_name("ios-ui-e2e-local"),
-            )?;
+            );
+
+            if let Some(recorder) = ios_video_recorder {
+                let _ = runner.run(
+                    &CommandSpec::new("pkill")
+                        .args(["-INT", "-f", &format!("simctl io {udid} recordVideo")])
+                        .capture_name("ios-ui-video-stop"),
+                );
+                stop_spawned_recorder_gracefully(recorder, Duration::from_secs(10));
+            }
+
+            if let Some(video_path) = ios_video_path {
+                if video_path.exists() {
+                    captured_videos.push(video_path);
+                } else {
+                    eprintln!(
+                        "warn: iOS UI video recording did not produce output at {}",
+                        video_path.display()
+                    );
+                }
+            }
+
+            let ios_ui = ios_ui_result?;
             command_outcomes.push(CommandOutcomeRecord::from_output(
                 "ios-ui-e2e-local",
                 &ios_ui,
@@ -861,7 +1020,11 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
     let mut result = ScenarioRunOutput::completed(context.state_dir().to_path_buf())
         .with_metadata("relay_url", relay_url)
         .with_metadata("bot_npub", bot_npub)
-        .with_metadata("platform", format!("{:?}", args.platform));
+        .with_metadata("platform", format!("{:?}", args.platform))
+        .with_metadata("video_recording_enabled", record_video.to_string());
+    for video in captured_videos {
+        result = result.with_artifact(video);
+    }
     let summary = artifacts::write_standard_summary(
         &context,
         "deterministic::ui_e2e_local",

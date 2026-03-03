@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - AST Types
 
@@ -205,21 +206,7 @@ struct HypernoteRenderer: View {
     }
 
     private func renderCodeBlock(_ node: HypernoteAstNode) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let lang = node.lang {
-                Text(lang)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-            }
-            Text(node.value ?? "")
-                .font(.system(.caption, design: .monospaced))
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(Color.gray.opacity(0.1))
-        .clipShape(.rect(cornerRadius: 8))
+        CodeBlockView(code: node.value ?? "", lang: node.lang)
     }
 
     @ViewBuilder
@@ -402,6 +389,40 @@ struct HypernoteRenderer: View {
                 )
             }
 
+        case "Details":
+            let openByDefault = attrs["open"] != nil
+            let children = node.children ?? []
+            let summaryNode = children.first {
+                ($0.type == "mdx_jsx_element" || $0.type == "mdx_jsx_self_closing")
+                    && $0.name == "Summary"
+            }
+            let contentChildren = children.filter {
+                !(($0.type == "mdx_jsx_element" || $0.type == "mdx_jsx_self_closing")
+                    && $0.name == "Summary")
+            }
+            let summaryView: AnyView = if let summaryNode {
+                AnyView(VStack(alignment: .leading) { renderChildren(summaryNode) })
+            } else {
+                AnyView(Text("Details"))
+            }
+            let contentView = AnyView(
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(contentChildren.enumerated()), id: \.offset) { _, child in
+                        renderNode(child)
+                    }
+                }
+            )
+            return AnyView(
+                DetailsDisclosure(defaultOpen: openByDefault, summary: summaryView, body: contentView)
+            )
+
+        case "Summary":
+            // Summary is normally consumed by Details; if standalone, render as bold text.
+            return AnyView(
+                inlineText(from: node.children)
+                    .fontWeight(.medium)
+            )
+
         case "ChecklistItem":
             let fieldName = attrs["name"] ?? "item"
             let defaultChecked = attrs["checked"] != nil
@@ -441,6 +462,108 @@ struct HypernoteRenderer: View {
                         .foregroundStyle(.tertiary)
                 )
             )
+        }
+    }
+
+    // MARK: - Details / Summary helper
+
+    private struct DetailsDisclosure: View {
+        let summaryContent: AnyView
+        let bodyContent: AnyView
+        @State private var isExpanded: Bool
+
+        init(defaultOpen: Bool, summary: AnyView, body: AnyView) {
+            self.summaryContent = summary
+            self.bodyContent = body
+            self._isExpanded = State(initialValue: defaultOpen)
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        summaryContent
+                    }
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier(TestIds.hypernoteDetailsSummary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(TestIds.hypernoteDetailsSummary)
+
+                if isExpanded {
+                    bodyContent
+                        .padding(.leading, 20)
+                        .padding(.top, 8)
+                        .accessibilityIdentifier(TestIds.hypernoteDetailsBody)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(TestIds.hypernoteDetails)
+        }
+    }
+
+    // MARK: - Code block helper
+
+    private struct CodeBlockView: View {
+        let code: String
+        let lang: String?
+        @State private var showCopied = false
+        private var languageLabel: String {
+            let trimmed = (lang ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "plain" : trimmed
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(languageLabel)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(languageLabel)
+                        .accessibilityIdentifier(TestIds.hypernoteCodeblockLang)
+                    Spacer()
+                    Button {
+                        UIPasteboard.general.string = code
+                        showCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            withAnimation { showCopied = false }
+                        }
+                    } label: {
+                        if showCopied {
+                            Label("Copied", systemImage: "checkmark")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier(TestIds.hypernoteCodeblockCopied)
+                        } else {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .animation(.default, value: showCopied)
+                    .accessibilityIdentifier(TestIds.hypernoteCodeblockCopy)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.gray.opacity(0.15))
+                .accessibilityElement(children: .contain)
+
+                Text(code)
+                    .font(.system(.caption, design: .monospaced))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Color.gray.opacity(0.1))
+            .clipShape(.rect(cornerRadius: 8))
+            .accessibilityIdentifier(TestIds.hypernoteCodeblock)
         }
     }
 

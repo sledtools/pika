@@ -61,4 +61,13 @@ enum TestIds {
     static let callScreenDismiss = "call_screen_dismiss"
     static let callReturnToCall = "call_return_to_call"
     static let callTimelineEvent = "call_timeline_event"
+
+    // Hypernote
+    static let hypernoteDetails = "hypernote_details"
+    static let hypernoteDetailsSummary = "hypernote_details_summary"
+    static let hypernoteDetailsBody = "hypernote_details_body"
+    static let hypernoteCodeblock = "hypernote_codeblock"
+    static let hypernoteCodeblockLang = "hypernote_codeblock_lang"
+    static let hypernoteCodeblockCopy = "hypernote_codeblock_copy"
+    static let hypernoteCodeblockCopied = "hypernote_codeblock_copied"
 }

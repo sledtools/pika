@@ -15,6 +15,8 @@ use tracing::{info, warn};
 
 use crate::Cli;
 
+const NOSTR_PER_MESSAGE_TIMEOUT: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Subcommand)]
 #[allow(clippy::enum_variant_names)]
 pub enum ScenarioCommand {
@@ -965,7 +967,7 @@ async fn bot_main(
         .await
         .with_context(|| format!("relay readiness check failed for {relay}"))?;
 
-    let expected_inviter = match inviter_pubkey_hex {
+    let required_inviter = match inviter_pubkey_hex {
         Some(hex) => Some(PublicKey::from_hex(hex).context("parse inviter pubkey hex")?),
         None => None,
     };
@@ -991,31 +993,32 @@ async fn bot_main(
         kp_event.id.to_hex()
     );
 
-    let (wrapper_event_id, mut unwrapped_rumor, inviter_pubkey) = match expected_inviter.as_ref() {
-        Some(pk) => {
-            let (wid, rumor) = wait_for_welcome_giftwrap(
-                &client,
-                &keys,
-                pk,
-                giftwrap_lookback_sec,
-                Duration::from_secs(timeout_sec),
-            )
-            .await
-            .context("wait for welcome giftwrap")?;
-            (wid, rumor, *pk)
-        }
-        None => {
-            let (wid, rumor, pk) = wait_for_welcome_giftwrap_any_sender(
-                &client,
-                &keys,
-                giftwrap_lookback_sec,
-                Duration::from_secs(timeout_sec),
-            )
-            .await
-            .context("wait for welcome giftwrap")?;
-            (wid, rumor, pk)
-        }
-    };
+    let (wrapper_event_id, mut unwrapped_rumor, _first_inviter_pubkey) =
+        match required_inviter.as_ref() {
+            Some(pk) => {
+                let (wid, rumor) = wait_for_welcome_giftwrap(
+                    &client,
+                    &keys,
+                    pk,
+                    giftwrap_lookback_sec,
+                    Duration::from_secs(timeout_sec),
+                )
+                .await
+                .context("wait for welcome giftwrap")?;
+                (wid, rumor, *pk)
+            }
+            None => {
+                let (wid, rumor, pk) = wait_for_welcome_giftwrap_any_sender(
+                    &client,
+                    &keys,
+                    giftwrap_lookback_sec,
+                    Duration::from_secs(timeout_sec),
+                )
+                .await
+                .context("wait for welcome giftwrap")?;
+                (wid, rumor, pk)
+            }
+        };
 
     println!(
         "[openclaw_bot] welcome_unwrapped wrapper_id={} rumor_kind={} rumor_id={} rumor_pubkey={}",
@@ -1036,19 +1039,34 @@ async fn bot_main(
     mdk.accept_welcome(&pending[0]).context("accept_welcome")?;
 
     let groups = mdk.get_groups().context("get_groups")?;
-    if groups.len() != 1 {
-        return Err(anyhow!(
-            "expected bot to have 1 group, got {}",
-            groups.len()
-        ));
+    if groups.is_empty() {
+        return Err(anyhow!("expected bot to have at least 1 group, got 0"));
     }
-    let group = &groups[0];
-    let nostr_group_id_hex = hex::encode(group.nostr_group_id);
-    let mls_group_id = group.mls_group_id.clone();
-    println!("[openclaw_bot] joined_group nostr_group_id={nostr_group_id_hex}");
-
     let mut rx = client.notifications();
-    let sub = subscribe_group_msgs(&client, &nostr_group_id_hex).await?;
+    let mut group_subscriptions = Vec::new();
+    let mut subscribed_group_ids = Vec::new();
+    for group in groups {
+        let nostr_group_id_hex = hex::encode(group.nostr_group_id);
+        println!("[openclaw_bot] joined_group nostr_group_id={nostr_group_id_hex}");
+        let sub = subscribe_group_msgs(&client, &nostr_group_id_hex).await?;
+        group_subscriptions.push(sub);
+        subscribed_group_ids.push(nostr_group_id_hex);
+    }
+
+    // Keep listening for additional welcomes so this single bot process can join
+    // multiple groups (e.g. when iOS XCTest runs multiple E2E cases in one suite).
+    let welcome_sub = client
+        .subscribe(
+            Filter::new()
+                .kind(Kind::GiftWrap)
+                .pubkey(keys.public_key())
+                .since(Timestamp::now() - Duration::from_secs(giftwrap_lookback_sec))
+                .limit(200),
+            None,
+        )
+        .await
+        .context("subscribe for additional welcomes")?
+        .val;
 
     let deadline = Instant::now() + Duration::from_secs(timeout_sec);
     loop {
@@ -1058,10 +1076,11 @@ async fn bot_main(
         }
         let remaining = deadline.duration_since(now);
 
-        let notification = tokio::time::timeout(remaining, rx.recv())
-            .await
-            .context("recv timeout (bot_wait_prompt)")?
-            .context("notification channel closed (bot_wait_prompt)")?;
+        let per_message_timeout = remaining.min(NOSTR_PER_MESSAGE_TIMEOUT);
+        let notification = match tokio::time::timeout(per_message_timeout, rx.recv()).await {
+            Ok(value) => value.context("notification channel closed (bot_wait_prompt)")?,
+            Err(_) => continue,
+        };
 
         let RelayPoolNotification::Event {
             subscription_id: sid,
@@ -1072,7 +1091,94 @@ async fn bot_main(
             continue;
         };
 
-        if sid != sub {
+        if sid == welcome_sub {
+            let ev = *event;
+            if ev.kind != Kind::GiftWrap {
+                continue;
+            }
+
+            let unwrapped = match nostr_sdk::nostr::nips::nip59::extract_rumor(&keys, &ev).await {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(
+                        "[openclaw_bot] welcome unwrap failed wrapper_id={} err={err}",
+                        ev.id.to_hex()
+                    );
+                    continue;
+                }
+            };
+            let sender = unwrapped.sender;
+            let mut rumor = unwrapped.rumor;
+
+            if rumor.kind != Kind::MlsWelcome {
+                continue;
+            }
+            if let Some(required_pubkey) = required_inviter.as_ref()
+                && sender != *required_pubkey
+            {
+                continue;
+            }
+
+            println!(
+                "[openclaw_bot] welcome_unwrapped wrapper_id={} rumor_kind={} rumor_id={} rumor_pubkey={}",
+                ev.id.to_hex(),
+                rumor.kind.as_u16(),
+                rumor.id().to_hex(),
+                rumor.pubkey.to_hex().to_lowercase()
+            );
+
+            if let Err(err) = mdk.process_welcome(&ev.id, &rumor) {
+                warn!(
+                    "[openclaw_bot] process_welcome failed wrapper_id={} err={err}",
+                    ev.id.to_hex()
+                );
+                continue;
+            }
+
+            let pending = match mdk.get_pending_welcomes(None) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!("[openclaw_bot] get_pending_welcomes failed err={err}");
+                    continue;
+                }
+            };
+            for welcome in pending {
+                if let Err(err) = mdk.accept_welcome(&welcome) {
+                    warn!("[openclaw_bot] accept_welcome failed err={err}");
+                }
+            }
+
+            let groups = match mdk.get_groups() {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!("[openclaw_bot] get_groups failed err={err}");
+                    continue;
+                }
+            };
+
+            for group in groups {
+                let nostr_group_id_hex = hex::encode(group.nostr_group_id);
+                if subscribed_group_ids
+                    .iter()
+                    .any(|known| known == &nostr_group_id_hex)
+                {
+                    continue;
+                }
+                println!("[openclaw_bot] joined_group nostr_group_id={nostr_group_id_hex}");
+                match subscribe_group_msgs(&client, &nostr_group_id_hex).await {
+                    Ok(sub) => {
+                        group_subscriptions.push(sub);
+                        subscribed_group_ids.push(nostr_group_id_hex);
+                    }
+                    Err(err) => {
+                        warn!("[openclaw_bot] subscribe_group_msgs failed err={err}");
+                    }
+                }
+            }
+            continue;
+        }
+
+        if !group_subscriptions.iter().any(|sub| sub == &sid) {
             continue;
         }
 
@@ -1084,7 +1190,38 @@ async fn bot_main(
         match mdk.process_message(&ev) {
             Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                 let from = msg.pubkey;
-                if from != inviter_pubkey {
+                println!(
+                    "[openclaw_bot] inbound_app from={} content={}",
+                    from.to_hex().to_lowercase(),
+                    msg.content.trim()
+                );
+
+                if from == keys.public_key() {
+                    continue;
+                }
+                if let Some(required_pubkey) = required_inviter.as_ref()
+                    && from != *required_pubkey
+                {
+                    continue;
+                }
+
+                // Hypernote probes: reply with a hypernote (different event kind).
+                if let Some(hn_reply) = parse_hypernote_probe(&msg.content) {
+                    println!(
+                        "[openclaw_bot] replying hypernote for probe={}",
+                        msg.content.trim()
+                    );
+                    let hn_rumor = EventBuilder::new(
+                        Kind::Custom(hypernote_protocol::HYPERNOTE_KIND),
+                        &hn_reply,
+                    )
+                    .build(keys.public_key());
+                    let hn_event = mdk
+                        .create_message(&msg.mls_group_id, hn_rumor)
+                        .context("bot create_message (hypernote)")?;
+                    publish_and_confirm(&client, relay_url.clone(), &hn_event, "bot_hypernote")
+                        .await?;
+                    println!("[openclaw_bot] ok sent hypernote");
                     continue;
                 }
 
@@ -1096,14 +1233,18 @@ async fn bot_main(
                 let reply_rumor =
                     EventBuilder::new(Kind::ChatMessage, reply.clone()).build(keys.public_key());
                 let reply_event = mdk
-                    .create_message(&mls_group_id, reply_rumor)
+                    .create_message(&msg.mls_group_id, reply_rumor)
                     .context("bot create_message")?;
                 publish_and_confirm(&client, relay_url.clone(), &reply_event, "bot_reply").await?;
                 println!("[openclaw_bot] ok replied={reply}");
 
-                client.unsubscribe_all().await;
-                client.shutdown().await;
-                return Ok(());
+                // For openclaw scenarios (E2E_OK_*), exit after first reply.
+                // For ping/pong probes, keep looping so multiple probes work.
+                if reply.starts_with("E2E_OK_") {
+                    client.unsubscribe_all().await;
+                    client.shutdown().await;
+                    return Ok(());
+                }
             }
             Ok(other) => {
                 warn!(
@@ -1135,6 +1276,30 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
     // a simple manual E2E loop from mobile clients without having to type quotes.
     if content.trim() == "ping" {
         return Some("pong".to_string());
+    }
+
+    // UI E2E probe: ping:<nonce> -> pong:<nonce>
+    if let Some(nonce) = content.trim().strip_prefix("ping:")
+        && !nonce.is_empty()
+        && nonce.len() <= 128
+        && nonce
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')
+    {
+        return Some(format!("pong:{nonce}"));
+    }
+
+    // Legacy alias used by older E2E tests.
+    if let Some(nonce) = content.trim().strip_prefix("pika-e2e:")
+        && !nonce.is_empty()
+        && nonce.len() <= 128
+        && nonce
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')
+    {
+        return Some(format!("pong:{nonce}"));
     }
 
     const PREFIX: &str = "openclaw: reply exactly \"";
@@ -1176,6 +1341,24 @@ fn parse_openclaw_prompt(content: &str) -> Option<String> {
         return None;
     }
     Some(inner.to_string())
+}
+
+/// Match hypernote probe commands and return the MDX content to send.
+fn parse_hypernote_probe(content: &str) -> Option<String> {
+    match content.trim() {
+        "hn:details" => Some(
+            "<Details><Summary>Click to expand this section</Summary>\n\n\
+             This is the expanded content inside the details block.\n\n\
+             - Item one\n\
+             - Item two\n\
+             </Details>"
+                .to_string(),
+        ),
+        "hn:codeblock" => {
+            Some("```rust\nfn hello() {\n    println!(\"Hello, world!\");\n}\n```".to_string())
+        }
+        _ => None,
+    }
 }
 
 async fn connect_client(keys: &Keys, relay: &str) -> anyhow::Result<Client> {
@@ -1303,10 +1486,11 @@ async fn wait_for_welcome_giftwrap(
         }
         let remaining = deadline.duration_since(now);
 
-        let notification = tokio::time::timeout(remaining, rx.recv())
-            .await
-            .context("giftwrap recv timeout")?
-            .context("giftwrap notification channel closed")?;
+        let per_message_timeout = remaining.min(NOSTR_PER_MESSAGE_TIMEOUT);
+        let notification = match tokio::time::timeout(per_message_timeout, rx.recv()).await {
+            Ok(value) => value.context("giftwrap notification channel closed")?,
+            Err(_) => continue,
+        };
 
         let RelayPoolNotification::Event {
             subscription_id,
@@ -1385,10 +1569,11 @@ async fn wait_for_welcome_giftwrap_any_sender(
         }
         let remaining = deadline.duration_since(now);
 
-        let notification = tokio::time::timeout(remaining, rx.recv())
-            .await
-            .context("giftwrap recv timeout")?
-            .context("giftwrap notification channel closed")?;
+        let per_message_timeout = remaining.min(NOSTR_PER_MESSAGE_TIMEOUT);
+        let notification = match tokio::time::timeout(per_message_timeout, rx.recv()).await {
+            Ok(value) => value.context("giftwrap notification channel closed")?,
+            Err(_) => continue,
+        };
 
         let RelayPoolNotification::Event {
             subscription_id,
@@ -1503,10 +1688,11 @@ async fn wait_for_exact_application(
         }
         let remaining = deadline.duration_since(now);
 
-        let notification = tokio::time::timeout(remaining, rx.recv())
-            .await
-            .with_context(|| format!("recv timeout ({label})"))?
-            .with_context(|| format!("notification channel closed ({label})"))?;
+        let per_message_timeout = remaining.min(NOSTR_PER_MESSAGE_TIMEOUT);
+        let notification = match tokio::time::timeout(per_message_timeout, rx.recv()).await {
+            Ok(value) => value.with_context(|| format!("notification channel closed ({label})"))?,
+            Err(_) => continue,
+        };
 
         let RelayPoolNotification::Event {
             subscription_id: sid,

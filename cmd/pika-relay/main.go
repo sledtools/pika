@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -60,6 +61,45 @@ func main() {
 	}
 
 	relay.Negentropy = true
+
+	if os.Getenv("PIKA_RELAY_LOG_EVENTS") == "1" {
+		log.Printf("event logging enabled (PIKA_RELAY_LOG_EVENTS=1)")
+		relay.OnConnect = func(ctx context.Context) {
+			log.Printf("[relay/ws] connect ip=%s", khatru.GetIP(ctx))
+		}
+		relay.OnDisconnect = func(ctx context.Context) {
+			log.Printf("[relay/ws] disconnect ip=%s", khatru.GetIP(ctx))
+		}
+		relay.OnRequest = func(ctx context.Context, filter nostr.Filter) (bool, string) {
+			log.Printf(
+				"[relay/ws] req ip=%s filter=%s",
+				khatru.GetIP(ctx),
+				compactFilter(filter),
+			)
+			return false, ""
+		}
+		relay.OnEvent = func(ctx context.Context, event nostr.Event) (bool, string) {
+			log.Printf(
+				"[relay/ws] event_recv ip=%s kind=%d id=%s pubkey=%s tags=%s content=%s",
+				khatru.GetIP(ctx),
+				event.Kind,
+				event.ID.Hex(),
+				event.PubKey.Hex(),
+				tagSummary(event.Tags),
+				contentPreview(event.Content),
+			)
+			return false, ""
+		}
+		relay.OnEventSaved = func(_ context.Context, event nostr.Event) {
+			log.Printf(
+				"[relay/ws] event_saved kind=%d id=%s pubkey=%s tags=%s",
+				event.Kind,
+				event.ID.Hex(),
+				event.PubKey.Hex(),
+				tagSummary(event.Tags),
+			)
+		}
+	}
 
 	// Event storage
 	db := &lmdb.LMDBBackend{Path: filepath.Join(dataDir, "relay")}
@@ -132,6 +172,37 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func compactFilter(filter nostr.Filter) string {
+	raw := strings.Join(strings.Fields(filter.String()), " ")
+	if len(raw) <= 512 {
+		return raw
+	}
+	return raw[:512] + "...(truncated)"
+}
+
+func tagSummary(tags nostr.Tags) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"h", "e", "p", "d"} {
+		if tag := tags.Find(key); len(tag) >= 2 {
+			parts = append(parts, key+"="+tag[1])
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
+func contentPreview(content string) string {
+	trimmed := strings.TrimSpace(content)
+	trimmed = strings.ReplaceAll(trimmed, "\n", "\\n")
+	trimmed = strings.ReplaceAll(trimmed, "\r", "")
+	if len(trimmed) <= 140 {
+		return trimmed
+	}
+	return trimmed[:140] + "...(truncated)"
 }
 
 type fileReadSeeker struct {

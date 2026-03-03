@@ -38,4 +38,13 @@ object TestTags {
     const val GROUPINFO_ADD_NPUB = "groupinfo_add_npub"
     const val GROUPINFO_ADD_BUTTON = "groupinfo_add_button"
     const val GROUPINFO_LEAVE = "groupinfo_leave"
+
+    // Hypernote
+    const val HYPERNOTE_DETAILS = "hypernote_details"
+    const val HYPERNOTE_DETAILS_SUMMARY = "hypernote_details_summary"
+    const val HYPERNOTE_DETAILS_BODY = "hypernote_details_body"
+    const val HYPERNOTE_CODEBLOCK = "hypernote_codeblock"
+    const val HYPERNOTE_CODEBLOCK_LANG = "hypernote_codeblock_lang"
+    const val HYPERNOTE_CODEBLOCK_COPY = "hypernote_codeblock_copy"
+    const val HYPERNOTE_CODEBLOCK_COPIED = "hypernote_codeblock_copied"
 }

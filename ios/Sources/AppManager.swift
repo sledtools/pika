@@ -289,6 +289,10 @@ final class AppManager: AppReconciler {
         dispatch(.enableDeveloperMode)
     }
 
+    func wipeProfileCacheForDeveloperTools() {
+        dispatch(.wipeProfileCache)
+    }
+
     func wipeLocalDataForDeveloperTools() {
         authStore.clear()
         ensureMigrationSentinelExists()

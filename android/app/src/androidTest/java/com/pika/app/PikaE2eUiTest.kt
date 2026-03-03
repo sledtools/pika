@@ -3,11 +3,17 @@ package com.pika.app
 import android.Manifest
 import android.util.Log
 import androidx.compose.ui.test.ComposeTimeoutException
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.test.rule.GrantPermissionRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pika.app.rust.AppAction
+import com.pika.app.ui.TestTags
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assume
 import org.junit.Rule
@@ -201,6 +207,85 @@ class PikaE2eUiTest {
         }
     }
 
+    @Test
+    fun e2e_hypernoteDetailsAndCodeBlock() {
+        val args = InstrumentationRegistry.getArguments()
+        Assume.assumeTrue(
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            args.getString("pika_e2e") == "1",
+        )
+
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val testNsec = args.getString("pika_nsec") ?: args.getString("pika_test_nsec") ?: ""
+        val botNpub = args.getString("pika_peer_npub") ?: ""
+
+        check(botNpub.isNotBlank()) { "Missing instrumentation arg: pika_peer_npub" }
+        check(testNsec.isNotBlank()) { "Missing instrumentation arg: pika_nsec" }
+
+        // Start from a known auth state.
+        runOnMain { AppManager.getInstance(ctx).logout() }
+        waitUntilState(uiReadyTimeoutMs, ctx, "logged out") { it.auth is com.pika.app.rust.AuthState.LoggedOut }
+
+        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.Login(testNsec)) }
+        waitUntilState(120_000, ctx, "logged in") { it.auth is com.pika.app.rust.AuthState.LoggedIn }
+
+        // Create + open chat with bot.
+        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) }
+        retryOnTimeout(
+            maxAttempts = 3,
+            beforeRetry = { runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) } },
+        ) {
+            waitUntilState(60_000, ctx, "chat created") { st ->
+                st.chatList.any { !it.isGroup && it.members.any { m -> m.npub == botNpub } }
+            }
+        }
+        val chatId =
+            runOnMain {
+                AppManager.getInstance(ctx).state.chatList.first { !it.isGroup && it.members.any { m -> m.npub == botNpub } }.chatId
+            }
+        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.OpenChat(chatId)) }
+        waitUntilState(60_000, ctx, "chat opened") { it.currentChat?.chatId == chatId }
+
+        // ── Details probe ──
+        runOnMain {
+            AppManager.getInstance(ctx).dispatch(AppAction.SendMessage(chatId, "hn:details", null, null))
+        }
+        // Wait for a hypernote message to appear.
+        waitUntilState(180_000, ctx, "details hypernote received") { st ->
+            st.currentChat?.messages?.any { it.hypernote != null } ?: false
+        }
+        compose.onNodeWithTag(TestTags.HYPERNOTE_DETAILS).assertIsDisplayed()
+        compose.onNodeWithTag(TestTags.HYPERNOTE_DETAILS_SUMMARY).assertIsDisplayed()
+        assertTagDoesNotExist(TestTags.HYPERNOTE_DETAILS_BODY)
+
+        // Tap to expand.
+        compose.onNodeWithTag(TestTags.HYPERNOTE_DETAILS_SUMMARY).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(TestTags.HYPERNOTE_DETAILS_BODY).assertIsDisplayed()
+
+        // Tap to collapse.
+        compose.onNodeWithTag(TestTags.HYPERNOTE_DETAILS_SUMMARY).performClick()
+        compose.waitForIdle()
+        assertTagDoesNotExist(TestTags.HYPERNOTE_DETAILS_BODY)
+
+        // ── Code block probe ──
+        runOnMain {
+            AppManager.getInstance(ctx).dispatch(AppAction.SendMessage(chatId, "hn:codeblock", null, null))
+        }
+        // Wait for a second hypernote.
+        waitUntilState(180_000, ctx, "codeblock hypernote received") { st ->
+            val hypernotes = st.currentChat?.messages?.count { it.hypernote != null } ?: 0
+            hypernotes >= 2
+        }
+        compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK).assertIsDisplayed()
+        compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK_LANG).assertIsDisplayed()
+        compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK_COPY).assertIsDisplayed()
+
+        // Tap copy.
+        compose.onNodeWithTag(TestTags.HYPERNOTE_CODEBLOCK_COPY).performClick()
+        waitForTagDisplayed(TestTags.HYPERNOTE_CODEBLOCK_COPIED, timeoutMs = 5_000)
+    }
+
     private fun retryOnTimeout(maxAttempts: Int, beforeRetry: (() -> Unit)? = null, block: () -> Unit) {
         var attempt = 0
         while (true) {
@@ -229,6 +314,27 @@ class PikaE2eUiTest {
         if (currentHas) return true
         val summary = st.chatList.firstOrNull { it.chatId == chatId } ?: return false
         return summary.lastMessage?.trim() == expected || summary.lastMessagePreview.trim() == expected
+    }
+
+    private fun assertTagDoesNotExist(tag: String) {
+        val matches = compose.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes()
+        if (matches.isNotEmpty()) {
+            throw AssertionError("Expected no node with tag $tag, found ${matches.size}")
+        }
+    }
+
+    private fun waitForTagDisplayed(tag: String, timeoutMs: Long) {
+        try {
+            compose.waitUntil(timeoutMs) {
+                val nodes = compose.onAllNodesWithTag(tag, useUnmergedTree = true)
+                val count = nodes.fetchSemanticsNodes().size
+                (0 until count).any { index ->
+                    runCatching { nodes[index].isDisplayed() }.getOrDefault(false)
+                }
+            }
+        } catch (e: ComposeTimeoutException) {
+            throw AssertionError("timeout waiting for visible node with tag: $tag", e)
+        }
     }
 
     private fun waitUntilState(

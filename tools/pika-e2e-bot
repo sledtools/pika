@@ -152,6 +152,20 @@ while true; do
       elif [[ "$content" =~ ^pika-e2e:([A-Za-z0-9._-]{16,128})$ ]]; then
         nonce="${BASH_REMATCH[1]}"
         respond "$ngid" "pong:${nonce}" || true
+      elif [[ "$content" == "hn:details" ]]; then
+        "${CLI[@]}" send-hypernote --group "$ngid" --content '<Details><Summary>Click to expand this section</Summary>
+
+This is the expanded content inside the details block.
+
+- Item one
+- Item two
+</Details>' || true
+      elif [[ "$content" == "hn:codeblock" ]]; then
+        "${CLI[@]}" send-hypernote --group "$ngid" --content '```rust
+fn hello() {
+    println!("Hello, world!");
+}
+```' || true
       fi
       continue
     fi

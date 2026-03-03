@@ -1,5 +1,6 @@
 package com.pika.app.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,9 +16,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -43,7 +47,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.material3.IconButton
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -56,6 +63,7 @@ import coil.compose.AsyncImage
 import com.pika.app.rust.HypernoteData
 import com.pika.app.rust.HypernoteResponseTally
 import com.pika.app.ui.Avatar
+import com.pika.app.ui.TestTags
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -241,24 +249,74 @@ private fun HypernoteNode(
         }
 
         "code_block" -> {
+            val code = node.value.orEmpty()
+            val clipboardManager = LocalClipboardManager.current
+            var showCopied by remember { mutableStateOf(false) }
+            if (showCopied) {
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(1500)
+                    showCopied = false
+                }
+            }
             Surface(
+                modifier = Modifier.testTag(TestTags.HYPERNOTE_CODEBLOCK),
                 shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    node.lang?.takeIf { it.isNotBlank() }?.let { language ->
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+                            .padding(start = 8.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            text = language,
+                            text = node.lang.orEmpty(),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f).testTag(TestTags.HYPERNOTE_CODEBLOCK_LANG),
                         )
+                        if (showCopied) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .testTag(TestTags.HYPERNOTE_CODEBLOCK_COPIED)
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Copied",
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = "Copied",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(code))
+                                    showCopied = true
+                                },
+                                modifier = Modifier.size(32.dp).testTag(TestTags.HYPERNOTE_CODEBLOCK_COPY),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ContentCopy,
+                                    contentDescription = "Copy code",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                     Text(
-                        text = node.value.orEmpty(),
+                        text = code,
                         style =
                             MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
@@ -625,6 +683,70 @@ private fun HypernoteJsxNode(
                     modifier = Modifier.weight(1f),
                 )
             }
+        }
+
+        "Details" -> {
+            val openByDefault = attrs.containsKey("open")
+            var expanded by remember { mutableStateOf(openByDefault) }
+            val summaryNode = node.children.firstOrNull {
+                (it.type == "mdx_jsx_element" || it.type == "mdx_jsx_self_closing") && it.name == "Summary"
+            }
+            val contentChildren = node.children.filter {
+                !((it.type == "mdx_jsx_element" || it.type == "mdx_jsx_self_closing") && it.name == "Summary")
+            }
+            Column(modifier = Modifier.testTag(TestTags.HYPERNOTE_DETAILS)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { expanded = !expanded }
+                        .padding(vertical = 4.dp)
+                        .testTag(TestTags.HYPERNOTE_DETAILS_SUMMARY),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                        contentDescription = if (expanded) "Collapse" else "Expand",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (summaryNode != null) inlineText(summaryNode.children) else "Details",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                AnimatedVisibility(visible = expanded) {
+                    Column(
+                        modifier = Modifier
+                            .padding(start = 24.dp, top = 4.dp)
+                            .testTag(TestTags.HYPERNOTE_DETAILS_BODY),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        contentChildren.forEach { child ->
+                            HypernoteNode(
+                                node = child,
+                                interactionState = interactionState,
+                                talliesByAction = talliesByAction,
+                                selectedAction = selectedAction,
+                                isSubmitted = isSubmitted,
+                                messageId = messageId,
+                                onAction = onAction,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        "Summary" -> {
+            // Summary is normally consumed by Details; if standalone, render as medium-weight text.
+            Text(
+                text = inlineText(node.children),
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
 
         else -> {

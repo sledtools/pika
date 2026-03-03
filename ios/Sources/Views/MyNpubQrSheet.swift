@@ -14,6 +14,7 @@ struct MyNpubQrSheet: View {
     let onLogout: @MainActor () -> Void
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
+    let onWipeProfileCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -46,6 +47,7 @@ struct MyNpubQrSheet: View {
         onLogout: @MainActor @escaping () -> Void,
         isDeveloperModeEnabledProvider: @MainActor @escaping () -> Bool,
         onEnableDeveloperMode: @MainActor @escaping () -> Void,
+        onWipeProfileCache: @MainActor @escaping () -> Void,
         onWipeLocalData: @MainActor @escaping () -> Void,
         showLogoutConfirm: Bool = false
     ) {
@@ -58,6 +60,7 @@ struct MyNpubQrSheet: View {
         self.onLogout = onLogout
         self.isDeveloperModeEnabledProvider = isDeveloperModeEnabledProvider
         self.onEnableDeveloperMode = onEnableDeveloperMode
+        self.onWipeProfileCache = onWipeProfileCache
         self.onWipeLocalData = onWipeLocalData
         self._showLogoutConfirm = State(initialValue: showLogoutConfirm)
     }
@@ -269,7 +272,7 @@ struct MyNpubQrSheet: View {
         if developerModeEnabled {
             Section {
                 Button("Wipe Profile Cache") {
-                    onAction(.wipeProfileCache)
+                    onWipeProfileCache()
                 }
                 Button("Wipe All Local Data", role: .destructive) {
                     showWipeLocalDataConfirm = true
@@ -522,6 +525,7 @@ struct MyNpubQrSheet: View {
         onLogout: {},
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
+        onWipeProfileCache: {},
         onWipeLocalData: {}
     )
 }
@@ -537,6 +541,7 @@ struct MyNpubQrSheet: View {
         onLogout: {},
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
+        onWipeProfileCache: {},
         onWipeLocalData: {},
         showLogoutConfirm: true
     )

@@ -165,6 +165,29 @@ pub fn component_registry() -> Vec<ComponentSpec> {
             ],
         },
         ComponentSpec {
+            name: "Details".to_string(),
+            category: "layout".to_string(),
+            description: "Collapsible container that shows/hides its children. Pair with Summary for the toggle label.".to_string(),
+            design_principles: vec![
+                "Always include a Summary child as the toggle label.".to_string(),
+            ],
+            props: vec![ComponentPropSpec {
+                name: "open".to_string(),
+                kind: "boolean".to_string(),
+                required: false,
+                description: "When present, the section starts expanded (defaults to collapsed).".to_string(),
+            }],
+        },
+        ComponentSpec {
+            name: "Summary".to_string(),
+            category: "layout".to_string(),
+            description: "Label shown as the toggle for a Details container. Must be a direct child of Details.".to_string(),
+            design_principles: vec![
+                "Keep summary text short (one line).".to_string(),
+            ],
+            props: vec![],
+        },
+        ComponentSpec {
             name: "SubmitButton".to_string(),
             category: "interactive".to_string(),
             description: "Submits current form state as a hypernote action response.".to_string(),

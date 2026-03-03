@@ -171,6 +171,8 @@ impl Relay {
         cmd.env("PORT", requested_port.to_string())
             .env("DATA_DIR", &data_dir)
             .env("MEDIA_DIR", &media_dir)
+            // Debug attach-point for local E2E investigations.
+            .env("PIKA_RELAY_LOG_EVENTS", "1")
             .stdout(StdStdio::from(log_file))
             .stderr(StdStdio::from(stderr_file))
             .kill_on_drop(true);

@@ -219,6 +219,7 @@ private func screenView(
             },
             isDeveloperModeEnabledProvider: { manager.isDeveloperModeEnabled },
             onEnableDeveloperMode: { manager.enableDeveloperMode() },
+            onWipeProfileCache: { manager.wipeProfileCacheForDeveloperTools() },
             onWipeLocalData: { manager.wipeLocalDataForDeveloperTools() },
             nsecProvider: { manager.getNsec() }
         )

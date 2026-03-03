@@ -61,6 +61,7 @@ secrets/.zapstore-sign-with.*
 .pgdata/
 .pika-cli/
 .tmp/
+screen_recordings/
 cmd/pika-relay/data/
 bots/__pycache__/
 tools/agent-pty/__pycache__/
@@ -77,4 +78,3 @@ cmd/pika-relay/pika-relay
 .pikahut/
 .local-backend/
 .pika-fixture/
-

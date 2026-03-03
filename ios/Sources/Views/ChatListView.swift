@@ -13,6 +13,7 @@ struct ChatListView: View {
     let onUploadProfilePhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
+    let onWipeProfileCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
     let nsecProvider: @MainActor () -> String?
     @State private var showMyNpub = false
@@ -96,6 +97,7 @@ struct ChatListView: View {
                             onLogout: onLogout,
                             isDeveloperModeEnabledProvider: isDeveloperModeEnabledProvider,
                             onEnableDeveloperMode: onEnableDeveloperMode,
+                            onWipeProfileCache: onWipeProfileCache,
                             onWipeLocalData: onWipeLocalData
                         )
                     }
@@ -154,6 +156,7 @@ struct ChatListView: View {
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            onWipeProfileCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )
@@ -178,6 +181,7 @@ struct ChatListView: View {
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            onWipeProfileCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )
@@ -202,6 +206,7 @@ struct ChatListView: View {
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            onWipeProfileCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )

@@ -335,6 +335,22 @@ impl Store {
             .context("query PR detail")
         })
     }
+    pub fn reset_artifact_to_pending(&self, pr_id: i64) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE generated_artifacts
+                     SET status='pending', tutorial_json=NULL, html=NULL, error_message=NULL,
+                         next_retry_at=NULL, claude_session_id=NULL, unified_diff=NULL,
+                         updated_at=CURRENT_TIMESTAMP
+                     WHERE pr_id = ?1",
+                    params![pr_id],
+                )
+                .context("reset artifact to pending")?;
+            Ok(rows > 0)
+        })
+    }
+
     pub fn get_artifact_session_id(&self, pr_id: i64) -> anyhow::Result<Option<String>> {
         self.with_connection(|conn| {
             conn.query_row(

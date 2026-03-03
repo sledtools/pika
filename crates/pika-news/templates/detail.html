@@ -44,12 +44,19 @@
       .chat-auth { padding: 1rem; text-align: center; }
       .chat-auth button { background: #7b3fe4; color: #fff; border: none; padding: 0.5rem 1.2rem; font-size: 0.9rem; cursor: pointer; border-radius: 10px; }
       .chat-status { padding: 0.5rem 1rem; font-size: 0.82rem; color: #64748b; text-align: center; }
+      .chat-disabled { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem; text-align: center; color: #94a3b8; }
+      .chat-disabled svg { width: 48px; height: 48px; margin-bottom: 0.75rem; opacity: 0.4; }
+      .nostr-login-bar { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem; padding: 0.5rem 0.75rem; background: #f0f4f9; border: 1px solid #d4deea; border-radius: 10px; font-size: 0.85rem; color: #64748b; }
+      .nostr-login-bar button { background: #7b3fe4; color: #fff; border: none; padding: 0.35rem 0.9rem; font-size: 0.82rem; cursor: pointer; border-radius: 8px; white-space: nowrap; }
+      .nostr-login-bar .npub-display { font-family: monospace; font-size: 0.8rem; color: #334155; }
+      .regen-btn { background: #e2e8f0; border: 1px solid #9eb3cb; color: #334155; font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; }
+      .regen-btn:hover { background: #cbd5e1; }
       @media (max-width: 900px) { .chat-sidebar { width: 300px; } }
       @media (max-width: 640px) { body { padding: 1rem 0.75rem; } .page-layout { flex-direction: column; } .chat-sidebar { width: 100%; position: static; height: 400px; } }
     </style>
   </head>
   <body>
-    {% if chat_enabled && has_session %}
+    {% if chat_enabled %}
     <div class="page-layout" style="max-width:1500px;margin:0 auto;padding:2rem 1rem;">
     {% endif %}
     <main class="shell">
@@ -59,6 +66,17 @@
       <p>
         <span class="status">pr: {{ pr_state }}</span>
         <span class="status">gen: {{ generation_status }}</span>
+        {% if chat_enabled %}
+        <span id="auth-actions">
+          <button id="nostr-login" type="button" class="nostr-login-bar" style="display:inline-flex;">Sign in with Nostr</button>
+        </span>
+        <span id="user-actions" style="display:none;">
+          <span class="nostr-login-bar" style="display:inline-flex;">
+            <span class="npub-display" id="user-npub"></span>
+            <button id="regen-btn" class="regen-btn" type="button">Regenerate</button>
+          </span>
+        </span>
+        {% endif %}
       </p>
       <p><a href="{{ github_url }}">Open PR on GitHub</a></p>
 
@@ -137,12 +155,13 @@
       {% when None %}{% endmatch %}
     </main>
 
-    {% if chat_enabled && has_session %}
+    {% if chat_enabled %}
     <aside class="chat-sidebar" id="chat-sidebar">
       <h3>Chat with Tutorial</h3>
-      <div id="chat-auth" class="chat-auth">
-        <p style="font-size:0.85rem;color:#64748b;">Sign in with your Nostr extension to ask questions about this PR.</p>
-        <button id="nostr-login" type="button">Sign in with Nostr</button>
+      <div id="chat-disabled" class="chat-disabled">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>
+        <p style="font-size:0.85rem;margin:0 0 0.5rem 0;">Chat is available to contributors with whitelisted pubkeys.</p>
+        <p style="font-size:0.8rem;margin:0;">Sign in with your Nostr extension above to unlock.</p>
       </div>
       <div id="chat-main" style="display:none;flex:1;flex-direction:column;">
         <div class="chat-messages" id="chat-messages"></div>
@@ -217,27 +236,35 @@
         }
       })();
 
-      // --- Chat / NIP-07 auth ---
+      // --- Auth + Chat + Regenerate ---
       (function () {
-        const sidebar = document.getElementById('chat-sidebar');
-        if (!sidebar) return;
-
         const prId = window.location.pathname.split('/').pop();
         let authToken = sessionStorage.getItem('pika_news_token_' + prId);
-        const authSection = document.getElementById('chat-auth');
+
+        const loginBtn = document.getElementById('nostr-login');
+        const authActions = document.getElementById('auth-actions');
+        const userActions = document.getElementById('user-actions');
+        const npubDisplay = document.getElementById('user-npub');
+        const regenBtn = document.getElementById('regen-btn');
+        const sidebar = document.getElementById('chat-sidebar');
+        const chatDisabled = document.getElementById('chat-disabled');
         const chatMain = document.getElementById('chat-main');
         const messagesDiv = document.getElementById('chat-messages');
         const chatInput = document.getElementById('chat-input');
         const chatSend = document.getElementById('chat-send');
         const chatStatus = document.getElementById('chat-status');
 
+        if (!loginBtn) return;
+
         function showStatus(msg) {
+          if (!chatStatus) return;
           chatStatus.textContent = msg;
           chatStatus.style.display = 'block';
         }
-        function hideStatus() { chatStatus.style.display = 'none'; }
+        function hideStatus() { if (chatStatus) chatStatus.style.display = 'none'; }
 
         function addMessage(role, content) {
+          if (!messagesDiv) return;
           const div = document.createElement('div');
           div.className = 'chat-msg ' + role;
           div.textContent = content;
@@ -245,18 +272,24 @@
           messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        function showChat() {
-          authSection.style.display = 'none';
-          chatMain.style.display = 'flex';
+        function showAuthed(npub) {
+          authActions.style.display = 'none';
+          userActions.style.display = 'inline';
+          const short = npub.length > 20 ? npub.slice(0, 10) + '...' + npub.slice(-6) : npub;
+          npubDisplay.textContent = short;
+          npubDisplay.title = npub;
+          if (chatDisabled) chatDisabled.style.display = 'none';
+          if (chatMain) chatMain.style.display = 'flex';
           loadHistory();
         }
 
         async function loadHistory() {
+          if (!messagesDiv) return;
           try {
             const res = await fetch('/news/pr/' + prId + '/chat', {
               headers: { 'Authorization': 'Bearer ' + authToken }
             });
-            if (!res.ok) throw new Error('Failed to load history');
+            if (!res.ok) return;
             const data = await res.json();
             messagesDiv.innerHTML = '';
             (data.messages || []).forEach(m => addMessage(m.role, m.content));
@@ -271,12 +304,12 @@
             return;
           }
           try {
-            showStatus('Requesting challenge...');
+            loginBtn.textContent = 'Signing...';
+            loginBtn.disabled = true;
             const challengeRes = await fetch('/news/pr/' + prId + '/auth/challenge', { method: 'POST' });
             if (!challengeRes.ok) throw new Error('Challenge request failed');
             const { challenge } = await challengeRes.json();
 
-            showStatus('Sign with your Nostr extension...');
             const pubkey = await window.nostr.getPublicKey();
             const event = {
               kind: 27235,
@@ -287,7 +320,6 @@
             };
             const signed = await window.nostr.signEvent(event);
 
-            showStatus('Verifying...');
             const verifyRes = await fetch('/news/pr/' + prId + '/auth/verify', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -297,13 +329,35 @@
               const err = await verifyRes.json();
               throw new Error(err.error || 'Verification failed');
             }
-            const { token } = await verifyRes.json();
+            const { token, npub } = await verifyRes.json();
             authToken = token;
             sessionStorage.setItem('pika_news_token_' + prId, token);
-            hideStatus();
-            showChat();
+            sessionStorage.setItem('pika_news_npub_' + prId, npub || pubkey);
+            showAuthed(npub || pubkey);
           } catch (e) {
-            showStatus('Auth error: ' + e.message);
+            loginBtn.textContent = 'Sign in with Nostr';
+            loginBtn.disabled = false;
+            alert('Auth error: ' + e.message);
+          }
+        }
+
+        async function doRegenerate() {
+          if (!confirm('Regenerate tutorial? This will queue a new generation pass.')) return;
+          regenBtn.disabled = true;
+          regenBtn.textContent = 'Queued...';
+          try {
+            const res = await fetch('/news/pr/' + prId + '/regenerate', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + authToken },
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Regenerate failed');
+            regenBtn.textContent = 'Queued!';
+            setTimeout(() => location.reload(), 3000);
+          } catch (e) {
+            regenBtn.textContent = 'Regenerate';
+            regenBtn.disabled = false;
+            alert('Error: ' + e.message);
           }
         }
 
@@ -339,13 +393,18 @@
           }
         }
 
-        document.getElementById('nostr-login').addEventListener('click', doLogin);
-        chatSend.addEventListener('click', sendMessage);
-        chatInput.addEventListener('keydown', (e) => {
+        loginBtn.addEventListener('click', doLogin);
+        if (regenBtn) regenBtn.addEventListener('click', doRegenerate);
+        if (chatSend) chatSend.addEventListener('click', sendMessage);
+        if (chatInput) chatInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
-        if (authToken) showChat();
+        // Auto-restore session
+        if (authToken) {
+          const savedNpub = sessionStorage.getItem('pika_news_npub_' + prId) || '';
+          showAuthed(savedNpub);
+        }
       })();
     </script>
   </body>

@@ -50,7 +50,6 @@ struct DetailTemplate {
     steps: Vec<StepView>,
     diff_json: Option<String>,
     chat_enabled: bool,
-    has_session: bool,
 }
 
 #[derive(Clone)]
@@ -135,6 +134,7 @@ pub async fn serve(
             "/news/pr/:pr_id/chat",
             get(chat_history_handler).post(chat_send_handler),
         )
+        .route("/news/pr/:pr_id/regenerate", post(regenerate_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -223,8 +223,7 @@ async fn detail_handler(
     };
 
     let chat_enabled = state.auth.chat_enabled();
-    let has_session = detail.claude_session_id.is_some();
-    match render_detail_template(detail, chat_enabled, has_session) {
+    match render_detail_template(detail, chat_enabled) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -257,7 +256,6 @@ fn map_feed_item(item: FeedItem) -> FeedItemView {
 fn render_detail_template(
     record: PrDetailRecord,
     chat_enabled: bool,
-    has_session: bool,
 ) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
     let mut executive_html = None;
@@ -311,7 +309,6 @@ fn render_detail_template(
             .unified_diff
             .map(|d| serde_json::to_string(&d).unwrap_or_default()),
         chat_enabled,
-        has_session,
     })
 }
 
@@ -350,7 +347,9 @@ async fn auth_verify_handler(
             .into_response();
     }
     match state.auth.verify_event(&body.event) {
-        Ok(token) => Json(serde_json::json!({"token": token})).into_response(),
+        Ok((token, npub)) => {
+            Json(serde_json::json!({"token": token, "npub": npub})).into_response()
+        }
         Err(msg) => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": msg})),
@@ -609,6 +608,55 @@ async fn chat_send_handler(
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("claude error: {}", e)})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// --- Regenerate handler ---
+
+async fn regenerate_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let token = match extract_token(&headers) {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing auth token"})),
+            )
+                .into_response()
+        }
+    };
+    if state.auth.validate_token(&token).is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid or expired token"})),
+        )
+            .into_response();
+    }
+
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.reset_artifact_to_pending(pr_id)).await {
+        Ok(Ok(true)) => {
+            Json(serde_json::json!({"status": "queued", "message": "Tutorial regeneration queued. Refresh in a minute."}))
+                .into_response()
+        }
+        Ok(Ok(false)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "no artifact found for this PR"})),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
         Err(e) => (

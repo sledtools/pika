@@ -39,7 +39,7 @@ impl AuthState {
         nonce
     }
 
-    pub fn verify_event(&self, event_json: &str) -> Result<String, String> {
+    pub fn verify_event(&self, event_json: &str) -> Result<(String, String), String> {
         let event: Event =
             serde_json::from_str(event_json).map_err(|e| format!("invalid event JSON: {}", e))?;
 
@@ -81,7 +81,7 @@ impl AuthState {
             tokens.insert(token.clone(), (npub.clone(), Instant::now()));
         }
 
-        Ok(token)
+        Ok((token, npub))
     }
 
     pub fn validate_token(&self, token: &str) -> Option<String> {

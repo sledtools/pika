@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,21 +55,10 @@ pub fn generate_with_anthropic(
 ) -> Result<GenerationOutput, GenerationError> {
     let prompt = format!("{}\n\n{}", SYSTEM_PROMPT, build_user_prompt(input));
 
-    let output = Command::new("claude")
-        .args(["-p", &prompt, "--output-format", "json", "--max-turns", "1"])
-        .output()
-        .map_err(|err| GenerationError::RetrySafe(format!("spawn claude CLI: {}", err)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GenerationError::RetrySafe(format!(
-            "claude CLI exited {}: {}",
-            output.status,
-            truncate(&stderr, 600)
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_claude_cli(
+        &["--output-format", "json", "--max-turns", "1"],
+        Some(&prompt),
+    )?;
     let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {
         GenerationError::RetrySafe(format!("parse claude CLI JSON envelope: {}", err))
     })?;
@@ -91,30 +81,17 @@ pub fn chat_with_session(
     base_session_id: &str,
     message: &str,
 ) -> Result<ChatResponse, GenerationError> {
-    let output = Command::new("claude")
-        .args([
+    let stdout = run_claude_cli(
+        &[
             "-r",
             base_session_id,
-            "-p",
-            message,
             "--output-format",
             "json",
             "--max-turns",
             "1",
-        ])
-        .output()
-        .map_err(|err| GenerationError::RetrySafe(format!("spawn claude CLI: {}", err)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GenerationError::RetrySafe(format!(
-            "claude CLI exited {}: {}",
-            output.status,
-            truncate(&stderr, 600)
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        ],
+        Some(message),
+    )?;
     let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {
         GenerationError::RetrySafe(format!("parse claude CLI JSON envelope: {}", err))
     })?;
@@ -142,6 +119,49 @@ struct ClaudeCliResponse {
     result: String,
     is_error: bool,
     session_id: Option<String>,
+}
+
+fn run_claude_cli(args: &[&str], stdin_data: Option<&str>) -> Result<String, GenerationError> {
+    let mut cmd = Command::new("claude");
+    cmd.args(args);
+    if stdin_data.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| GenerationError::RetrySafe(format!("spawn claude CLI: {}", err)))?;
+
+    if let Some(data) = stdin_data {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(data.as_bytes());
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| GenerationError::RetrySafe(format!("wait claude CLI: {}", err)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI exited {}: {}",
+            output.status,
+            truncate(&stderr, 600)
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GenerationError::RetrySafe(format!(
+            "claude CLI returned empty stdout. stderr: {}",
+            truncate(&stderr, 600)
+        )));
+    }
+
+    Ok(stdout.into_owned())
 }
 
 fn parse_and_validate_tutorial(raw_output: &str) -> Result<TutorialDoc, GenerationError> {

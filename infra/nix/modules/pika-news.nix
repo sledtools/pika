@@ -40,12 +40,21 @@ in
     mode = "0400";
   };
 
+  sops.secrets."pika_news_claude_oauth_token" = {
+    format = "yaml";
+    sopsFile = ../../secrets/pika-news.yaml;
+    owner = serviceUser;
+    group = serviceGroup;
+    mode = "0400";
+  };
+
   sops.templates."pika-news-env" = {
     owner = serviceUser;
     group = serviceGroup;
     mode = "0400";
     content = ''
       GITHUB_TOKEN=${config.sops.placeholder."pika_news_github_token"}
+      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_news_claude_oauth_token"}
       RUST_LOG=info
     '';
   };

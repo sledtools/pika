@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
-use pulldown_cmark::{html, Parser};
+use pulldown_cmark::{html, Options, Parser};
 
 use crate::config::Config;
 use crate::poller;
@@ -292,10 +292,15 @@ fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTempla
 }
 
 fn markdown_to_safe_html(markdown: &str) -> String {
-    let parser = Parser::new(markdown);
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    let parser = Parser::new_ext(markdown, opts);
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
-    ammonia::clean(&html_output)
+    let mut builder = ammonia::Builder::default();
+    builder.add_tags(&["table", "thead", "tbody", "tr", "th", "td"]);
+    builder.clean(&html_output).to_string()
 }
 
 async fn shutdown_signal() {

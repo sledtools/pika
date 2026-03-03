@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/css/diff2html.min.css" />
     <style>
       :root { color-scheme: light; }
       body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 2rem 1rem; background: radial-gradient(circle at top right, #ecf6ff, #f7fafc 45%, #eef2f7); color: #1e293b; }
@@ -11,14 +13,17 @@
       .meta { color: #334155; font-size: 0.92rem; }
       .status { display: inline-block; border-radius: 999px; border: 1px solid #afc2d8; padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
       .panel { background: #ffffffeb; border: 1px solid #d4deea; border-radius: 14px; padding: 1rem; margin-top: 1rem; }
-      .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+      .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
       button { border-radius: 10px; border: 1px solid #9eb3cb; background: #f3f8ff; padding: 0.45rem 0.8rem; cursor: pointer; }
       .step { display: none; }
       .step.active { display: block; }
       .evidence { background: #f7fafc; border-radius: 10px; padding: 0.75rem; }
-      .diff { max-height: 360px; overflow: auto; background: #f7fafc; border-radius: 10px; padding: 0.75rem; white-space: pre-wrap; }
       a { color: #0f4c81; text-decoration: none; }
       a:hover { text-decoration: underline; }
+      pre code.hljs { border-radius: 10px; }
+      .d2h-wrapper { border-radius: 10px; overflow: hidden; }
+      .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+      .diff-view-toggle button.active { background: #0f4c81; color: #fff; border-color: #0f4c81; }
       @media (max-width: 640px) { body { padding: 1rem 0.75rem; } }
     </style>
   </head>
@@ -94,37 +99,78 @@
       </section>
       {% endif %}
 
-      {% match raw_diff %}
-      {% when Some with (diff_text) %}
+      {% match diff_json %}
+      {% when Some with (json_str) %}
       <section class="panel">
-        <h2>Diff Snapshot</h2>
-        <pre class="diff">{{ diff_text }}</pre>
+        <h2>Diff</h2>
+        <div class="diff-view-toggle">
+          <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
+          <button type="button" class="diff-toggle" data-style="line">Unified</button>
+        </div>
+        <div id="diff-container"></div>
+        <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
       </section>
       {% when None %}{% endmatch %}
     </main>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/js/diff2html.min.js"></script>
     <script>
       (function () {
+        // Step navigation
         const steps = Array.from(document.querySelectorAll('.step'));
-        if (steps.length === 0) return;
-        const prev = document.getElementById('prev-step');
-        const next = document.getElementById('next-step');
-        const label = document.getElementById('step-index');
-        let index = 0;
+        if (steps.length > 0) {
+          const prev = document.getElementById('prev-step');
+          const next = document.getElementById('next-step');
+          const label = document.getElementById('step-index');
+          let index = 0;
 
-        function render() {
-          steps.forEach((step, i) => step.classList.toggle('active', i === index));
-          label.textContent = `Step ${index + 1} / ${steps.length}`;
-          prev.disabled = index === 0;
-          next.disabled = index === steps.length - 1;
+          function render() {
+            steps.forEach((step, i) => step.classList.toggle('active', i === index));
+            label.textContent = `Step ${index + 1} / ${steps.length}`;
+            prev.disabled = index === 0;
+            next.disabled = index === steps.length - 1;
+          }
+
+          prev.addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
+          next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; render(); } });
+          window.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowLeft' && index > 0) { index -= 1; render(); }
+            if (event.key === 'ArrowRight' && index < steps.length - 1) { index += 1; render(); }
+          });
+          render();
         }
 
-        prev.addEventListener('click', () => { if (index > 0) { index -= 1; render(); } });
-        next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; render(); } });
-        window.addEventListener('keydown', (event) => {
-          if (event.key === 'ArrowLeft' && index > 0) { index -= 1; render(); }
-          if (event.key === 'ArrowRight' && index < steps.length - 1) { index += 1; render(); }
-        });
-        render();
+        // Syntax highlighting for code blocks in tutorial body
+        hljs.highlightAll();
+
+        // Diff rendering
+        const diffDataEl = document.getElementById('diff-data');
+        const diffContainer = document.getElementById('diff-container');
+        if (diffDataEl && diffContainer) {
+          const diffText = JSON.parse(diffDataEl.textContent);
+          let currentStyle = 'side';
+
+          function renderDiff(style) {
+            const outputFormat = style === 'side' ? 'side-by-side' : 'line-by-line';
+            diffContainer.innerHTML = Diff2Html.html(diffText, {
+              drawFileList: true,
+              matching: 'lines',
+              outputFormat: outputFormat,
+              highlight: true,
+            });
+          }
+
+          renderDiff(currentStyle);
+
+          document.querySelectorAll('.diff-toggle').forEach(btn => {
+            btn.addEventListener('click', () => {
+              document.querySelectorAll('.diff-toggle').forEach(b => b.classList.remove('active'));
+              btn.classList.add('active');
+              currentStyle = btn.dataset.style;
+              renderDiff(currentStyle);
+            });
+          });
+        }
       })();
     </script>
   </body>

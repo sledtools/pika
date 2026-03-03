@@ -45,7 +45,7 @@ struct DetailTemplate {
     media_links: Vec<MediaLinkView>,
     error_message: Option<String>,
     steps: Vec<StepView>,
-    raw_diff: Option<String>,
+    diff_json: Option<String>,
 }
 
 #[derive(Clone)]
@@ -285,10 +285,9 @@ fn render_detail_template(record: PrDetailRecord) -> anyhow::Result<DetailTempla
         media_links,
         error_message: record.error_message,
         steps,
-        raw_diff: Some(format!(
-            "base_ref={}\nhead_sha={}\n(diff text is stored in generated artifact HTML for now)",
-            record.base_ref, record.head_sha
-        )),
+        diff_json: record
+            .unified_diff
+            .map(|d| serde_json::to_string(&d).unwrap_or_default()),
     })
 }
 

@@ -53,6 +53,7 @@ pub struct FeedItem {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PrDetailRecord {
     pub repo: String,
     pub pr_number: i64,
@@ -64,6 +65,7 @@ pub struct PrDetailRecord {
     pub head_sha: String,
     pub generation_status: String,
     pub tutorial_json: Option<String>,
+    pub unified_diff: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -198,14 +200,15 @@ impl Store {
         tutorial_json: &str,
         html: &str,
         generated_head_sha: &str,
+        unified_diff: &str,
     ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE generated_artifacts
                  SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
-                     generated_head_sha=?3, updated_at=CURRENT_TIMESTAMP
-                 WHERE id = ?4",
-                params![tutorial_json, html, generated_head_sha, artifact_id],
+                     generated_head_sha=?3, unified_diff=?4, updated_at=CURRENT_TIMESTAMP
+                 WHERE id = ?5",
+                params![tutorial_json, html, generated_head_sha, unified_diff, artifact_id],
             )
             .with_context(|| format!("mark artifact {} ready", artifact_id))?;
             Ok(())
@@ -294,7 +297,7 @@ impl Store {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, pr.base_ref, pr.head_sha,
-                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.error_message
+                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.unified_diff, ga.error_message
                  FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
                  LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
@@ -312,7 +315,8 @@ impl Store {
                         head_sha: row.get(7)?,
                         generation_status: row.get(8)?,
                         tutorial_json: row.get(9)?,
-                        error_message: row.get(10)?,
+                        unified_diff: row.get(10)?,
+                        error_message: row.get(11)?,
                     })
                 },
             )
@@ -500,11 +504,18 @@ struct Migration {
 }
 
 fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        name: "0001_init",
-        sql: include_str!("../migrations/0001_init.sql"),
-    }]
+    vec![
+        Migration {
+            version: 1,
+            name: "0001_init",
+            sql: include_str!("../migrations/0001_init.sql"),
+        },
+        Migration {
+            version: 2,
+            name: "0002_add_unified_diff",
+            sql: include_str!("../migrations/0002_add_unified_diff.sql"),
+        },
+    ]
 }
 
 #[cfg(test)]

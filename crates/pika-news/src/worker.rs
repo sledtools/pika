@@ -171,7 +171,13 @@ fn process_job(
 
     let tutorial_json = serde_json::to_string(&doc).context("serialize tutorial JSON")?;
     store
-        .mark_generation_ready(job.artifact_id, &tutorial_json, &html, &job.head_sha)
+        .mark_generation_ready(
+            job.artifact_id,
+            &tutorial_json,
+            &html,
+            &job.head_sha,
+            &diff.unified_diff,
+        )
         .with_context(|| format!("mark artifact {} ready", job.artifact_id))?;
 
     Ok(JobOutcome::Ready)

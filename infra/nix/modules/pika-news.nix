@@ -8,7 +8,7 @@ let
   configFile = pkgs.writeText "pika-news.toml" ''
     repos = ["sledtools/pika"]
     poll_interval_secs = 300
-    model = "claude-sonnet-4-5-20250929"
+    model = "claude-opus-4-6"
     api_key_env = "ANTHROPIC_API_KEY"
     github_token_env = "GITHUB_TOKEN"
     merged_lookback_hours = 72

@@ -49,14 +49,21 @@ pub struct GenerationOutput {
 }
 
 pub fn generate_with_anthropic(
-    _model: &str,
+    model: &str,
     _api_key_env: &str,
     input: &PromptInput,
 ) -> Result<GenerationOutput, GenerationError> {
     let prompt = format!("{}\n\n{}", SYSTEM_PROMPT, build_user_prompt(input));
 
     let stdout = run_claude_cli(
-        &["--output-format", "json", "--max-turns", "1"],
+        &[
+            "--model",
+            model,
+            "--output-format",
+            "json",
+            "--max-turns",
+            "1",
+        ],
         Some(&prompt),
     )?;
     let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {

@@ -81,6 +81,10 @@ in
       configFile
     ];
 
+    environment = {
+      SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
+    };
+
     serviceConfig = {
       Type = "simple";
       User = serviceUser;

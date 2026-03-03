@@ -1,13 +1,15 @@
-{ config, lib, pkgs, modulesPath, sops-nix, ... }:
+{ config, lib, pkgs, modulesPath, sops-nix, pikaNewsPkg, ... }:
 
 let
   cachePort = 5000;
+  newsPort = 8788;
 in
 {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ../modules/base.nix
     ../modules/microvm-host.nix
+    ../modules/pika-news.nix
   ];
 
   networking.hostName = "pika-build";
@@ -103,12 +105,22 @@ in
     secretKeyFile = config.sops.secrets."cache_signing_key".path;
   };
 
+  # ── Caddy: reverse proxy for pika-news ─────────────────────────────────
+  services.caddy = {
+    enable = true;
+    virtualHosts."news.pikachat.org" = {
+      extraConfig = ''
+        reverse_proxy 127.0.0.1:${toString newsPort}
+      '';
+    };
+  };
+
   # ── SSH ────────────────────────────────────────────────────────────────
   services.openssh.openFirewall = lib.mkForce true;
 
-  # ── Firewall: SSH + nix-serve only ────────────────────────────────────
+  # ── Firewall: SSH + nix-serve + HTTP/HTTPS ────────────────────────────
   networking.firewall = {
-    allowedTCPPorts = [ cachePort ];
+    allowedTCPPorts = [ cachePort 80 443 ];
   };
 
   # ── Users ──────────────────────────────────────────────────────────────

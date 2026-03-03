@@ -73,6 +73,31 @@
         buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];
       };
 
+      pikaNewsPkg = serverPkgs.rustPlatform.buildRustPackage {
+        pname = "pika-news";
+        version = "0.1.0";
+        src = serverPkgs.lib.cleanSourceWith {
+          src = serverPkgs.lib.sourceByRegex ./. [
+            "Cargo\\.toml"
+            "Cargo\\.lock"
+            "crates(/.*)?"
+          ];
+          filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
+        };
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          outputHashes = {
+            "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
+            "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+          };
+        };
+        cargoBuildFlags = [ "-p" "pika-news" ];
+        doCheck = false;
+        nativeBuildInputs = [ serverPkgs.pkg-config ];
+        buildInputs = [ serverPkgs.openssl ];
+      };
+
       vmSpawnerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "vm-spawner";
         version = "0.1.0";
@@ -557,7 +582,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit sops-nix vmSpawnerPkg piAgentPkg; };
+          specialArgs = { inherit sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops

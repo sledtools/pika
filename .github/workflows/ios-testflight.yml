@@ -41,6 +41,7 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/Pika.xcarchive" \
             -destination "generic/platform=iOS" \
+            -skipMacroValidation \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             PIKA_APP_BUNDLE_ID=org.pikachat.pika \
             CODE_SIGN_STYLE=Automatic \

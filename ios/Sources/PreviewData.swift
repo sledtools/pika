@@ -620,7 +620,8 @@ enum PreviewAppState {
                         height: 800,
                         nonceHex: "00",
                         schemeVersion: "v1",
-                        localPath: nil
+                        localPath: nil,
+                        uploadProgress: nil
                     ),
                 ],
                 pollTally: [],
@@ -653,7 +654,8 @@ enum PreviewAppState {
                         height: 1200,
                         nonceHex: "00",
                         schemeVersion: "v1",
-                        localPath: nil
+                        localPath: nil,
+                        uploadProgress: nil
                     ),
                 ],
                 pollTally: [],
@@ -686,7 +688,8 @@ enum PreviewAppState {
                         height: nil,
                         nonceHex: "00",
                         schemeVersion: "v1",
-                        localPath: nil
+                        localPath: nil,
+                        uploadProgress: nil
                     ),
                 ],
                 pollTally: [],

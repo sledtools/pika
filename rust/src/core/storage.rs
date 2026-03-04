@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::state::{
-    resolve_mentions, HypernoteResponder, HypernoteResponseTally, MemberInfo, MessageSegment,
+    resolve_mentions, ChatMediaKind, HypernoteResponder, HypernoteResponseTally, MemberInfo,
+    MessageSegment,
 };
 use hypernote_protocol as hn;
 use std::sync::OnceLock;
@@ -604,6 +605,23 @@ impl AppCore {
                 picture_url: p.display_group_picture_url(&self.data_dir, chat_id, &my_pubkey_hex),
             });
 
+        // Collect attachments needing auto-download before emitting state.
+        let auto_downloads: Vec<(String, String)> = msgs
+            .iter()
+            .flat_map(|m| {
+                m.media
+                    .iter()
+                    .filter(|a| {
+                        matches!(
+                            a.kind,
+                            ChatMediaKind::Image | ChatMediaKind::VoiceNote | ChatMediaKind::Video
+                        ) && a.local_path.is_none()
+                            && a.upload_progress.is_none()
+                    })
+                    .map(|a| (m.id.clone(), a.original_hash_hex.clone()))
+            })
+            .collect();
+
         self.state.current_chat = Some(ChatViewState {
             chat_id: chat_id.to_string(),
             is_group: entry.is_group,
@@ -617,6 +635,33 @@ impl AppCore {
             my_group_profile,
         });
         self.emit_current_chat();
+
+        // Trigger auto-downloads for images, voice memos, and videos.
+        let chat_id_str = chat_id.to_string();
+        const MAX_CONCURRENT_AUTO_DOWNLOADS: usize = 5;
+        let already_pending = self
+            .pending_media_downloads
+            .values()
+            .filter(|p| p.chat_id == chat_id_str)
+            .count();
+        let available_slots = MAX_CONCURRENT_AUTO_DOWNLOADS.saturating_sub(already_pending);
+        let mut auto_download_count = 0;
+        for (message_id, hash) in auto_downloads {
+            if auto_download_count >= available_slots {
+                break;
+            }
+            if !self.is_media_download_pending(&chat_id_str, &hash) {
+                self.download_chat_media(chat_id_str.clone(), message_id, hash);
+                auto_download_count += 1;
+            }
+        }
+    }
+
+    /// Check if a download is already in-flight for this chat + hash.
+    fn is_media_download_pending(&self, chat_id: &str, original_hash_hex: &str) -> bool {
+        self.pending_media_downloads.values().any(|p| {
+            p.chat_id == chat_id && hex::encode(p.reference.original_hash) == original_hash_hex
+        })
     }
 
     pub(super) fn load_older_messages(&mut self, chat_id: &str, limit: usize) {

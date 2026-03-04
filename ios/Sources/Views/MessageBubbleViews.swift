@@ -242,8 +242,17 @@ struct MediaAttachmentView: View {
         attachment.kind == .image
     }
 
+    private var isVideo: Bool {
+        attachment.kind == .video
+    }
+
     private var isAudio: Bool {
         attachment.kind == .voiceNote
+    }
+
+    /// Image, VoiceNote, and Video kinds auto-download; File requires a manual tap.
+    private var isAutoDownloadKind: Bool {
+        isImage || isAudio || isVideo
     }
 
     private var aspectRatio: CGFloat {
@@ -263,14 +272,18 @@ struct MediaAttachmentView: View {
     }
 
     var body: some View {
-        if isImage {
-            imageContent
-        } else if isAudio {
-            VoiceMessageView(
+        if isVideo {
+            VideoAttachmentView(
                 attachment: attachment,
                 isMine: isMine,
+                maxMediaWidth: maxMediaWidth,
+                maxMediaHeight: maxMediaHeight,
                 onDownload: onDownload
             )
+        } else if isImage {
+            imageContent
+        } else if isAudio {
+            voiceContent
         } else {
             fileRow
         }
@@ -288,29 +301,73 @@ struct MediaAttachmentView: View {
             }
             .frame(width: imageSize.width, height: imageSize.height)
             .clipped()
-            .contentShape(Rectangle())
-            .onTapGesture { onTapImage?() }
-            .allowsHitTesting(onTapImage != nil)
-        } else {
-            Button {
-                onDownload?()
-            } label: {
-                ZStack {
-                    imagePlaceholder
-                    VStack(spacing: 6) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.title)
-                            .foregroundStyle(.white)
-                        Text(attachment.filename)
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.8))
-                            .lineLimit(1)
-                    }
+            .overlay {
+                if attachment.uploadProgress != nil {
+                    UploadProgressOverlay()
                 }
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture { onTapImage?() }
+            .allowsHitTesting(attachment.uploadProgress == nil && onTapImage != nil)
+        } else if isAutoDownloadKind {
+            // Auto-downloading: show placeholder with spinner
+            ZStack {
+                imagePlaceholder
+                ProgressView().tint(.white)
+            }
             .frame(width: imageSize.width, height: imageSize.height)
+        } else {
+            // File: keep existing tap-to-download button
+            downloadButton
         }
+    }
+
+    @ViewBuilder
+    private var voiceContent: some View {
+        if attachment.uploadProgress != nil {
+            // Uploading voice memo: show spinner
+            HStack(spacing: 10) {
+                Image(systemName: "waveform")
+                    .font(.title3)
+                    .foregroundStyle(isMine ? .white.opacity(0.8) : .secondary)
+                Text("Uploading...")
+                    .font(.subheadline)
+                    .foregroundStyle(isMine ? .white : .primary)
+                Spacer(minLength: 0)
+                ProgressView()
+                    .tint(isMine ? .white : .blue)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+        } else {
+            VoiceMessageView(
+                attachment: attachment,
+                isMine: isMine,
+                onDownload: onDownload
+            )
+        }
+    }
+
+    private var downloadButton: some View {
+        Button {
+            onDownload?()
+        } label: {
+            ZStack {
+                imagePlaceholder
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.title)
+                        .foregroundStyle(.white)
+                    Text(attachment.filename)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(width: imageSize.width, height: imageSize.height)
     }
 
     private var imagePlaceholder: some View {
@@ -324,10 +381,24 @@ struct MediaAttachmentView: View {
             filename: attachment.filename,
             mimeType: attachment.mimeType,
             localPath: attachment.localPath,
+            uploadProgress: attachment.uploadProgress,
             isMine: isMine,
             onDownload: onDownload
         )
         .frame(maxWidth: .infinity, minHeight: 44)
+    }
+}
+
+// MARK: - Upload progress overlay
+
+struct UploadProgressOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+            ProgressView()
+                .tint(.white)
+                .scaleEffect(1.5)
+        }
     }
 }
 
@@ -453,7 +524,7 @@ private struct MessageBubble: View {
     private func mediaBubble(segments: [MessageSegment]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(message.media, id: \.originalHashHex) { attachment in
-                let isImageAttachment = attachment.kind == .image
+                let isVisualAttachment = attachment.kind == .image || attachment.kind == .video
                 MediaAttachmentView(
                     attachment: attachment,
                     isMine: message.isMine,
@@ -465,8 +536,8 @@ private struct MessageBubble: View {
                     }
                 )
                 .overlay(alignment: .bottomTrailing) {
-                    // Floating timestamp only for images without a text caption
-                    if !hasText, isImageAttachment {
+                    // Floating timestamp only for images/videos without a text caption
+                    if !hasText, isVisualAttachment {
                         Text(timestampText)
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.78))

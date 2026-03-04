@@ -1014,7 +1014,7 @@ private struct EmojiPickerSheet: View {
     ]
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if searchText.isEmpty {

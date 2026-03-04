@@ -64,6 +64,8 @@ secrets/.zapstore-sign-with.*
 .pgdata/
 .pika-cli/
 .tmp/
+crates/pika-dev/node_modules/
+crates/pika-dev/dist/
 screen_recordings/
 cmd/pika-relay/data/
 bots/__pycache__/

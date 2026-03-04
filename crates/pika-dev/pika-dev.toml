@@ -1,0 +1,23 @@
+# GitHub
+github_repo = "sledtools/pika"
+github_label = "pika-dev"
+github_token_env = "GITHUB_TOKEN"
+poll_interval_secs = 60
+
+# Agent
+provider = "anthropic"
+model = "claude-sonnet-4-5-20250929"
+thinking_level = "high"
+max_concurrent_sessions = 5
+session_timeout_mins = 30
+workspace_base = ".tmp/pika-dev/workspaces"
+session_base = ".tmp/pika-dev/sessions"
+agent_backend = "pi"
+base_branch = "origin/master"
+
+# Web
+bind_address = "127.0.0.1"
+bind_port = 8789
+
+# Auth
+allowed_npubs = []

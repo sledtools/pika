@@ -1,0 +1,146 @@
+:root {
+  --bg: #f3f7f9;
+  --panel: #ffffff;
+  --border: #d4dde4;
+  --text: #1a2b36;
+  --muted: #5a6a76;
+  --accent: #1f7a8c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Iosevka Web", "SF Mono", "Menlo", monospace;
+  color: var(--text);
+  background: radial-gradient(circle at 10% 10%, #e8f2f4, var(--bg));
+}
+
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.panel h1,
+.panel h2,
+.panel h3 {
+  margin-top: 0;
+}
+
+.card-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+  background: #fbfdff;
+}
+
+.card ul {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+}
+
+.two-column {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.events,
+.chat {
+  max-height: 28rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  list-style: none;
+  background: #f9fcfe;
+}
+
+.events li,
+.chat li {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-bottom: 0.45rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-form {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.45rem;
+  background: #ffffff;
+}
+
+button {
+  width: fit-content;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+code {
+  background: #eff4f7;
+  padding: 0.1rem 0.25rem;
+  border-radius: 0.25rem;
+}
+
+@media (max-width: 900px) {
+  .two-column {
+    grid-template-columns: 1fr;
+  }
+}

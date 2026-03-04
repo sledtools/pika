@@ -669,6 +669,10 @@ pub struct AppCore {
     subs_recompute_dirty: bool,
     subs_recompute_token: u64,
 
+    // Coalescing flags for deferred init events — collapse rapid duplicates.
+    deferred_foreground_pending: bool,
+    deferred_session_init_pending: bool,
+
     // Actor-internal UI bookkeeping (spec-v2 paging + delivery state).
     loaded_count: HashMap<String, usize>,
     unread_counts: HashMap<String, u32>,
@@ -798,6 +802,8 @@ impl AppCore {
             subs_recompute_in_flight: false,
             subs_recompute_dirty: false,
             subs_recompute_token: 0,
+            deferred_foreground_pending: false,
+            deferred_session_init_pending: false,
             loaded_count: HashMap::new(),
             unread_counts: HashMap::new(),
             delivery_overrides: HashMap::new(),
@@ -3129,6 +3135,7 @@ impl AppCore {
                 self.handle_group_message(event);
             }
             InternalEvent::CompleteSessionInit => {
+                self.deferred_session_init_pending = false;
                 if !self.is_logged_in() {
                     return;
                 }
@@ -3144,6 +3151,7 @@ impl AppCore {
                 self.register_push_device();
             }
             InternalEvent::RefreshAfterForeground => {
+                self.deferred_foreground_pending = false;
                 if !self.is_logged_in() {
                     return;
                 }
@@ -4577,9 +4585,13 @@ impl AppCore {
 
                     // Defer the heavy refresh so any user actions that queued while
                     // the actor was busy (e.g. chat taps) are processed first.
-                    let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                        InternalEvent::RefreshAfterForeground,
-                    )));
+                    // Coalesce: skip if one is already pending.
+                    if !self.deferred_foreground_pending {
+                        self.deferred_foreground_pending = true;
+                        let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::RefreshAfterForeground,
+                        )));
+                    }
                 } else {
                     tracing::info!(
                         pending_nostr_connect = self.pending_nostr_connect_login.is_some(),

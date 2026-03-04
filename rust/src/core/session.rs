@@ -87,6 +87,7 @@ impl AppCore {
 
         // Defer remaining init work so any user actions that queued while the
         // actor was busy (e.g. chat taps during loading) are processed first.
+        self.deferred_session_init_pending = true;
         let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
             InternalEvent::CompleteSessionInit,
         )));

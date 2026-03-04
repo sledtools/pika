@@ -406,8 +406,22 @@ struct ChatView: View {
         var rows: [ChatTimelineRow] = []
         rows.reserveCapacity(entries.count)
         var insertedUnreadDivider = false
+        var lastDate: Date?
 
         for entry in entries {
+            let entryDate = entry.timestamp
+            let entryDay = Calendar.current.startOfDay(for: entryDate)
+            
+            // Insert date separator if day changed
+            if let lastDay = lastDate.map({ Calendar.current.startOfDay(for: $0) }),
+               entryDay != lastDay {
+                rows.append(.dateSeparator(entryDay))
+            } else if lastDate == nil {
+                // First entry - always show date
+                rows.append(.dateSeparator(entryDay))
+            }
+            lastDate = entryDate
+            
             switch entry {
             case .callEvent(_, let event):
                 rows.append(.callEvent(event))
@@ -483,6 +497,7 @@ struct ChatView: View {
         case messageGroup(GroupedChatMessage)
         case unreadDivider
         case callEvent(CallTimelineEvent)
+        case dateSeparator(Date)
 
         var id: String {
             switch self {
@@ -492,6 +507,8 @@ struct ChatView: View {
                 return "unread-divider"
             case .callEvent(let event):
                 return "call:\(event.id)"
+            case .dateSeparator(let date):
+                return "date:\(date.timeIntervalSince1970)"
             }
         }
     }

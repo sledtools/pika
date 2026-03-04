@@ -275,6 +275,8 @@ struct InvertedMessageList: UIViewRepresentable {
                         UnreadDividerRow()
                     case .callEvent(let event):
                         CallTimelineEventRow(event: event)
+                    case .dateSeparator(let date):
+                        DateSeparatorRow(date: date)
                     }
                 }
                 .padding(.horizontal, 12)

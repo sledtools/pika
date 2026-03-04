@@ -1094,6 +1094,47 @@ struct UnreadDividerRow: View {
     }
 }
 
+struct DateSeparatorRow: View {
+    let date: Date
+    
+    var body: some View {
+        HStack {
+            Spacer()
+            Text(formatDateLabel(date))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+    
+    private func formatDateLabel(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        if calendar.isDateInToday(date) {
+            return "Today"
+        } else if calendar.isDateInYesterday(date) {
+            return "Yesterday"
+        } else if let daysAgo = calendar.dateComponents([.day], from: date, to: now).day,
+                  daysAgo < 7 {
+            // Within the last week - show day name
+            let formatter = DateFormatter()
+            formatter.dateFormat = "EEEE"
+            return formatter.string(from: date)
+        } else {
+            // Older - show full date
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+    }
+}
+
 
 
 private struct FloatingInputBarModifier<Bar: View>: ViewModifier {

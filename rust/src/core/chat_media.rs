@@ -1,5 +1,7 @@
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use ::image::GenericImageView as _;
 use base64::Engine;
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use nostr_blossom::client::BlossomClient;
@@ -11,6 +13,41 @@ use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
+
+const RESIZE_MAX_DIMENSION: u32 = 1600;
+
+/// Resize large JPEG/PNG images to fit within 1600×1600 (longest edge).
+///
+/// Returns `Some((jpeg_bytes, width, height))` when the image was resized.
+/// Returns `None` for: non-image types, GIF/WebP (may be animated), images that
+/// already fit within the limit, or decode errors — the caller should pass the
+/// original data through to MDK unchanged.
+fn maybe_resize_image(data: &[u8], mime_type: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let normalized = mime_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "image/jpeg" | "image/png" => {}
+        _ => return None,
+    }
+
+    let img = ::image::load_from_memory(data).ok()?;
+    let (w, h) = img.dimensions();
+    if w <= RESIZE_MAX_DIMENSION && h <= RESIZE_MAX_DIMENSION {
+        return None;
+    }
+
+    let resized = img.resize(
+        RESIZE_MAX_DIMENSION,
+        RESIZE_MAX_DIMENSION,
+        ::image::imageops::FilterType::Lanczos3,
+    );
+    let (new_w, new_h) = resized.dimensions();
+
+    let mut buf = Cursor::new(Vec::new());
+    let encoder = ::image::codecs::jpeg::JpegEncoder::new(&mut buf);
+    resized.write_with_encoder(encoder).ok()?;
+
+    Some((buf.into_inner(), new_w, new_h))
+}
 
 /// Send an event to multiple relays concurrently, returning success as soon as
 /// the first relay ACKs. Only waits for all relays if none succeed.
@@ -121,6 +158,9 @@ fn infer_media_kind(mime_type: &str, filename: &str) -> ChatMediaKind {
     if normalized_mime.starts_with("audio/") {
         return ChatMediaKind::VoiceNote;
     }
+    if normalized_mime.starts_with("video/") {
+        return ChatMediaKind::Video;
+    }
 
     if normalized_mime.is_empty() || normalized_mime == "application/octet-stream" {
         let inferred_mime = mime_type_for_filename(filename);
@@ -129,6 +169,9 @@ fn infer_media_kind(mime_type: &str, filename: &str) -> ChatMediaKind {
         }
         if inferred_mime.starts_with("audio/") {
             return ChatMediaKind::VoiceNote;
+        }
+        if inferred_mime.starts_with("video/") {
+            return ChatMediaKind::Video;
         }
     }
 
@@ -231,6 +274,7 @@ impl AppCore {
             nonce_hex: hex::encode(reference.nonce),
             scheme_version: reference.scheme_version.clone(),
             local_path,
+            upload_progress: None,
         }
     }
 
@@ -322,15 +366,24 @@ impl AppCore {
 
         let caption = caption.trim().to_string();
 
-        let (
-            request_id,
-            encrypted_data,
-            expected_hash_hex,
-            upload_mime,
-            signer_keys,
-            blossom_servers,
-        ) = {
-            let Some(sess) = self.session.as_mut() else {
+        // --- Phase A: Preprocess + show bubble immediately ---
+
+        // Try to resize large JPEG/PNG images (bakes in EXIF orientation).
+        let (media_data, media_mime, was_resized, resize_dims) =
+            match maybe_resize_image(&decoded, &mime_type) {
+                Some((resized_bytes, w, h)) => {
+                    (resized_bytes, "image/jpeg".to_string(), true, Some((w, h)))
+                }
+                None => (decoded.clone(), mime_type.clone(), false, None),
+            };
+
+        // Compute hash of the data we'll give to MDK.
+        let pre_hash = Sha256::digest(&media_data);
+        let pre_hash_hex = hex::encode(pre_hash);
+
+        // Validate session state before writing anything.
+        let (account_pubkey, group, local_keys) = {
+            let Some(sess) = self.session.as_ref() else {
                 return;
             };
             let Some(group) = sess.groups.get(&chat_id).cloned() else {
@@ -341,39 +394,152 @@ impl AppCore {
                 self.toast("Media upload requires local key signer");
                 return;
             };
+            (sess.pubkey.to_hex(), group, local_keys)
+        };
+
+        // Write the (potentially resized) data to local cache.
+        let local_filename = if was_resized {
+            // Use .jpg extension since we re-encoded as JPEG.
+            let stem = filename.rsplit('.').next_back().unwrap_or(&filename);
+            format!("{stem}.jpg")
+        } else {
+            filename.clone()
+        };
+        let local_path = media_file_path(
+            &self.data_dir,
+            &account_pubkey,
+            &chat_id,
+            &pre_hash_hex,
+            &local_filename,
+        );
+        if let Err(e) = write_media_file(&local_path, &media_data) {
+            self.toast(format!("Media cache failed: {e}"));
+            return;
+        }
+
+        // Build temporary attachment and insert outbox entry so the bubble appears now.
+        let (width, height) = resize_dims
+            .map(|(w, h)| (Some(w), Some(h)))
+            .unwrap_or((None, None));
+        let kind = infer_media_kind(&media_mime, &local_filename);
+        let temp_rumor_id = uuid::Uuid::new_v4().to_string();
+        let temp_attachment = ChatMediaAttachment {
+            original_hash_hex: pre_hash_hex.clone(),
+            encrypted_hash_hex: None,
+            url: String::new(),
+            mime_type: media_mime.clone(),
+            filename: local_filename.clone(),
+            kind,
+            width,
+            height,
+            nonce_hex: String::new(),
+            scheme_version: String::new(),
+            local_path: Some(local_path.to_string_lossy().to_string()),
+            upload_progress: Some(0.0),
+        };
+
+        self.delivery_overrides
+            .entry(chat_id.clone())
+            .or_default()
+            .insert(temp_rumor_id.clone(), MessageDeliveryState::Pending);
+
+        self.outbox_seq = self.outbox_seq.wrapping_add(1);
+        let seq = self.outbox_seq;
+        let ts = {
+            let now = now_seconds();
+            if now <= self.last_outgoing_ts {
+                self.last_outgoing_ts += 1;
+            } else {
+                self.last_outgoing_ts = now;
+            }
+            self.last_outgoing_ts
+        };
+        self.local_outbox
+            .entry(chat_id.clone())
+            .or_default()
+            .insert(
+                temp_rumor_id.clone(),
+                LocalOutgoing {
+                    content: caption.clone(),
+                    timestamp: ts,
+                    sender_pubkey: account_pubkey.clone(),
+                    reply_to_message_id: None,
+                    seq,
+                    media: vec![temp_attachment],
+                    kind: Kind::ChatMessage,
+                },
+            );
+
+        // Bubble is now visible in the UI.
+        self.refresh_current_chat_if_open(&chat_id);
+        self.refresh_chat_list_from_storage();
+
+        // --- Phase B: Encrypt ---
+
+        let (request_id, encrypted_data, expected_hash_hex, upload_mime, blossom_servers) = {
+            let Some(sess) = self.session.as_mut() else {
+                return;
+            };
 
             let manager = sess.mdk.media_manager(group.mls_group_id.clone());
             let mut upload = match manager.encrypt_for_upload_with_options(
-                &decoded,
-                &mime_type,
-                &filename,
+                &media_data,
+                &media_mime,
+                &local_filename,
                 &MediaProcessingOptions::default(),
             ) {
                 Ok(upload) => upload,
                 Err(e) => {
+                    // Clean up the optimistic outbox entry on failure.
+                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                        outbox.remove(&temp_rumor_id);
+                    }
+                    if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
+                        overrides.remove(&temp_rumor_id);
+                    }
+                    self.refresh_current_chat_if_open(&chat_id);
+                    self.refresh_chat_list_from_storage();
                     self.toast(format!("Media encryption failed: {e}"));
                     return;
                 }
             };
 
-            let account_pubkey = sess.pubkey.to_hex();
             let original_hash_hex = hex::encode(upload.original_hash);
-            let local_path = media_file_path(
-                &self.data_dir,
-                &account_pubkey,
-                &chat_id,
-                &original_hash_hex,
-                &upload.filename,
-            );
-            if let Err(e) = write_media_file(&local_path, &decoded) {
-                self.toast(format!("Media cache failed: {e}"));
-                return;
+
+            // If MDK re-encoded (sanitize_exif: true), the hash may differ from our
+            // pre-computed one. Update outbox entry and local file accordingly.
+            if original_hash_hex != pre_hash_hex {
+                // Write MDK's sanitized data under the new hash path.
+                // (We don't have MDK's sanitized plaintext here — the original_hash in
+                // the upload reflects what MDK used. The local_path we already wrote is
+                // still valid for preview, so just update the hash in the outbox entry.)
+                if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                    if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                        if let Some(att) = entry.media.first_mut() {
+                            att.original_hash_hex = original_hash_hex.clone();
+                        }
+                    }
+                }
             }
 
             let encrypted_data = std::mem::take(&mut upload.encrypted_data);
             let expected_hash_hex = hex::encode(upload.encrypted_hash);
             let upload_mime = upload.mime_type.clone();
             let request_id = uuid::Uuid::new_v4().to_string();
+
+            // Update the outbox attachment with encryption details.
+            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                    if let Some(att) = entry.media.first_mut() {
+                        att.encrypted_hash_hex = Some(expected_hash_hex.clone());
+                        att.nonce_hex = hex::encode(upload.nonce);
+                        if let Some((w, h)) = upload.dimensions {
+                            att.width = Some(w);
+                            att.height = Some(h);
+                        }
+                    }
+                }
+            }
 
             self.pending_media_sends.insert(
                 request_id.clone(),
@@ -382,6 +548,8 @@ impl AppCore {
                     caption,
                     upload,
                     account_pubkey,
+                    temp_rumor_id,
+                    encrypted_data: encrypted_data.clone(),
                 },
             );
 
@@ -390,11 +558,32 @@ impl AppCore {
                 encrypted_data,
                 expected_hash_hex,
                 upload_mime,
-                local_keys,
                 self.blossom_servers(),
             )
         };
 
+        // --- Phase C: Upload (async, unchanged) ---
+
+        self.spawn_media_upload(
+            request_id,
+            blossom_servers,
+            encrypted_data,
+            upload_mime,
+            expected_hash_hex,
+            local_keys,
+        );
+    }
+
+    /// Spawn the async Blossom upload task.
+    pub(super) fn spawn_media_upload(
+        &self,
+        request_id: String,
+        blossom_servers: Vec<String>,
+        encrypted_data: Vec<u8>,
+        upload_mime: String,
+        expected_hash_hex: String,
+        signer_keys: nostr_sdk::Keys,
+    ) {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             let result = upload_to_blossom(
@@ -430,14 +619,41 @@ impl AppCore {
         descriptor_sha256_hex: Option<String>,
         error: Option<String>,
     ) {
+        if let Some(e) = &error {
+            // On failure: keep PendingMediaSend for retry, mark as Failed.
+            let Some(pending) = self.pending_media_sends.get(&request_id) else {
+                return;
+            };
+            let chat_id = pending.chat_id.clone();
+            let temp_rumor_id = pending.temp_rumor_id.clone();
+
+            // Remove progress spinner from attachment.
+            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                    if let Some(attachment) = entry.media.first_mut() {
+                        attachment.upload_progress = None;
+                    }
+                }
+            }
+
+            self.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id,
+                    MessageDeliveryState::Failed {
+                        reason: format!("Upload failed: {e}"),
+                    },
+                );
+
+            self.refresh_current_chat_if_open(&chat_id);
+            self.refresh_chat_list_from_storage();
+            return;
+        }
+
         let Some(pending) = self.pending_media_sends.remove(&request_id) else {
             return;
         };
-
-        if let Some(e) = error {
-            self.toast(format!("Media upload failed: {e}"));
-            return;
-        }
 
         let Some(uploaded_url) = uploaded_url else {
             self.toast("Media upload failed: missing upload URL");
@@ -452,6 +668,14 @@ impl AppCore {
         if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
             self.toast("Media upload failed: uploaded hash mismatch");
             return;
+        }
+
+        // Remove the temporary outbox entry and delivery override.
+        if let Some(outbox) = self.local_outbox.get_mut(&pending.chat_id) {
+            outbox.remove(&pending.temp_rumor_id);
+        }
+        if let Some(overrides) = self.delivery_overrides.get_mut(&pending.chat_id) {
+            overrides.remove(&pending.temp_rumor_id);
         }
 
         let Some(sess) = self.session.as_mut() else {
@@ -952,6 +1176,50 @@ mod tests {
     }
 
     #[test]
+    fn infer_media_kind_video_from_mime() {
+        assert!(matches!(
+            infer_media_kind("video/mp4", "file.bin"),
+            ChatMediaKind::Video
+        ));
+        assert!(matches!(
+            infer_media_kind("video/quicktime", "file.bin"),
+            ChatMediaKind::Video
+        ));
+        assert!(matches!(
+            infer_media_kind("video/webm", "clip.webm"),
+            ChatMediaKind::Video
+        ));
+        assert!(matches!(
+            infer_media_kind("video/x-matroska", "movie.mkv"),
+            ChatMediaKind::Video
+        ));
+        assert!(matches!(
+            infer_media_kind("video/x-msvideo", "clip.avi"),
+            ChatMediaKind::Video
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_video_from_filename_when_mime_empty() {
+        assert!(matches!(
+            infer_media_kind("", "clip.mp4"),
+            ChatMediaKind::Video
+        ));
+        assert!(matches!(
+            infer_media_kind("application/octet-stream", "recording.mov"),
+            ChatMediaKind::Video
+        ));
+    }
+
+    #[test]
+    fn infer_media_kind_video_case_insensitive_mime() {
+        assert!(matches!(
+            infer_media_kind("Video/MP4", "clip.mp4"),
+            ChatMediaKind::Video
+        ));
+    }
+
+    #[test]
     fn infer_media_kind_treats_unknown_pdf_as_file() {
         assert!(matches!(
             infer_media_kind("application/octet-stream", "doc.pdf"),
@@ -1154,5 +1422,102 @@ mod tests {
         use nostr_sdk::prelude::*;
         let tag = Tag::parse(vec!["e", "abc123"]).unwrap();
         assert!(!is_imeta_tag(&tag));
+    }
+
+    // --- maybe_resize_image tests ---
+
+    /// Encode a solid-color image as JPEG bytes at the given dimensions.
+    fn make_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let img = ::image::RgbImage::from_pixel(width, height, ::image::Rgb([128, 128, 128]));
+        let mut buf = Cursor::new(Vec::new());
+        let encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
+        ::image::DynamicImage::ImageRgb8(img)
+            .write_with_encoder(encoder)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    /// Encode a solid-color image as PNG bytes at the given dimensions.
+    fn make_png(width: u32, height: u32) -> Vec<u8> {
+        let img = ::image::RgbImage::from_pixel(width, height, ::image::Rgb([128, 128, 128]));
+        let mut buf = Cursor::new(Vec::new());
+        let encoder = ::image::codecs::png::PngEncoder::new(&mut buf);
+        ::image::DynamicImage::ImageRgb8(img)
+            .write_with_encoder(encoder)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn resize_returns_none_for_non_image() {
+        assert!(maybe_resize_image(b"hello", "application/pdf").is_none());
+        assert!(maybe_resize_image(b"hello", "text/plain").is_none());
+        assert!(maybe_resize_image(b"hello", "video/mp4").is_none());
+    }
+
+    #[test]
+    fn resize_returns_none_for_gif() {
+        assert!(maybe_resize_image(b"GIF89a", "image/gif").is_none());
+    }
+
+    #[test]
+    fn resize_returns_none_for_webp() {
+        assert!(maybe_resize_image(b"RIFF", "image/webp").is_none());
+    }
+
+    #[test]
+    fn resize_returns_none_for_invalid_data() {
+        assert!(maybe_resize_image(b"not an image", "image/jpeg").is_none());
+    }
+
+    #[test]
+    fn resize_returns_none_for_small_jpeg() {
+        let data = make_jpeg(1600, 900);
+        assert!(
+            maybe_resize_image(&data, "image/jpeg").is_none(),
+            "1600x900 already fits within limit"
+        );
+    }
+
+    #[test]
+    fn resize_large_jpeg() {
+        let data = make_jpeg(3200, 2400);
+        let (resized, w, h) =
+            maybe_resize_image(&data, "image/jpeg").expect("should resize 3200x2400");
+        assert_eq!(w, 1600);
+        assert_eq!(h, 1200);
+        // Verify the output is valid JPEG.
+        let img = ::image::load_from_memory(&resized).expect("should be valid image");
+        assert_eq!(img.dimensions(), (1600, 1200));
+    }
+
+    #[test]
+    fn resize_large_png_to_jpeg() {
+        let data = make_png(2000, 1000);
+        let (resized, w, h) =
+            maybe_resize_image(&data, "image/png").expect("should resize 2000x1000 PNG");
+        assert_eq!(w, 1600);
+        assert_eq!(h, 800);
+        // Output should be valid JPEG.
+        let img = ::image::load_from_memory(&resized).expect("should be valid image");
+        assert_eq!(img.dimensions(), (1600, 800));
+    }
+
+    #[test]
+    fn resize_returns_none_for_exact_limit() {
+        let data = make_jpeg(1600, 1600);
+        assert!(
+            maybe_resize_image(&data, "image/jpeg").is_none(),
+            "exactly 1600x1600 should not resize"
+        );
+    }
+
+    #[test]
+    fn resize_portrait_image() {
+        let data = make_jpeg(2400, 3200);
+        let (_, w, h) =
+            maybe_resize_image(&data, "image/jpeg").expect("should resize 2400x3200 portrait");
+        assert_eq!(w, 1200);
+        assert_eq!(h, 1600);
     }
 }

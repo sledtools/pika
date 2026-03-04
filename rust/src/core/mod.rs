@@ -429,6 +429,8 @@ struct PendingMediaSend {
     caption: String,
     upload: EncryptedMediaUpload,
     account_pubkey: String,
+    temp_rumor_id: String,
+    encrypted_data: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -4778,6 +4780,57 @@ impl AppCore {
                     self.toast("Please log in first");
                     return;
                 }
+
+                // Check if this is a pending media upload retry.
+                if let Some((request_id, pending)) = self
+                    .pending_media_sends
+                    .iter()
+                    .find(|(_, p)| p.chat_id == chat_id && p.temp_rumor_id == message_id)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                {
+                    if !self.network_enabled() {
+                        self.toast("Network disabled");
+                        return;
+                    }
+                    let Some(sess) = self.session.as_ref() else {
+                        return;
+                    };
+                    let Some(local_keys) = sess.local_keys.clone() else {
+                        self.toast("Media upload requires local key signer");
+                        return;
+                    };
+
+                    // Reset delivery to Pending, set upload_progress to 0.
+                    self.delivery_overrides
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .insert(message_id.clone(), MessageDeliveryState::Pending);
+                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                        if let Some(entry) = outbox.get_mut(&message_id) {
+                            if let Some(attachment) = entry.media.first_mut() {
+                                attachment.upload_progress = Some(0.0);
+                            }
+                        }
+                    }
+                    self.refresh_current_chat_if_open(&chat_id);
+                    self.refresh_chat_list_from_storage();
+
+                    let encrypted_data = pending.encrypted_data.clone();
+                    let upload_mime = pending.upload.mime_type.clone();
+                    let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
+                    let blossom_servers = self.blossom_servers();
+
+                    self.spawn_media_upload(
+                        request_id,
+                        blossom_servers,
+                        encrypted_data,
+                        upload_mime,
+                        expected_hash_hex,
+                        local_keys,
+                    );
+                    return;
+                }
+
                 let network_enabled = self.network_enabled();
                 let fallback_relays = self.default_relays();
 

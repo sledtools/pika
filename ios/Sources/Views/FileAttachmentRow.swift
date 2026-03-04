@@ -4,6 +4,7 @@ struct FileAttachmentRow: View {
     let filename: String
     let mimeType: String
     let localPath: String?
+    var uploadProgress: Float? = nil
     let isMine: Bool
     var onDownload: (() -> Void)? = nil
 
@@ -18,14 +19,21 @@ struct FileAttachmentRow: View {
                     .font(.subheadline)
                     .foregroundStyle(isMine ? .white : .primary)
                     .lineLimit(1)
-                Text(mimeType)
-                    .font(.caption2)
-                    .foregroundStyle(isMine ? .white.opacity(0.6) : .secondary)
+                if uploadProgress != nil {
+                    ProgressView()
+                        .tint(isMine ? .white : .blue)
+                } else {
+                    Text(mimeType)
+                        .font(.caption2)
+                        .foregroundStyle(isMine ? .white.opacity(0.6) : .secondary)
+                }
             }
 
             Spacer(minLength: 4)
 
-            if let localPath {
+            if uploadProgress != nil {
+                // Uploading — no action button
+            } else if let localPath {
                 ShareLink(item: URL(fileURLWithPath: localPath)) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.title3)

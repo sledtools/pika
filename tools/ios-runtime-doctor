@@ -18,10 +18,67 @@ has_runtimes() {
   [ -n "$("$SIMCTL" list runtimes | sed -n '2,$p' | tr -d '[:space:]')" ]
 }
 
+ios_sim_sdk="$(
+  DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-version 2>/dev/null || true
+)"
+
+has_compatible_runtime_for_sdk() {
+  python3 - "$ios_sim_sdk" "$SIMCTL" <<'PY'
+import json
+import re
+import subprocess
+import sys
+
+sdk = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+simctl = sys.argv[2]
+m = re.match(r"^(\d+)(?:\.(\d+))?", sdk)
+if not m:
+    sys.exit(0)
+sdk_major = int(m.group(1))
+sdk_minor = int(m.group(2) or 0)
+
+j = json.loads(subprocess.check_output([simctl, "list", "-j", "runtimes"], text=True))
+for rt in j.get("runtimes", []):
+    ident = rt.get("identifier") or ""
+    name = rt.get("name") or ""
+    if not name.startswith("iOS "):
+        continue
+    if rt.get("isAvailable") is False:
+        continue
+    rm = re.search(r"iOS-(\d+)-(\d+)$", ident)
+    if not rm:
+        continue
+    major = int(rm.group(1))
+    minor = int(rm.group(2))
+    if major == sdk_major and minor >= sdk_minor:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
 if has_runtimes; then
-  echo "ok: iOS Simulator runtimes are installed."
-  "$SIMCTL" list runtimes | sed -n '1,40p' || true
-  exit 0
+  if has_compatible_runtime_for_sdk; then
+    echo "ok: iOS Simulator runtimes are installed."
+    if [ -n "$ios_sim_sdk" ]; then
+      echo "ok: found a runtime compatible with iphonesimulator SDK $ios_sim_sdk."
+    fi
+    "$SIMCTL" list runtimes | sed -n '1,40p' || true
+    exit 0
+  fi
+  cat >&2 <<EOF
+error: iOS Simulator runtimes are installed, but none are compatible with the current Xcode iphonesimulator SDK (${ios_sim_sdk:-unknown}).
+
+This usually means your selected Xcode is newer than your installed simulator runtimes.
+
+Recommended:
+  1) Open Xcode
+  2) Xcode -> Settings -> Platforms
+  3) Install "iOS Simulator ${ios_sim_sdk:-<matching version>}"
+
+Installed runtimes:
+EOF
+  "$SIMCTL" list runtimes | sed -n '1,80p' >&2 || true
+  exit 1
 fi
 
 XCODES_BIN="$(command -v xcodes 2>/dev/null || true)"

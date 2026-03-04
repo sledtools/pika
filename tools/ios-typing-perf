@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+chars="${PIKA_UI_TYPING_PERF_CHARS:-120}"
+warmup="${PIKA_UI_TYPING_PERF_WARMUP:-10}"
+
+usage() {
+  cat <<USAGE
+usage: ./tools/ios-typing-perf [--chars N] [--warmup N]
+
+Runs dedicated iOS typing perf UI tests and prints one summary line:
+  - per-char keypress avg/best/worst
+  - bulk composer baseline (total and per-char)
+
+Env overrides:
+  PIKA_UI_TYPING_PERF_CHARS
+  PIKA_UI_TYPING_PERF_WARMUP
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chars)
+      shift
+      [ $# -gt 0 ] || { echo "error: --chars requires a value" >&2; exit 2; }
+      chars="$1"
+      ;;
+    --warmup)
+      shift
+      [ $# -gt 0 ] || { echo "error: --warmup requires a value" >&2; exit 2; }
+      warmup="$1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown arg: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -f "ios/Pika.xcodeproj/project.pbxproj" ]; then
+  echo "error: ios/Pika.xcodeproj is missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+if [ ! -d "ios/Frameworks/PikaCore.xcframework" ] || [ ! -d "ios/Frameworks/PikaNSE.xcframework" ]; then
+  echo "error: iOS xcframeworks are missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+
+udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
+if [ -z "$udid" ]; then
+  echo "error: could not determine simulator udid" >&2
+  exit 1
+fi
+
+log_file="$(mktemp -t pika-ios-typing-perf.XXXXXX.log)"
+cleanup() {
+  rm -f "$log_file"
+}
+trap cleanup EXIT
+
+if ! PIKA_UI_TYPING_PERF_CHARS="$chars" \
+     PIKA_UI_TYPING_PERF_WARMUP="$warmup" \
+     ./tools/xcode-run xcodebuild \
+       -project ios/Pika.xcodeproj \
+       -scheme Pika \
+       -derivedDataPath ios/build \
+       -destination "id=$udid" \
+       test \
+       ARCHS=arm64 \
+       ONLY_ACTIVE_ARCH=YES \
+       CODE_SIGNING_ALLOWED=NO \
+       PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
+       -only-testing:PikaUITests/TypingPerfUITests/testTypingLatencySummary \
+       -only-testing:PikaUITests/TypingPerfUITests/testTypingBulkSummary \
+       >"$log_file" 2>&1; then
+  echo "error: typing perf UI test failed; tailing xcodebuild output" >&2
+  tail -n 120 "$log_file" >&2
+  exit 1
+fi
+
+summary_line="$(rg 'PIKA_TYPING_PERF ' "$log_file" | tail -n 1 || true)"
+if [ -z "$summary_line" ]; then
+  echo "error: perf summary not found in test output" >&2
+  tail -n 120 "$log_file" >&2
+  exit 1
+fi
+bulk_line="$(rg 'PIKA_TYPING_BULK ' "$log_file" | tail -n 1 || true)"
+
+avg_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*avg_ms=\([0-9.]*\).*/\1/p')"
+best_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*best_ms=\([0-9.]*\).*/\1/p')"
+worst_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*worst_ms=\([0-9.]*\).*/\1/p')"
+samples="$(printf '%s\n' "$summary_line" | sed -n 's/.*samples=\([0-9]*\).*/\1/p')"
+bulk_total_ms="$(printf '%s\n' "$bulk_line" | sed -n 's/.*total_ms=\([0-9.]*\).*/\1/p')"
+bulk_per_char_ms="$(printf '%s\n' "$bulk_line" | sed -n 's/.*per_char_ms=\([0-9.]*\).*/\1/p')"
+
+if [ -z "$avg_ms" ] || [ -z "$best_ms" ] || [ -z "$worst_ms" ] || [ -z "$samples" ]; then
+  echo "error: failed to parse perf summary" >&2
+  echo "$summary_line" >&2
+  exit 1
+fi
+
+if [ -n "$bulk_total_ms" ] && [ -n "$bulk_per_char_ms" ]; then
+  printf 'typing-keypress-ms avg=%s best=%s worst=%s samples=%s bulk_total=%s bulk_per_char=%s\n' \
+    "$avg_ms" "$best_ms" "$worst_ms" "$samples" "$bulk_total_ms" "$bulk_per_char_ms"
+else
+  printf 'typing-keypress-ms avg=%s best=%s worst=%s samples=%s\n' "$avg_ms" "$best_ms" "$worst_ms" "$samples"
+fi

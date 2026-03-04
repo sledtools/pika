@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+chars="${PIKA_UI_TYPING_PERF_CHARS:-120}"
+warmup="${PIKA_UI_TYPING_PERF_WARMUP:-10}"
+time_limit="${PIKA_UI_TYPING_PERF_TRACE_TIME_LIMIT:-2m}"
+output_dir="${PIKA_UI_TYPING_PERF_TRACE_DIR:-artifacts/perf}"
+open_trace=1
+
+usage() {
+  cat <<USAGE
+usage: ./tools/ios-typing-perf-trace [--chars N] [--warmup N] [--time-limit DURATION] [--output-dir DIR] [--no-open]
+
+Runs iOS typing perf summary and records a Time Profiler trace in parallel.
+Prints:
+  - one summary line (avg/best/worst keypress ms)
+  - one trace path line
+
+Examples:
+  ./tools/ios-typing-perf-trace
+  ./tools/ios-typing-perf-trace --chars 300 --warmup 20
+  ./tools/ios-typing-perf-trace --time-limit 90s --no-open
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chars)
+      shift
+      [ $# -gt 0 ] || { echo "error: --chars requires a value" >&2; exit 2; }
+      chars="$1"
+      ;;
+    --warmup)
+      shift
+      [ $# -gt 0 ] || { echo "error: --warmup requires a value" >&2; exit 2; }
+      warmup="$1"
+      ;;
+    --time-limit)
+      shift
+      [ $# -gt 0 ] || { echo "error: --time-limit requires a value (e.g. 90s, 2m)" >&2; exit 2; }
+      time_limit="$1"
+      ;;
+    --output-dir)
+      shift
+      [ $# -gt 0 ] || { echo "error: --output-dir requires a value" >&2; exit 2; }
+      output_dir="$1"
+      ;;
+    --no-open)
+      open_trace=0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown arg: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -x "./tools/ios-typing-perf" ]; then
+  echo "error: missing ./tools/ios-typing-perf" >&2
+  exit 1
+fi
+
+udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
+if [ -z "$udid" ]; then
+  echo "error: could not determine simulator udid" >&2
+  exit 1
+fi
+
+mkdir -p "$output_dir"
+trace_path="$output_dir/typing-$(date +%Y%m%d-%H%M%S).trace"
+xctrace_log="$(mktemp -t pika-ios-typing-trace.XXXXXX.log)"
+tp_pid=""
+
+finish_trace() {
+  if [ -n "$tp_pid" ] && kill -0 "$tp_pid" 2>/dev/null; then
+    kill -INT "$tp_pid" 2>/dev/null || true
+  fi
+  if [ -n "$tp_pid" ]; then
+    wait "$tp_pid" || true
+    tp_pid=""
+  fi
+}
+trap finish_trace EXIT
+
+./tools/xcode-run xcrun xctrace record \
+  --template "Time Profiler" \
+  --device "$udid" \
+  --all-processes \
+  --output "$trace_path" \
+  --time-limit "$time_limit" \
+  --no-prompt \
+  >"$xctrace_log" 2>&1 &
+tp_pid="$!"
+
+# Give xctrace a moment to start before typing begins.
+sleep 2
+
+if ! summary_line="$(PIKA_UI_TYPING_PERF_CHARS="$chars" PIKA_UI_TYPING_PERF_WARMUP="$warmup" ./tools/ios-typing-perf)"; then
+  echo "error: typing perf summary run failed" >&2
+  tail -n 120 "$xctrace_log" >&2 || true
+  exit 1
+fi
+
+finish_trace
+trap - EXIT
+
+if [ ! -e "$trace_path" ]; then
+  echo "error: expected trace file was not created: $trace_path" >&2
+  tail -n 120 "$xctrace_log" >&2 || true
+  exit 1
+fi
+
+printf '%s\n' "$summary_line"
+printf 'time-profiler-trace path=%s\n' "$trace_path"
+
+if [ "$open_trace" = "1" ]; then
+  open "$trace_path" >/dev/null 2>&1 || true
+fi
+
+rm -f "$xctrace_log"

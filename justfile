@@ -731,6 +731,26 @@ ios-ui-test: ios-xcframework ios-xcodeproj
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -derivedDataPath ios/build -destination "id=$udid" test -skipMacroValidation ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}" \
       -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
 
+# Run iOS typing perf test and print avg/best/worst keypress latency.
+ios-typing-perf *ARGS: ios-xcframework ios-xcodeproj
+    ./tools/ios-typing-perf {{ ARGS }}
+
+# Run iOS typing perf summary + capture/open a Time Profiler trace.
+ios-typing-perf-trace *ARGS: ios-xcframework ios-xcodeproj
+    ./tools/ios-typing-perf-trace {{ ARGS }}
+
+# Run iOS typing perf and print averaged per-keypress stack profile from Time Profiler.
+ios-typing-perf-keypress-profile *ARGS: ios-xcframework ios-xcodeproj
+    ./tools/ios-typing-perf-keypress-profile {{ ARGS }}
+
+# Run iOS typing perf with attach-mode symbolized stacks and per-keypress flamegraph output.
+ios-typing-perf-keypress-profile-symbolized *ARGS: ios-xcframework ios-xcodeproj
+    ./tools/ios-typing-perf-keypress-profile-symbolized {{ ARGS }}
+
+# Run iOS typing perf while recording a Samply profile for the Pika app process.
+ios-typing-perf-samply *ARGS: ios-xcframework ios-xcodeproj
+    ./tools/ios-typing-perf-samply {{ ARGS }}
+
 # iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:
     cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture

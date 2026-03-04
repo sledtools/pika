@@ -3,6 +3,7 @@ import MarkdownUI
 import PhotosUI
 import AVFAudio
 import UniformTypeIdentifiers
+import os.signpost
 
 struct ChatView: View {
     let chatId: String
@@ -47,6 +48,7 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
 
     private let scrollButtonBottomPadding: CGFloat = 12
+    private static let typingPerfSignpostLog = OSLog(subsystem: "org.pikachat.pika", category: .pointsOfInterest)
 
     init(
         chatId: String,
@@ -645,7 +647,21 @@ struct ChatView: View {
                     onSend: { sendMessage() },
                     onStartVoiceRecording: { startVoiceRecording() }
                 )
-                .onChangeCompat(of: messageText) { newValue in
+                .onChangeCompat(of: messageText, withOld: { oldValue, newValue in
+                    let signpostEnabled = envBool("PIKA_UI_TYPING_PERF_APP_SIGNPOSTS", defaultValue: false)
+                    let lengthDelta = newValue.count - oldValue.count
+                    let likelyKeypress = isInputFocused && abs(lengthDelta) == 1
+                    var signpostID: OSSignpostID?
+                    if signpostEnabled && likelyKeypress {
+                        let id = OSSignpostID(log: Self.typingPerfSignpostLog)
+                        os_signpost(.begin, log: Self.typingPerfSignpostLog, name: "composer_keypress", signpostID: id, "delta=%{public}d", lengthDelta)
+                        signpostID = id
+                    }
+                    defer {
+                        if let signpostID {
+                            os_signpost(.end, log: Self.typingPerfSignpostLog, name: "composer_keypress", signpostID: signpostID, "delta=%{public}d", lengthDelta)
+                        }
+                    }
                     if chat.isGroup {
                         if let atIdx = newValue.lastIndex(of: "@") {
                             let prefix = newValue[..<atIdx]
@@ -671,7 +687,7 @@ struct ChatView: View {
                     if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         onTypingStarted?()
                     }
-                }
+                })
                 .onChangeCompat(of: selectedPhotoItem) { item in
                     guard let item else { return }
                     Task {
@@ -765,6 +781,16 @@ struct ChatView: View {
         case .idle, .done:
             break
         }
+    }
+
+    private func envBool(_ key: String, defaultValue: Bool) -> Bool {
+        let raw = (ProcessInfo.processInfo.environment[key] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if raw.isEmpty { return defaultValue }
+        if raw == "1" || raw == "true" || raw == "yes" || raw == "on" { return true }
+        if raw == "0" || raw == "false" || raw == "no" || raw == "off" { return false }
+        return defaultValue
     }
 
     private func startVoiceRecording() {

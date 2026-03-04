@@ -345,6 +345,8 @@
             pkgs.findutils
             pkgs.gnugrep
             pkgs.gnused
+            pkgs.inferno
+            pkgs.samply
             cargoDinghy
             pkgs.age
             pkgs.age-plugin-yubikey

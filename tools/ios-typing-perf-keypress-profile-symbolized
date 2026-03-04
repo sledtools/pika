@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+chars="${PIKA_UI_TYPING_PERF_CHARS:-120}"
+warmup="${PIKA_UI_TYPING_PERF_WARMUP:-10}"
+time_limit="${PIKA_UI_TYPING_PERF_TRACE_TIME_LIMIT:-2m}"
+start_delay_ms="${PIKA_UI_TYPING_PERF_START_DELAY_MS:-4000}"
+output_dir="${PIKA_UI_TYPING_PERF_TRACE_DIR:-artifacts/perf}"
+top_n="${PIKA_UI_TYPING_PERF_TOP_STACKS:-15}"
+main_thread_only=1
+open_trace=0
+bundle_id="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
+
+usage() {
+  cat <<USAGE
+usage: ./tools/ios-typing-perf-keypress-profile-symbolized [--chars N] [--warmup N] [--time-limit DURATION] [--start-delay-ms N] [--top N] [--all-threads] [--open]
+
+Runs typing perf UI test while attaching Time Profiler directly to the Pika app process
+for symbolized stacks, then prints averaged per-keypress profile output.
+
+Examples:
+  ./tools/ios-typing-perf-keypress-profile-symbolized
+  ./tools/ios-typing-perf-keypress-profile-symbolized --chars 200 --warmup 20 --all-threads --top 25
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chars)
+      shift
+      [ $# -gt 0 ] || { echo "error: --chars requires a value" >&2; exit 2; }
+      chars="$1"
+      ;;
+    --warmup)
+      shift
+      [ $# -gt 0 ] || { echo "error: --warmup requires a value" >&2; exit 2; }
+      warmup="$1"
+      ;;
+    --time-limit)
+      shift
+      [ $# -gt 0 ] || { echo "error: --time-limit requires a value (e.g. 90s, 2m)" >&2; exit 2; }
+      time_limit="$1"
+      ;;
+    --start-delay-ms)
+      shift
+      [ $# -gt 0 ] || { echo "error: --start-delay-ms requires a value" >&2; exit 2; }
+      start_delay_ms="$1"
+      ;;
+    --top)
+      shift
+      [ $# -gt 0 ] || { echo "error: --top requires a value" >&2; exit 2; }
+      top_n="$1"
+      ;;
+    --all-threads)
+      main_thread_only=0
+      ;;
+    --open)
+      open_trace=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown arg: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -f "ios/Pika.xcodeproj/project.pbxproj" ]; then
+  echo "error: ios/Pika.xcodeproj is missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+if [ ! -d "ios/Frameworks/PikaCore.xcframework" ] || [ ! -d "ios/Frameworks/PikaNSE.xcframework" ]; then
+  echo "error: iOS xcframeworks are missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+
+udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
+if [ -z "$udid" ]; then
+  echo "error: could not determine simulator udid" >&2
+  exit 1
+fi
+
+mkdir -p "$output_dir"
+stamp="$(date +%Y%m%d-%H%M%S)"
+trace_path="$output_dir/typing-keypress-profile-symbolized-$stamp.trace"
+xcode_log="$(mktemp -t pika-ios-typing-symbolized-xcode.XXXXXX.log)"
+xctrace_log="$(mktemp -t pika-ios-typing-symbolized-trace.XXXXXX.log)"
+xcode_pid=""
+tp_pid=""
+
+cleanup() {
+  if [ -n "$xcode_pid" ] && kill -0 "$xcode_pid" 2>/dev/null; then
+    kill "$xcode_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$tp_pid" ] && kill -0 "$tp_pid" 2>/dev/null; then
+    kill -INT "$tp_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$tp_pid" ]; then
+    wait "$tp_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$xcode_pid" ]; then
+    wait "$xcode_pid" >/dev/null 2>&1 || true
+  fi
+  rm -f "$xcode_log" "$xctrace_log"
+}
+trap cleanup EXIT
+
+PIKA_UI_TYPING_PERF_CHARS="$chars" \
+PIKA_UI_TYPING_PERF_WARMUP="$warmup" \
+PIKA_UI_TYPING_PERF_START_DELAY_MS="$start_delay_ms" \
+PIKA_UI_TYPING_PERF_SIGNPOSTS=0 \
+PIKA_UI_TYPING_PERF_APP_SIGNPOSTS=1 \
+./tools/xcode-run xcodebuild \
+  -project ios/Pika.xcodeproj \
+  -scheme Pika \
+  -derivedDataPath ios/build \
+  -destination "id=$udid" \
+  test \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGNING_ALLOWED=NO \
+  DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
+  ENABLE_DEBUG_DYLIB=NO \
+  PIKA_APP_BUNDLE_ID="$bundle_id" \
+  -only-testing:PikaUITests/TypingPerfUITests/testTypingLatencySummary \
+  >"$xcode_log" 2>&1 &
+xcode_pid="$!"
+
+app_pid=""
+deadline=$((SECONDS + 90))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  app_pid="$(
+    ./tools/xcode-run xcrun simctl spawn "$udid" launchctl list 2>/dev/null \
+      | awk -v bundle="$bundle_id" '
+          $1 ~ /^[0-9]+$/ && index($3, "UIKitApplication:" bundle "[") == 1 { print $1; exit }
+        '
+  )"
+  if [ -n "$app_pid" ]; then
+    break
+  fi
+  if ! kill -0 "$xcode_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.2
+done
+
+if [ -z "$app_pid" ]; then
+  echo "error: failed to resolve app pid for bundle id: $bundle_id" >&2
+  tail -n 120 "$xcode_log" >&2 || true
+  exit 1
+fi
+
+./tools/xcode-run xcrun xctrace record \
+  --template "Time Profiler" \
+  --device "$udid" \
+  --attach "$app_pid" \
+  --output "$trace_path" \
+  --time-limit "$time_limit" \
+  --no-prompt \
+  >"$xctrace_log" 2>&1 &
+tp_pid="$!"
+
+# Ensure tracer has initialized before the test starts measured keypresses.
+sleep 1
+
+if ! wait "$xcode_pid"; then
+  echo "error: typing perf UI test failed; tailing xcodebuild output" >&2
+  tail -n 120 "$xcode_log" >&2 || true
+  tail -n 120 "$xctrace_log" >&2 || true
+  exit 1
+fi
+xcode_pid=""
+
+if [ -n "$tp_pid" ] && kill -0 "$tp_pid" 2>/dev/null; then
+  kill -INT "$tp_pid" >/dev/null 2>&1 || true
+fi
+if [ -n "$tp_pid" ]; then
+  wait "$tp_pid" >/dev/null 2>&1 || true
+  tp_pid=""
+fi
+
+if [ ! -e "$trace_path" ]; then
+  echo "error: expected trace file was not created: $trace_path" >&2
+  tail -n 120 "$xctrace_log" >&2 || true
+  exit 1
+fi
+
+summary_line="$(rg 'PIKA_TYPING_PERF ' "$xcode_log" | tail -n 1 || true)"
+if [ -z "$summary_line" ]; then
+  echo "error: perf summary not found in test output" >&2
+  tail -n 120 "$xcode_log" >&2 || true
+  exit 1
+fi
+
+avg_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*avg_ms=\([0-9.]*\).*/\1/p')"
+best_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*best_ms=\([0-9.]*\).*/\1/p')"
+worst_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*worst_ms=\([0-9.]*\).*/\1/p')"
+samples="$(printf '%s\n' "$summary_line" | sed -n 's/.*samples=\([0-9]*\).*/\1/p')"
+if [ -z "$avg_ms" ] || [ -z "$best_ms" ] || [ -z "$worst_ms" ] || [ -z "$samples" ]; then
+  echo "error: failed to parse perf summary" >&2
+  echo "$summary_line" >&2
+  exit 1
+fi
+printf 'typing-keypress-ms avg=%s best=%s worst=%s samples=%s\n' "$avg_ms" "$best_ms" "$worst_ms" "$samples"
+
+analyze_args=(--trace "$trace_path" --top "$top_n")
+if [ "$main_thread_only" = "0" ]; then
+  analyze_args+=(--all-threads)
+fi
+if [ "$open_trace" = "1" ]; then
+  analyze_args+=(--open)
+fi
+./tools/ios-typing-perf-keypress-profile "${analyze_args[@]}"

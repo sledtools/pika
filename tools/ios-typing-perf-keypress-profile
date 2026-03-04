@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+chars="${PIKA_UI_TYPING_PERF_CHARS:-120}"
+warmup="${PIKA_UI_TYPING_PERF_WARMUP:-10}"
+time_limit="${PIKA_UI_TYPING_PERF_TRACE_TIME_LIMIT:-2m}"
+output_dir="${PIKA_UI_TYPING_PERF_TRACE_DIR:-artifacts/perf}"
+top_n="${PIKA_UI_TYPING_PERF_TOP_STACKS:-15}"
+main_thread_only=1
+open_trace=0
+input_trace=""
+
+usage() {
+  cat <<USAGE
+usage: ./tools/ios-typing-perf-keypress-profile [--chars N] [--warmup N] [--time-limit DURATION] [--top N] [--all-threads] [--open] [--trace PATH]
+
+Records Time Profiler while running typing perf tests, then prints averaged per-keypress
+stack findings for the Pika process. Also writes a folded stacks file suitable for
+flamegraph tooling.
+
+Examples:
+  ./tools/ios-typing-perf-keypress-profile
+  ./tools/ios-typing-perf-keypress-profile --chars 200 --warmup 20 --top 25
+  ./tools/ios-typing-perf-keypress-profile --all-threads --open
+  ./tools/ios-typing-perf-keypress-profile --trace artifacts/perf/typing-foo.trace
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chars)
+      shift
+      [ $# -gt 0 ] || { echo "error: --chars requires a value" >&2; exit 2; }
+      chars="$1"
+      ;;
+    --warmup)
+      shift
+      [ $# -gt 0 ] || { echo "error: --warmup requires a value" >&2; exit 2; }
+      warmup="$1"
+      ;;
+    --time-limit)
+      shift
+      [ $# -gt 0 ] || { echo "error: --time-limit requires a value (e.g. 90s, 2m)" >&2; exit 2; }
+      time_limit="$1"
+      ;;
+    --top)
+      shift
+      [ $# -gt 0 ] || { echo "error: --top requires a value" >&2; exit 2; }
+      top_n="$1"
+      ;;
+    --all-threads)
+      main_thread_only=0
+      ;;
+    --trace)
+      shift
+      [ $# -gt 0 ] || { echo "error: --trace requires a path" >&2; exit 2; }
+      input_trace="$1"
+      ;;
+    --open)
+      open_trace=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown arg: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -x "./tools/ios-typing-perf" ]; then
+  echo "error: missing ./tools/ios-typing-perf" >&2
+  exit 1
+fi
+
+mkdir -p "$output_dir"
+stamp="$(date +%Y%m%d-%H%M%S)"
+trace_path="${input_trace:-$output_dir/typing-keypress-profile-$stamp.trace}"
+xctrace_log=""
+tp_pid=""
+perf_summary=""
+
+finish_trace() {
+  if [ -n "$tp_pid" ] && kill -0 "$tp_pid" 2>/dev/null; then
+    kill -INT "$tp_pid" 2>/dev/null || true
+  fi
+  if [ -n "$tp_pid" ]; then
+    wait "$tp_pid" || true
+    tp_pid=""
+  fi
+}
+if [ -n "$input_trace" ]; then
+  if [ ! -e "$trace_path" ]; then
+    echo "error: trace file not found: $trace_path" >&2
+    exit 1
+  fi
+else
+  udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
+  if [ -z "$udid" ]; then
+    echo "error: could not determine simulator udid" >&2
+    exit 1
+  fi
+
+  xctrace_log="$(mktemp -t pika-ios-typing-profile-trace.XXXXXX.log)"
+  trap finish_trace EXIT
+
+  ./tools/xcode-run xcrun xctrace record \
+    --template "Time Profiler" \
+    --device "$udid" \
+    --all-processes \
+    --output "$trace_path" \
+    --time-limit "$time_limit" \
+    --no-prompt \
+    >"$xctrace_log" 2>&1 &
+  tp_pid="$!"
+
+  # Give xctrace a chance to initialize so the first keypresses are included.
+  sleep 2
+
+  if ! perf_summary="$(PIKA_UI_TYPING_PERF_SIGNPOSTS=1 PIKA_UI_TYPING_PERF_CHARS="$chars" PIKA_UI_TYPING_PERF_WARMUP="$warmup" ./tools/ios-typing-perf)"; then
+    echo "error: typing perf tests failed" >&2
+    tail -n 120 "$xctrace_log" >&2 || true
+    exit 1
+  fi
+
+  finish_trace
+  trap - EXIT
+
+  if [ ! -e "$trace_path" ]; then
+    echo "error: expected trace file was not created: $trace_path" >&2
+    tail -n 120 "$xctrace_log" >&2 || true
+    exit 1
+  fi
+fi
+
+python3 - "$ROOT" "$trace_path" "$output_dir" "$stamp" "$top_n" "$main_thread_only" <<'PY'
+import bisect
+import collections
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+
+repo_root, trace_path, output_dir, stamp, top_n_raw, main_only_raw = sys.argv[1:7]
+top_n = int(top_n_raw)
+main_only = main_only_raw == "1"
+
+xcode_run = os.path.join(repo_root, "tools", "xcode-run")
+
+def run_export(xpath: str, out_path: str) -> None:
+    cmd = [
+        xcode_run,
+        "xcrun",
+        "xctrace",
+        "export",
+        "--input",
+        trace_path,
+        "--xpath",
+        xpath,
+        "--output",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def parse_int(text: str | None) -> int | None:
+    if text is None:
+        return None
+    s = text.strip()
+    if not s:
+        return None
+    try:
+        return int(s, 0)
+    except ValueError:
+        return None
+
+def resolve_value(elem: ET.Element | None, value_by_id: dict[str, str], cast=None):
+    if elem is None:
+        return None
+    ref = elem.attrib.get("ref")
+    if ref:
+        raw = value_by_id.get(ref)
+        if raw is None:
+            return None
+    else:
+        raw = (elem.text or "").strip() or elem.attrib.get("fmt")
+        elem_id = elem.attrib.get("id")
+        if raw is not None and elem_id:
+            value_by_id[elem_id] = raw
+    if cast is None:
+        return raw
+    return cast(raw)
+
+def resolve_pid_from_process(elem: ET.Element | None, process_pid_by_id: dict[str, int], pid_value_by_id: dict[str, str]) -> int | None:
+    if elem is None:
+        return None
+    ref = elem.attrib.get("ref")
+    if ref:
+        return process_pid_by_id.get(ref)
+    pid_elem = elem.find("pid")
+    pid = resolve_value(pid_elem, pid_value_by_id, parse_int)
+    if pid is None:
+        return None
+    process_id = elem.attrib.get("id")
+    if process_id:
+        process_pid_by_id[process_id] = pid
+    return pid
+
+tmpdir = tempfile.mkdtemp(prefix="pika-typing-profile-")
+process_xml = os.path.join(tmpdir, "process.xml")
+thread_xml = os.path.join(tmpdir, "thread.xml")
+roi_xml = os.path.join(tmpdir, "roi.xml")
+time_xml = os.path.join(tmpdir, "time.xml")
+
+run_export('/trace-toc/run[@number="1"]/data/table[@schema="process-info"]', process_xml)
+run_export('/trace-toc/run[@number="1"]/data/table[@schema="thread-info"]', thread_xml)
+run_export('/trace-toc/run[@number="1"]/data/table[@schema="region-of-interest"]', roi_xml)
+run_export('/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]', time_xml)
+
+# Resolve process names -> pids.
+string_by_id: dict[str, str] = {}
+pid_value_by_id: dict[str, str] = {}
+pid_to_name: dict[int, str] = {}
+tree = ET.parse(process_xml)
+for row in tree.findall(".//row"):
+    pid = resolve_value(row.find("pid"), pid_value_by_id, parse_int)
+    name = resolve_value(row.find("string"), string_by_id, lambda s: s)
+    if pid is not None and name:
+        pid_to_name[pid] = name
+
+pika_pids = sorted(pid for pid, name in pid_to_name.items() if name == "Pika")
+runner_pids = sorted(pid for pid, name in pid_to_name.items() if name == "PikaUITests-Runner")
+if not pika_pids:
+    print("error: could not resolve Pika pid from trace process-info", file=sys.stderr)
+    sys.exit(1)
+pika_pid_set = set(pika_pids)
+runner_pid_set = set(runner_pids)
+
+# Resolve main thread tids for all Pika pids.
+pid_values: dict[str, str] = {}
+tid_values: dict[str, str] = {}
+bool_values: dict[str, str] = {}
+main_tid_by_pid: dict[int, int] = {}
+tree = ET.parse(thread_xml)
+for row in tree.findall(".//row"):
+    pid = resolve_value(row.find("pid"), pid_values, parse_int)
+    tid = resolve_value(row.find("tid"), tid_values, parse_int)
+    main_raw = resolve_value(row.find("boolean"), bool_values, lambda s: s)
+    if pid in pika_pid_set and tid is not None and main_raw in {"1", "Yes", "yes", "true", "True"}:
+        main_tid_by_pid[pid] = tid
+
+if main_only and not main_tid_by_pid:
+    print("error: main thread tids for Pika were not found in trace", file=sys.stderr)
+    sys.exit(1)
+
+# Keypress intervals from signposts.
+start_values: dict[str, str] = {}
+duration_values: dict[str, str] = {}
+signpost_values: dict[str, str] = {}
+pid_values = {}
+process_pid_by_id: dict[str, int] = {}
+intervals: list[tuple[int, int]] = []
+tree = ET.parse(roi_xml)
+for row in tree.findall(".//row"):
+    name = resolve_value(row.find("signpost-name"), signpost_values, lambda s: s)
+    if name != "composer_keypress":
+        continue
+    start = resolve_value(row.find("start-time"), start_values, parse_int)
+    duration = resolve_value(row.find("duration"), duration_values, parse_int)
+    pid = resolve_pid_from_process(row.find("process"), process_pid_by_id, pid_values)
+    if start is None or duration is None:
+        continue
+    if runner_pid_set and pid is not None and pid not in runner_pid_set:
+        continue
+    intervals.append((start, start + duration))
+
+intervals.sort()
+if not intervals:
+    print("error: no composer_keypress intervals were found in trace (signposts missing)", file=sys.stderr)
+    sys.exit(1)
+
+starts = [s for s, _ in intervals]
+ends = [e for _, e in intervals]
+
+def in_interval(sample_ns: int) -> bool:
+    i = bisect.bisect_right(starts, sample_ns) - 1
+    return i >= 0 and sample_ns <= ends[i]
+
+sample_values: dict[str, str] = {}
+pid_values = {}
+tid_values = {}
+process_pid_by_id = {}
+thread_tid_by_id: dict[str, int] = {}
+thread_pid_by_id: dict[str, int] = {}
+frame_name_by_id: dict[str, str] = {}
+backtrace_frames_by_id: dict[str, list[str]] = {}
+
+collapsed_all = collections.Counter()
+leaf_all = collections.Counter()
+sample_count_all = 0
+
+collapsed_main = collections.Counter()
+leaf_main = collections.Counter()
+sample_count_main = 0
+
+pid_samples_all = collections.Counter()
+pid_samples_main = collections.Counter()
+
+for event, elem in ET.iterparse(time_xml, events=("end",)):
+    if elem.tag != "row":
+        continue
+
+    sample_elem = elem.find("sample-time")
+    sample_ns = resolve_value(sample_elem, sample_values, parse_int)
+    if sample_ns is None:
+        elem.clear()
+        continue
+    sample_in_interval = in_interval(sample_ns)
+
+    process_elem = elem.find("process")
+    pid = resolve_pid_from_process(process_elem, process_pid_by_id, pid_values)
+
+    thread_elem = elem.find("thread")
+    if thread_elem is None:
+        elem.clear()
+        continue
+    thread_ref = thread_elem.attrib.get("ref")
+    thread_pid = None
+    if thread_ref:
+        tid = thread_tid_by_id.get(thread_ref)
+        thread_pid = thread_pid_by_id.get(thread_ref)
+    else:
+        tid = resolve_value(thread_elem.find("tid"), tid_values, parse_int)
+        thread_pid = resolve_pid_from_process(thread_elem.find("process"), process_pid_by_id, pid_values)
+        if thread_pid is None:
+            fmt = thread_elem.attrib.get("fmt") or ""
+            match = re.search(r"pid:\s*(\d+)\)", fmt)
+            if match:
+                thread_pid = int(match.group(1))
+        thread_id = thread_elem.attrib.get("id")
+        if thread_id:
+            if tid is not None:
+                thread_tid_by_id[thread_id] = tid
+            if thread_pid is not None:
+                thread_pid_by_id[thread_id] = thread_pid
+
+    if pid is None:
+        pid = thread_pid
+    if not sample_in_interval:
+        elem.clear()
+        continue
+    if pid not in pika_pid_set:
+        elem.clear()
+        continue
+
+    if tid is None:
+        elem.clear()
+        continue
+
+    bt_elem = elem.find("backtrace")
+    if bt_elem is None:
+        elem.clear()
+        continue
+
+    bt_ref = bt_elem.attrib.get("ref")
+    if bt_ref:
+        frames = backtrace_frames_by_id.get(bt_ref, [])
+    else:
+        frames: list[str] = []
+        for frame_elem in bt_elem.findall("frame"):
+            frame_ref = frame_elem.attrib.get("ref")
+            if frame_ref:
+                name = frame_name_by_id.get(frame_ref)
+            else:
+                name = frame_elem.attrib.get("name")
+                frame_id = frame_elem.attrib.get("id")
+                if frame_id and name:
+                    frame_name_by_id[frame_id] = name
+            if name:
+                frames.append(name)
+        bt_id = bt_elem.attrib.get("id")
+        if bt_id:
+            backtrace_frames_by_id[bt_id] = frames
+
+    if not frames:
+        elem.clear()
+        continue
+
+    sample_count_all += 1
+    pid_samples_all[pid] += 1
+    leaf_all[frames[0]] += 1
+    collapsed_key = ";".join(f.replace(";", ":") for f in reversed(frames))
+    collapsed_all[collapsed_key] += 1
+
+    expected_main_tid = main_tid_by_pid.get(pid)
+    if expected_main_tid is not None and tid == expected_main_tid:
+        sample_count_main += 1
+        pid_samples_main[pid] += 1
+        leaf_main[frames[0]] += 1
+        collapsed_main[collapsed_key] += 1
+    elem.clear()
+
+keypresses = len(intervals)
+avg_samples_all = sample_count_all / max(1, keypresses)
+avg_samples_main = sample_count_main / max(1, keypresses)
+
+scope = "all"
+selected_collapsed = collapsed_all
+selected_leaf = leaf_all
+selected_sample_count = sample_count_all
+selected_avg_samples = avg_samples_all
+
+if main_only:
+    scope = "main"
+    selected_collapsed = collapsed_main
+    selected_leaf = leaf_main
+    selected_sample_count = sample_count_main
+    selected_avg_samples = avg_samples_main
+    if selected_sample_count == 0 and sample_count_all > 0:
+        scope = "all-fallback"
+        selected_collapsed = collapsed_all
+        selected_leaf = leaf_all
+        selected_sample_count = sample_count_all
+        selected_avg_samples = avg_samples_all
+
+folded_path = os.path.join(output_dir, f"typing-keypress-profile-{stamp}.folded")
+with open(folded_path, "w", encoding="utf-8") as f:
+    for stack, count in selected_collapsed.most_common():
+        f.write(f"{stack} {count}\n")
+
+pid_list = ",".join(str(pid) for pid in pika_pids)
+main_tid_list = ",".join(f"{pid}:{tid}" for pid, tid in sorted(main_tid_by_pid.items()))
+print(
+    "typing-keypress-profile "
+    f"keypresses={keypresses} "
+    f"scope={scope} "
+    f"main_samples={sample_count_main} "
+    f"main_avg_samples_per_keypress={avg_samples_main:.3f} "
+    f"all_samples={sample_count_all} "
+    f"all_avg_samples_per_keypress={avg_samples_all:.3f} "
+    f"pika_pids={pid_list} "
+    f"main_tids={main_tid_list if main_tid_list else 'n/a'} "
+    f"mode={'main' if main_only else 'all'}"
+)
+for name, count in selected_leaf.most_common(top_n):
+    print(
+        "typing-keypress-top "
+        f"scope={scope} "
+        f"samples={count} "
+        f"avg_per_keypress={count / max(1, keypresses):.3f} "
+        f"pct={(100.0 * count / max(1, selected_sample_count)):.2f} "
+        f"frame={name}"
+    )
+
+hex_leaf_samples = sum(
+    count
+    for name, count in selected_leaf.items()
+    if re.fullmatch(r"0x[0-9a-fA-F]+", name)
+)
+if selected_sample_count > 0 and (hex_leaf_samples / selected_sample_count) >= 0.80:
+    print(
+        "typing-keypress-warning "
+        "reason=unsymbolicated_frames "
+        f"hex_leaf_pct={(100.0 * hex_leaf_samples / selected_sample_count):.1f} "
+        "hint='All-process simulator traces can lose process image mapping. "
+        "For symbolized stacks, profile by attaching Time Profiler to the Pika process in Instruments.'"
+    )
+print(f"typing-keypress-folded path={folded_path}")
+PY
+
+if [ -n "$perf_summary" ]; then
+  printf '%s\n' "$perf_summary"
+fi
+printf 'time-profiler-trace path=%s\n' "$trace_path"
+
+folded_path="$(ls -1 "$output_dir"/typing-keypress-profile-"$stamp".folded 2>/dev/null | tail -n 1 || true)"
+if [ -n "$folded_path" ] && command -v inferno-flamegraph >/dev/null 2>&1; then
+  svg_path="${folded_path%.folded}.svg"
+  inferno-flamegraph <"$folded_path" >"$svg_path"
+  printf 'typing-keypress-flamegraph path=%s\n' "$svg_path"
+fi
+
+if [ "$open_trace" = "1" ]; then
+  open "$trace_path" >/dev/null 2>&1 || true
+fi
+
+if [ -n "$xctrace_log" ]; then
+  rm -f "$xctrace_log"
+fi

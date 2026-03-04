@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+chars="${PIKA_UI_TYPING_PERF_CHARS:-120}"
+warmup="${PIKA_UI_TYPING_PERF_WARMUP:-10}"
+start_delay_ms="${PIKA_UI_TYPING_PERF_START_DELAY_MS:-8000}"
+duration_s="${PIKA_UI_TYPING_PERF_SAMPLY_DURATION_S:-75}"
+output_dir="${PIKA_UI_TYPING_PERF_TRACE_DIR:-artifacts/perf}"
+bundle_id="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
+attach_attempts="${PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_ATTEMPTS:-6}"
+attach_grace_s="${PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_GRACE_S:-2}"
+attach_initial_delay_s="${PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_DELAY_S:-10}"
+attach_wait_for_typing="${PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_ON_TYPING:-0}"
+attach_wait_timeout_s="${PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_TIMEOUT_S:-120}"
+fallback_to_xctrace="${PIKA_UI_TYPING_PERF_SAMPLY_FALLBACK_XCTRACE:-1}"
+open_profile=0
+
+usage() {
+  cat <<USAGE
+usage: ./tools/ios-typing-perf-samply [--chars N] [--warmup N] [--start-delay-ms N] [--duration-s N] [--open]
+
+Runs the iOS typing perf UI test and records a Samply profile for the running Pika app process.
+
+Examples:
+  ./tools/ios-typing-perf-samply
+  ./tools/ios-typing-perf-samply --chars 200 --warmup 20 --duration-s 90 --open
+
+Environment:
+  PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_ATTEMPTS   Number of attach retries (default: 6)
+  PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_GRACE_S    Seconds to wait to confirm attach is stable (default: 2)
+  PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_DELAY_S    Seconds to wait before first attach attempt (default: 10)
+  PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_ON_TYPING  Wait for first composer keypress log before attach (default: 0)
+  PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_TIMEOUT_S  Max wait for typing log before attach attempts (default: 120)
+  PIKA_UI_TYPING_PERF_SAMPLY_FALLBACK_XCTRACE  Fall back to symbolized xctrace profile when samply fails (default: 1)
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chars)
+      shift
+      [ $# -gt 0 ] || { echo "error: --chars requires a value" >&2; exit 2; }
+      chars="$1"
+      ;;
+    --warmup)
+      shift
+      [ $# -gt 0 ] || { echo "error: --warmup requires a value" >&2; exit 2; }
+      warmup="$1"
+      ;;
+    --start-delay-ms)
+      shift
+      [ $# -gt 0 ] || { echo "error: --start-delay-ms requires a value" >&2; exit 2; }
+      start_delay_ms="$1"
+      ;;
+    --duration-s)
+      shift
+      [ $# -gt 0 ] || { echo "error: --duration-s requires a value" >&2; exit 2; }
+      duration_s="$1"
+      ;;
+    --open)
+      open_profile=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown arg: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if ! command -v samply >/dev/null 2>&1; then
+  echo "error: samply not found in PATH." >&2
+  echo "hint: enter the dev shell first: nix develop" >&2
+  exit 1
+fi
+samply_cmd="$(command -v samply)"
+samply_from_nix=0
+
+prepare_nix_samply_for_attach() {
+  local src_bin="$1"
+  local dst_bin="$HOME/.local/share/pika/bin/samply-nix-codesigned"
+  local ent_file
+  ent_file="$(mktemp -t pika-samply-entitlements.XXXXXX.plist)"
+  cat >"$ent_file" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.cs.debugger</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>
+EOF
+  mkdir -p "$(dirname "$dst_bin")"
+  if [ ! -f "$dst_bin" ] || ! cmp -s "$src_bin" "$dst_bin"; then
+    cp "$src_bin" "$dst_bin"
+    chmod u+w "$dst_bin"
+  fi
+  if ! codesign --force --sign - --entitlements "$ent_file" "$dst_bin" >/dev/null 2>&1; then
+    rm -f "$ent_file"
+    echo "error: failed to codesign local samply binary for attach profiling." >&2
+    echo "hint: verify codesign works locally and retry." >&2
+    exit 1
+  fi
+  rm -f "$ent_file"
+  samply_cmd="$dst_bin"
+}
+
+if [ "$(uname -s)" = "Darwin" ] && [ "${samply_cmd#/nix/store/}" != "$samply_cmd" ]; then
+  samply_from_nix=1
+  prepare_nix_samply_for_attach "$samply_cmd"
+fi
+
+if [ ! -f "ios/Pika.xcodeproj/project.pbxproj" ]; then
+  echo "error: ios/Pika.xcodeproj is missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+if [ ! -d "ios/Frameworks/PikaCore.xcframework" ] || [ ! -d "ios/Frameworks/PikaNSE.xcframework" ]; then
+  echo "error: iOS xcframeworks are missing. Run: just ios-xcframework ios-xcodeproj" >&2
+  exit 1
+fi
+
+udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"
+if [ -z "$udid" ]; then
+  echo "error: could not determine simulator udid" >&2
+  exit 1
+fi
+
+mkdir -p "$output_dir"
+stamp="$(date +%Y%m%d-%H%M%S)"
+profile_path="$output_dir/typing-keypress-samply-$stamp.json.gz"
+xcode_log="$output_dir/typing-keypress-samply-$stamp-xcode.log"
+samply_log="$output_dir/typing-keypress-samply-$stamp-samply.log"
+samply_log_prefix="$output_dir/typing-keypress-samply-$stamp-samply-attempt"
+xcode_pid=""
+samply_pid=""
+app_pid=""
+samply_attempt_log_active=""
+
+cleanup() {
+  if [ -n "$xcode_pid" ] && kill -0 "$xcode_pid" 2>/dev/null; then
+    kill "$xcode_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$samply_pid" ] && kill -0 "$samply_pid" 2>/dev/null; then
+    kill -INT "$samply_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$samply_pid" ]; then
+    wait "$samply_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$xcode_pid" ]; then
+    wait "$xcode_pid" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+resolve_app_pid() {
+  ./tools/xcode-run xcrun simctl spawn "$udid" launchctl list 2>/dev/null \
+    | awk -v bundle="$bundle_id" '
+        $1 ~ /^[0-9]+$/ && index($3, "UIKitApplication:" bundle "[") == 1 { print $1; exit }
+      '
+}
+
+wait_for_typing_log() {
+  local deadline=$((SECONDS + attach_wait_timeout_s))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ ! -f "$xcode_log" ]; then
+      sleep 0.2
+      continue
+    fi
+    if rg -q 'Type .* into "chat_message_input"' "$xcode_log"; then
+      return 0
+    fi
+    if ! kill -0 "$xcode_pid" 2>/dev/null; then
+      return 1
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+attempt_samply_attach() {
+  local attempt candidate_pid attempt_log deadline
+  deadline=$((SECONDS + attach_wait_timeout_s))
+  attempt=0
+  : >"$samply_log"
+  printf 'attach-config attempts=%s timeout_s=%s grace_s=%s\n' "$attach_attempts" "$attach_wait_timeout_s" "$attach_grace_s" >>"$samply_log"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! kill -0 "$xcode_pid" 2>/dev/null; then
+      printf 'attach-stop reason=xcode-exited attempts=%s\n' "$attempt" >>"$samply_log"
+      return 1
+    fi
+
+    candidate_pid="$(resolve_app_pid)"
+    if [ -z "$candidate_pid" ]; then
+      sleep 0.3
+      continue
+    fi
+
+    attempt=$((attempt + 1))
+    attempt_log="${samply_log_prefix}${attempt}.log"
+    samply_attempt_log_active="$attempt_log"
+    rm -f "$attempt_log"
+    printf 'attach-attempt n=%s pid=%s\n' "$attempt" "$candidate_pid" >>"$samply_log"
+    "$samply_cmd" record \
+      -p "$candidate_pid" \
+      -d "$duration_s" \
+      --save-only \
+      --no-open \
+      -o "$profile_path" \
+      >"$attempt_log" 2>&1 &
+    samply_pid="$!"
+
+    sleep "$attach_grace_s"
+    if kill -0 "$samply_pid" 2>/dev/null; then
+      app_pid="$candidate_pid"
+      printf 'attach-attempt n=%s status=running\n' "$attempt" >>"$samply_log"
+      cat "$attempt_log" >>"$samply_log"
+      return 0
+    fi
+
+    wait "$samply_pid" >/dev/null 2>&1 || true
+    samply_pid=""
+    cat "$attempt_log" >>"$samply_log"
+
+    if rg -q "task_for_pid.*failed|samply setup|Could not obtain the root task|Could not check process libraries|InvalidAddress" "$attempt_log"; then
+      printf 'attach-attempt n=%s status=retryable-failure\n' "$attempt" >>"$samply_log"
+      if [ "$attempt" -ge "$attach_attempts" ]; then
+        printf 'attach-stop reason=attempt-limit-reached attempts=%s\n' "$attempt" >>"$samply_log"
+        return 1
+      fi
+      sleep 0.4
+      continue
+    fi
+    printf 'attach-stop reason=non-retryable-failure attempts=%s\n' "$attempt" >>"$samply_log"
+    return 1
+  done
+  printf 'attach-stop reason=timeout attempts=%s\n' "$attempt" >>"$samply_log"
+  return 1
+}
+
+run_xctrace_fallback() {
+  local fallback_args=(
+    --chars "$chars"
+    --warmup "$warmup"
+    --start-delay-ms "$start_delay_ms"
+    --time-limit "${duration_s}s"
+  )
+  if [ "$open_profile" = "1" ]; then
+    fallback_args+=(--open)
+  fi
+  echo "warning: falling back to symbolized Time Profiler capture due samply attach instability." >&2
+  ./tools/ios-typing-perf-keypress-profile-symbolized "${fallback_args[@]}"
+}
+
+PIKA_UI_TYPING_PERF_CHARS="$chars" \
+PIKA_UI_TYPING_PERF_WARMUP="$warmup" \
+PIKA_UI_TYPING_PERF_START_DELAY_MS="$start_delay_ms" \
+PIKA_UI_TYPING_PERF_APP_SIGNPOSTS=1 \
+./tools/xcode-run xcodebuild \
+  -project ios/Pika.xcodeproj \
+  -scheme Pika \
+  -derivedDataPath ios/build \
+  -destination "id=$udid" \
+  test \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGNING_ALLOWED=NO \
+  DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
+  ENABLE_DEBUG_DYLIB=NO \
+  PIKA_APP_BUNDLE_ID="$bundle_id" \
+  -only-testing:PikaUITests/TypingPerfUITests/testTypingLatencySummary \
+  >"$xcode_log" 2>&1 &
+xcode_pid="$!"
+
+if [ "$attach_initial_delay_s" != "0" ]; then
+  deadline=$((SECONDS + attach_initial_delay_s))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! kill -0 "$xcode_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+  done
+fi
+
+if [ "$attach_wait_for_typing" = "1" ]; then
+  if ! wait_for_typing_log; then
+    echo "warning: typing marker not observed before attach timeout; continuing with pid attach attempts" >&2
+  fi
+fi
+
+if ! attempt_samply_attach; then
+  if [ "$fallback_to_xctrace" = "1" ]; then
+    run_xctrace_fallback
+    exit $?
+  fi
+  echo "error: samply could not attach after $attach_attempts attempt(s)." >&2
+  tail -n 120 "$samply_log" >&2 || true
+  tail -n 120 "$xcode_log" >&2 || true
+  exit 1
+fi
+
+retryable_pattern="task_for_pid.*failed|samply setup|Could not obtain the root task|Could not check process libraries|InvalidAddress"
+while kill -0 "$xcode_pid" 2>/dev/null; do
+  if [ -n "$samply_pid" ] && [ -n "$samply_attempt_log_active" ] && rg -q "$retryable_pattern" "$samply_attempt_log_active"; then
+    printf 'attach-watchdog reason=retryable-panic pid=%s log=%s\n' "$app_pid" "$samply_attempt_log_active" >>"$samply_log"
+    kill -INT "$samply_pid" >/dev/null 2>&1 || true
+    wait "$samply_pid" >/dev/null 2>&1 || true
+    samply_pid=""
+    if ! attempt_samply_attach; then
+      if [ "$fallback_to_xctrace" = "1" ]; then
+        run_xctrace_fallback
+        exit $?
+      fi
+      echo "error: samply could not recover from attach panic while test was running." >&2
+      tail -n 120 "$samply_log" >&2 || true
+      tail -n 120 "$xcode_log" >&2 || true
+      exit 1
+    fi
+  fi
+  sleep 0.4
+done
+
+if ! wait "$xcode_pid"; then
+  echo "error: typing perf UI test failed; tailing xcodebuild output" >&2
+  tail -n 120 "$xcode_log" >&2 || true
+  exit 1
+fi
+xcode_pid=""
+
+if [ -n "$samply_pid" ] && kill -0 "$samply_pid" 2>/dev/null; then
+  kill -INT "$samply_pid" >/dev/null 2>&1 || true
+fi
+if [ -n "$samply_pid" ]; then
+  if ! wait "$samply_pid"; then
+    if rg -q "$retryable_pattern" "$samply_log"; then
+      if [ "$fallback_to_xctrace" = "1" ]; then
+        run_xctrace_fallback
+        exit $?
+      fi
+      echo "error: samply attach/recording failed for pid $app_pid." >&2
+      if [ "$samply_from_nix" = "1" ]; then
+        echo "hint: nix-store samply cannot be attach-profiled directly on macOS; use the auto-codesigned local copy path." >&2
+      else
+        echo "hint: run this once, then retry: samply setup" >&2
+      fi
+      echo "hint: retry with more attempts: PIKA_UI_TYPING_PERF_SAMPLY_ATTACH_ATTEMPTS=10 just ios-typing-perf-samply" >&2
+      tail -n 80 "$samply_log" >&2 || true
+      exit 1
+    fi
+    echo "error: samply recording failed." >&2
+    tail -n 80 "$samply_log" >&2 || true
+    exit 1
+  fi
+  samply_pid=""
+fi
+
+if [ ! -s "$profile_path" ]; then
+  echo "error: samply profile was not created: $profile_path" >&2
+  tail -n 80 "$samply_log" >&2 || true
+  exit 1
+fi
+
+summary_line="$(rg 'PIKA_TYPING_PERF ' "$xcode_log" | tail -n 1 || true)"
+if [ -z "$summary_line" ]; then
+  echo "error: perf summary not found in test output" >&2
+  tail -n 120 "$xcode_log" >&2 || true
+  exit 1
+fi
+
+avg_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*avg_ms=\([0-9.]*\).*/\1/p')"
+best_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*best_ms=\([0-9.]*\).*/\1/p')"
+worst_ms="$(printf '%s\n' "$summary_line" | sed -n 's/.*worst_ms=\([0-9.]*\).*/\1/p')"
+samples="$(printf '%s\n' "$summary_line" | sed -n 's/.*samples=\([0-9]*\).*/\1/p')"
+
+if [ -z "$avg_ms" ] || [ -z "$best_ms" ] || [ -z "$worst_ms" ] || [ -z "$samples" ]; then
+  echo "error: failed to parse perf summary" >&2
+  echo "$summary_line" >&2
+  exit 1
+fi
+
+printf 'typing-keypress-ms avg=%s best=%s worst=%s samples=%s\n' "$avg_ms" "$best_ms" "$worst_ms" "$samples"
+printf 'samply-profile path=%s\n' "$profile_path"
+printf 'samply-log path=%s\n' "$samply_log"
+printf 'xcode-log path=%s\n' "$xcode_log"
+
+if [ "$open_profile" = "1" ]; then
+  "$samply_cmd" load "$profile_path" >/dev/null 2>&1 || true
+fi

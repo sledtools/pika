@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve an Xcode Developer directory with deterministic precedence:
-# 1) Respect DEVELOPER_DIR if already set (flake shell pins this).
-# 2) Respect xcode-select (xcode-wrapper may pin this in nix shells).
-# 3) Fallback to latest /Applications/Xcode*.app for non-nix usage.
+# Resolve an Xcode Developer directory with deterministic precedence while
+# preferring a toolchain that has a compatible iOS simulator runtime:
+# 1) DEVELOPER_DIR
+# 2) xcode-select
+# 3) latest /Applications/Xcode*.app
+#
+# If no candidate has a compatible simulator runtime, fall back to the first
+# valid candidate so non-simulator workflows can still run.
 
 is_valid_dev_dir() {
   local dir="${1:-}"
@@ -13,20 +17,78 @@ is_valid_dev_dir() {
     && [ -x "$dir/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" ]
 }
 
-if is_valid_dev_dir "${DEVELOPER_DIR:-}"; then
-  echo "$DEVELOPER_DIR"
-  exit 0
-fi
+has_compatible_ios_sim_runtime() {
+  local dir="${1:-}"
+  local simctl="$dir/usr/bin/simctl"
+  local sdk=""
+
+  sdk="$(DEVELOPER_DIR="$dir" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-version 2>/dev/null || true)"
+  [ -n "$sdk" ] || return 1
+
+  python3 - "$simctl" "$sdk" <<'PY'
+import json
+import re
+import subprocess
+import sys
+
+simctl = sys.argv[1]
+sdk = sys.argv[2]
+m = re.match(r"^(\d+)(?:\.(\d+))?", sdk)
+if not m:
+    sys.exit(1)
+sdk_major = int(m.group(1))
+sdk_minor = int(m.group(2) or 0)
+
+try:
+    j = json.loads(subprocess.check_output([simctl, "list", "-j", "runtimes"], text=True))
+except Exception:
+    sys.exit(1)
+
+for rt in j.get("runtimes", []):
+    name = rt.get("name") or ""
+    ident = rt.get("identifier") or ""
+    if not name.startswith("iOS "):
+        continue
+    if rt.get("isAvailable") is False:
+        continue
+    rm = re.search(r"iOS-(\d+)-(\d+)$", ident)
+    if not rm:
+        continue
+    major = int(rm.group(1))
+    minor = int(rm.group(2))
+    if major == sdk_major and minor >= sdk_minor:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+first_valid=""
+
+try_candidate() {
+  local dir="${1:-}"
+  if ! is_valid_dev_dir "$dir"; then
+    return 1
+  fi
+  if [ -z "$first_valid" ]; then
+    first_valid="$dir"
+  fi
+  if has_compatible_ios_sim_runtime "$dir"; then
+    echo "$dir"
+    exit 0
+  fi
+  return 1
+}
+
+try_candidate "${DEVELOPER_DIR:-}" || true
 
 SELECTED_DIR="$(xcode-select -p 2>/dev/null || true)"
-if is_valid_dev_dir "$SELECTED_DIR"; then
-  echo "$SELECTED_DIR"
-  exit 0
-fi
+try_candidate "$SELECTED_DIR" || true
 
 LATEST_DIR="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
-if is_valid_dev_dir "$LATEST_DIR"; then
-  echo "$LATEST_DIR"
+try_candidate "$LATEST_DIR" || true
+
+if [ -n "$first_valid" ]; then
+  echo "$first_valid"
   exit 0
 fi
 

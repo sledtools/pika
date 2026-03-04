@@ -590,7 +590,15 @@ private struct MessageBubble: View {
                 .padding(.bottom, 6)
             }
         }
-        .background(hasText || hasFileAttachment ? (message.isMine ? Color.blue : Color.gray.opacity(0.2)) : Color.clear)
+        .background {
+            let visualMedia = message.media.filter { $0.kind == .image || $0.kind == .video }
+            let needsBg = hasText || hasFileAttachment || visualMedia.count > 1
+            if needsBg {
+                message.isMine ? Color.blue : Color.gray.opacity(0.2)
+            } else {
+                Color.clear
+            }
+        }
         .clipShape(UnevenRoundedRectangleCompat(cornerRadii: bubbleRadii, style: .continuous))
     }
 

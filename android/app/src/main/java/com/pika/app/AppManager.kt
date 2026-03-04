@@ -24,6 +24,7 @@ import com.pika.app.rust.ExternalSignerErrorKind
 import com.pika.app.rust.ExternalSignerHandshakeResult
 import com.pika.app.rust.ExternalSignerResult
 import com.pika.app.rust.FfiApp
+import com.pika.app.rust.MediaBatchItem
 import com.pika.app.rust.isValidPeerKey
 import com.pika.app.rust.MyProfileState
 import com.pika.app.rust.Screen
@@ -875,6 +876,7 @@ internal sealed class PendingShareDraft {
                 mediaRelativePath = null,
                 mediaMimeType = null,
                 mediaFilename = null,
+                mediaBatch = null,
                 clientRequestId = clientRequestId,
                 createdAtMs = createdAtMs,
             )
@@ -901,6 +903,7 @@ internal sealed class PendingShareDraft {
                 mediaRelativePath = mediaRelativePath,
                 mediaMimeType = mediaMimeType,
                 mediaFilename = mediaFilename,
+                mediaBatch = null,
                 clientRequestId = clientRequestId,
                 createdAtMs = createdAtMs,
             )

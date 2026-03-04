@@ -289,20 +289,6 @@ fun ChatScreen(
         buildBubblePositions(chat.messages, firstUnreadMessageId)
     }
 
-    fun sendDraftMessage() {
-        if (stagedMedia.isNotEmpty()) {
-            sendStagedMedia()
-            return
-        }
-        val text = draft.trim()
-        if (text.isBlank()) return
-        draft = ""
-        manager.dispatch(
-            AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
-        )
-        replyDraft = null
-    }
-
     fun sendMediaFromUri(uri: Uri?) {
         if (uri == null) return
         coroutineScope.launch {
@@ -386,6 +372,20 @@ fun ChatScreen(
             }
             replyDraft = null
         }
+    }
+
+    fun sendDraftMessage() {
+        if (stagedMedia.isNotEmpty()) {
+            sendStagedMedia()
+            return
+        }
+        val text = draft.trim()
+        if (text.isBlank()) return
+        draft = ""
+        manager.dispatch(
+            AppAction.SendMessage(chat.chatId, text, null, replyDraft?.id),
+        )
+        replyDraft = null
     }
 
     val pickPhotoOrVideoLauncher =

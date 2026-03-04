@@ -858,18 +858,7 @@ impl AppCore {
             };
 
             self.pending_sends
-                .entry(chat_id.clone())
-                .or_default()
-                .insert(
-                    rumor_id_hex.clone(),
-                    PendingSend {
-                        wrapper_event: wrapper.clone(),
-                        rumor_id_hex: rumor_id_hex.clone(),
-                    },
-                );
-            if let Some(conn) = self.profile_db.as_ref() {
-                profile_db::save_pending_send(conn, &rumor_id_hex, &chat_id, &wrapper.as_json());
-            }
+                .insert(&chat_id, &rumor_id_hex, &wrapper, self.profile_db.as_ref());
 
             let relays: Vec<RelayUrl> = if network_enabled {
                 sess.mdk

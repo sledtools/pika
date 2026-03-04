@@ -438,6 +438,7 @@ impl PendingSends {
                             Err(e) => {
                                 tracing::warn!(%e, %rumor_id, "failed to deserialize pending_send wrapper event, removing");
                                 profile_db::remove_pending_send(conn, &rumor_id);
+                                profile_db::remove_failed_send(conn, &rumor_id);
                             }
                         }
                     }
@@ -765,8 +766,9 @@ impl AppCore {
             .as_ref()
             .map(profile_db::load_profiles)
             .unwrap_or_default();
-        let failed_sends = FailedSends::load(profile_db.as_ref());
+        // Load pending_sends first — it prunes corrupt entries from both tables.
         let pending_sends = PendingSends::load(profile_db.as_ref());
+        let failed_sends = FailedSends::load(profile_db.as_ref());
         let developer_mode = profile_db
             .as_ref()
             .map(profile_db::load_developer_mode)

@@ -929,7 +929,7 @@ impl AppCore {
         let batch_id = uuid::Uuid::new_v4().to_string();
 
         self.pending_media_batch_sends.insert(
-            batch_id,
+            batch_id.clone(),
             PendingMediaBatchSend {
                 chat_id: chat_id.clone(),
                 caption,
@@ -941,12 +941,7 @@ impl AppCore {
         );
 
         // Spawn upload for item[0].
-        let first = &self
-            .pending_media_batch_sends
-            .values()
-            .last()
-            .unwrap()
-            .items[0];
+        let first = &self.pending_media_batch_sends.get(&batch_id).unwrap().items[0];
         let request_id = first.request_id.clone();
         let encrypted_data = first.encrypted_data.clone();
         let upload_mime = first.upload.mime_type.clone();

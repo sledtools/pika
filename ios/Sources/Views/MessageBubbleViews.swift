@@ -637,9 +637,11 @@ private struct MessageBubble: View {
                             mediaGridCell(attachment: attachments[3], maxWidth: halfWidth)
                                 .overlay {
                                     Color.black.opacity(0.5)
+                                        .allowsHitTesting(false)
                                     Text("+\(remaining)")
                                         .font(.title2.bold())
                                         .foregroundStyle(.white)
+                                        .allowsHitTesting(false)
                                 }
                         } else {
                             mediaGridCell(attachment: attachments[3], maxWidth: halfWidth)

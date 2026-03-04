@@ -1253,7 +1253,7 @@ async fn bot_main(
                             // Send a text reply so the test knows it failed.
                             let err_rumor = EventBuilder::new(
                                 Kind::ChatMessage,
-                                format!("media_batch_error:{e}"),
+                                "media_batch_error".to_string(),
                             )
                             .build(keys.public_key());
                             let err_event = mdk
@@ -1440,18 +1440,11 @@ async fn send_test_media_batch(
     mls_group_id: &GroupId,
     count: usize,
 ) -> anyhow::Result<String> {
-    // Locate fixtures/test-images relative to the workspace root.
-    // The bot is always launched with `cargo run -p pikachat` from the workspace root,
-    // so current_dir or CARGO_MANIFEST_DIR work. We try CARGO_MANIFEST_DIR first
-    // (points to cli/), then fall back to cwd.
-    let fixtures_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map(|d| {
-            Path::new(&d)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("fixtures/test-images")
-        })
-        .unwrap_or_else(|_| Path::new("fixtures/test-images").to_path_buf());
+    // Locate fixtures/test-images relative to the crate root (compile-time).
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("fixtures/test-images");
 
     let upload_servers = pika_relay_profiles::blossom_servers_or_default(&[]);
     let manager = mdk.media_manager(mls_group_id.clone());

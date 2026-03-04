@@ -1,3 +1,8 @@
+//! Shared test utilities for the pika workspace.
+//!
+//! Provides helpers like [`spawn_one_shot_server`] for standing up throwaway
+//! HTTP mock servers in integration tests.
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;

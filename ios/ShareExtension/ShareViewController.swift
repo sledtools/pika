@@ -603,41 +603,83 @@ private enum ShareIncomingPayload {
     }
 
     private static func loadImage(from provider: NSItemProvider) async throws -> ShareIncomingPayload? {
-        if provider.canLoadObject(ofClass: UIImage.self) {
-            if let image = try await loadUIImage(from: provider),
-               let jpeg = downscaledJPEGData(from: image) {
+        // Use loadFileRepresentation to get a file URL without decoding the image.
+        // This is the preferred path: ImageIO can downsample directly from the file,
+        // never loading the full bitmap into memory (~120MB extension limit).
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            if let jpeg = try await loadFileAndDownsample(from: provider) {
                 let filename = sanitizedFilename(from: provider.suggestedName)
                 return .image(jpeg, mimeType: "image/jpeg", filename: filename)
             }
         }
 
+        // Fallback: loadItem can return URL, Data, or UIImage.
         let raw = try await loadItem(from: provider, type: .image)
+
+        if let url = raw as? URL,
+           let jpeg = downsampledJPEGData(fromURL: url) {
+            return .image(jpeg, mimeType: "image/jpeg", filename: sanitizedFilename(from: url.lastPathComponent))
+        }
+
         if let data = raw as? Data,
-           let image = UIImage(data: data),
-           let jpeg = downscaledJPEGData(from: image) {
+           let jpeg = downsampledJPEGData(fromData: data) {
             return .image(jpeg, mimeType: "image/jpeg", filename: sanitizedFilename(from: provider.suggestedName))
         }
 
-        if let url = raw as? URL,
-           let data = try? Data(contentsOf: url),
-           let image = UIImage(data: data),
-           let jpeg = downscaledJPEGData(from: image) {
-            return .image(jpeg, mimeType: "image/jpeg", filename: sanitizedFilename(from: url.lastPathComponent))
+        // If the provider returned a UIImage, the bitmap is already in memory.
+        // Use jpegData (not pngData) to serialize it with minimal extra allocation,
+        // then downsample via ImageIO.
+        if let image = raw as? UIImage,
+           let jpegData = image.jpegData(compressionQuality: 0.9),
+           let jpeg = downsampledJPEGData(fromData: jpegData) {
+            return .image(jpeg, mimeType: "image/jpeg", filename: sanitizedFilename(from: provider.suggestedName))
         }
 
         return nil
     }
 
-    private static func loadUIImage(from provider: NSItemProvider) async throws -> UIImage? {
+    // MARK: - Image helpers
+
+    private static func loadFileAndDownsample(from provider: NSItemProvider) async throws -> Data? {
         try await withCheckedThrowingContinuation { continuation in
-            provider.loadObject(ofClass: UIImage.self) { object, error in
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
                 if let error {
                     continuation.resume(throwing: error)
                     return
                 }
-                continuation.resume(returning: object as? UIImage)
+                guard let url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // The file is temporary and deleted after this callback returns,
+                // so we must downsample synchronously here.
+                let result = downsampledJPEGData(fromURL: url)
+                continuation.resume(returning: result)
             }
         }
+    }
+
+    private static func downsampledJPEGData(fromURL url: URL) -> Data? {
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions as CFDictionary) else { return nil }
+        return downsampledJPEGData(from: source)
+    }
+
+    private static func downsampledJPEGData(fromData data: Data) -> Data? {
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else { return nil }
+        return downsampledJPEGData(from: source)
+    }
+
+    private static func downsampledJPEGData(from source: CGImageSource, maxDimension: CGFloat = 2048) -> Data? {
+        let downsampleOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else { return nil }
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.85)
     }
 
     private static func loadItem(from provider: NSItemProvider, type: UTType) async throws -> NSSecureCoding? {
@@ -652,21 +694,6 @@ private enum ShareIncomingPayload {
         }
     }
 
-    private static func downscaledJPEGData(from image: UIImage) -> Data? {
-        let size = image.size
-        let maxDimension = max(size.width, size.height)
-        let scale = maxDimension > 2048 ? (2048 / maxDimension) : 1
-        let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
-
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
-        let rendered = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
-        }
-
-        return rendered.jpegData(compressionQuality: 0.85)
-    }
 
     private static func sanitizedFilename(from proposed: String?) -> String {
         let raw = (proposed ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

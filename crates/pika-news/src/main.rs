@@ -24,6 +24,14 @@ fn main() -> anyhow::Result<()> {
             let store = storage::Store::open(&args.db).context("initialize sqlite storage")?;
             let max_prs = args.max_prs;
             let bind_addr = args.bind_with_config(&config.bind_address, config.bind_port);
+
+            // Recover artifacts stuck in 'generating' from a previous unclean shutdown.
+            match store.recover_stale_generating() {
+                Ok(0) => {}
+                Ok(n) => eprintln!("recovered {} stale generating artifact(s)", n),
+                Err(err) => eprintln!("warning: failed to recover stale generating: {}", err),
+            }
+
             println!(
                 "serve: bind={} db={} repos={} poll_interval={}s model={}",
                 bind_addr,

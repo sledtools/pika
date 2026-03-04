@@ -335,6 +335,22 @@ impl Store {
             .context("query PR detail")
         })
     }
+    /// Reset any artifacts stuck in `generating` state back to `pending`.
+    /// Called on startup to recover from unclean shutdowns.
+    pub fn recover_stale_generating(&self) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE generated_artifacts
+                     SET status='pending', updated_at=CURRENT_TIMESTAMP
+                     WHERE status='generating'",
+                    [],
+                )
+                .context("recover stale generating artifacts")?;
+            Ok(rows)
+        })
+    }
+
     pub fn reset_artifact_to_pending(&self, pr_id: i64) -> anyhow::Result<bool> {
         self.with_connection(|conn| {
             let rows = conn
@@ -813,5 +829,50 @@ mod tests {
             .expect("reclaim pending job");
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].artifact_id, artifact_id);
+    }
+
+    #[test]
+    fn recover_stale_generating_resets_to_pending() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 99,
+            title: "Stuck generating".to_string(),
+            url: "https://github.com/sledtools/pika/pull/99".to_string(),
+            state: "merged".to_string(),
+            head_sha: "stuck-sha".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("bob".to_string()),
+            updated_at: "2026-03-03T00:00:00Z".to_string(),
+            merged_at: Some("2026-03-03T00:00:00Z".to_string()),
+        };
+        store.upsert_pull_request(&input).expect("upsert PR");
+
+        // Claim the job (moves to 'generating')
+        let claimed = store
+            .claim_pending_generation_jobs(1)
+            .expect("claim pending job");
+        assert_eq!(claimed.len(), 1);
+
+        // Verify it's now generating and not claimable
+        let empty = store
+            .claim_pending_generation_jobs(1)
+            .expect("try claim again");
+        assert_eq!(empty.len(), 0);
+
+        // Recover stale generating items
+        let recovered = store
+            .recover_stale_generating()
+            .expect("recover stale generating");
+        assert_eq!(recovered, 1);
+
+        // Now it should be claimable again
+        let reclaimed = store
+            .claim_pending_generation_jobs(1)
+            .expect("reclaim after recovery");
+        assert_eq!(reclaimed.len(), 1);
     }
 }

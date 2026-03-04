@@ -107,11 +107,32 @@ pub async fn serve(
             .await
             {
                 Ok((poll_result, worker_result)) => {
-                    if let Err(err) = poll_result {
-                        eprintln!("pika-news background poller error: {}", err);
+                    match poll_result {
+                        Ok(pr) if pr.prs_seen > 0 || pr.queued_regenerations > 0 => {
+                            eprintln!(
+                                "poll: repos={} prs_seen={} queued={} head_changes={}",
+                                pr.repos_polled,
+                                pr.prs_seen,
+                                pr.queued_regenerations,
+                                pr.head_sha_changes
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("pika-news background poller error: {}", err);
+                        }
                     }
-                    if let Err(err) = worker_result {
-                        eprintln!("pika-news background worker error: {}", err);
+                    match worker_result {
+                        Ok(wr) if wr.claimed > 0 => {
+                            eprintln!(
+                                "worker: claimed={} ready={} failed={} retry={}",
+                                wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("pika-news background worker error: {}", err);
+                        }
                     }
                 }
                 Err(err) => {

@@ -57,17 +57,24 @@ pub fn generate_with_anthropic(
 
     let stdout = run_claude_cli(
         &[
+            "-p",
             "--model",
             model,
             "--output-format",
             "json",
             "--max-turns",
             "1",
+            "--tools",
+            "",
         ],
         Some(&prompt),
     )?;
     let envelope: ClaudeCliResponse = serde_json::from_str(&stdout).map_err(|err| {
-        GenerationError::RetrySafe(format!("parse claude CLI JSON envelope: {}", err))
+        let prefix = truncate(&stdout, 200);
+        GenerationError::RetrySafe(format!(
+            "parse claude CLI JSON envelope: {} (stdout prefix: {})",
+            err, prefix
+        ))
     })?;
 
     if envelope.is_error {
@@ -77,7 +84,21 @@ pub fn generate_with_anthropic(
         )));
     }
 
-    let tutorial = parse_and_validate_tutorial(&envelope.result)?;
+    if envelope.subtype.as_deref() == Some("error_max_turns") {
+        return Err(GenerationError::RetrySafe(
+            "claude CLI hit max turns limit".to_string(),
+        ));
+    }
+
+    let tutorial = parse_and_validate_tutorial(&envelope.result).map_err(|err| {
+        let prefix = truncate(&envelope.result, 300);
+        match err {
+            GenerationError::RetrySafe(msg) => {
+                GenerationError::RetrySafe(format!("{} (result prefix: {})", msg, prefix))
+            }
+            other => other,
+        }
+    })?;
     Ok(GenerationOutput {
         tutorial,
         session_id: envelope.session_id,
@@ -90,6 +111,7 @@ pub fn chat_with_session(
 ) -> Result<ChatResponse, GenerationError> {
     let stdout = run_claude_cli(
         &[
+            "-p",
             "-r",
             base_session_id,
             "--output-format",
@@ -122,9 +144,14 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ClaudeCliResponse {
+    #[serde(default)]
     result: String,
+    #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    subtype: Option<String>,
     session_id: Option<String>,
 }
 
@@ -227,6 +254,8 @@ fn validate_step(index: usize, step: &TutorialStep) -> Result<(), GenerationErro
 
 fn extract_json_payload(raw_output: &str) -> String {
     let trimmed = raw_output.trim();
+
+    // Try: output starts with ```json fence
     if let Some(rest) = trimmed.strip_prefix("```") {
         let without_lang = rest
             .strip_prefix("json")
@@ -237,6 +266,43 @@ fn extract_json_payload(raw_output: &str) -> String {
             return inner.trim().to_string();
         }
     }
+
+    // Try: find ```json ... ``` anywhere in the output (model often prefixes with prose)
+    if let Some(fence_start) = trimmed.find("```json") {
+        let after_fence = &trimmed[fence_start + 7..];
+        let content = after_fence.trim_start_matches('\n');
+        if let Some(fence_end) = content.find("```") {
+            return content[..fence_end].trim().to_string();
+        }
+    }
+    if let Some(fence_start) = trimmed.find("```JSON") {
+        let after_fence = &trimmed[fence_start + 7..];
+        let content = after_fence.trim_start_matches('\n');
+        if let Some(fence_end) = content.find("```") {
+            return content[..fence_end].trim().to_string();
+        }
+    }
+
+    // Try: find bare ``` ... ``` block
+    if let Some(fence_start) = trimmed.find("```\n") {
+        let after_fence = &trimmed[fence_start + 4..];
+        if let Some(fence_end) = after_fence.find("```") {
+            let inner = after_fence[..fence_end].trim();
+            if inner.starts_with('{') {
+                return inner.to_string();
+            }
+        }
+    }
+
+    // Try: extract outermost JSON object by finding first { and last }
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            if end > start {
+                return trimmed[start..=end].to_string();
+            }
+        }
+    }
+
     trimmed.to_string()
 }
 
@@ -291,6 +357,21 @@ mod tests {
             "```json\n{\"executive_summary\":\"ok\",\"media_links\":[],\"steps\":[]}\n```",
         );
         assert!(payload.starts_with('{'));
+    }
+
+    #[test]
+    fn extracts_json_with_prose_prefix() {
+        let payload = extract_json_payload(
+            "Here is the PR tutorial JSON:\n\n```json\n{\"executive_summary\":\"ok\"}\n```",
+        );
+        assert_eq!(payload, "{\"executive_summary\":\"ok\"}");
+    }
+
+    #[test]
+    fn extracts_json_from_bare_braces() {
+        let payload =
+            extract_json_payload("Sure, here is the tutorial:\n{\"executive_summary\":\"ok\"}");
+        assert_eq!(payload, "{\"executive_summary\":\"ok\"}");
     }
 
     #[test]

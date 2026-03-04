@@ -4616,6 +4616,7 @@ impl AppCore {
                 // operation completes (success navigates to the chat; failure toasts an error).
                 let (client, tx) = {
                     let Some(sess) = self.session.as_ref() else {
+                        self.set_busy(|b| b.creating_chat = false);
                         return;
                     };
                     (sess.client.clone(), self.core_sender.clone())

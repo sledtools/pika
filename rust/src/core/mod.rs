@@ -667,6 +667,7 @@ pub struct AppCore {
 
     subs_recompute_in_flight: bool,
     subs_recompute_dirty: bool,
+    subs_force_reconnect: bool,
     subs_recompute_token: u64,
 
     // Coalescing flags for deferred init events — collapse rapid duplicates.
@@ -801,6 +802,7 @@ impl AppCore {
             session: None,
             subs_recompute_in_flight: false,
             subs_recompute_dirty: false,
+            subs_force_reconnect: false,
             subs_recompute_token: 0,
             deferred_foreground_pending: false,
             deferred_session_init_pending: false,
@@ -4582,6 +4584,11 @@ impl AppCore {
                 // Native should send lifecycle signals as actions. Rust owns all state changes.
                 if self.is_logged_in() {
                     self.reopen_mdk(); // Pick up NSE's ratchet changes
+
+                    // After a long background sleep, WebSocket connections may be stale but
+                    // still appear connected to the relay pool. Force a full disconnect so
+                    // recompute_subscriptions() re-establishes fresh connections.
+                    self.subs_force_reconnect = true;
 
                     // Defer the heavy refresh so any user actions that queued while
                     // the actor was busy (e.g. chat taps) are processed first.

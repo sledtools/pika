@@ -116,6 +116,7 @@ impl AppCore {
         self.subs_recompute_token = self.subs_recompute_token.wrapping_add(1);
         self.subs_recompute_in_flight = false;
         self.subs_recompute_dirty = false;
+        self.subs_force_reconnect = false;
         self.group_profiles.clear();
 
         if let Some(sess) = self.session.take() {
@@ -371,6 +372,7 @@ impl AppCore {
 
         self.subs_recompute_in_flight = true;
         self.subs_recompute_dirty = false;
+        let force_reconnect = std::mem::take(&mut self.subs_force_reconnect);
         self.subs_recompute_token = self.subs_recompute_token.wrapping_add(1);
         let token = self.subs_recompute_token;
 
@@ -393,6 +395,11 @@ impl AppCore {
             }
             if !alive.load(Ordering::SeqCst) {
                 return;
+            }
+            // After returning from background, WebSocket connections may be stale.
+            // Disconnect first so connect() re-establishes fresh sockets.
+            if force_reconnect {
+                client.disconnect().await;
             }
             client.connect().await;
             client.wait_for_connection(Duration::from_secs(4)).await;

@@ -14,7 +14,6 @@ pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    Fly,
     Microvm,
 }
 
@@ -264,10 +263,10 @@ mod tests {
             "req-1".to_string(),
             "idem-1".to_string(),
             AgentControlCommand::Provision(ProvisionCommand {
-                provider: ProviderKind::Fly,
+                provider: ProviderKind::Microvm,
                 protocol: ProtocolKind::Acp,
                 name: Some("agent".to_string()),
-                runtime_class: Some("fly-us-east".to_string()),
+                runtime_class: Some("microvm-us-east".to_string()),
                 relay_urls: vec!["wss://relay.example.com".to_string()],
                 keep: false,
                 bot_secret_key_hex: None,
@@ -283,7 +282,7 @@ mod tests {
         assert_eq!(decoded.idempotency_key, "idem-1");
         match decoded.command {
             AgentControlCommand::Provision(provision) => {
-                assert_eq!(provision.provider, ProviderKind::Fly);
+                assert_eq!(provision.provider, ProviderKind::Microvm);
                 assert_eq!(provision.protocol, ProtocolKind::Acp);
             }
             _ => panic!("expected provision command"),
@@ -324,10 +323,10 @@ mod tests {
                 runtime_id: "rt-3".to_string(),
             }),
             AgentControlCommand::ListRuntimes(ListRuntimesCommand {
-                provider: Some(ProviderKind::Fly),
+                provider: Some(ProviderKind::Microvm),
                 protocol: Some(ProtocolKind::Acp),
                 lifecycle_phase: Some(RuntimeLifecyclePhase::Ready),
-                runtime_class: Some("fly-us-east".to_string()),
+                runtime_class: Some("microvm-us-east".to_string()),
                 limit: Some(10),
             }),
             AgentControlCommand::ListRuntimes(ListRuntimesCommand::default()),
@@ -353,7 +352,7 @@ mod tests {
             "req-5".to_string(),
             RuntimeLifecyclePhase::Provisioning,
             Some("rt-42".to_string()),
-            Some(ProviderKind::Fly),
+            Some(ProviderKind::Microvm),
             Some("provisioning started".to_string()),
             json!({"percent": 25}),
         );
@@ -363,7 +362,7 @@ mod tests {
         assert_eq!(decoded.schema, STATUS_SCHEMA_V1);
         assert_eq!(decoded.phase, RuntimeLifecyclePhase::Provisioning);
         assert_eq!(decoded.runtime_id, Some("rt-42".to_string()));
-        assert_eq!(decoded.provider, Some(ProviderKind::Fly));
+        assert_eq!(decoded.provider, Some(ProviderKind::Microvm));
     }
 
     #[test]
@@ -372,7 +371,7 @@ mod tests {
             "req-6".to_string(),
             "provision_failed",
             Some("check provider credentials".to_string()),
-            Some("fly auth token expired".to_string()),
+            Some("spawner host unreachable".to_string()),
         );
         let encoded = serde_json::to_string(&error).expect("encode error");
         let decoded: AgentControlErrorEnvelope =
@@ -380,7 +379,7 @@ mod tests {
         assert_eq!(decoded.schema, ERROR_SCHEMA_V1);
         assert_eq!(decoded.code, "provision_failed");
         assert_eq!(decoded.hint, Some("check provider credentials".to_string()));
-        assert_eq!(decoded.detail, Some("fly auth token expired".to_string()));
+        assert_eq!(decoded.detail, Some("spawner host unreachable".to_string()));
     }
 
     #[test]
@@ -396,7 +395,7 @@ mod tests {
     fn runtime_descriptor_optional_fields_default_correctly() {
         let minimal_json = json!({
             "runtime_id": "rt-min",
-            "provider": "fly",
+            "provider": "microvm",
             "lifecycle_phase": "queued",
         });
         let descriptor: RuntimeDescriptor =
@@ -413,16 +412,8 @@ mod tests {
     #[test]
     fn provider_kind_serde_uses_snake_case() {
         assert_eq!(
-            serde_json::to_string(&ProviderKind::Fly).unwrap(),
-            "\"fly\""
-        );
-        assert_eq!(
             serde_json::to_string(&ProviderKind::Microvm).unwrap(),
             "\"microvm\""
-        );
-        assert_eq!(
-            serde_json::from_str::<ProviderKind>("\"fly\"").unwrap(),
-            ProviderKind::Fly
         );
         assert_eq!(
             serde_json::from_str::<ProviderKind>("\"microvm\"").unwrap(),
@@ -455,7 +446,7 @@ mod tests {
     #[test]
     fn provision_command_minimal_fields_decode() {
         let json = json!({
-            "provider": "fly",
+            "provider": "microvm",
             "protocol": "acp",
         });
         let cmd: ProvisionCommand = serde_json::from_value(json).expect("decode");

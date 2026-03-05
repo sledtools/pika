@@ -14,8 +14,8 @@ This document defines deterministic CI coverage for `pikachat agent new` provide
 These lanes are required in `.github/workflows/pre-merge.yml`:
 
 - `check-agent-contracts`:
-  - Runs mocked control-plane contracts for Fly + MicroVM (no real cloud credentials/hosts).
-  - Covers: `pikachat` Fly client tests, `pika-agent-microvm` tests, `pika-agent-control-plane` schema tests, `pika-agent-protocol` envelope tests, `pika-server` agent_control service tests.
+  - Runs mocked HTTP control-plane contracts for MicroVM (no real cloud credentials/hosts).
+  - Covers: `pika-agent-microvm` tests, `pika-server` agent API tests, and `pikahut` deterministic HTTP integration probes (`agent_http_ensure_local`, `agent_http_cli_new_local`).
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
 
 ## Advisory Integration Lanes
@@ -30,7 +30,7 @@ Real-provider probes stay outside pre-merge gating:
 Run these commands locally to reproduce provider contract failures:
 
 ```bash
-# Fly + MicroVM mocked contracts
+# MicroVM mocked contracts
 just pre-merge-agent-contracts
 
 # Full pre-merge lane for pikachat crate
@@ -51,11 +51,9 @@ just openclaw-pikachat-e2e
 
 Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:
 
-- Touch `cli/src/fly_machines.rs`:
-  - expected: `check-agent-contracts` and `check-pikachat` run.
 - Touch `crates/pika-agent-microvm/src/lib.rs`:
   - expected: `check-agent-contracts` runs.
-- Touch `crates/pika-server/src/agent_control.rs`:
+- Touch `crates/pika-server/src/agent_api.rs`:
   - expected: `check-agent-contracts` runs.
 - Touch `cli/src/main.rs` only:
   - expected: `check-pikachat` runs; `check-agent-contracts` is skipped.

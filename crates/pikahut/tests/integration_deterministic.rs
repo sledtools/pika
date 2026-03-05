@@ -1,13 +1,22 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
+use anyhow::{Context, anyhow, bail};
+use reqwest::StatusCode;
+use serde_json::Value;
+use tokio::sync::Mutex;
 
+use pikahut::config::ProfileName;
 use pikahut::testing::{
-    ArtifactPolicy, CommandRunner, CommandSpec, Requirement, TestContext, scenarios,
+    ArtifactPolicy, CommandRunner, CommandSpec, FixtureSpec, Requirement, TestContext, scenarios,
     scenarios::{
         CliSmokeRequest, InteropRustBaselineRequest, ScenarioRequest, UiE2eLocalRequest, UiPlatform,
     },
-    skip_if_missing_requirements,
+    skip_if_missing_requirements, start_fixture,
 };
 
 fn workspace_root() -> PathBuf {
@@ -50,6 +59,114 @@ fn scenario_request(name: &str) -> ScenarioRequest {
         relay: env_opt("PIKAHUT_SCENARIO_RELAY_URL"),
         extra_args: scenario_extra_args(),
     }
+}
+
+const HTTP_AGENT_TEST_OWNER_NPUB: &str =
+    "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+struct ScopedEnvVar {
+    key: String,
+    previous: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: integration tests serialize env mutations via ENV_LOCK.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            // SAFETY: integration tests serialize env mutations via ENV_LOCK.
+            unsafe {
+                std::env::set_var(&self.key, previous);
+            }
+        } else {
+            // SAFETY: integration tests serialize env mutations via ENV_LOCK.
+            unsafe {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+}
+
+fn spawn_mock_vm_spawner() -> Result<(String, thread::JoinHandle<Result<String>>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
+    let addr = listener.local_addr().context("read mock vm-spawner addr")?;
+    let url = format!("http://{}", addr);
+
+    let handle = thread::spawn(move || -> Result<String> {
+        let (mut stream, _) = listener.accept().context("accept spawner request")?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .context("set spawner read timeout")?;
+
+        let mut buf = Vec::new();
+        let mut header_end = None;
+        while header_end.is_none() {
+            let mut chunk = [0u8; 1024];
+            let n = stream.read(&mut chunk).context("read spawner headers")?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                header_end = Some(idx + 4);
+            }
+        }
+
+        let header_end = header_end.ok_or_else(|| anyhow!("missing HTTP header terminator"))?;
+        let header_text = String::from_utf8_lossy(&buf[..header_end]);
+        let request_line = header_text.lines().next().unwrap_or_default().to_string();
+
+        let mut content_length = 0usize;
+        for line in header_text.lines().skip(1) {
+            let mut parts = line.splitn(2, ':');
+            let name = parts.next().unwrap_or_default().trim();
+            let value = parts.next().unwrap_or_default().trim();
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.parse::<usize>().unwrap_or(0);
+            }
+        }
+
+        let already_body = buf.len().saturating_sub(header_end);
+        if content_length > already_body {
+            let mut remaining = vec![0u8; content_length - already_body];
+            stream
+                .read_exact(&mut remaining)
+                .context("read spawner request body")?;
+            buf.extend_from_slice(&remaining);
+        }
+
+        let (status, body) = if request_line.starts_with("POST /vms ") {
+            ("200 OK", r#"{"id":"vm-test-1","ip":"10.0.0.2"}"#)
+        } else {
+            ("404 Not Found", r#"{"error":"unexpected path"}"#)
+        };
+
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .context("write spawner response")?;
+        stream.flush().context("flush spawner response")?;
+
+        Ok(request_line)
+    });
+
+    Ok((url, handle))
 }
 
 #[tokio::test]
@@ -277,6 +394,182 @@ fn call_with_pikachat_daemon_boundary() -> Result<()> {
             ])
             .capture_name("regression-call-with-pikachat-daemon"),
     )?;
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_ensure_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let mut context = TestContext::builder("agent-http-ensure-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
+    let token = format!("agent-http-token-{}", std::process::id());
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _token_env = ScopedEnvVar::set(
+        "PIKA_AGENT_OWNER_TOKEN_MAP",
+        &format!("{token}={HTTP_AGENT_TEST_OWNER_NPUB}"),
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+
+    let client = reqwest::Client::new();
+    let ensure_resp = client
+        .post(format!("{server_url}/v1/agents/ensure"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("send /v1/agents/ensure")?;
+    let ensure_status = ensure_resp.status();
+    let ensure_body = ensure_resp.text().await.unwrap_or_default();
+    if ensure_status != StatusCode::ACCEPTED {
+        bail!("expected 202 from ensure, got {ensure_status}: {ensure_body}");
+    }
+    let ensure_json: Value =
+        serde_json::from_str(&ensure_body).context("decode ensure response json")?;
+    let state = ensure_json
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if state != "creating" {
+        bail!("expected state=creating after ensure, got: {state}");
+    }
+    let agent_id = ensure_json
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("ensure response missing agent_id"))?;
+    if !agent_id.starts_with("npub1") {
+        bail!("ensure returned unexpected agent_id format: {agent_id}");
+    }
+    let vm_id = ensure_json
+        .get("vm_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("ensure response missing vm_id"))?;
+    if vm_id != "vm-test-1" {
+        bail!("expected vm_id=vm-test-1, got: {vm_id}");
+    }
+
+    let me_resp = client
+        .get(format!("{server_url}/v1/agents/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("send /v1/agents/me")?;
+    let me_status = me_resp.status();
+    let me_body = me_resp.text().await.unwrap_or_default();
+    if me_status != StatusCode::OK {
+        bail!("expected 200 from /v1/agents/me, got {me_status}: {me_body}");
+    }
+    let me_json: Value = serde_json::from_str(&me_body).context("decode /me response json")?;
+    let me_agent_id = me_json
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("/me response missing agent_id"))?;
+    if me_agent_id != agent_id {
+        bail!("agent_id mismatch between ensure and /me");
+    }
+
+    let spawner_request_line = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if !spawner_request_line.starts_with("POST /vms ") {
+        bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_cli_new_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let mut context = TestContext::builder("agent-http-cli-new-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
+    let token = format!("agent-http-cli-token-{}", std::process::id());
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _token_env = ScopedEnvVar::set(
+        "PIKA_AGENT_OWNER_TOKEN_MAP",
+        &format!("{token}={HTTP_AGENT_TEST_OWNER_NPUB}"),
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+
+    let runner = CommandRunner::new(&context);
+    let output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "new",
+                "--api-base-url",
+                &server_url,
+                "--token",
+                &token,
+            ])
+            .capture_name("agent-http-cli-new"),
+    )?;
+    let stdout = String::from_utf8(output.stdout).context("decode pikachat stdout")?;
+    let cli_json: Value = serde_json::from_str(stdout.trim()).context("decode cli json output")?;
+    if cli_json.get("operation").and_then(Value::as_str) != Some("ensure") {
+        bail!("unexpected CLI operation payload: {cli_json}");
+    }
+    let state = cli_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if state != "creating" {
+        bail!("expected CLI ensure state=creating, got: {state}");
+    }
+
+    let me_resp = reqwest::Client::new()
+        .get(format!("{server_url}/v1/agents/me"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .context("send /v1/agents/me")?;
+    if me_resp.status() != StatusCode::OK {
+        let body = me_resp.text().await.unwrap_or_default();
+        bail!("expected 200 from /v1/agents/me after CLI ensure, got body: {body}");
+    }
+
+    let spawner_request_line = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if !spawner_request_line.starts_with("POST /vms ") {
+        bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    }
+
     context.mark_success();
     Ok(())
 }

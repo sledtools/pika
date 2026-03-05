@@ -1,26 +1,19 @@
+use std::collections::{HashMap, HashSet};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
+
 use anyhow::Context;
 use axum::extract::Extension;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::{response::IntoResponse, Json};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
-use diesel::PgConnection;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use serde::Serialize;
 
-use crate::agent_api_v1_contract::{
-    AgentApiErrorCode, AgentAppState, V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH,
-    V1_AGENTS_RECOVER_PATH,
-};
-use crate::agent_control::{
-    default_microvm_spawner_url_from_env, ensure_private_microvm_spawner_url,
-};
-use crate::models::agent_allowlist::AgentAllowlistEntry;
+use crate::agent_api_v1_contract::{AgentApiErrorCode, AgentAppState};
 use crate::models::agent_instance::{
     AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
-};
-use crate::nostr_auth::{
-    event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::State;
 use pika_agent_control_plane::MicrovmProvisionParams;
@@ -30,7 +23,17 @@ use pika_agent_microvm::{
 };
 use pika_relay_profiles::default_message_relays;
 
+const OWNER_TOKEN_MAP_ENV: &str = "PIKA_AGENT_OWNER_TOKEN_MAP";
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
+const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
+const FIXED_ALLOWLIST_NPUBS: [&str; 3] = [
+    // justin
+    "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y",
+    // benthecarman (Ben)
+    "npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38",
+    // Paul
+    "npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8",
+];
 
 #[derive(Debug)]
 pub struct AgentApiError {
@@ -69,35 +72,144 @@ pub(crate) struct AgentStateResponse {
     state: AgentAppState,
 }
 
-fn authenticated_requester_npub(
-    headers: &HeaderMap,
-    expected_method: &str,
-    expected_path: &str,
-) -> Result<String, AgentApiError> {
-    let event = event_from_authorization_header(headers)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    let expected_host = expected_host_from_headers(headers)
-        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    verify_nip98_event(
-        &event,
-        expected_method,
-        expected_path,
-        Some(expected_host.as_str()),
-        None,
-    )
-    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))
+fn fixed_allowlist_pubkeys_hex() -> &'static HashSet<String> {
+    static ALLOWLIST_HEX: OnceLock<HashSet<String>> = OnceLock::new();
+    ALLOWLIST_HEX.get_or_init(|| {
+        FIXED_ALLOWLIST_NPUBS
+            .iter()
+            .map(|npub| {
+                PublicKey::parse(npub)
+                    .expect("fixed allowlist npub must parse")
+                    .to_hex()
+            })
+            .collect::<HashSet<_>>()
+    })
 }
 
-fn require_whitelisted_requester(
-    conn: &mut PgConnection,
-    headers: &HeaderMap,
-    expected_method: &str,
-    expected_path: &str,
-) -> Result<RequesterIdentity, AgentApiError> {
-    let owner_npub = authenticated_requester_npub(headers, expected_method, expected_path)?;
-    let is_active = AgentAllowlistEntry::is_active(conn, &owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    if !is_active {
+fn parse_owner_token_map(raw: &str) -> anyhow::Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    for entry in raw.split(',') {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (token, owner_npub) = trimmed.split_once('=').with_context(|| {
+            format!("invalid token map entry `{trimmed}` (expected token=npub)")
+        })?;
+        let token = token.trim();
+        let owner_npub = owner_npub.trim();
+        anyhow::ensure!(!token.is_empty(), "token cannot be empty");
+        anyhow::ensure!(!owner_npub.is_empty(), "owner npub cannot be empty");
+        anyhow::ensure!(
+            owner_npub.starts_with("npub1"),
+            "owner must be provided as npub in token map: {owner_npub}"
+        );
+        PublicKey::parse(owner_npub)
+            .with_context(|| format!("invalid owner npub in token map: {owner_npub}"))?;
+        map.insert(token.to_string(), owner_npub.to_string());
+    }
+    Ok(map)
+}
+
+fn configured_owner_token_map() -> anyhow::Result<HashMap<String, String>> {
+    let raw = std::env::var(OWNER_TOKEN_MAP_ENV).unwrap_or_default();
+    parse_owner_token_map(&raw)
+}
+
+fn default_microvm_spawner_url_from_env() -> Option<String> {
+    std::env::var(MICROVM_SPAWNER_URL_ENV)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_private_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    let is_cgnat = octets[0] == 100 && (64..=127).contains(&octets[1]);
+    ip.is_private() || ip.is_loopback() || ip.is_link_local() || is_cgnat
+}
+
+fn is_private_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unicast_link_local() || ip.is_unique_local()
+}
+
+fn ensure_private_microvm_spawner_url(spawner_url: &str) -> anyhow::Result<()> {
+    let uri: Uri = spawner_url.parse().with_context(|| {
+        format!("{MICROVM_SPAWNER_URL_ENV} must be a valid URL or URI host, got: {spawner_url}")
+    })?;
+    let host = uri.host().with_context(|| {
+        format!(
+            "microvm spawner URL must include an explicit host: {}",
+            spawner_url
+        )
+    })?;
+    let normalized_host = host.trim_matches(|c| c == '[' || c == ']');
+
+    if normalized_host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+    if let Ok(ipv4) = normalized_host.parse::<Ipv4Addr>() {
+        if is_private_ipv4(ipv4) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "microvm spawner host must be private (RFC1918/CGNAT/loopback), got public IPv4 {}",
+            normalized_host
+        );
+    }
+    if let Ok(ipv6) = normalized_host.parse::<Ipv6Addr>() {
+        if is_private_ipv6(ipv6) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "microvm spawner host must be private (ULA/link-local/loopback), got public IPv6 {}",
+            normalized_host
+        );
+    }
+
+    let is_private_dns_name = normalized_host.ends_with(".internal")
+        || normalized_host.ends_with(".tailnet")
+        || normalized_host.ends_with(".tailnet.ts.net");
+    if is_private_dns_name {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "microvm spawner host must be private DNS (.internal/.tailnet/.tailnet.ts.net) or private IP, got {}",
+        normalized_host
+    );
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AgentApiError> {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    let auth = auth
+        .to_str()
+        .ok()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    let token = auth
+        .strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    Ok(token.to_string())
+}
+
+fn require_whitelisted_requester(headers: &HeaderMap) -> Result<RequesterIdentity, AgentApiError> {
+    let token = extract_bearer_token(headers)?;
+    let owner_npub = configured_owner_token_map()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?
+        .get(&token)
+        .cloned()
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+
+    let pubkey_hex = PublicKey::parse(&owner_npub)
+        .map(|pk| pk.to_hex())
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    if !fixed_allowlist_pubkeys_hex().contains(&pubkey_hex) {
         return Err(AgentApiError::from_code(AgentApiErrorCode::NotWhitelisted));
     }
     Ok(RequesterIdentity { owner_npub })
@@ -187,13 +299,12 @@ pub async fn ensure_agent(
     Extension(state): Extension<State>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
+    let requester = require_whitelisted_requester(&headers)?;
+    let bot_identity = generate_provisioning_bot_identity()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     let mut conn = state
         .db_pool
         .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester =
-        require_whitelisted_requester(&mut conn, &headers, "POST", V1_AGENTS_ENSURE_PATH)?;
-    let bot_identity = generate_provisioning_bot_identity()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
 
     if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
@@ -242,11 +353,11 @@ pub async fn get_my_agent(
     Extension(state): Extension<State>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let requester = require_whitelisted_requester(&headers)?;
     let mut conn = state
         .db_pool
         .get()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester = require_whitelisted_requester(&mut conn, &headers, "GET", V1_AGENTS_ME_PATH)?;
     let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     else {
@@ -259,12 +370,11 @@ pub async fn recover_my_agent(
     Extension(state): Extension<State>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let requester = require_whitelisted_requester(&headers)?;
     let mut conn = state
         .db_pool
         .get()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester =
-        require_whitelisted_requester(&mut conn, &headers, "POST", V1_AGENTS_RECOVER_PATH)?;
     let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     else {
@@ -293,75 +403,69 @@ pub async fn recover_my_agent(
     Ok(Json(map_row_to_response(updated)?))
 }
 
+pub fn whitelist_healthcheck() -> anyhow::Result<()> {
+    anyhow::ensure!(
+        FIXED_ALLOWLIST_NPUBS.len() == 3,
+        "fixed microvm allowlist must include exactly three npubs"
+    );
+
+    let mut dedupe = HashSet::new();
+    for npub in FIXED_ALLOWLIST_NPUBS {
+        let normalized = PublicKey::parse(npub)
+            .with_context(|| format!("invalid fixed allowlist npub: {npub}"))?
+            .to_hex();
+        anyhow::ensure!(
+            dedupe.insert(normalized),
+            "duplicate npub in fixed allowlist"
+        );
+    }
+
+    let raw_map = std::env::var(OWNER_TOKEN_MAP_ENV).unwrap_or_default();
+    if !raw_map.trim().is_empty() {
+        let map = parse_owner_token_map(&raw_map)?;
+        for owner_npub in map.values() {
+            let owner_hex = PublicKey::parse(owner_npub)?.to_hex();
+            anyhow::ensure!(
+                fixed_allowlist_pubkeys_hex().contains(&owner_hex),
+                "owner in {} is not part of fixed 3-npub allowlist: {}",
+                OWNER_TOKEN_MAP_ENV,
+                owner_npub
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header;
-    use base64::Engine;
-    use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
 
     #[test]
-    fn authenticated_requester_npub_accepts_valid_nip98_header() {
-        let keys = Keys::generate();
-        let event = EventBuilder::new(Kind::Custom(27235), "")
-            .tags([
-                Tag::custom(TagKind::custom("u"), ["https://example.com/v1/agents/me"]),
-                Tag::custom(TagKind::custom("method"), ["GET"]),
-            ])
-            .sign_with_keys(&keys)
-            .expect("sign nip98 event");
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_vec(&event).expect("serialize event"));
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Nostr {encoded}").parse().expect("auth value"),
-        );
-        headers.insert(header::HOST, "example.com".parse().expect("host value"));
-
-        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
-            .expect("extract authenticated npub");
-        assert_eq!(
-            npub,
-            keys.public_key()
-                .to_bech32()
-                .expect("encode npub")
-                .to_lowercase()
-        );
+    fn whitelist_healthcheck_validates_fixed_three_entries() {
+        whitelist_healthcheck().expect("fixed allowlist should be valid");
+        assert_eq!(fixed_allowlist_pubkeys_hex().len(), 3);
     }
 
     #[test]
-    fn authenticated_requester_npub_requires_nostr_authorization_header() {
+    fn parse_owner_token_map_accepts_valid_entries() {
+        let raw = "token-a=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+        let map = parse_owner_token_map(raw).expect("parse token map");
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("token-a"));
+    }
+
+    #[test]
+    fn parse_owner_token_map_rejects_invalid_entries() {
+        let raw = "missing_equals";
+        let err = parse_owner_token_map(raw).expect_err("invalid format must fail");
+        assert!(err.to_string().contains("expected token=npub"));
+    }
+
+    #[test]
+    fn extract_bearer_token_requires_authorization_header() {
         let headers = HeaderMap::new();
-        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
-            .expect_err("missing header must fail");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
-    }
-
-    #[test]
-    fn authenticated_requester_npub_rejects_mismatched_u_tag_authority() {
-        let keys = Keys::generate();
-        let event = EventBuilder::new(Kind::Custom(27235), "")
-            .tags([
-                Tag::custom(TagKind::custom("u"), ["https://wrong.example/v1/agents/me"]),
-                Tag::custom(TagKind::custom("method"), ["GET"]),
-            ])
-            .sign_with_keys(&keys)
-            .expect("sign nip98 event");
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_vec(&event).expect("serialize event"));
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Nostr {encoded}").parse().expect("auth value"),
-        );
-        headers.insert(header::HOST, "example.com".parse().expect("host value"));
-
-        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
-            .expect_err("mismatched authority must fail");
+        let err = extract_bearer_token(&headers).expect_err("missing header must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
     }
@@ -372,5 +476,17 @@ mod tests {
         let parsed = PublicKey::parse(&identity.pubkey_npub).expect("parse npub");
         assert_eq!(parsed.to_hex(), identity.pubkey_hex);
         assert!(!identity.secret_hex.is_empty());
+    }
+
+    #[test]
+    fn private_spawner_url_validation_accepts_localhost() {
+        ensure_private_microvm_spawner_url("http://127.0.0.1:8080").expect("localhost url");
+    }
+
+    #[test]
+    fn private_spawner_url_validation_rejects_public_host() {
+        let err = ensure_private_microvm_spawner_url("https://example.com")
+            .expect_err("public host must be rejected");
+        assert!(err.to_string().contains("private DNS"));
     }
 }

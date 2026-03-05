@@ -15,22 +15,12 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
-use pika_agent_control_plane::{
-    AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
-    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
-    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
-    ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
-    RuntimeLifecyclePhase, TeardownCommand,
-};
-use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-
-use crate::agent::harness::AgentProtocol;
 
 const CHANNELS_MANIFEST_JSON: &str = include_str!("../../config/channels.json");
 
@@ -380,7 +370,7 @@ If --output is omitted, the original filename from the sender is used.")]
         exec: Option<String>,
     },
 
-    /// Manage AI agents (`fly` or `microvm`)
+    /// Manage AI agents (HTTP control plane)
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
@@ -389,104 +379,39 @@ If --output is omitted, the original filename from the sender is used.")]
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Create a new ACP agent runtime
+    /// Ensure an agent exists for the configured owner token
     New {
-        /// Agent name (default: agent-<random>)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Runtime provider (`fly` keeps existing behavior)
-        #[arg(long, value_enum, default_value_t = AgentProvider::Fly, env = "PIKA_AGENT_PROVIDER")]
-        provider: AgentProvider,
-
-        /// Target runtime class advertised by the server (optional routing hint)
-        #[arg(long, env = "PIKA_AGENT_RUNTIME_CLASS")]
-        runtime_class: Option<String>,
-
-        /// Deprecated: provisioning is ACP-only; `--brain` no longer changes behavior.
-        #[arg(long, hide = true)]
-        brain: Option<String>,
-
-        /// Print provision result as JSON and exit (no interactive chat)
-        #[arg(long)]
-        json: bool,
-
-        /// Keep runtime alive after CLI exit (skip auto-teardown)
-        #[arg(long)]
-        keep: bool,
-
         #[command(flatten)]
-        control: AgentControlArgs,
-
-        #[command(flatten)]
-        microvm: AgentNewMicrovmArgs,
+        http: AgentHttpArgs,
     },
 
-    /// List runtimes known to the control-plane server (filterable)
-    ListRuntimes {
-        /// Filter by provider
-        #[arg(long, value_enum)]
-        provider: Option<AgentProvider>,
-
-        /// Filter by protocol compatibility
-        #[arg(long, value_enum)]
-        protocol: Option<AgentProtocol>,
-
-        /// Filter by runtime lifecycle phase
-        #[arg(long, value_enum)]
-        phase: Option<AgentRuntimePhase>,
-
-        /// Filter by runtime class
-        #[arg(long)]
-        runtime_class: Option<String>,
-
-        /// Maximum number of runtimes to return
-        #[arg(long)]
-        limit: Option<usize>,
-
+    /// Fetch the current agent state for the configured owner token
+    Me {
         #[command(flatten)]
-        control: AgentControlArgs,
+        http: AgentHttpArgs,
     },
 
-    /// Fetch one runtime descriptor by id
-    GetRuntime {
-        /// Runtime id from provision/list results
-        #[arg(long)]
-        runtime_id: String,
-
+    /// Ask the server to recover the current agent VM
+    Recover {
         #[command(flatten)]
-        control: AgentControlArgs,
-    },
-
-    /// Tear down a runtime by id
-    Teardown {
-        /// Runtime id to tear down
-        #[arg(long)]
-        runtime_id: String,
-
-        #[command(flatten)]
-        control: AgentControlArgs,
+        http: AgentHttpArgs,
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentProvider {
-    Fly,
-    Microvm,
-}
+const DEFAULT_AGENT_API_BASE_URL: &str = "http://127.0.0.1:8080";
+const AGENT_API_ENSURE_PATH: &str = "/v1/agents/ensure";
+const AGENT_API_ME_PATH: &str = "/v1/agents/me";
+const AGENT_API_RECOVER_PATH: &str = "/v1/agents/me/recover";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentRuntimePhase {
-    Queued,
-    Provisioning,
-    Ready,
-    Failed,
-    Teardown,
-}
+#[derive(Clone, Debug, Args)]
+struct AgentHttpArgs {
+    /// Base URL for pika-server HTTP control plane
+    #[arg(long, env = "PIKA_AGENT_API_BASE_URL", default_value = DEFAULT_AGENT_API_BASE_URL)]
+    api_base_url: String,
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentControlMode {
-    Remote,
+    /// Bearer token configured in `PIKA_AGENT_OWNER_TOKEN_MAP` on pika-server
+    #[arg(long, env = "PIKA_AGENT_API_TOKEN")]
+    token: String,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -515,97 +440,6 @@ struct ChannelManifest {
 struct ChannelConfig {
     id: String,
     url_scheme: String,
-}
-
-#[derive(Clone, Debug, Args)]
-struct AgentControlArgs {
-    /// Provider control-plane mode (`remote` only; local provisioning is removed)
-    #[arg(long, value_enum, default_value_t = AgentControlMode::Remote, env = "PIKA_AGENT_CONTROL_MODE")]
-    control_mode: AgentControlMode,
-
-    /// Nostr pubkey (hex or npub) for the `pika-server` control-plane identity
-    #[arg(long, env = "PIKA_AGENT_CONTROL_SERVER_PUBKEY")]
-    control_server_pubkey: Option<String>,
-}
-
-#[derive(Clone, Debug, Args, Default)]
-struct AgentNewMicrovmArgs {
-    /// MicroVM spawner base URL
-    #[arg(long, env = "PIKA_MICROVM_SPAWNER_URL")]
-    spawner_url: Option<String>,
-
-    /// Spawn variant for vm-spawner
-    #[arg(long, value_enum)]
-    spawn_variant: Option<MicrovmSpawnVariant>,
-
-    /// Nix flake reference used by vm-spawner when building/running guest commands
-    #[arg(long)]
-    flake_ref: Option<String>,
-
-    /// Nix dev shell name used for guest command execution
-    #[arg(long)]
-    dev_shell: Option<String>,
-
-    /// vCPU count for the VM
-    #[arg(long)]
-    cpu: Option<u32>,
-
-    /// VM memory in MB
-    #[arg(long)]
-    memory_mb: Option<u32>,
-
-    /// VM time-to-live in seconds
-    #[arg(long)]
-    ttl_seconds: Option<u64>,
-}
-
-impl AgentNewMicrovmArgs {
-    fn provided_flag_names(&self) -> Vec<&'static str> {
-        let mut out = Vec::new();
-        if self.spawner_url.is_some() {
-            out.push("--spawner-url");
-        }
-        if self.spawn_variant.is_some() {
-            out.push("--spawn-variant");
-        }
-        if self.flake_ref.is_some() {
-            out.push("--flake-ref");
-        }
-        if self.dev_shell.is_some() {
-            out.push("--dev-shell");
-        }
-        if self.cpu.is_some() {
-            out.push("--cpu");
-        }
-        if self.memory_mb.is_some() {
-            out.push("--memory-mb");
-        }
-        if self.ttl_seconds.is_some() {
-            out.push("--ttl-seconds");
-        }
-        out
-    }
-
-    fn ensure_provider_compatible(&self, provider: AgentProvider) -> anyhow::Result<()> {
-        if provider == AgentProvider::Microvm {
-            return Ok(());
-        }
-        let flags = self.provided_flag_names();
-        if flags.is_empty() {
-            return Ok(());
-        }
-        anyhow::bail!(
-            "microvm options {} require --provider microvm",
-            flags.join(", ")
-        );
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum MicrovmSpawnVariant {
-    Prebuilt,
-    #[value(name = "prebuilt-cow")]
-    PrebuiltCow,
 }
 
 async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
@@ -835,54 +669,9 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Agent { cmd } => match cmd {
-            AgentCommand::New {
-                name,
-                provider,
-                runtime_class,
-                brain,
-                json,
-                keep,
-                control,
-                microvm,
-            } => {
-                let request = AgentNewRequest {
-                    name: name.as_deref(),
-                    provider: *provider,
-                    runtime_class: runtime_class.as_deref(),
-                    brain: brain.as_deref(),
-                    json: *json,
-                    keep: *keep,
-                    microvm,
-                };
-                cmd_agent_new(&cli, control, request).await
-            }
-            AgentCommand::ListRuntimes {
-                provider,
-                protocol,
-                phase,
-                runtime_class,
-                limit,
-                control,
-            } => {
-                cmd_agent_list_runtimes(
-                    &cli,
-                    *provider,
-                    *protocol,
-                    *phase,
-                    runtime_class.as_deref(),
-                    *limit,
-                    control,
-                )
-                .await
-            }
-            AgentCommand::GetRuntime {
-                runtime_id,
-                control,
-            } => cmd_agent_get_runtime(&cli, runtime_id, control).await,
-            AgentCommand::Teardown {
-                runtime_id,
-                control,
-            } => cmd_agent_teardown(&cli, runtime_id, control).await,
+            AgentCommand::New { http } => cmd_agent_new(http).await,
+            AgentCommand::Me { http } => cmd_agent_me(http).await,
+            AgentCommand::Recover { http } => cmd_agent_recover(http).await,
         },
     }
 }
@@ -1821,590 +1610,89 @@ async fn cmd_download_media(
     Ok(())
 }
 
-async fn cmd_agent_new(
-    cli: &Cli,
-    control: &AgentControlArgs,
-    request: AgentNewRequest<'_>,
-) -> anyhow::Result<()> {
-    validate_agent_new_request(request.provider, request.brain, request.microvm)?;
-    if control.control_mode != AgentControlMode::Remote {
-        anyhow::bail!("--control-mode remote is required; local provisioning has been removed");
-    }
-    cmd_agent_new_remote(cli, control, &request).await
+async fn cmd_agent_new(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let agent = call_agent_api(http, reqwest::Method::POST, AGENT_API_ENSURE_PATH).await?;
+    print(json!({
+        "operation": "ensure",
+        "agent": agent,
+    }));
+    Ok(())
 }
 
-struct AgentNewRequest<'a> {
-    name: Option<&'a str>,
-    provider: AgentProvider,
-    runtime_class: Option<&'a str>,
-    brain: Option<&'a str>,
-    json: bool,
-    keep: bool,
-    microvm: &'a AgentNewMicrovmArgs,
+async fn cmd_agent_me(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let agent = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+    print(json!({
+        "operation": "me",
+        "agent": agent,
+    }));
+    Ok(())
 }
 
-fn validate_agent_new_request(
-    provider: AgentProvider,
-    brain: Option<&str>,
-    microvm: &AgentNewMicrovmArgs,
-) -> anyhow::Result<()> {
-    if let Some(value) = brain.map(str::trim).filter(|v| !v.is_empty()) {
+async fn cmd_agent_recover(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let agent = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await?;
+    print(json!({
+        "operation": "recover",
+        "agent": agent,
+    }));
+    Ok(())
+}
+
+fn normalized_agent_api_base_url(raw: &str) -> anyhow::Result<String> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "agent api base url cannot be empty");
+    let parsed = reqwest::Url::parse(trimmed).context("parse agent api base url")?;
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
+fn agent_api_token_value(raw: &str) -> anyhow::Result<&str> {
+    let token = raw.trim();
+    anyhow::ensure!(!token.is_empty(), "agent api token cannot be empty");
+    Ok(token)
+}
+
+async fn call_agent_api(
+    http: &AgentHttpArgs,
+    method: reqwest::Method,
+    path: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let base_url = normalized_agent_api_base_url(&http.api_base_url)?;
+    let token = agent_api_token_value(&http.token)?;
+    let url = format!("{base_url}{path}");
+    let response = reqwest::Client::new()
+        .request(method.clone(), &url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .with_context(|| format!("send {} {}", method, url))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let error_code = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|raw| raw.as_str())
+                    .map(str::to_string)
+            });
+        if let Some(code) = error_code {
+            anyhow::bail!(
+                "agent api {} {} failed: HTTP {} ({code})",
+                method,
+                path,
+                status
+            );
+        }
         anyhow::bail!(
-            "--brain is no longer supported: provisioning is ACP-only. Remove --brain (received: {value})"
+            "agent api {} {} failed: HTTP {} body={}",
+            method,
+            path,
+            status,
+            body
         );
     }
-    microvm.ensure_provider_compatible(provider)?;
-    Ok(())
-}
-
-struct RemoteControlClient {
-    client: Client,
-    keys: Keys,
-    relays: Vec<RelayUrl>,
-    server_pubkey: PublicKey,
-}
-
-impl RemoteControlClient {
-    async fn connect(
-        keys: &Keys,
-        relay_urls: &[String],
-        server_pubkey: PublicKey,
-    ) -> anyhow::Result<Self> {
-        let relays = relay_util::parse_relay_urls(relay_urls)?;
-        let client = relay_util::connect_client(keys, relay_urls).await?;
-        Ok(Self {
-            client,
-            keys: keys.clone(),
-            relays,
-            server_pubkey,
-        })
-    }
-
-    async fn send_command(
-        &self,
-        command: AgentControlCommand,
-    ) -> anyhow::Result<AgentControlResultEnvelope> {
-        let request_id = new_control_request_id("agent-ctl");
-        let idempotency_key = new_control_request_id("idem");
-        let envelope = AgentControlCmdEnvelope::v1(
-            request_id.clone(),
-            idempotency_key,
-            command,
-            AuthContext {
-                acting_as_pubkey: Some(self.keys.public_key().to_hex()),
-            },
-        );
-
-        let status_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_STATUS_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-        let result_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_RESULT_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-        let error_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_ERROR_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-
-        let content = serde_json::to_string(&envelope).context("encode control command")?;
-        let encrypted = nostr_sdk::nostr::nips::nip44::encrypt(
-            self.keys.secret_key(),
-            &self.server_pubkey,
-            content,
-            nostr_sdk::nostr::nips::nip44::Version::V2,
-        )
-        .context("encrypt control command payload")?;
-        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), encrypted)
-            .tags([Tag::public_key(self.server_pubkey)])
-            .sign_with_keys(&self.keys)
-            .context("sign control command")?;
-        let mut publish_error = None;
-        for attempt in 1..=12 {
-            match relay_util::publish_and_confirm(
-                &self.client,
-                &self.relays,
-                &cmd_event,
-                "agent control cmd",
-            )
-            .await
-            {
-                Ok(()) => {
-                    publish_error = None;
-                    break;
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    if attempt < 12
-                        && (message.contains("relay not connected")
-                            || message.contains("timeout")
-                            || message.contains("Connection refused")
-                            || message.contains("no one was listening"))
-                    {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        continue;
-                    }
-                    publish_error = Some(err);
-                    break;
-                }
-            }
-        }
-        if let Some(err) = publish_error {
-            return Err(err);
-        }
-
-        let mut rx = self.client.notifications();
-        let timeout = Duration::from_secs(180);
-        let started = tokio::time::Instant::now();
-        let mut seen = HashSet::<EventId>::new();
-        loop {
-            if started.elapsed() > timeout {
-                self.client.unsubscribe_all().await;
-                anyhow::bail!("timed out waiting for remote control reply ({request_id})");
-            }
-
-            let notification = match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
-                Ok(Ok(notification)) => notification,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(_)) => {
-                    self.client.unsubscribe_all().await;
-                    anyhow::bail!("remote control notification channel closed");
-                }
-                Err(_) => continue,
-            };
-
-            let RelayPoolNotification::Event {
-                subscription_id,
-                event,
-                ..
-            } = notification
-            else {
-                continue;
-            };
-            if subscription_id != status_sub.val
-                && subscription_id != result_sub.val
-                && subscription_id != error_sub.val
-            {
-                continue;
-            }
-
-            let event = *event;
-            if !seen.insert(event.id) {
-                continue;
-            }
-            let decrypted = match nostr_sdk::nostr::nips::nip44::decrypt(
-                self.keys.secret_key(),
-                &self.server_pubkey,
-                event.content.as_str(),
-            ) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
-
-            if event.kind == Kind::Custom(CONTROL_STATUS_KIND) {
-                if let Ok(status) = serde_json::from_str::<AgentControlStatusEnvelope>(&decrypted)
-                    && status.request_id == request_id
-                {
-                    render_control_status(&status);
-                }
-                continue;
-            }
-
-            if event.kind == Kind::Custom(CONTROL_RESULT_KIND) {
-                if let Ok(result) = serde_json::from_str::<AgentControlResultEnvelope>(&decrypted)
-                    && result.request_id == request_id
-                {
-                    self.client.unsubscribe_all().await;
-                    return Ok(result);
-                }
-                continue;
-            }
-
-            if event.kind == Kind::Custom(CONTROL_ERROR_KIND)
-                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&decrypted)
-                && err.request_id == request_id
-            {
-                self.client.unsubscribe_all().await;
-                let hint = err.hint.unwrap_or_default();
-                let detail = err.detail.unwrap_or_default();
-                anyhow::bail!("remote control error {}: {} {}", err.code, hint, detail);
-            }
-        }
-    }
-}
-
-fn render_control_status(status: &AgentControlStatusEnvelope) {
-    let phase = match status.phase {
-        RuntimeLifecyclePhase::Queued => "queued",
-        RuntimeLifecyclePhase::Provisioning => "provisioning",
-        RuntimeLifecyclePhase::Ready => "ready",
-        RuntimeLifecyclePhase::Failed => "failed",
-        RuntimeLifecyclePhase::Teardown => "teardown",
-    };
-    if let Some(msg) = &status.message {
-        eprintln!("[control] {phase}: {msg}");
-    } else {
-        eprintln!("[control] {phase}");
-    }
-}
-
-fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<PublicKey> {
-    let raw = control
-        .control_server_pubkey
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            anyhow!(
-                "missing control server pubkey (use --control-server-pubkey or PIKA_AGENT_CONTROL_SERVER_PUBKEY)"
-            )
-        })?;
-    PublicKey::parse(raw).context("parse control server pubkey")
-}
-
-fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
-    match provider {
-        AgentProvider::Fly => ProviderKind::Fly,
-        AgentProvider::Microvm => ProviderKind::Microvm,
-    }
-}
-
-fn map_protocol_kind(_protocol: AgentProtocol) -> ProtocolKind {
-    ProtocolKind::Acp
-}
-
-fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
-    let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
-        MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
-        MicrovmSpawnVariant::PrebuiltCow => "prebuilt-cow".to_string(),
-    });
-    let params = MicrovmProvisionParams {
-        spawner_url: microvm.spawner_url.clone(),
-        spawn_variant,
-        flake_ref: microvm.flake_ref.clone(),
-        dev_shell: microvm.dev_shell.clone(),
-        cpu: microvm.cpu,
-        memory_mb: microvm.memory_mb,
-        ttl_seconds: microvm.ttl_seconds,
-    };
-    if microvm_params_provided(&params) {
-        Some(params)
-    } else {
-        None
-    }
-}
-
-fn new_control_request_id(prefix: &str) -> String {
-    format!(
-        "{prefix}-{:08x}{:08x}",
-        rand::random::<u32>(),
-        rand::random::<u32>()
-    )
-}
-
-async fn cmd_agent_new_remote(
-    cli: &Cli,
-    control: &AgentControlArgs,
-    request: &AgentNewRequest<'_>,
-) -> anyhow::Result<()> {
-    let name = request.name;
-    let provider = request.provider;
-    let runtime_class = request.runtime_class;
-    let json_mode = request.json;
-    let keep = request.keep;
-    let microvm = request.microvm;
-
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let kp_relay_urls = resolve_kp_relays(cli);
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
-
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let provision_result = control_client
-        .send_command(AgentControlCommand::Provision(ProvisionCommand {
-            provider: map_provider_kind(provider),
-            protocol: map_protocol_kind(AgentProtocol::Acp),
-            name: name.map(str::to_string),
-            runtime_class: runtime_class
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
-            relay_urls: relay_urls.clone(),
-            keep,
-            bot_secret_key_hex: None,
-            microvm: if provider == AgentProvider::Microvm {
-                map_microvm_control_params(microvm)
-            } else {
-                None
-            },
-        }))
-        .await?;
-    let runtime = provision_result.runtime;
-    let runtime_id = runtime.runtime_id.clone();
-
-    // --json mode: print provision result and exit (no interactive chat, no teardown)
-    if json_mode {
-        control_client.client.unsubscribe_all().await;
-        control_client.client.shutdown().await;
-        print(json!({
-            "provider": match provider {
-                AgentProvider::Fly => "fly",
-                AgentProvider::Microvm => "microvm",
-            },
-            "protocol": "acp",
-            "runtime_id": runtime.runtime_id,
-            "runtime_class": runtime.runtime_class,
-            "runtime": runtime,
-            "payload": provision_result.payload,
-        }));
-        return Ok(());
-    }
-
-    // Interactive mode: setup chat, run loop, teardown on exit or setup failure.
-    // All fallible steps after provisioning are wrapped so teardown always runs.
-    let session_result = run_interactive_session(
-        &keys,
-        &mdk,
-        &control_client,
-        &relay_urls,
-        &kp_relay_urls,
-        &runtime,
-    )
-    .await;
-
-    // Best-effort teardown unless --keep (runs on success, chat exit, AND setup failures)
-    if keep {
-        eprintln!("\n--keep: runtime {runtime_id} left alive.");
-    } else {
-        eprintln!("\nTearing down runtime {runtime_id}...");
-        match control_client
-            .send_command(AgentControlCommand::Teardown(TeardownCommand {
-                runtime_id: runtime_id.clone(),
-            }))
-            .await
-        {
-            Ok(_) => eprintln!("Runtime {runtime_id} torn down."),
-            Err(err) => {
-                eprintln!("Teardown failed: {err:#}");
-                eprintln!("Manual cleanup: pikachat agent teardown --runtime-id {runtime_id}");
-            }
-        }
-    }
-
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-
-    session_result
-}
-
-async fn run_interactive_session(
-    keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
-    control_client: &RemoteControlClient,
-    relay_urls: &[String],
-    kp_relay_urls: &[String],
-    runtime: &pika_agent_control_plane::RuntimeDescriptor,
-) -> anyhow::Result<()> {
-    let bot_pubkey_hex = runtime
-        .bot_pubkey
-        .as_deref()
-        .ok_or_else(|| anyhow!("runtime did not return a bot_pubkey; cannot open chat"))?;
-    let bot_pubkey =
-        PublicKey::parse(bot_pubkey_hex).context("parse bot pubkey from provision result")?;
-
-    eprintln!(
-        "Runtime {} provisioned. Connecting to chat...",
-        runtime.runtime_id
-    );
-
-    let relays = relay_util::parse_relay_urls(relay_urls)?;
-    let kp_relays = relay_util::parse_relay_urls(kp_relay_urls)?;
-
-    let kp_plan = agent::provider::KeyPackageWaitPlan {
-        progress_message: "Waiting for bot key package...",
-        timeout: Duration::from_secs(120),
-        fetch_timeout: Duration::from_secs(5),
-        retry_delay: Duration::from_secs(2),
-    };
-    let bot_kp = tokio::select! {
-        result = agent::session::wait_for_latest_key_package(
-            &control_client.client,
-            bot_pubkey,
-            &kp_relays,
-            kp_plan,
-        ) => result?,
-        _ = tokio::signal::ctrl_c() => {
-            anyhow::bail!("interrupted during key package wait");
-        }
-    };
-
-    let group_plan = agent::provider::GroupCreatePlan {
-        progress_message: "Creating MLS group...",
-        create_group_context: "create MLS group for agent chat",
-        build_welcome_context: "build welcome message",
-        welcome_publish_label: "agent welcome",
-    };
-    let group = tokio::select! {
-        result = agent::session::create_group_and_publish_welcomes(
-            keys,
-            mdk,
-            &control_client.client,
-            &relays,
-            bot_kp,
-            bot_pubkey,
-            group_plan,
-        ) => result?,
-        _ = tokio::signal::ctrl_c() => {
-            anyhow::bail!("interrupted during group creation");
-        }
-    };
-
-    eprintln!("Chat ready. Type a message and press Enter. Ctrl-C to exit.");
-
-    let chat_plan = agent::provider::ChatLoopPlan {
-        outbound_publish_label: "agent chat msg",
-        wait_for_pending_replies_on_eof: false,
-        eof_reply_timeout: Duration::from_secs(30),
-        projection_mode: pika_agent_protocol::projection::ProjectionMode::Chat,
-    };
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys,
-        mdk,
-        send_client: &control_client.client,
-        listen_client: &control_client.client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &group.mls_group_id,
-        nostr_group_id_hex: &group.nostr_group_id_hex,
-        plan: chat_plan,
-        seen_mls_event_ids: None,
-    })
-    .await
-}
-
-fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
-    match phase {
-        AgentRuntimePhase::Queued => RuntimeLifecyclePhase::Queued,
-        AgentRuntimePhase::Provisioning => RuntimeLifecyclePhase::Provisioning,
-        AgentRuntimePhase::Ready => RuntimeLifecyclePhase::Ready,
-        AgentRuntimePhase::Failed => RuntimeLifecyclePhase::Failed,
-        AgentRuntimePhase::Teardown => RuntimeLifecyclePhase::Teardown,
-    }
-}
-
-async fn cmd_agent_list_runtimes(
-    cli: &Cli,
-    provider: Option<AgentProvider>,
-    protocol: Option<AgentProtocol>,
-    phase: Option<AgentRuntimePhase>,
-    runtime_class: Option<&str>,
-    limit: Option<usize>,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::ListRuntimes(ListRuntimesCommand {
-            provider: provider.map(map_provider_kind),
-            protocol: protocol.map(map_protocol_kind),
-            lifecycle_phase: phase.map(map_agent_runtime_phase),
-            runtime_class: runtime_class
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
-            limit,
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "list_runtimes",
-        "count": result.payload.get("count").cloned().unwrap_or_else(|| json!(0)),
-        "runtimes": result.payload.get("runtimes").cloned().unwrap_or_else(|| json!([])),
-    }));
-    Ok(())
-}
-
-async fn cmd_agent_get_runtime(
-    cli: &Cli,
-    runtime_id: &str,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::GetRuntime(GetRuntimeCommand {
-            runtime_id: runtime_id.to_string(),
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "get_runtime",
-        "runtime": result.runtime,
-        "payload": result.payload,
-    }));
-    Ok(())
-}
-
-async fn cmd_agent_teardown(
-    cli: &Cli,
-    runtime_id: &str,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::Teardown(TeardownCommand {
-            runtime_id: runtime_id.to_string(),
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "teardown",
-        "runtime": result.runtime,
-        "payload": result.payload,
-    }));
-    Ok(())
+    serde_json::from_str::<serde_json::Value>(&body)
+        .with_context(|| format!("decode agent api response for {path}"))
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {
@@ -2747,273 +2035,80 @@ async fn cmd_daemon(
 mod tests {
     use super::*;
 
-    struct AgentListRuntimesParse {
-        provider: Option<AgentProvider>,
-        protocol: Option<AgentProtocol>,
-        phase: Option<AgentRuntimePhase>,
-        runtime_class: Option<String>,
-        limit: Option<usize>,
+    struct AgentHttpParse {
+        api_base_url: String,
+        token: String,
     }
 
-    struct AgentNewParse {
-        provider: AgentProvider,
-        runtime_class: Option<String>,
-        json: bool,
-        keep: bool,
-        microvm: AgentNewMicrovmArgs,
-    }
-
-    fn parse_agent_new(args: &[&str]) -> AgentNewParse {
+    fn parse_agent_new(args: &[&str]) -> AgentHttpParse {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd:
-                    AgentCommand::New {
-                        provider,
-                        runtime_class,
-                        json,
-                        keep,
-                        microvm,
-                        ..
-                    },
-            } => AgentNewParse {
-                provider,
-                runtime_class,
-                json,
-                keep,
-                microvm,
+                cmd: AgentCommand::New { http },
+            } => AgentHttpParse {
+                api_base_url: http.api_base_url,
+                token: http.token,
             },
             _ => panic!("expected agent new command"),
         }
     }
 
-    fn validate_agent_new_args(args: &[&str]) -> anyhow::Result<()> {
+    fn parse_agent_me(args: &[&str]) -> AgentHttpParse {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd:
-                    AgentCommand::New {
-                        provider,
-                        brain,
-                        microvm,
-                        ..
-                    },
-            } => validate_agent_new_request(provider, brain.as_deref(), &microvm),
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    fn parse_agent_new_control_mode(args: &[&str]) -> AgentControlMode {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { control, .. },
-            } => control.control_mode,
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    fn parse_agent_list_runtimes(args: &[&str]) -> AgentListRuntimesParse {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd:
-                    AgentCommand::ListRuntimes {
-                        provider,
-                        protocol,
-                        phase,
-                        runtime_class,
-                        limit,
-                        ..
-                    },
-            } => AgentListRuntimesParse {
-                provider,
-                protocol,
-                phase,
-                runtime_class,
-                limit,
+                cmd: AgentCommand::Me { http },
+            } => AgentHttpParse {
+                api_base_url: http.api_base_url,
+                token: http.token,
             },
-            _ => panic!("expected agent list-runtimes command"),
-        }
-    }
-
-    fn parse_agent_get_runtime(args: &[&str]) -> String {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::GetRuntime { runtime_id, .. },
-            } => runtime_id,
-            _ => panic!("expected agent get-runtime command"),
+            _ => panic!("expected agent me command"),
         }
     }
 
     #[test]
-    fn agent_new_microvm_flags_parse() {
+    fn agent_new_http_parse() {
         let parsed = parse_agent_new(&[
             "pikachat",
             "agent",
             "new",
-            "--provider",
-            "microvm",
-            "--spawner-url",
-            "http://127.0.0.1:8080",
-            "--spawn-variant",
-            "prebuilt-cow",
-            "--flake-ref",
-            ".#nixpi",
-            "--dev-shell",
-            "default",
-            "--cpu",
-            "1",
-            "--memory-mb",
-            "1024",
-            "--ttl-seconds",
-            "600",
-            "--keep",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--token",
+            "dev-token",
         ]);
-        assert_eq!(parsed.provider, AgentProvider::Microvm);
-        assert_eq!(parsed.runtime_class, None);
-        assert!(parsed.keep);
-        assert!(!parsed.json);
-        assert_eq!(
-            parsed.microvm.spawner_url.as_deref(),
-            Some("http://127.0.0.1:8080")
-        );
-        assert_eq!(
-            parsed.microvm.spawn_variant,
-            Some(MicrovmSpawnVariant::PrebuiltCow)
-        );
-        assert_eq!(parsed.microvm.flake_ref.as_deref(), Some(".#nixpi"));
-        assert_eq!(parsed.microvm.dev_shell.as_deref(), Some("default"));
-        assert_eq!(parsed.microvm.cpu, Some(1));
-        assert_eq!(parsed.microvm.memory_mb, Some(1024));
-        assert_eq!(parsed.microvm.ttl_seconds, Some(600));
+        assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
+        assert_eq!(parsed.token, "dev-token");
     }
 
     #[test]
-    fn agent_new_existing_fly_parse_unchanged() {
-        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
-        assert_eq!(parsed.provider, AgentProvider::Fly);
-        assert_eq!(parsed.runtime_class, None);
-        assert!(!parsed.keep);
-        assert!(!parsed.json);
-        assert!(parsed.microvm.provided_flag_names().is_empty());
+    fn agent_new_defaults_base_url() {
+        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--token", "dev-token"]);
+        assert_eq!(parsed.api_base_url, DEFAULT_AGENT_API_BASE_URL);
+        assert_eq!(parsed.token, "dev-token");
     }
 
     #[test]
-    fn agent_new_json_flag_parse() {
-        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly", "--json"]);
-        assert!(parsed.json);
-        assert!(!parsed.keep);
-    }
-
-    #[test]
-    fn microvm_flags_rejected_for_non_microvm_provider() {
-        let parsed = parse_agent_new(&[
+    fn agent_me_http_parse() {
+        let parsed = parse_agent_me(&[
             "pikachat",
             "agent",
-            "new",
-            "--provider",
-            "fly",
-            "--spawner-url",
-            "http://127.0.0.1:8080",
+            "me",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--token",
+            "dev-token",
         ]);
-        let err = validate_agent_new_request(parsed.provider, None, &parsed.microvm)
-            .expect_err("should fail");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("--spawner-url"));
-        assert!(msg.contains("--provider microvm"));
+        assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
+        assert_eq!(parsed.token, "dev-token");
     }
 
     #[test]
-    fn agent_new_brain_flag_is_explicitly_rejected() {
-        for value in ["pi", "acp"] {
-            let err = validate_agent_new_args(&["pikachat", "agent", "new", "--brain", value])
-                .expect_err("brain flag should be rejected");
-            let msg = format!("{err:#}");
-            assert!(msg.contains("--brain"));
-            assert!(msg.contains("ACP-only"));
-        }
-    }
-
-    #[test]
-    fn agent_new_control_mode_is_strict_remote_only() {
-        let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
-        assert_eq!(mode, AgentControlMode::Remote);
-
-        for invalid in ["auto", "local"] {
-            let err = Cli::try_parse_from(["pikachat", "agent", "new", "--control-mode", invalid])
-                .expect_err("legacy control mode should fail");
-            let msg = err.to_string();
-            assert!(msg.contains("invalid value"));
-        }
-    }
-
-    #[test]
-    fn agent_new_runtime_class_parse() {
-        let parsed = parse_agent_new(&[
-            "pikachat",
-            "agent",
-            "new",
-            "--provider",
-            "fly",
-            "--runtime-class",
-            "fly-us-east",
-        ]);
-        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
-    }
-
-    #[test]
-    fn agent_list_runtimes_parse() {
-        let parsed = parse_agent_list_runtimes(&[
-            "pikachat",
-            "agent",
-            "list-runtimes",
-            "--provider",
-            "fly",
-            "--protocol",
-            "acp",
-            "--phase",
-            "ready",
-            "--runtime-class",
-            "fly-us-east",
-            "--limit",
-            "5",
-        ]);
-        assert_eq!(parsed.provider, Some(AgentProvider::Fly));
-        assert_eq!(parsed.protocol, Some(AgentProtocol::Acp));
-        assert_eq!(parsed.phase, Some(AgentRuntimePhase::Ready));
-        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
-        assert_eq!(parsed.limit, Some(5));
-    }
-
-    #[test]
-    fn agent_get_runtime_parse() {
-        let runtime_id = parse_agent_get_runtime(&[
-            "pikachat",
-            "agent",
-            "get-runtime",
-            "--runtime-id",
-            "runtime-123",
-        ]);
-        assert_eq!(runtime_id, "runtime-123");
-    }
-
-    #[test]
-    fn agent_teardown_parse() {
-        let cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "teardown",
-            "--runtime-id",
-            "fly-abc123",
-        ])
-        .expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::Teardown { runtime_id, .. },
-            } => assert_eq!(runtime_id, "fly-abc123"),
-            _ => panic!("expected agent teardown command"),
+    fn legacy_agent_runtime_subcommands_are_removed() {
+        for legacy in ["list-runtimes", "get-runtime", "teardown"] {
+            let err = Cli::try_parse_from(["pikachat", "agent", legacy])
+                .expect_err("legacy runtime command should fail");
+            assert!(err.to_string().contains("unrecognized subcommand"));
         }
     }
 }

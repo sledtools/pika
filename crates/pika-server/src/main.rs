@@ -1,8 +1,6 @@
 mod admin;
 mod agent_api;
 mod agent_api_v1_contract;
-mod agent_clients;
-mod agent_control;
 mod listener;
 mod models;
 mod nostr_auth;
@@ -53,7 +51,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    agent_control::control_schema_healthcheck()?;
     agent_api_v1_contract::contract_healthcheck()?;
     admin::admin_healthcheck()?;
 
@@ -228,16 +225,6 @@ async fn main() -> anyhow::Result<()> {
             .await
             .expect("failed to create Ctrl+C shutdown signal");
     });
-
-    if let Some(control_runtime) = agent_control::AgentControlRuntime::from_env().await? {
-        tokio::spawn(async move {
-            if let Err(err) = control_runtime.run().await {
-                error!(error = %err, "agent control runtime exited");
-            }
-        });
-    } else {
-        info!("Agent control plane disabled (set PIKA_AGENT_CONTROL_ENABLED=1 to force enable)");
-    }
 
     if let Err(e) = graceful.await {
         error!("Shutdown error: {e}");

@@ -6294,8 +6294,6 @@ dependencies = [
  "mdk-storage-traits",
  "nostr-blossom",
  "nostr-sdk",
- "pika-agent-control-plane",
- "pika-agent-microvm",
  "pika-agent-protocol",
  "pika-marmot-runtime",
  "pika-relay-profiles",

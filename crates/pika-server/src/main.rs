@@ -1,3 +1,4 @@
+mod agent_api_v1_contract;
 mod agent_clients;
 mod agent_control;
 mod listener;
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     agent_control::control_schema_healthcheck()?;
+    agent_api_v1_contract::contract_healthcheck()?;
 
     // APNs configuration (optional — logs only when not configured)
     let apns_topic = std::env::var("APNS_TOPIC").unwrap_or_default();

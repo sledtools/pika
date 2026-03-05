@@ -69,11 +69,14 @@ pub(crate) struct AgentStateResponse {
     state: AgentAppState,
 }
 
-fn default_microvm_spawner_url_from_env() -> Option<String> {
-    std::env::var(MICROVM_SPAWNER_URL_ENV)
-        .ok()
-        .map(|raw| raw.trim().to_string())
+fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
+    raw.map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .with_context(|| format!("missing {MICROVM_SPAWNER_URL_ENV}"))
+}
+
+fn required_microvm_spawner_url_from_env() -> anyhow::Result<String> {
+    required_microvm_spawner_url(std::env::var(MICROVM_SPAWNER_URL_ENV).ok())
 }
 
 fn is_private_ipv4(ip: Ipv4Addr) -> bool {
@@ -215,8 +218,9 @@ fn generate_provisioning_bot_identity() -> anyhow::Result<ProvisioningBotIdentit
 }
 
 fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
+    let spawner_url = required_microvm_spawner_url_from_env()?;
     let params = MicrovmProvisionParams {
-        spawner_url: default_microvm_spawner_url_from_env(),
+        spawner_url: Some(spawner_url),
         ..MicrovmProvisionParams::default()
     };
     let resolved = resolve_params(&params, false);
@@ -435,6 +439,47 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_requester_npub_prefers_x_forwarded_host_over_host() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(27235), "")
+            .tags([
+                Tag::custom(
+                    TagKind::custom("u"),
+                    ["https://public.example.com/v1/agents/me"],
+                ),
+                Tag::custom(TagKind::custom("method"), ["GET"]),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign nip98 event");
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&event).expect("serialize event"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Nostr {encoded}").parse().expect("auth value"),
+        );
+        headers.insert(
+            header::HOST,
+            "127.0.0.1:8080".parse().expect("internal host value"),
+        );
+        headers.insert(
+            "x-forwarded-host",
+            "public.example.com".parse().expect("forwarded host value"),
+        );
+
+        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+            .expect("extract authenticated npub");
+        assert_eq!(
+            npub,
+            keys.public_key()
+                .to_bech32()
+                .expect("encode npub")
+                .to_lowercase()
+        );
+    }
+
+    #[test]
     fn generated_bot_identity_round_trips_npub_and_hex() {
         let identity = generate_provisioning_bot_identity().expect("generate identity");
         let parsed = PublicKey::parse(&identity.pubkey_npub).expect("parse npub");
@@ -443,8 +488,23 @@ mod tests {
     }
 
     #[test]
-    fn agent_api_healthcheck_validates_spawner_params() {
-        agent_api_healthcheck().expect("agent api healthcheck");
+    fn required_microvm_spawner_url_rejects_missing_value() {
+        let err = required_microvm_spawner_url(None).expect_err("missing env must fail");
+        assert!(err.to_string().contains(MICROVM_SPAWNER_URL_ENV));
+    }
+
+    #[test]
+    fn required_microvm_spawner_url_rejects_blank_value() {
+        let err =
+            required_microvm_spawner_url(Some("   ".to_string())).expect_err("blank env must fail");
+        assert!(err.to_string().contains(MICROVM_SPAWNER_URL_ENV));
+    }
+
+    #[test]
+    fn required_microvm_spawner_url_accepts_non_empty_value() {
+        let value = required_microvm_spawner_url(Some("http://127.0.0.1:8080".to_string()))
+            .expect("parse spawner url env value");
+        assert_eq!(value, "http://127.0.0.1:8080");
     }
 
     #[test]

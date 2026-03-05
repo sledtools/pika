@@ -75,6 +75,18 @@ fn endpoint(base: &str, path: &str) -> String {
     )
 }
 
+fn resolve_agent_api_url(
+    config_agent_api_url: Option<&str>,
+    env_agent_api_url: Option<&str>,
+) -> String {
+    for candidate in [config_agent_api_url, env_agent_api_url] {
+        if let Some(url) = candidate.map(str::trim).filter(|url| !url.is_empty()) {
+            return url.to_string();
+        }
+    }
+    DEFAULT_AGENT_API_URL.to_string()
+}
+
 fn build_nip98_authorization_header_with_keys(
     keys: &Keys,
     method: &Method,
@@ -250,27 +262,11 @@ impl AppCore {
     }
 
     fn agent_api_url(&self) -> String {
-        if let Some(url) = &self.config.agent_api_url {
-            if !url.trim().is_empty() {
-                return url.clone();
-            }
-        }
-        if let Some(url) = &self.config.notification_url {
-            if !url.trim().is_empty() {
-                return url.clone();
-            }
-        }
-        if let Ok(url) = std::env::var("PIKA_AGENT_API_URL") {
-            if !url.trim().is_empty() {
-                return url;
-            }
-        }
-        if let Ok(url) = std::env::var("PIKA_NOTIFICATION_URL") {
-            if !url.trim().is_empty() {
-                return url;
-            }
-        }
-        DEFAULT_AGENT_API_URL.to_string()
+        let env_agent_api_url = std::env::var("PIKA_AGENT_API_URL").ok();
+        resolve_agent_api_url(
+            self.config.agent_api_url.as_deref(),
+            env_agent_api_url.as_deref(),
+        )
     }
 
     pub(super) fn ensure_personal_agent(&mut self) {
@@ -530,6 +526,33 @@ mod tests {
         assert_eq!(
             endpoint("https://api.pikachat.org/", "/v1/agents/me"),
             "https://api.pikachat.org/v1/agents/me"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_api_url_prefers_config_value() {
+        let resolved = resolve_agent_api_url(
+            Some("https://api.pikachat.org"),
+            Some("https://env.example.com"),
+        );
+        assert_eq!(resolved, "https://api.pikachat.org");
+    }
+
+    #[test]
+    fn resolve_agent_api_url_uses_env_when_config_missing() {
+        let resolved = resolve_agent_api_url(None, Some("https://env.example.com"));
+        assert_eq!(resolved, "https://env.example.com");
+    }
+
+    #[test]
+    fn resolve_agent_api_url_falls_back_to_default_when_missing_or_blank() {
+        assert_eq!(
+            resolve_agent_api_url(None, None),
+            DEFAULT_AGENT_API_URL.to_string()
+        );
+        assert_eq!(
+            resolve_agent_api_url(Some("  "), Some("")),
+            DEFAULT_AGENT_API_URL.to_string()
         );
     }
 

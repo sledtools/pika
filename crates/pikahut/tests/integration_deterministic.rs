@@ -102,70 +102,79 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-fn spawn_mock_vm_spawner() -> Result<(String, thread::JoinHandle<Result<String>>)> {
+fn spawn_mock_vm_spawner(
+    expected_requests: usize,
+) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
     let addr = listener.local_addr().context("read mock vm-spawner addr")?;
     let url = format!("http://{}", addr);
 
-    let handle = thread::spawn(move || -> Result<String> {
-        let (mut stream, _) = listener.accept().context("accept spawner request")?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .context("set spawner read timeout")?;
-
-        let mut buf = Vec::new();
-        let mut header_end = None;
-        while header_end.is_none() {
-            let mut chunk = [0u8; 1024];
-            let n = stream.read(&mut chunk).context("read spawner headers")?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                header_end = Some(idx + 4);
-            }
-        }
-
-        let header_end = header_end.ok_or_else(|| anyhow!("missing HTTP header terminator"))?;
-        let header_text = String::from_utf8_lossy(&buf[..header_end]);
-        let request_line = header_text.lines().next().unwrap_or_default().to_string();
-
-        let mut content_length = 0usize;
-        for line in header_text.lines().skip(1) {
-            let mut parts = line.splitn(2, ':');
-            let name = parts.next().unwrap_or_default().trim();
-            let value = parts.next().unwrap_or_default().trim();
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.parse::<usize>().unwrap_or(0);
-            }
-        }
-
-        let already_body = buf.len().saturating_sub(header_end);
-        if content_length > already_body {
-            let mut remaining = vec![0u8; content_length - already_body];
+    let handle = thread::spawn(move || -> Result<Vec<String>> {
+        let mut request_lines = Vec::with_capacity(expected_requests);
+        for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().context("accept spawner request")?;
             stream
-                .read_exact(&mut remaining)
-                .context("read spawner request body")?;
-            buf.extend_from_slice(&remaining);
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .context("set spawner read timeout")?;
+
+            let mut buf = Vec::new();
+            let mut header_end = None;
+            while header_end.is_none() {
+                let mut chunk = [0u8; 1024];
+                let n = stream.read(&mut chunk).context("read spawner headers")?;
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = Some(idx + 4);
+                }
+            }
+
+            let header_end = header_end.ok_or_else(|| anyhow!("missing HTTP header terminator"))?;
+            let header_text = String::from_utf8_lossy(&buf[..header_end]);
+            let request_line = header_text.lines().next().unwrap_or_default().to_string();
+
+            let mut content_length = 0usize;
+            for line in header_text.lines().skip(1) {
+                let mut parts = line.splitn(2, ':');
+                let name = parts.next().unwrap_or_default().trim();
+                let value = parts.next().unwrap_or_default().trim();
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.parse::<usize>().unwrap_or(0);
+                }
+            }
+
+            let already_body = buf.len().saturating_sub(header_end);
+            if content_length > already_body {
+                let mut remaining = vec![0u8; content_length - already_body];
+                stream
+                    .read_exact(&mut remaining)
+                    .context("read spawner request body")?;
+                buf.extend_from_slice(&remaining);
+            }
+
+            let is_create_or_recover = request_line.starts_with("POST /vms ")
+                || request_line.starts_with("POST /vms/vm-test-1/recover ");
+            let (status, body) = if is_create_or_recover {
+                ("200 OK", r#"{"id":"vm-test-1","ip":"10.0.0.2"}"#)
+            } else {
+                ("404 Not Found", r#"{"error":"unexpected path"}"#)
+            };
+
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .context("write spawner response")?;
+            stream.flush().context("flush spawner response")?;
+
+            request_lines.push(request_line);
         }
 
-        let (status, body) = if request_line.starts_with("POST /vms ") {
-            ("200 OK", r#"{"id":"vm-test-1","ip":"10.0.0.2"}"#)
-        } else {
-            ("404 Not Found", r#"{"error":"unexpected path"}"#)
-        };
-
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream
-            .write_all(response.as_bytes())
-            .context("write spawner response")?;
-        stream.flush().context("flush spawner response")?;
-
-        Ok(request_line)
+        Ok(request_lines)
     });
 
     Ok((url, handle))
@@ -448,7 +457,7 @@ async fn agent_http_ensure_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -541,9 +550,12 @@ async fn agent_http_ensure_local() -> Result<()> {
         bail!("agent_id mismatch between ensure and /me");
     }
 
-    let spawner_request_line = spawner_thread
+    let spawner_request_lines = spawner_thread
         .join()
         .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_line = spawner_request_lines
+        .first()
+        .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
     if !spawner_request_line.starts_with("POST /vms ") {
         bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
     }
@@ -563,7 +575,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -642,11 +654,161 @@ async fn agent_http_cli_new_local() -> Result<()> {
         bail!("expected 200 from /v1/agents/me after CLI ensure, got body: {body}");
     }
 
-    let spawner_request_line = spawner_thread
+    let spawner_request_lines = spawner_thread
         .join()
         .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_line = spawner_request_lines
+        .first()
+        .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
     if !spawner_request_line.starts_with("POST /vms ") {
         bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_cli_new_me_recover_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-http-cli-new-me-recover-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
+    let owner_nsec = owner_keys.secret_key().to_secret_hex();
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
+
+    let runner = CommandRunner::new(&context);
+    let new_output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "new",
+                "--api-base-url",
+                &server_url,
+                "--nsec",
+                &owner_nsec,
+            ])
+            .capture_name("agent-http-cli-new-me-recover-new"),
+    )?;
+    let new_stdout = String::from_utf8(new_output.stdout).context("decode pikachat new stdout")?;
+    let new_json: Value = serde_json::from_str(new_stdout.trim()).context("decode new json")?;
+    if new_json.get("operation").and_then(Value::as_str) != Some("ensure") {
+        bail!("unexpected CLI new payload: {new_json}");
+    }
+
+    let me_output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "me",
+                "--api-base-url",
+                &server_url,
+                "--nsec",
+                &owner_nsec,
+            ])
+            .capture_name("agent-http-cli-new-me-recover-me"),
+    )?;
+    let me_stdout = String::from_utf8(me_output.stdout).context("decode pikachat me stdout")?;
+    let me_json: Value = serde_json::from_str(me_stdout.trim()).context("decode me json")?;
+    if me_json.get("operation").and_then(Value::as_str) != Some("me") {
+        bail!("unexpected CLI me payload: {me_json}");
+    }
+
+    let recover_output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "recover",
+                "--api-base-url",
+                &server_url,
+                "--nsec",
+                &owner_nsec,
+            ])
+            .capture_name("agent-http-cli-new-me-recover-recover"),
+    )?;
+    let recover_stdout =
+        String::from_utf8(recover_output.stdout).context("decode pikachat recover stdout")?;
+    let recover_json: Value =
+        serde_json::from_str(recover_stdout.trim()).context("decode recover json")?;
+    if recover_json.get("operation").and_then(Value::as_str) != Some("recover") {
+        bail!("unexpected CLI recover payload: {recover_json}");
+    }
+    let recover_state = recover_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if recover_state != "creating" {
+        bail!("expected CLI recover state=creating, got: {recover_state}");
+    }
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("POST /vms "))
+    {
+        bail!("expected vm-spawner POST /vms request, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("POST /vms/vm-test-1/recover "))
+    {
+        bail!(
+            "expected vm-spawner POST /vms/vm-test-1/recover request, got: {spawner_request_lines:?}"
+        );
     }
 
     context.mark_success();

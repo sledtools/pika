@@ -84,7 +84,8 @@ private struct ThumbnailImage: View {
                     .fill(Color(.systemGray5))
             }
         }
-        .aspectRatio(1, contentMode: .fill)
+        .frame(minWidth: 0, maxWidth: .infinity)
+        .aspectRatio(1, contentMode: .fit)
         .clipped()
         .task(id: url) {
             if let cached = ImageCache.shared.image(for: url) {

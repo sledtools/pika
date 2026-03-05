@@ -8,6 +8,11 @@ let
   serviceUser = dbName;
   serviceGroup = dbName;
   serviceStateDir = "/var/lib/pika-server";
+  startPikaServer = pkgs.writeShellScript "start-pika-server" ''
+    set -euo pipefail
+    export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/sha256sum ${serviceStateDir}/apns-key.p8 | ${pkgs.gawk}/bin/awk '{print $1}')"
+    exec ${pikaServerPkg}/bin/pika-server
+  '';
 in
 {
   imports = [
@@ -84,13 +89,6 @@ in
     path = "${serviceStateDir}/fcm-credentials.json";
   };
 
-  sops.secrets."agent_owner_token_map" = {
-    format = "yaml";
-    owner = serviceUser;
-    group = serviceGroup;
-    mode = "0400";
-  };
-
   sops.templates."pika-server-env" = {
     owner = serviceUser;
     group = serviceGroup;
@@ -107,8 +105,6 @@ in
       # vm-spawner is reached over private WireGuard/Tailscale network.
       PIKA_AGENT_MICROVM_SPAWNER_URL=http://pika-build.tailnet.ts.net:8080
       PIKA_ADMIN_BOOTSTRAP_NPUBS=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y,npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38,npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8
-      # Reuses legacy secret slot previously used for token map.
-      PIKA_ADMIN_SESSION_SECRET=${config.sops.placeholder."agent_owner_token_map"}
       RUST_LOG=info
     '';
   };
@@ -139,7 +135,7 @@ in
       Group = serviceGroup;
       WorkingDirectory = serviceStateDir;
       EnvironmentFile = [ config.sops.templates."pika-server-env".path ];
-      ExecStart = "${pikaServerPkg}/bin/pika-server";
+      ExecStart = "${startPikaServer}";
       Restart = "always";
       RestartSec = "2s";
       NoNewPrivileges = true;

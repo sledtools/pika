@@ -81,6 +81,7 @@
           src = serverPkgs.lib.sourceByRegex ./. [
             "Cargo\\.toml"
             "Cargo\\.lock"
+            "config(/.*)?"
             "crates(/.*)?"
             "rust(/.*)?"
             "cli(/.*)?"

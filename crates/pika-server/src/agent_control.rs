@@ -29,7 +29,7 @@ const DEFAULT_CONTROL_STATE_PATH: &str = ".pika-agent-control-state.json";
 const DEFAULT_CONTROL_LOOKBACK_SECS: u64 = 600;
 const DEFAULT_IDEMPOTENCY_MAX_ENTRIES: usize = 8192;
 const EVENT_DEDUP_WINDOW: usize = 8192;
-const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
+pub(crate) const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
 
 #[derive(Clone)]
 pub struct AgentControlRuntime {
@@ -276,7 +276,7 @@ fn env_u64(key: &str) -> Option<u64> {
         .and_then(|raw| raw.trim().parse::<u64>().ok())
 }
 
-fn default_microvm_spawner_url_from_env() -> Option<String> {
+pub(crate) fn default_microvm_spawner_url_from_env() -> Option<String> {
     std::env::var(MICROVM_SPAWNER_URL_ENV)
         .ok()
         .map(|raw| raw.trim().to_string())
@@ -293,7 +293,7 @@ fn is_private_ipv6(ip: Ipv6Addr) -> bool {
     ip.is_loopback() || ip.is_unicast_link_local() || ip.is_unique_local()
 }
 
-fn ensure_private_microvm_spawner_url(spawner_url: &str) -> anyhow::Result<()> {
+pub(crate) fn ensure_private_microvm_spawner_url(spawner_url: &str) -> anyhow::Result<()> {
     let uri: Uri = spawner_url.parse().with_context(|| {
         format!("{MICROVM_SPAWNER_URL_ENV} must be a valid URL or URI host, got: {spawner_url}")
     })?;

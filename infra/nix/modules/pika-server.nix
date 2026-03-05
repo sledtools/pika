@@ -84,6 +84,13 @@ in
     path = "${serviceStateDir}/fcm-credentials.json";
   };
 
+  sops.secrets."agent_owner_token_map" = {
+    format = "yaml";
+    owner = serviceUser;
+    group = serviceGroup;
+    mode = "0400";
+  };
+
   sops.templates."pika-server-env" = {
     owner = serviceUser;
     group = serviceGroup;
@@ -99,6 +106,7 @@ in
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
       # vm-spawner is reached over private WireGuard/Tailscale network.
       PIKA_AGENT_MICROVM_SPAWNER_URL=http://pika-build:8080
+      PIKA_AGENT_OWNER_TOKEN_MAP=${config.sops.placeholder."agent_owner_token_map"}
       RUST_LOG=info
     '';
   };

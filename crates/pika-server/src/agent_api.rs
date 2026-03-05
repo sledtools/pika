@@ -11,6 +11,9 @@ use rand::Rng;
 use serde::Serialize;
 
 use crate::agent_api_v1_contract::{AgentApiErrorCode, AgentAppState};
+use crate::agent_control::{
+    default_microvm_spawner_url_from_env, ensure_private_microvm_spawner_url,
+};
 use crate::models::agent_instance::{
     AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
 };
@@ -188,8 +191,13 @@ fn generate_agent_id() -> String {
 
 async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
-    let params = MicrovmProvisionParams::default();
+    let params = MicrovmProvisionParams {
+        spawner_url: default_microvm_spawner_url_from_env(),
+        ..MicrovmProvisionParams::default()
+    };
     let resolved = resolve_params(&params, false);
+    ensure_private_microvm_spawner_url(&resolved.spawner_url)
+        .context("validate private microvm spawner URL")?;
 
     let bot_keys = Keys::generate();
     let bot_pubkey = bot_keys.public_key().to_hex();
@@ -312,7 +320,9 @@ pub fn whitelist_healthcheck() -> anyhow::Result<()> {
         );
     }
 
-    if let Ok(map) = configured_owner_token_map() {
+    let raw_map = std::env::var(OWNER_TOKEN_MAP_ENV).unwrap_or_default();
+    if !raw_map.trim().is_empty() {
+        let map = parse_owner_token_map(&raw_map)?;
         for owner_npub in map.values() {
             let owner_hex = PublicKey::parse(owner_npub)?.to_hex();
             anyhow::ensure!(

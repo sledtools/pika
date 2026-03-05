@@ -17,6 +17,7 @@ diesel_migrations = "2.1.0"
 dotenv = "0.15.0"
 futures = "0.3.28"
 hex = "0.4"
+hmac = "0.12"
 nostr = "0.44"
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 pika-agent-control-plane = { path = "../pika-agent-control-plane" }
@@ -28,6 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = "1.0"
 serde_json = "1.0"
+sha2 = "0.10"
 tokio = { version = "1.12.0", features = ["full"] }
 a2 = "0.10"
 base64 = "0.22"

@@ -9,6 +9,7 @@ Required keys:
 - `apns_key_id` -- APNs Key ID from Apple Developer Portal
 - `apns_team_id` -- Apple Developer Team ID
 - `fcm_credentials` -- Contents of the Firebase service account JSON
+- `agent_owner_token_map` -- Legacy key slot now used as `PIKA_ADMIN_SESSION_SECRET` (store a high-entropy random secret)
 
 ## Setup
 

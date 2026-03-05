@@ -1,5 +1,6 @@
 use diesel_migrations::{embed_migrations, EmbeddedMigrations};
 
+pub mod agent_allowlist;
 pub mod agent_instance;
 pub mod group_subscription;
 mod schema;
@@ -10,6 +11,7 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::models::agent_allowlist::AgentAllowlistEntry;
     use crate::models::agent_instance::{
         AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
     };
@@ -53,6 +55,8 @@ mod test {
 
         conn.transaction::<_, anyhow::Error, _>(|conn| {
             diesel::delete(schema::agent_instances::table).execute(conn)?;
+            diesel::delete(schema::agent_allowlist_audit::table).execute(conn)?;
+            diesel::delete(schema::agent_allowlist::table).execute(conn)?;
             diesel::delete(schema::group_subscriptions::table).execute(conn)?;
             diesel::delete(schema::subscription_info::table).execute(conn)?;
             Ok(())
@@ -187,6 +191,31 @@ mod test {
             .expect("query active row")
             .expect("active row should exist");
         assert_eq!(active.agent_id, "agent-1");
+
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_agent_allowlist_upsert_and_active_lookup() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+
+        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("dogfood"), npub)
+            .expect("upsert allowlist");
+        assert_eq!(row.npub, npub);
+        assert!(row.active);
+
+        let active = AgentAllowlistEntry::is_active(&mut conn, npub).expect("active check");
+        assert!(active);
+
+        let row = AgentAllowlistEntry::set_active(&mut conn, npub, false, npub)
+            .expect("deactivate allowlist");
+        assert!(!row.active);
+        let active = AgentAllowlistEntry::is_active(&mut conn, npub).expect("active check");
+        assert!(!active);
 
         clear_database(&db_pool);
     }

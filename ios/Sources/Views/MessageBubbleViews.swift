@@ -470,16 +470,7 @@ private struct MessageBubble: View {
             } else if hasMedia {
                 mediaBubble(segments: segments)
             } else {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case let .markdown(text):
-                        markdownBubble(text: text)
-                    case let .pikaHtml(_, html):
-                        PikaHtmlView(html: html, htmlState: message.htmlState, onSendMessage: {
-                            onSendMessage($0, nil)
-                        })
-                    }
-                }
+                textBubble(segments: segments)
             }
 
             if hasReactions {
@@ -529,6 +520,8 @@ private struct MessageBubble: View {
         let fileMedia = message.media.filter { $0.kind != .image && $0.kind != .video }
 
         VStack(alignment: .leading, spacing: 0) {
+            replyPreviewSection
+
             // Visual media grid (images + videos)
             if !visualMedia.isEmpty {
                 mediaGrid(attachments: visualMedia)
@@ -686,24 +679,38 @@ private struct MessageBubble: View {
         .clipped()
     }
 
-    private func markdownBubble(text: String) -> some View {
+    @ViewBuilder
+    private var replyPreviewSection: some View {
+        if let replyToId = message.replyToMessageId {
+            ReplyPreviewCard(
+                replyToMessageId: replyToId,
+                target: replyTargetsById[replyToId],
+                isMine: message.isMine,
+                onTap: onJumpToMessage
+            )
+            .padding(.horizontal, 6)
+            .padding(.top, 6)
+        }
+    }
+
+    private func textBubble(segments: [MessageSegment]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let replyToId = message.replyToMessageId {
-                ReplyPreviewCard(
-                    replyToMessageId: replyToId,
-                    target: replyTargetsById[replyToId],
-                    isMine: message.isMine,
-                    onTap: onJumpToMessage
-                )
-                .padding(.horizontal, 6)
-                .padding(.top, 6)
-            }
+            replyPreviewSection
 
             VStack(alignment: .leading, spacing: 3) {
-                Markdown(text)
-                    .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    switch segment {
+                    case let .markdown(text):
+                        Markdown(text)
+                            .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case let .pikaHtml(_, html):
+                        PikaHtmlView(html: html, htmlState: message.htmlState, onSendMessage: {
+                            onSendMessage($0, nil)
+                        })
+                    }
+                }
 
                 Text(timestampText)
                     .font(.caption2)
@@ -713,6 +720,24 @@ private struct MessageBubble: View {
             .padding(.top, 8)
             .padding(.bottom, 6)
         }
+        .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
+        .clipShape(UnevenRoundedRectangleCompat(cornerRadii: bubbleRadii, style: .continuous))
+    }
+
+    private func markdownBubble(text: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Markdown(text)
+                .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(timestampText)
+                .font(.caption2)
+                .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
         .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
         .clipShape(UnevenRoundedRectangleCompat(cornerRadii: bubbleRadii, style: .continuous))
     }

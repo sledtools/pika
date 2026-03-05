@@ -398,7 +398,7 @@ private func screenView(
     case .chatMedia(let chatId):
         ChatMediaGalleryView(
             chatId: chatId,
-            items: state.mediaGallery ?? []
+            items: state.mediaGallery?.items ?? []
         )
         .onAppear {
             manager.dispatch(.loadMediaGallery(chatId: chatId))

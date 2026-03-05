@@ -7,7 +7,7 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use nostr_blossom::client::BlossomClient;
 use sha2::{Digest, Sha256};
 
-use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem};
+use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
 
 use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
@@ -1821,7 +1821,10 @@ impl AppCore {
             })
             .collect();
 
-        self.state.media_gallery = Some(items);
+        self.state.media_gallery = Some(MediaGalleryState {
+            chat_id: chat_id.to_string(),
+            items,
+        });
         self.emit_state();
     }
 }

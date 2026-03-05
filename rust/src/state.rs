@@ -22,7 +22,7 @@ pub struct AppState {
     pub toast: Option<String>,
     pub developer_mode: bool,
     pub voice_recording: Option<VoiceRecordingState>,
-    pub media_gallery: Option<Vec<MediaGalleryItem>>,
+    pub media_gallery: Option<MediaGalleryState>,
 }
 
 impl AppState {
@@ -406,6 +406,12 @@ pub enum ChatMediaKind {
     VoiceNote,
     Video,
     File,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct MediaGalleryState {
+    pub chat_id: String,
+    pub items: Vec<MediaGalleryItem>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

@@ -885,8 +885,9 @@ fn last_event_tag_id(tags: &Tags) -> Option<String> {
 }
 
 struct SeparatedMessages<'a> {
-    /// reaction_target_id → Vec<(emoji, sender_pubkey_hex)>
-    reaction_map: HashMap<String, Vec<(String, String)>>,
+    /// reaction_target_id → sender_pubkey_hex → (emoji, timestamp)
+    /// When a sender reacts multiple times, only the newest reaction is kept.
+    reaction_map: HashMap<String, HashMap<String, (String, u64)>>,
     hypernote_responses: Vec<HypernoteResponseMessage>,
     regular: Vec<&'a message_types::Message>,
 }
@@ -897,7 +898,7 @@ fn separate_messages<'a>(
     messages: &'a [message_types::Message],
     sender_names: &HashMap<String, String>,
 ) -> SeparatedMessages<'a> {
-    let mut reaction_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut reaction_map: HashMap<String, HashMap<String, (String, u64)>> = HashMap::new();
     let mut hypernote_responses: Vec<HypernoteResponseMessage> = Vec::new();
     let mut regular_messages = Vec::new();
     for m in messages {
@@ -909,10 +910,16 @@ fn separate_messages<'a>(
                     } else {
                         m.content.clone()
                     };
-                    reaction_map
-                        .entry(target_id)
-                        .or_default()
-                        .push((emoji, m.pubkey.to_hex()));
+                    let ts = m.created_at.as_secs();
+                    let sender_reactions = reaction_map.entry(target_id).or_default();
+                    sender_reactions
+                        .entry(m.pubkey.to_hex())
+                        .and_modify(|existing| {
+                            if ts > existing.1 {
+                                *existing = (emoji.clone(), ts);
+                            }
+                        })
+                        .or_insert((emoji, ts));
                 }
             }
             Some(AppMessageKind::HypernoteResponse) => {
@@ -946,7 +953,7 @@ fn build_chat_message(
     m: &super::message_types::Message,
     my_pubkey_hex: &str,
     sender_names: &HashMap<String, String>,
-    reaction_map: &HashMap<String, Vec<(String, String)>>,
+    reaction_map: &HashMap<String, HashMap<String, (String, u64)>>,
 ) -> ChatMessage {
     let id = m.id.to_hex();
     let sender_hex = m.pubkey.to_hex();
@@ -958,7 +965,7 @@ fn build_chat_message(
 
     let reactions = if let Some(rxns) = reaction_map.get(&id) {
         let mut emoji_counts: HashMap<String, (u32, bool)> = HashMap::new();
-        for (emoji, sender) in rxns {
+        for (sender, (emoji, _ts)) in rxns {
             let entry = emoji_counts.entry(emoji.clone()).or_insert((0, false));
             entry.0 += 1;
             if sender == my_pubkey_hex {
@@ -1746,7 +1753,7 @@ mod tests {
         assert!(separated.reaction_map.contains_key("target1"));
         let rxns = &separated.reaction_map["target1"];
         assert_eq!(rxns.len(), 1);
-        assert_eq!(rxns[0].0, "\u{2764}\u{FE0F}"); // "+" becomes heart
+        assert!(rxns.values().any(|(e, _)| e == "\u{2764}\u{FE0F}")); // "+" becomes heart
 
         // HypernoteResponse goes to hypernote_responses
         assert_eq!(separated.hypernote_responses.len(), 1);
@@ -1827,7 +1834,7 @@ mod tests {
         let separated = separate_messages(&msgs, &sender_names);
 
         let rxns = &separated.reaction_map["msg1"];
-        assert_eq!(rxns[0].0, "🔥"); // custom emoji preserved
+        assert!(rxns.values().any(|(e, _)| e == "🔥")); // custom emoji preserved
     }
 
     #[test]
@@ -1852,21 +1859,18 @@ mod tests {
         let sender_names = HashMap::new();
         let reaction_map = HashMap::from([(
             msg_id,
-            vec![
-                ("🔥".to_string(), "alice".to_string()),
-                ("🔥".to_string(), "bob".to_string()),
-                ("👍".to_string(), "alice".to_string()),
-            ],
+            HashMap::from([
+                ("alice".to_string(), ("🔥".to_string(), 100)),
+                ("bob".to_string(), ("🔥".to_string(), 101)),
+            ]),
         )]);
 
         let cm = build_chat_message(&msg, "someone_else", &sender_names, &reaction_map);
 
-        assert_eq!(cm.reactions.len(), 2);
+        assert_eq!(cm.reactions.len(), 1);
         let fire = cm.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
         assert_eq!(fire.count, 2);
         assert!(!fire.reacted_by_me);
-        let thumbs = cm.reactions.iter().find(|r| r.emoji == "👍").unwrap();
-        assert_eq!(thumbs.count, 1);
     }
 
     #[test]
@@ -1996,7 +2000,7 @@ mod tests {
         let separated = separate_messages(&msgs, &sender_names);
 
         let rxns = &separated.reaction_map["target1"];
-        assert_eq!(rxns[0].0, "\u{2764}\u{FE0F}"); // empty → heart
+        assert!(rxns.values().any(|(e, _)| e == "\u{2764}\u{FE0F}")); // empty → heart
     }
 
     #[test]
@@ -2045,5 +2049,46 @@ mod tests {
         let cm = build_chat_message(&msg, "other", &sender_names, &reaction_map);
 
         assert_eq!(cm.reply_to_message_id.as_deref(), Some("reply_target"));
+    }
+
+    #[test]
+    fn separate_messages_deduplicates_reactions_per_sender_newest_first() {
+        // MDK returns messages newest-first; the newer reaction should win.
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(vec!["e", "msg1"]).unwrap());
+        let msgs = vec![
+            make_stored_msg(1, Kind::Reaction, "👍", tags.clone(), 101), // newer, comes first
+            make_stored_msg(1, Kind::Reaction, "🔥", tags, 100),         // older
+        ];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        let rxns = &separated.reaction_map["msg1"];
+        assert_eq!(rxns.len(), 1, "each sender should only have one reaction");
+        let sender_hex = PublicKey::from_byte_array([1u8; 32]).to_hex();
+        assert_eq!(rxns[&sender_hex].0, "👍", "newest reaction should win");
+    }
+
+    #[test]
+    fn separate_messages_deduplicates_reactions_per_sender_oldest_first() {
+        // Even when messages arrive oldest-first, the newest reaction should win.
+        let mut tags = Tags::new();
+        tags.push(Tag::parse(vec!["e", "msg1"]).unwrap());
+        let msgs = vec![
+            make_stored_msg(1, Kind::Reaction, "🔥", tags.clone(), 100), // older, comes first
+            make_stored_msg(1, Kind::Reaction, "👍", tags, 101),         // newer
+        ];
+
+        let sender_names = HashMap::new();
+        let separated = separate_messages(&msgs, &sender_names);
+
+        let rxns = &separated.reaction_map["msg1"];
+        assert_eq!(rxns.len(), 1, "each sender should only have one reaction");
+        let sender_hex = PublicKey::from_byte_array([1u8; 32]).to_hex();
+        assert_eq!(
+            rxns[&sender_hex].0, "👍",
+            "newest reaction should win regardless of iteration order"
+        );
     }
 }

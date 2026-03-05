@@ -284,7 +284,7 @@ if [[ ${#relay_args[@]} -eq 0 ]]; then
 fi
 
 bin=""
-if [[ -n "${PIKA_PIKACHAT_BIN:-}" ]]; then
+if [[ -n "${PIKA_PIKACHAT_BIN:-}" && -x "${PIKA_PIKACHAT_BIN}" ]]; then
   bin="${PIKA_PIKACHAT_BIN}"
 elif command -v pikachat >/dev/null 2>&1; then
   bin="pikachat"
@@ -772,6 +772,11 @@ mod tests {
             "autostart script must keep state under /root for restart durability"
         );
         assert!(script.contains("--state-dir \"$STATE_DIR\""));
+        assert!(script.contains("PIKA_PIKACHAT_BIN"));
+        assert!(
+            !script.contains("marmotd"),
+            "autostart script must only resolve pikachat daemon binary"
+        );
     }
 
     #[test]

@@ -11,8 +11,8 @@ Exact build target (what will exist when done):
 `POST /v1/agents/ensure`, `GET /v1/agents/me`, `POST /v1/agents/me/recover`.
 2. One-agent-per-user invariant:
 exactly one active agent per `npub`; duplicate create while `creating` or `ready` is rejected.
-3. Strict fixed whitelist:
-only three npubs (Justin, Ben, Paul) are allowed.
+3. Managed allowlist operations:
+allowlist managed by admin data path (not hardcoded 3-user config).
 4. Durable home:
 per-agent host-backed path mounted as guest `/root`, with `/workspace` resolving to `/root`.
 5. Marmot/MLS durability:
@@ -26,7 +26,7 @@ reboot first, then recreate VM while reusing the same persistent `/root` backing
 
 Exact approach (how it will be accomplished technically):
 1. Keep `vm-spawner` as lifecycle backend and `pika-server` as ownership/auth/control layer.
-2. Use simple MVP auth via existing app/backend token -> `npub` mapping plus fixed 3-user whitelist.
+2. Use NIP-98 auth plus DB-backed allowlist gating managed through admin tools.
 3. Keep user-facing lifecycle state minimal (`creating`, `ready`, `error`).
 4. Validate success through real app usage and Marmot messaging by all three dev users.
 
@@ -41,8 +41,8 @@ Acceptance criteria: `pika-server` can call `vm-spawner` over WireGuard/private 
 3. Add control-plane schema and one-agent-per-user DB constraint.
 Acceptance criteria: DB stores `owner_npub`, `agent_id`, `vm_id`, phase, timestamps; only one active agent per `owner_npub` is allowed.
 
-4. Implement strict fixed whitelist gate for exactly three npubs.
-Acceptance criteria: only Justin/Ben/Paul npubs can call ensure/get/recover; all others receive `403 not_whitelisted`.
+4. Implement admin-managed allowlist gate.
+Acceptance criteria: admins can add/remove allowlisted npubs without redeploy; only active allowlist npubs can call ensure/get/recover; others receive `403 not_whitelisted`.
 
 5. Implement `POST /v1/agents/ensure` idempotent flow.
 Acceptance criteria: first call provisions; subsequent calls while active do not create another VM and return stable `agent_exists` behavior.

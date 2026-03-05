@@ -3,6 +3,9 @@
 Why this is being done:
 We need a fast internal checkpoint for the 1-click personal agent flow before opening to external users.
 
+Decision update (2026-03-04):
+Restic backup setup is explicitly deferred and is non-blocking for current dogfood/prod validation.
+
 Intent and expected outcome:
 Justin, Ben, and Paul can each create exactly one long-lived personal agent VM from the app, chat with it over Marmot, and keep state across restart/recovery.
 
@@ -17,8 +20,8 @@ allowlist managed by admin data path (not hardcoded 3-user config).
 per-agent host-backed path mounted as guest `/root`, with `/workspace` resolving to `/root`.
 5. Marmot/MLS durability:
 `pikachat` state under `/root` so restart/recover preserves chat context.
-6. Backups:
-host-managed restic backup to Cloudflare R2 every 10 minutes.
+6. Backups (deferred; non-blocking for v1):
+host-managed restic backup to Cloudflare R2 is tracked for post-v1 hardening and does not gate rollout/testing now.
 7. Recovery:
 reboot first, then recreate VM while reusing the same persistent `/root` backing path.
 8. Private control transport:
@@ -53,8 +56,8 @@ Acceptance criteria: each VM mounts dedicated host persistent home at `/root`; `
 7. Enforce Marmot/MLS state path under `/root`.
 Acceptance criteria: `pikachat` state directory is under `/root`; encrypted chat context remains valid after restart.
 
-8. Add host-managed 10-minute restic backups to Cloudflare R2.
-Acceptance criteria: timer runs every 10 minutes; operator can restore one sample agent home from backup.
+8. Defer host-managed 10-minute restic backups to Cloudflare R2.
+Acceptance criteria: explicitly out of v1 rollout gate; absence of restic does not block deploy, whitelist validation, or app flow testing.
 
 9. Implement `POST /v1/agents/me/recover` (reboot, then recreate-with-same-home fallback).
 Acceptance criteria: recover reboots unhealthy VM; if still unhealthy, VM is recreated and attached to same persistent home path.

@@ -103,7 +103,9 @@ in
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
       # vm-spawner is reached over private WireGuard/Tailscale network.
-      PIKA_AGENT_MICROVM_SPAWNER_URL=http://pika-build.tailnet.ts.net:8080
+      # Use the builder's stable tailnet IPv4 directly because MagicDNS
+      # names may not resolve on this host.
+      PIKA_AGENT_MICROVM_SPAWNER_URL=http://100.81.250.67:8080
       PIKA_ADMIN_BOOTSTRAP_NPUBS=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y,npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38,npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8
       RUST_LOG=info
     '';

@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vmSpawnerPkg, piAgentPkg, ... }:
+{ config, lib, pkgs, vmSpawnerPkg, piAgentPkg, pikachatPkg, ... }:
 
 let
   microvmBridge = "microbr";
@@ -128,6 +128,7 @@ in
         "VM_RUNTIME_ARTIFACTS_HOST_DIR=/data/microvm-shared/artifacts"
         "VM_RUNTIME_ARTIFACTS_GUEST_MOUNT=/opt/runtime-artifacts"
         "VM_RUNTIME_ARTIFACTS=pi=${piAgentPkg}"
+        "VM_PIKACHAT_BIN=${pikachatPkg}/bin/pikachat"
         "VM_SPAWN_VARIANT_DEFAULT=prebuilt-cow"
         "VM_PREWARM_ENABLED=true"
         "VM_PREWARM_FLAKE_REF=github:sledtools/pika"

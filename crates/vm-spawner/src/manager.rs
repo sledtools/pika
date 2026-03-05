@@ -1063,6 +1063,16 @@ fn env_existing_path(name: &str) -> Option<PathBuf> {
     }
 }
 
+fn env_non_empty(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn resolve_agent_daemon_bin() -> Option<PathBuf> {
     if let Some(path) = env_existing_path("VM_PIKACHAT_BIN") {
         return Some(path);
@@ -1141,11 +1151,24 @@ fn write_runtime_metadata(
         "PIKA_RUNTIME_ARTIFACTS_GUEST={}\n",
         shell_quote(&runtime_artifacts_guest_mount.display().to_string()),
     ));
+    let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
+    env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
     if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
             "PIKA_PIKACHAT_BIN={}\n",
             shell_quote(&path.display().to_string())
         ));
+    }
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "PI_MODEL",
+        "PI_ADAPTER_BASE_URL",
+        "PI_ADAPTER_TOKEN",
+    ] {
+        if let Some(value) = env_non_empty(key) {
+            env_file.push_str(&format!("{key}={}\n", shell_quote(&value)));
+        }
     }
     fs::write(metadata_dir.join("env"), env_file)
         .with_context(|| format!("write {}", metadata_dir.join("env").display()))?;

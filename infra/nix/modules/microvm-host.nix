@@ -113,6 +113,7 @@ in
       Type = "simple";
       User = "root";
       Group = "root";
+      EnvironmentFile = [ "-/etc/microvm-agent.env" ];
       Environment = [
         "VM_SPAWNER_BIND=0.0.0.0:8080"
         "VM_BRIDGE=${microvmBridge}"
@@ -168,6 +169,12 @@ in
 
     2. Access vm-spawner over private tailnet:
        curl http://pika-build:8080/healthz
+
+    3. Optional agent runtime secrets/env (host-side):
+       /etc/microvm-agent.env
+       Example:
+         ANTHROPIC_API_KEY=...
+         PI_MODEL=claude-sonnet-4-6
 
     Bridge network: ${microvmCidr}
     microvm.nix state dir: ${spawnerStateDir} -> ${spawnerStateBackingDir}

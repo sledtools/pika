@@ -319,7 +319,11 @@ from urllib import request as urlrequest
 owner = os.environ.get("PIKA_OWNER_PUBKEY", "").strip().lower()
 relay_env = os.environ.get("PIKA_RELAY_URLS", "")
 relays = [relay.strip() for relay in relay_env.split(",") if relay.strip()]
-pi_cmd = os.environ.get("PIKA_PI_CMD", "pi -p").strip()
+runtime_artifacts_guest = os.environ.get("PIKA_RUNTIME_ARTIFACTS_GUEST", "/opt/runtime-artifacts").strip()
+if not runtime_artifacts_guest:
+    runtime_artifacts_guest = "/opt/runtime-artifacts"
+default_pi_cmd = f"{runtime_artifacts_guest}/pi/bin/pi -p"
+pi_cmd = os.environ.get("PIKA_PI_CMD", "").strip() or default_pi_cmd
 pi_timeout_ms = int(os.environ.get("PIKA_PI_TIMEOUT_MS", "120000"))
 pi_history_turns = int(os.environ.get("PIKA_PI_HISTORY_TURNS", "8"))
 pi_adapter_base_url = os.environ.get("PI_ADAPTER_BASE_URL", "").strip().rstrip("/")
@@ -752,6 +756,8 @@ mod tests {
             .expect("bridge script");
         assert!(bridge_script.contains("publish_keypackage"));
         assert!(bridge_script.contains("run_pi"));
+        assert!(bridge_script.contains("PIKA_RUNTIME_ARTIFACTS_GUEST"));
+        assert!(bridge_script.contains("/pi/bin/pi -p"));
         assert!(!bridge_script.contains("microvm> {content}"));
         let identity_text = value["guest_autostart"]["files"][AUTOSTART_IDENTITY_PATH]
             .as_str()

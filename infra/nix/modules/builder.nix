@@ -98,11 +98,71 @@ in
     mode = "0400";
   };
 
+  sops.secrets."microvm_backup_env" = {
+    format = "yaml";
+    owner = "root";
+    group = "root";
+    mode = "0400";
+    path = "/run/secrets/microvm-backup.env";
+  };
+
   services.nix-serve = {
     enable = true;
     bindAddress = "0.0.0.0";
     port = cachePort;
     secretKeyFile = config.sops.secrets."cache_signing_key".path;
+  };
+
+  systemd.services.microvm-home-backup = {
+    description = "Backup microVM homes to Cloudflare R2 with restic";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+
+    serviceConfig = {
+      Type = "oneshot";
+      EnvironmentFile = [ config.sops.secrets."microvm_backup_env".path ];
+    };
+
+    path = with pkgs; [ bash coreutils findutils hostname restic ];
+    script = ''
+      set -euo pipefail
+
+      : "''${AWS_ACCESS_KEY_ID:?missing AWS_ACCESS_KEY_ID in microvm backup env}"
+      : "''${AWS_SECRET_ACCESS_KEY:?missing AWS_SECRET_ACCESS_KEY in microvm backup env}"
+      : "''${R2_ACCOUNT_ID:?missing R2_ACCOUNT_ID in microvm backup env}"
+      : "''${R2_BUCKET:?missing R2_BUCKET in microvm backup env}"
+      : "''${RESTIC_PASSWORD:?missing RESTIC_PASSWORD in microvm backup env}"
+
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY RESTIC_PASSWORD
+      export RESTIC_REPOSITORY="s3:https://''${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/''${R2_BUCKET}"
+
+      homes=()
+      while IFS= read -r home; do
+        homes+=("$home")
+      done < <(find /var/lib/microvms -mindepth 2 -maxdepth 2 -type d -name home | sort)
+
+      if [ "''${#homes[@]}" -eq 0 ]; then
+        echo "no microvm homes found under /var/lib/microvms; skipping backup"
+        exit 0
+      fi
+
+      if ! restic snapshots --json >/dev/null 2>&1; then
+        restic init
+      fi
+
+      restic backup "''${homes[@]}" --tag microvm-home --host "$(hostname)"
+    '';
+  };
+
+  systemd.timers.microvm-home-backup = {
+    description = "Run microVM home restic backup every 10 minutes";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      Unit = "microvm-home-backup.service";
+      OnBootSec = "5m";
+      OnUnitActiveSec = "10m";
+      Persistent = true;
+    };
   };
 
   # ── Caddy: reverse proxy for pika-news ─────────────────────────────────
@@ -162,6 +222,46 @@ in
     dates = "weekly";
     options = "--delete-older-than 60d";
   };
+
+  environment.systemPackages = with pkgs; [
+    restic
+    (writeShellScriptBin "microvm-home-restore" ''
+      set -euo pipefail
+
+      if [ "$#" -lt 1 ]; then
+        echo "usage: microvm-home-restore <vm-id> [snapshot]" >&2
+        exit 2
+      fi
+
+      VM_ID="$1"
+      SNAPSHOT="${2:-latest}"
+      ENV_FILE="${config.sops.secrets."microvm_backup_env".path}"
+
+      if [ ! -f "$ENV_FILE" ]; then
+        echo "missing backup env file: $ENV_FILE" >&2
+        exit 1
+      fi
+
+      set -a
+      . "$ENV_FILE"
+      set +a
+
+      : "''${AWS_ACCESS_KEY_ID:?missing AWS_ACCESS_KEY_ID in backup env}"
+      : "''${AWS_SECRET_ACCESS_KEY:?missing AWS_SECRET_ACCESS_KEY in backup env}"
+      : "''${R2_ACCOUNT_ID:?missing R2_ACCOUNT_ID in backup env}"
+      : "''${R2_BUCKET:?missing R2_BUCKET in backup env}"
+      : "''${RESTIC_PASSWORD:?missing RESTIC_PASSWORD in backup env}"
+
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY RESTIC_PASSWORD
+      export RESTIC_REPOSITORY="s3:https://''${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/''${R2_BUCKET}"
+
+      TARGET="/tmp/microvm-restore-$VM_ID-$(date +%Y%m%d%H%M%S)"
+      INCLUDE_PATH="/var/lib/microvms/$VM_ID/home"
+      mkdir -p "$TARGET"
+      restic restore "$SNAPSHOT" --target "$TARGET" --include "$INCLUDE_PATH"
+      echo "restored $INCLUDE_PATH to $TARGET"
+    '')
+  ];
 
   # ── tmpfiles ───────────────────────────────────────────────────────────
   systemd.tmpfiles.rules = [

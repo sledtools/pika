@@ -55,3 +55,8 @@ sops updatekeys infra/secrets/builder-cache-key.yaml
 The `pika-build` microVM host stack (`vm-spawner` + `microvm.nix`) does not currently
 require an additional sops secret for agent LLM keys. The `pika-cli agent new --provider microvm`
 flow forwards provider keys directly from the local environment to the guest process.
+
+MicroVM home backups use `restic` with a host-local env file instead of sops:
+
+- `/etc/microvm-backup.env`
+- Example template is installed at `/etc/microvm-backup.env.example`

@@ -238,7 +238,8 @@ pub fn microvm_autostart_script() -> &'static str {
     r#"#!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="/workspace/pika-agent/state"
+# Keep Marmot/MLS state under /root so VM restart/recovery preserves context.
+STATE_DIR="/root/pika-agent/state"
 mkdir -p "$STATE_DIR"
 
 if [[ -z "${PIKA_OWNER_PUBKEY:-}" ]]; then
@@ -745,6 +746,16 @@ mod tests {
             identity_json["public_key_hex"],
             serde_json::Value::String(bot_keys.public_key().to_hex())
         );
+    }
+
+    #[test]
+    fn autostart_script_uses_root_backed_state_dir() {
+        let script = microvm_autostart_script();
+        assert!(
+            script.contains("STATE_DIR=\"/root/pika-agent/state\""),
+            "autostart script must keep state under /root for restart durability"
+        );
+        assert!(script.contains("--state-dir \"$STATE_DIR\""));
     }
 
     #[test]

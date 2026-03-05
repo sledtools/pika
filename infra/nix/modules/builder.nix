@@ -228,7 +228,7 @@ in
       fi
 
       VM_ID="$1"
-      SNAPSHOT="${2:-latest}"
+      SNAPSHOT="''${2:-latest}"
       ENV_FILE="${microvmBackupEnvFile}"
 
       if [ ! -f "$ENV_FILE" ]; then

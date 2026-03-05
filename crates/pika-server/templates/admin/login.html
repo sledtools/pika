@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pika Admin Login</title>
+</head>
+<body style="font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; max-width: 700px; margin: 32px auto; padding: 0 16px;">
+  <h1>Pika Admin</h1>
+  <p>Sign in with a Nostr extension (NIP-07).</p>
+  <button id="login">Sign in with Nostr</button>
+  {% if dev_mode %}
+  <form method="post" action="/admin/dev-login" style="margin-top:12px">
+    <button type="submit">Dev Login (PIKA_TEST_NSEC)</button>
+  </form>
+  {% endif %}
+  <p id="status" style="margin-top:10px;color:#555"></p>
+  <script>
+  (function() {
+    const btn = document.getElementById('login');
+    const status = document.getElementById('status');
+    async function login() {
+      if (!window.nostr) {
+        alert('No Nostr extension detected.');
+        return;
+      }
+      try {
+        btn.disabled = true;
+        status.textContent = 'Requesting challenge...';
+        const challengeRes = await fetch('/admin/challenge', { method: 'POST' });
+        if (!challengeRes.ok) throw new Error('challenge request failed');
+        const { challenge } = await challengeRes.json();
+
+        status.textContent = 'Signing event...';
+        const pubkey = await window.nostr.getPublicKey();
+        const event = {
+          kind: 27235,
+          created_at: Math.floor(Date.now()/1000),
+          tags: [['u', window.location.origin + '/admin/verify'], ['method', 'POST']],
+          content: challenge,
+          pubkey
+        };
+        const signed = await window.nostr.signEvent(event);
+
+        status.textContent = 'Verifying...';
+        const verifyRes = await fetch('/admin/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: signed })
+        });
+        if (!verifyRes.ok) {
+          const body = await verifyRes.json().catch(() => ({}));
+          throw new Error(body.error || 'verify failed');
+        }
+        window.location.assign('/admin');
+      } catch (err) {
+        btn.disabled = false;
+        status.textContent = '';
+        alert('Login failed: ' + (err.message || err));
+      }
+    }
+    btn.addEventListener('click', login);
+  })();
+  </script>
+</body>
+</html>

@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
 use anyhow::Context;
+use askama::Template;
 use axum::extract::{Form, Path};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::models::agent_allowlist::AgentAllowlistEntry;
-use crate::nostr_auth::verify_nip98_event;
+use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
 use crate::State;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -68,6 +69,30 @@ pub struct AllowlistUpsertForm {
 #[derive(Debug, Deserialize)]
 pub struct AllowlistToggleForm {
     active: String,
+}
+
+#[derive(Clone, Debug)]
+struct AdminAllowlistRow {
+    npub: String,
+    active: bool,
+    note: String,
+    updated_by: String,
+    updated_at: String,
+    next_active: String,
+    action_label: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin/login.html")]
+struct LoginTemplate {
+    dev_mode: bool,
+}
+
+#[derive(Template)]
+#[template(path = "admin/dashboard.html")]
+struct DashboardTemplate<'a> {
+    current_admin_npub: &'a str,
+    rows: &'a [AdminAllowlistRow],
 }
 
 impl AdminConfig {
@@ -289,148 +314,15 @@ fn parse_form_bool(value: &str) -> anyhow::Result<bool> {
     }
 }
 
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
-fn render_login_html(dev_mode: bool) -> String {
-    let dev_button = if dev_mode {
-        r#"<form method=\"post\" action=\"/admin/dev-login\" style=\"margin-top:12px\"><button type=\"submit\">Dev Login (PIKA_TEST_NSEC)</button></form>"#
-    } else {
-        ""
-    };
-
-    format!(
-        r#"<!doctype html>
-<html>
-<head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>Pika Admin Login</title>
-</head>
-<body style=\"font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; max-width: 700px; margin: 32px auto; padding: 0 16px;\">
-  <h1>Pika Admin</h1>
-  <p>Sign in with a Nostr extension (NIP-07).</p>
-  <button id=\"login\">Sign in with Nostr</button>
-  {dev_button}
-  <p id=\"status\" style=\"margin-top:10px;color:#555\"></p>
-  <script>
-  (function() {{
-    const btn = document.getElementById('login');
-    const status = document.getElementById('status');
-    async function login() {{
-      if (!window.nostr) {{
-        alert('No Nostr extension detected.');
-        return;
-      }}
-      try {{
-        btn.disabled = true;
-        status.textContent = 'Requesting challenge...';
-        const challengeRes = await fetch('/admin/challenge', {{ method: 'POST' }});
-        if (!challengeRes.ok) throw new Error('challenge request failed');
-        const {{ challenge }} = await challengeRes.json();
-
-        status.textContent = 'Signing event...';
-        const pubkey = await window.nostr.getPublicKey();
-        const event = {{
-          kind: 27235,
-          created_at: Math.floor(Date.now()/1000),
-          tags: [['u', window.location.origin + '/admin/verify'], ['method', 'POST']],
-          content: challenge,
-          pubkey
-        }};
-        const signed = await window.nostr.signEvent(event);
-
-        status.textContent = 'Verifying...';
-        const verifyRes = await fetch('/admin/verify', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ event: signed }})
-        }});
-        if (!verifyRes.ok) {{
-          const body = await verifyRes.json().catch(() => ({{}}));
-          throw new Error(body.error || 'verify failed');
-        }}
-        window.location.assign('/admin');
-      }} catch (err) {{
-        btn.disabled = false;
-        status.textContent = '';
-        alert('Login failed: ' + (err.message || err));
-      }}
-    }}
-    btn.addEventListener('click', login);
-  }})();
-  </script>
-</body>
-</html>"#
-    )
-}
-
-fn render_admin_html(current_admin_npub: &str, rows: &[AgentAllowlistEntry]) -> String {
-    let mut row_html = String::new();
-    for row in rows {
-        let (next_active, label) = if row.active {
-            ("0", "Disable")
-        } else {
-            ("1", "Enable")
-        };
-        row_html.push_str(&format!(
-            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td><form method=\"post\" action=\"/admin/allowlist/{}/toggle\"><input type=\"hidden\" name=\"active\" value=\"{}\" /><button type=\"submit\">{}</button></form></td></tr>",
-            html_escape(&row.npub),
-            if row.active { "active" } else { "inactive" },
-            html_escape(row.note.as_deref().unwrap_or("")),
-            html_escape(&row.updated_by),
-            row.updated_at,
-            html_escape(&row.npub),
-            next_active,
-            label,
-        ));
-    }
-
-    format!(
-        r#"<!doctype html>
-<html>
-<head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>Pika Admin</title>
-</head>
-<body style=\"font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; margin: 24px;\">
-  <h1>Agent Allowlist</h1>
-  <p>Signed in as <code>{}</code></p>
-  <form method=\"post\" action=\"/admin/logout\" style=\"margin-bottom: 20px;\">
-    <button type=\"submit\">Logout</button>
-  </form>
-
-  <h2>Add / Update</h2>
-  <form method=\"post\" action=\"/admin/allowlist\" style=\"display:grid; gap:8px; max-width: 620px;\">
-    <label>Npub <input name=\"npub\" required style=\"width:100%\" /></label>
-    <label>Note <input name=\"note\" style=\"width:100%\" /></label>
-    <label><input type=\"checkbox\" name=\"active\" checked /> Active</label>
-    <button type=\"submit\">Save</button>
-  </form>
-
-  <h2 style=\"margin-top:24px\">Current Entries</h2>
-  <table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse; width:100%; max-width:1200px\">
-    <thead>
-      <tr><th>Npub</th><th>Status</th><th>Note</th><th>Updated By</th><th>Updated At (UTC)</th><th>Action</th></tr>
-    </thead>
-    <tbody>{}</tbody>
-  </table>
-</body>
-</html>"#,
-        html_escape(current_admin_npub),
-        row_html
-    )
-}
-
 fn admin_config(state: &State) -> &AdminConfig {
     &state.admin_config
+}
+
+fn render_template(template: &impl Template) -> Result<Response, (StatusCode, String)> {
+    let html = template
+        .render()
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(axum::response::Html(html).into_response())
 }
 
 pub async fn login_page(
@@ -443,7 +335,9 @@ pub async fn login_page(
     {
         return Ok(Redirect::to("/admin").into_response());
     }
-    Ok(Html(render_login_html(admin_config(&state).dev_mode)).into_response())
+    render_template(&LoginTemplate {
+        dev_mode: admin_config(&state).dev_mode,
+    })
 }
 
 pub async fn challenge(
@@ -457,6 +351,7 @@ pub async fn challenge(
 
 pub async fn verify(
     Extension(state): Extension<State>,
+    headers: HeaderMap,
     Json(payload): Json<VerifyRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     let event: nostr_sdk::prelude::Event =
@@ -467,8 +362,20 @@ pub async fn verify(
             )
         })?;
 
-    let npub = verify_nip98_event(&event, "POST", "/admin/verify", None)
-        .map_err(|err| (StatusCode::UNAUTHORIZED, err.to_string()))?;
+    let expected_host = expected_host_from_headers(&headers).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "missing host for NIP-98 verification".to_string(),
+        )
+    })?;
+    let npub = verify_nip98_event(
+        &event,
+        "POST",
+        "/admin/verify",
+        Some(expected_host.as_str()),
+        None,
+    )
+    .map_err(|err| (StatusCode::UNAUTHORIZED, err.to_string()))?;
 
     admin_config(&state)
         .verify_challenge(event.content.as_str())
@@ -506,7 +413,31 @@ pub async fn dashboard(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let rows = AgentAllowlistEntry::list(&mut conn)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    Ok(Html(render_admin_html(&admin_npub, &rows)).into_response())
+
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (next_active, action_label) = if row.active {
+                ("0".to_string(), "Disable".to_string())
+            } else {
+                ("1".to_string(), "Enable".to_string())
+            };
+            AdminAllowlistRow {
+                npub: row.npub,
+                active: row.active,
+                note: row.note.unwrap_or_default(),
+                updated_by: row.updated_by,
+                updated_at: row.updated_at.to_string(),
+                next_active,
+                action_label,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    render_template(&DashboardTemplate {
+        current_admin_npub: &admin_npub,
+        rows: &rows,
+    })
 }
 
 pub async fn upsert_allowlist(

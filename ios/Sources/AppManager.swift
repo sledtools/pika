@@ -746,7 +746,8 @@ final class AppManager: AppReconciler {
     private func resolvedAgentApiConfiguration() -> AgentApiConfiguration? {
         resolveAgentApiConfiguration(
             appConfig: loadAppConfigDictionary(),
-            env: ProcessInfo.processInfo.environment
+            env: ProcessInfo.processInfo.environment,
+            signingNsec: getNsec()
         )
     }
 

@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pika Admin</title>
+</head>
+<body style="font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; margin: 24px;">
+  <h1>Agent Allowlist</h1>
+  <p>Signed in as <code>{{ current_admin_npub }}</code></p>
+  <form method="post" action="/admin/logout" style="margin-bottom: 20px;">
+    <button type="submit">Logout</button>
+  </form>
+
+  <h2>Add / Update</h2>
+  <form method="post" action="/admin/allowlist" style="display:grid; gap:8px; max-width: 620px;">
+    <label>Npub <input name="npub" required style="width:100%" /></label>
+    <label>Note <input name="note" style="width:100%" /></label>
+    <label><input type="checkbox" name="active" checked /> Active</label>
+    <button type="submit">Save</button>
+  </form>
+
+  <h2 style="margin-top:24px">Current Entries</h2>
+  <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:1200px">
+    <thead>
+      <tr><th>Npub</th><th>Status</th><th>Note</th><th>Updated By</th><th>Updated At (UTC)</th><th>Action</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><code>{{ row.npub }}</code></td>
+        <td>{% if row.active %}active{% else %}inactive{% endif %}</td>
+        <td>{{ row.note }}</td>
+        <td><code>{{ row.updated_by }}</code></td>
+        <td>{{ row.updated_at }}</td>
+        <td>
+          <form method="post" action="/admin/allowlist/{{ row.npub }}/toggle">
+            <input type="hidden" name="active" value="{{ row.next_active }}" />
+            <button type="submit">{{ row.action_label }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+askama = "0.12"
 async-trait = "0.1"
 axum = "0.6.16"
 chrono = { version = "0.4.26", features = ["serde"] }

@@ -6177,6 +6177,7 @@ version = "0.1.0"
 dependencies = [
  "a2",
  "anyhow",
+ "askama 0.12.1",
  "async-trait",
  "axum 0.6.20",
  "base64 0.22.1",

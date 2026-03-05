@@ -30,34 +30,34 @@ final class AgentDogfoodTests: XCTestCase {
         let config = resolveAgentApiConfiguration(
             appConfig: [
                 "agent_api_url": "https://api.example.com",
-                "agent_owner_token": "token-from-config",
                 "notification_url": "https://ignored.example.com",
             ],
-            env: [:]
+            env: [:],
+            signingNsec: "nsec1test"
         )
         XCTAssertEqual(config?.baseUrl.absoluteString, "https://api.example.com")
-        XCTAssertEqual(config?.bearerToken, "token-from-config")
+        XCTAssertEqual(config?.signingNsec, "nsec1test")
     }
 
-    func testResolveAgentApiConfigurationFallsBackToNotificationUrlAndEnvToken() {
+    func testResolveAgentApiConfigurationFallsBackToNotificationUrl() {
         let config = resolveAgentApiConfiguration(
             appConfig: [
                 "notification_url": "https://notifs.example.com",
             ],
-            env: [
-                "PIKA_AGENT_OWNER_TOKEN": "token-from-env",
-            ]
+            env: [:],
+            signingNsec: "nsec1test"
         )
         XCTAssertEqual(config?.baseUrl.absoluteString, "https://notifs.example.com")
-        XCTAssertEqual(config?.bearerToken, "token-from-env")
+        XCTAssertEqual(config?.signingNsec, "nsec1test")
     }
 
-    func testResolveAgentApiConfigurationRequiresToken() {
+    func testResolveAgentApiConfigurationRequiresSigningNsec() {
         let config = resolveAgentApiConfiguration(
             appConfig: [
                 "agent_api_url": "https://api.example.com",
             ],
-            env: [:]
+            env: [:],
+            signingNsec: nil
         )
         XCTAssertNil(config)
     }

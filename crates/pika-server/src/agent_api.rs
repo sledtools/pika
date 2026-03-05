@@ -19,7 +19,9 @@ use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::agent_instance::{
     AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
 };
-use crate::nostr_auth::{event_from_authorization_header, verify_nip98_event};
+use crate::nostr_auth::{
+    event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
+};
 use crate::State;
 use pika_agent_control_plane::MicrovmProvisionParams;
 use pika_agent_microvm::{
@@ -74,8 +76,16 @@ fn authenticated_requester_npub(
 ) -> Result<String, AgentApiError> {
     let event = event_from_authorization_header(headers)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    verify_nip98_event(&event, expected_method, expected_path, None)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))
+    let expected_host = expected_host_from_headers(headers)
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    verify_nip98_event(
+        &event,
+        expected_method,
+        expected_path,
+        Some(expected_host.as_str()),
+        None,
+    )
+    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))
 }
 
 fn require_whitelisted_requester(
@@ -295,7 +305,7 @@ mod tests {
         let keys = Keys::generate();
         let event = EventBuilder::new(Kind::Custom(27235), "")
             .tags([
-                Tag::custom(TagKind::custom("u"), [V1_AGENTS_ME_PATH]),
+                Tag::custom(TagKind::custom("u"), ["https://example.com/v1/agents/me"]),
                 Tag::custom(TagKind::custom("method"), ["GET"]),
             ])
             .sign_with_keys(&keys)
@@ -308,6 +318,7 @@ mod tests {
             header::AUTHORIZATION,
             format!("Nostr {encoded}").parse().expect("auth value"),
         );
+        headers.insert(header::HOST, "example.com".parse().expect("host value"));
 
         let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
             .expect("extract authenticated npub");
@@ -325,6 +336,32 @@ mod tests {
         let headers = HeaderMap::new();
         let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
             .expect_err("missing header must fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
+    }
+
+    #[test]
+    fn authenticated_requester_npub_rejects_mismatched_u_tag_authority() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(27235), "")
+            .tags([
+                Tag::custom(TagKind::custom("u"), ["https://wrong.example/v1/agents/me"]),
+                Tag::custom(TagKind::custom("method"), ["GET"]),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign nip98 event");
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&event).expect("serialize event"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Nostr {encoded}").parse().expect("auth value"),
+        );
+        headers.insert(header::HOST, "example.com".parse().expect("host value"));
+
+        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+            .expect_err("mismatched authority must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
     }

@@ -21,20 +21,16 @@ func isMicrovmDogfoodWhitelistedNpub(_ npub: String?) -> Bool {
 
 struct AgentApiConfiguration: Equatable {
     let baseUrl: URL
-    let bearerToken: String
+    let signingNsec: String
 }
 
 func resolveAgentApiConfiguration(
     appConfig: [String: Any],
-    env: [String: String]
+    env: [String: String],
+    signingNsec: String?
 ) -> AgentApiConfiguration? {
-    let token = readTrimmedString(
-        key: "agent_owner_token",
-        appConfig: appConfig,
-        envKey: "PIKA_AGENT_OWNER_TOKEN",
-        env: env
-    )
-    guard let token, !token.isEmpty else {
+    guard let signingNsec = signingNsec?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !signingNsec.isEmpty else {
         return nil
     }
 
@@ -53,7 +49,7 @@ func resolveAgentApiConfiguration(
     guard let baseUrl = URL(string: baseUrlString) else {
         return nil
     }
-    return AgentApiConfiguration(baseUrl: baseUrl, bearerToken: token)
+    return AgentApiConfiguration(baseUrl: baseUrl, signingNsec: signingNsec)
 }
 
 private func readTrimmedString(
@@ -103,6 +99,7 @@ enum AgentControlClientError: Error {
     case invalidRequestPath
     case invalidResponse
     case decodeFailure
+    case signingFailed
     case transport(Error)
     case unauthorized
     case notWhitelisted
@@ -207,7 +204,14 @@ final class HttpAgentControlClient: AgentControlClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("Bearer \(config.bearerToken)", forHTTPHeaderField: "Authorization")
+        guard let authorization = buildNip98AuthorizationHeader(
+            nsec: config.signingNsec,
+            method: method,
+            url: url.absoluteString
+        ) else {
+            throw AgentControlClientError.signingFailed
+        }
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if method == "POST" {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

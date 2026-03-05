@@ -38,19 +38,43 @@ pub fn event_from_authorization_header(headers: &HeaderMap) -> anyhow::Result<Ev
     Ok(event)
 }
 
-fn normalize_signed_url_path(value: &str) -> String {
+fn split_signed_u_tag(value: &str) -> anyhow::Result<(Option<String>, String)> {
     if value.starts_with('/') {
-        return value.to_string();
+        return Ok((None, value.to_string()));
     }
 
-    if let Some((_, after_scheme)) = value.split_once("://") {
-        if let Some((_, path_with_query)) = after_scheme.split_once('/') {
-            return format!("/{path_with_query}");
-        }
-        return "/".to_string();
+    let parsed =
+        reqwest::Url::parse(value).with_context(|| format!("invalid u tag URL: {value}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("u tag URL missing host"))?;
+    let authority = if let Some(port) = parsed.port() {
+        format!("{host}:{port}")
+    } else {
+        host.to_string()
+    };
+    let mut path = parsed.path().to_string();
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
     }
+    Ok((Some(authority), path))
+}
 
-    value.to_string()
+pub fn expected_host_from_headers(headers: &HeaderMap) -> Option<String> {
+    let forwarded = headers
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.split(',').next().unwrap_or(v).trim().to_ascii_lowercase());
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_ascii_lowercase());
+    forwarded.or(host)
 }
 
 fn tag_content(event: &Event, tag_name: &str) -> Option<String> {
@@ -67,6 +91,7 @@ pub fn verify_nip98_event(
     event: &Event,
     expected_method: &str,
     expected_path: &str,
+    expected_host: Option<&str>,
     expected_content: Option<&str>,
 ) -> anyhow::Result<String> {
     event.verify().context("invalid nostr event signature")?;
@@ -96,7 +121,17 @@ pub fn verify_nip98_event(
     );
 
     let signed_url = tag_content(event, "u").ok_or_else(|| anyhow::anyhow!("missing u tag"))?;
-    let signed_path = normalize_signed_url_path(&signed_url);
+    let (signed_authority, signed_path) = split_signed_u_tag(&signed_url)?;
+    if let Some(expected_host) = expected_host {
+        let expected_host = expected_host.trim().to_ascii_lowercase();
+        let signed_authority = signed_authority
+            .ok_or_else(|| anyhow::anyhow!("u tag must include absolute URL authority"))?
+            .to_ascii_lowercase();
+        anyhow::ensure!(
+            signed_authority == expected_host,
+            "u tag authority mismatch"
+        );
+    }
     anyhow::ensure!(
         signed_path == expected_path || signed_path.starts_with(&format!("{expected_path}?")),
         "u tag path mismatch"

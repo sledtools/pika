@@ -104,7 +104,13 @@ enum PreviewAppState {
             rev: 2,
             router: Router(defaultScreen: .login, screenStack: []),
             auth: .loggedOut,
-            busy: BusyState(creatingAccount: false, loggingIn: true, creatingChat: false, fetchingFollowList: false)
+            busy: BusyState(
+                creatingAccount: false,
+                loggingIn: true,
+                creatingChat: false,
+                startingPersonalAgent: false,
+                fetchingFollowList: false
+            )
         )
     }
 
@@ -176,7 +182,13 @@ enum PreviewAppState {
             router: Router(defaultScreen: .newChat, screenStack: [.newChat]),
             auth: .loggedIn(npub: sampleNpub, pubkey: samplePubkey, mode: .localNsec),
             myProfile: sampleProfile,
-            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: true, fetchingFollowList: false)
+            busy: BusyState(
+                creatingAccount: false,
+                loggingIn: false,
+                creatingChat: true,
+                startingPersonalAgent: false,
+                fetchingFollowList: false
+            )
         )
     }
 
@@ -282,7 +294,13 @@ enum PreviewAppState {
         router: Router,
         auth: AuthState,
         myProfile: MyProfileState = .init(name: "", about: "", pictureUrl: nil),
-        busy: BusyState = BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
+        busy: BusyState = BusyState(
+            creatingAccount: false,
+            loggingIn: false,
+            creatingChat: false,
+            startingPersonalAgent: false,
+            fetchingFollowList: false
+        ),
         chatList: [ChatSummary] = [],
         currentChat: ChatViewState? = nil,
         followList: [FollowListEntry] = [],

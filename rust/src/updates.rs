@@ -76,6 +76,11 @@ pub enum InternalEvent {
     PushUnsubscriptionsSynced {
         groups: Vec<String>,
     },
+    AgentFlowCompleted {
+        flow_token: u64,
+        agent_id: Option<String>,
+        error: Option<String>,
+    },
     Toast(String),
     ToastAutoDismiss {
         token: u64,

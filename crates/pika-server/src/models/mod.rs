@@ -219,4 +219,25 @@ mod test {
 
         clear_database(&db_pool);
     }
+
+    #[tokio::test]
+    async fn test_agent_allowlist_transaction_rolls_back_when_audit_insert_fails() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let npub = "npub1rollbacktestuser";
+
+        let result = conn.transaction::<_, anyhow::Error, _>(|conn| {
+            AgentAllowlistEntry::upsert(conn, npub, true, Some("dogfood"), npub)?;
+            AgentAllowlistEntry::record_audit(conn, npub, npub, "enabled\0invalid", None)?;
+            Ok(())
+        });
+
+        assert!(result.is_err(), "expected audit insert to fail");
+        let rows = AgentAllowlistEntry::list(&mut conn).expect("list allowlist rows");
+        assert!(rows.is_empty(), "allowlist row must be rolled back");
+
+        clear_database(&db_pool);
+    }
 }

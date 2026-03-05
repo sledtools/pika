@@ -7,6 +7,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use base64::Engine;
+use diesel::Connection;
 use hmac::{Hmac, Mac};
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
@@ -462,19 +463,21 @@ pub async fn upsert_allowlist(
         .get()
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    AgentAllowlistEntry::upsert(&mut conn, &npub, active, note.as_deref(), &admin_npub)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    AgentAllowlistEntry::record_audit(
-        &mut conn,
-        &admin_npub,
-        &npub,
-        if active {
-            "upsert_active"
-        } else {
-            "upsert_inactive"
-        },
-        note.as_deref(),
-    )
+    conn.transaction::<(), anyhow::Error, _>(|conn| {
+        AgentAllowlistEntry::upsert(conn, &npub, active, note.as_deref(), &admin_npub)?;
+        AgentAllowlistEntry::record_audit(
+            conn,
+            &admin_npub,
+            &npub,
+            if active {
+                "upsert_active"
+            } else {
+                "upsert_inactive"
+            },
+            note.as_deref(),
+        )?;
+        Ok(())
+    })
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     Ok(Redirect::to("/admin").into_response())
@@ -500,15 +503,17 @@ pub async fn toggle_allowlist(
         .get()
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    AgentAllowlistEntry::set_active(&mut conn, &normalized, active, &admin_npub)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    AgentAllowlistEntry::record_audit(
-        &mut conn,
-        &admin_npub,
-        &normalized,
-        if active { "enabled" } else { "disabled" },
-        None,
-    )
+    conn.transaction::<(), anyhow::Error, _>(|conn| {
+        AgentAllowlistEntry::set_active(conn, &normalized, active, &admin_npub)?;
+        AgentAllowlistEntry::record_audit(
+            conn,
+            &admin_npub,
+            &normalized,
+            if active { "enabled" } else { "disabled" },
+            None,
+        )?;
+        Ok(())
+    })
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     Ok(Redirect::to("/admin").into_response())

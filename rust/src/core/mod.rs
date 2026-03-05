@@ -4659,6 +4659,15 @@ impl AppCore {
                 self.state.media_gallery = None;
                 self.emit_state();
             }
+            AppAction::WipeMediaCache => {
+                if let Some(conn) = self.chat_media_db.as_ref() {
+                    let _ = conn.execute("DELETE FROM chat_media", []);
+                }
+                // Delete cached media files on disk.
+                let media_dir = std::path::Path::new(&self.data_dir).join("chat_media");
+                let _ = std::fs::remove_dir_all(&media_dir);
+                self.toast("Media cache wiped");
+            }
             AppAction::OpenPeerProfile { pubkey } => {
                 if !self.is_logged_in() {
                     return;

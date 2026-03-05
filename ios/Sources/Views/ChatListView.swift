@@ -14,6 +14,7 @@ struct ChatListView: View {
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
     let onWipeProfileCache: @MainActor () -> Void
+    let onWipeMediaCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
     let nsecProvider: @MainActor () -> String?
     @State private var showMyNpub = false
@@ -98,6 +99,7 @@ struct ChatListView: View {
                             isDeveloperModeEnabledProvider: isDeveloperModeEnabledProvider,
                             onEnableDeveloperMode: onEnableDeveloperMode,
                             onWipeProfileCache: onWipeProfileCache,
+                            onWipeMediaCache: onWipeMediaCache,
                             onWipeLocalData: onWipeLocalData
                         )
                     }
@@ -157,6 +159,7 @@ struct ChatListView: View {
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
             onWipeProfileCache: {},
+            onWipeMediaCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )
@@ -182,6 +185,7 @@ struct ChatListView: View {
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
             onWipeProfileCache: {},
+            onWipeMediaCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )
@@ -207,6 +211,7 @@ struct ChatListView: View {
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
             onWipeProfileCache: {},
+            onWipeMediaCache: {},
             onWipeLocalData: {},
             nsecProvider: { nil }
         )

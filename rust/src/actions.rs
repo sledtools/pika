@@ -195,6 +195,7 @@ pub enum AppAction {
         chat_id: String,
     },
     ClearMediaGallery,
+    WipeMediaCache,
 
     // Peer profile
     OpenPeerProfile {
@@ -297,6 +298,7 @@ impl AppAction {
             // Media gallery
             AppAction::LoadMediaGallery { .. } => "LoadMediaGallery",
             AppAction::ClearMediaGallery => "ClearMediaGallery",
+            AppAction::WipeMediaCache => "WipeMediaCache",
 
             // Peer profile
             AppAction::OpenPeerProfile { .. } => "OpenPeerProfile",

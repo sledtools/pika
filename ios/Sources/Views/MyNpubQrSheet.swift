@@ -15,6 +15,7 @@ struct MyNpubQrSheet: View {
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
     let onWipeProfileCache: @MainActor () -> Void
+    let onWipeMediaCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -48,6 +49,7 @@ struct MyNpubQrSheet: View {
         isDeveloperModeEnabledProvider: @MainActor @escaping () -> Bool,
         onEnableDeveloperMode: @MainActor @escaping () -> Void,
         onWipeProfileCache: @MainActor @escaping () -> Void,
+        onWipeMediaCache: @MainActor @escaping () -> Void,
         onWipeLocalData: @MainActor @escaping () -> Void,
         showLogoutConfirm: Bool = false
     ) {
@@ -61,6 +63,7 @@ struct MyNpubQrSheet: View {
         self.isDeveloperModeEnabledProvider = isDeveloperModeEnabledProvider
         self.onEnableDeveloperMode = onEnableDeveloperMode
         self.onWipeProfileCache = onWipeProfileCache
+        self.onWipeMediaCache = onWipeMediaCache
         self.onWipeLocalData = onWipeLocalData
         self._showLogoutConfirm = State(initialValue: showLogoutConfirm)
     }
@@ -274,13 +277,16 @@ struct MyNpubQrSheet: View {
                 Button("Wipe Profile Cache") {
                     onWipeProfileCache()
                 }
+                Button("Wipe Media Cache") {
+                    onWipeMediaCache()
+                }
                 Button("Wipe All Local Data", role: .destructive) {
                     showWipeLocalDataConfirm = true
                 }
             } header: {
                 Text("Developer Mode")
             } footer: {
-                Text("Wipe Profile Cache clears cached profiles and pictures. Wipe All Local Data deletes everything and logs out.")
+                Text("Wipe Profile Cache clears cached profiles and pictures. Wipe Media Cache clears the media DB and downloaded files. Wipe All Local Data deletes everything and logs out.")
             }
         }
     }
@@ -526,6 +532,7 @@ struct MyNpubQrSheet: View {
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
         onWipeProfileCache: {},
+        onWipeMediaCache: {},
         onWipeLocalData: {}
     )
 }
@@ -542,6 +549,7 @@ struct MyNpubQrSheet: View {
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
         onWipeProfileCache: {},
+        onWipeMediaCache: {},
         onWipeLocalData: {},
         showLogoutConfirm: true
     )

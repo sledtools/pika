@@ -4538,7 +4538,7 @@ dependencies = [
 [[package]]
 name = "mdk-core"
 version = "0.6.0"
-source = "git+https://github.com/benthecarman/mdk?rev=5c551d40c4e47d8f31165b194d77d3d9461b31fd#5c551d40c4e47d8f31165b194d77d3d9461b31fd"
+source = "git+https://github.com/benthecarman/mdk?rev=cd5b41235e8a40e7619cd7f6f9648adeb8e0f830#cd5b41235e8a40e7619cd7f6f9648adeb8e0f830"
 dependencies = [
  "blurhash",
  "chacha20poly1305",
@@ -4562,7 +4562,7 @@ dependencies = [
 [[package]]
 name = "mdk-sqlite-storage"
 version = "0.6.0"
-source = "git+https://github.com/benthecarman/mdk?rev=5c551d40c4e47d8f31165b194d77d3d9461b31fd#5c551d40c4e47d8f31165b194d77d3d9461b31fd"
+source = "git+https://github.com/benthecarman/mdk?rev=cd5b41235e8a40e7619cd7f6f9648adeb8e0f830#cd5b41235e8a40e7619cd7f6f9648adeb8e0f830"
 dependencies = [
  "getrandom 0.3.4",
  "hex",
@@ -4583,7 +4583,7 @@ dependencies = [
 [[package]]
 name = "mdk-storage-traits"
 version = "0.6.0"
-source = "git+https://github.com/benthecarman/mdk?rev=5c551d40c4e47d8f31165b194d77d3d9461b31fd#5c551d40c4e47d8f31165b194d77d3d9461b31fd"
+source = "git+https://github.com/benthecarman/mdk?rev=cd5b41235e8a40e7619cd7f6f9648adeb8e0f830#cd5b41235e8a40e7619cd7f6f9648adeb8e0f830"
 dependencies = [
  "nostr",
  "openmls",

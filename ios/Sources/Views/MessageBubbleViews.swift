@@ -841,6 +841,7 @@ private struct ReplyPreviewCard: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            mediaThumbnail
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -865,6 +866,9 @@ private struct ReplyPreviewCard: View {
         guard let target else { return "Original message not loaded" }
         let trimmed = target.displayContent.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
+            if let firstMedia = target.media.first {
+                return mediaLabel(for: firstMedia.kind)
+            }
             return "(empty message)"
         }
         if let first = trimmed.split(separator: "\n").first {
@@ -878,6 +882,51 @@ private struct ReplyPreviewCard: View {
             return String(trimmed.prefix(80)) + "…"
         }
         return trimmed
+    }
+
+    private func mediaLabel(for kind: ChatMediaKind) -> String {
+        switch kind {
+        case .image: return "Photo"
+        case .video: return "Video"
+        case .voiceNote: return "Voice Message"
+        case .file: return "File"
+        }
+    }
+
+    private var firstVisualMedia: ChatMediaAttachment? {
+        target?.media.first { $0.kind == .image || $0.kind == .video }
+    }
+
+    @ViewBuilder
+    private var mediaThumbnail: some View {
+        if let media = firstVisualMedia {
+            let size: CGFloat = 34
+            Group {
+                if let localPath = media.localPath {
+                    CachedAsyncImage(url: URL(fileURLWithPath: localPath)) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        thumbnailPlaceholder(media: media, size: size)
+                    }
+                } else {
+                    thumbnailPlaceholder(media: media, size: size)
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func thumbnailPlaceholder(media: ChatMediaAttachment, size: CGFloat) -> some View {
+        if let hash = media.blurhash {
+            BlurhashView(hash: hash, size: CGSize(width: size, height: size))
+        } else {
+            Rectangle()
+                .fill(isMine ? Color.white.opacity(0.15) : Color.gray.opacity(0.2))
+        }
     }
 }
 

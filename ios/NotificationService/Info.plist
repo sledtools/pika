@@ -4,10 +4,6 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>Pika Notifications</string>
-	<key>PikaAppGroup</key>
-	<string>$(PIKA_APP_GROUP)</string>
-	<key>PikaKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
@@ -22,5 +18,9 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>PikaAppGroup</key>
+	<string>$(PIKA_APP_GROUP)</string>
+	<key>PikaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 </dict>
 </plist>

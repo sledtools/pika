@@ -18,8 +18,6 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -33,12 +31,16 @@
 			</array>
 		</dict>
 	</array>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>nostrconnect</string>
 	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -48,29 +50,27 @@
 	<string>Scan QR codes to start new chats.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice calls and voice messages require microphone access.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Speech recognition is used to transcribe your voice messages.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save photos from chats to your photo library.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Speech recognition is used to transcribe your voice messages.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>
 	</array>
+	<key>PikaAppGroup</key>
+	<string>$(PIKA_APP_GROUP)</string>
+	<key>PikaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
-	<key>PikaAppGroup</key>
-	<string>$(PIKA_APP_GROUP)</string>
-	<key>PikaKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
 	</array>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

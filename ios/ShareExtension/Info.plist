@@ -4,12 +4,6 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>Pika Share</string>
-	<key>PikaAppGroup</key>
-	<string>$(PIKA_APP_GROUP)</string>
-	<key>PikaKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
-	<key>PikaUrlScheme</key>
-	<string>$(PIKA_IOS_URL_SCHEME)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
@@ -31,5 +25,11 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 	</dict>
+	<key>PikaAppGroup</key>
+	<string>$(PIKA_APP_GROUP)</string>
+	<key>PikaKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(PIKA_APP_BUNDLE_ID).shared</string>
+	<key>PikaUrlScheme</key>
+	<string>$(PIKA_IOS_URL_SCHEME)</string>
 </dict>
 </plist>

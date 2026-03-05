@@ -7,7 +7,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::{response::IntoResponse, Json};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use nostr_sdk::prelude::{Keys, PublicKey};
-use rand::Rng;
+use nostr_sdk::ToBech32;
 use serde::Serialize;
 
 use crate::agent_api_v1_contract::{AgentApiErrorCode, AgentAppState};
@@ -185,9 +185,20 @@ fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
     err.to_string().contains(AGENT_OWNER_ACTIVE_INDEX)
 }
 
-fn generate_agent_id() -> String {
-    let suffix = rand::thread_rng().r#gen::<u64>();
-    format!("agent-{suffix:016x}")
+#[derive(Debug, Clone)]
+struct ProvisioningBotIdentity {
+    pubkey_npub: String,
+    pubkey_hex: String,
+    secret_hex: String,
+}
+
+fn generate_provisioning_bot_identity() -> anyhow::Result<ProvisioningBotIdentity> {
+    let bot_keys = Keys::generate();
+    Ok(ProvisioningBotIdentity {
+        pubkey_npub: bot_keys.public_key().to_bech32()?,
+        pubkey_hex: bot_keys.public_key().to_hex(),
+        secret_hex: bot_keys.secret_key().to_secret_hex(),
+    })
 }
 
 fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
@@ -201,19 +212,18 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
     Ok(resolved)
 }
 
-async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
+async fn provision_vm_for_owner(
+    owner_npub: &str,
+    bot_identity: &ProvisioningBotIdentity,
+) -> anyhow::Result<String> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     let resolved = resolved_spawner_params()?;
-
-    let bot_keys = Keys::generate();
-    let bot_pubkey = bot_keys.public_key().to_hex();
-    let bot_secret = bot_keys.secret_key().to_secret_hex();
     let create_vm = build_create_vm_request(
         &resolved,
         &owner_pubkey,
         &default_message_relays(),
-        &bot_secret,
-        &bot_pubkey,
+        &bot_identity.secret_hex,
+        &bot_identity.pubkey_hex,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
     let vm = spawner
@@ -228,6 +238,8 @@ pub async fn ensure_agent(
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
     let requester = require_whitelisted_requester(&headers)?;
+    let bot_identity = generate_provisioning_bot_identity()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     let mut conn = state
         .db_pool
         .get()
@@ -243,7 +255,7 @@ pub async fn ensure_agent(
     let created = AgentInstance::create(
         &mut conn,
         &requester.owner_npub,
-        &generate_agent_id(),
+        &bot_identity.pubkey_npub,
         None,
         AGENT_PHASE_CREATING,
     )
@@ -255,7 +267,7 @@ pub async fn ensure_agent(
         }
     })?;
 
-    let vm_id = match provision_vm_for_owner(&requester.owner_npub).await {
+    let vm_id = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
         Ok(vm_id) => vm_id,
         Err(_) => {
             let _ =
@@ -394,5 +406,13 @@ mod tests {
         let err = extract_bearer_token(&headers).expect_err("missing header must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
+    }
+
+    #[test]
+    fn generated_bot_identity_round_trips_npub_and_hex() {
+        let identity = generate_provisioning_bot_identity().expect("generate identity");
+        let parsed = PublicKey::parse(&identity.pubkey_npub).expect("parse npub");
+        assert_eq!(parsed.to_hex(), identity.pubkey_hex);
+        assert!(!identity.secret_hex.is_empty());
     }
 }

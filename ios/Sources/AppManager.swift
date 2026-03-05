@@ -102,6 +102,25 @@ final class KeychainAuthStore: AuthStore {
     }
 }
 
+private enum DogfoodAgentFlowState: Equatable {
+    case idle
+    case ensuring
+    case polling
+    case openingChat
+    case failed
+
+    var buttonState: DogfoodAgentButtonState {
+        switch self {
+        case .idle:
+            return DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false)
+        case .ensuring, .polling, .openingChat:
+            return DogfoodAgentButtonState(title: "Starting Personal Agent...", isBusy: true)
+        case .failed:
+            return DogfoodAgentButtonState(title: "Retry Personal Agent", isBusy: false)
+        }
+    }
+}
+
 @MainActor
 @Perceptible
 final class AppManager: AppReconciler {
@@ -112,13 +131,23 @@ final class AppManager: AppReconciler {
     private let authStore: AuthStore
     /// True while we're waiting for a stored session to be restored by Rust.
     var isRestoringSession: Bool = false
+    private var dogfoodAgentFlowState: DogfoodAgentFlowState = .idle
+    private var dogfoodAgentTask: Task<Void, Never>?
     private let callAudioSession = CallAudioSessionCoordinator()
+    private let agentControlClient: AgentControlClient
     private var lastSharedChatCache: [ShareableChatSummary]
     private var lastShareLoggedInFlag: Bool?
+    private static let dogfoodAgentPollMaxAttempts = 60
+    private static let dogfoodAgentPollDelayNanos: UInt64 = 2_000_000_000
 
-    init(core: AppCore, authStore: AuthStore) {
+    init(
+        core: AppCore,
+        authStore: AuthStore,
+        agentControlClient: AgentControlClient = HttpAgentControlClient()
+    ) {
         self.core = core
         self.authStore = authStore
+        self.agentControlClient = agentControlClient
 
         let initial = core.state()
         self.state = initial
@@ -187,6 +216,8 @@ final class AppManager: AppReconciler {
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let moqProbeOnStart = (env["PIKA_MOQ_PROBE_ON_START"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let notificationUrl = (env["PIKA_NOTIFICATION_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentApiUrl = (env["PIKA_AGENT_API_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentOwnerToken = (env["PIKA_AGENT_OWNER_TOKEN"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         ensureDefaultConfig(
             dataDirUrl: dataDirUrl,
             uiTestReset: uiTestReset,
@@ -195,7 +226,9 @@ final class AppManager: AppReconciler {
             callMoqUrl: callMoqUrl,
             callBroadcastPrefix: callBroadcastPrefix,
             moqProbeOnStart: moqProbeOnStart,
-            notificationUrl: notificationUrl
+            notificationUrl: notificationUrl,
+            agentApiUrl: agentApiUrl,
+            agentOwnerToken: agentOwnerToken
         )
 
         let core = FfiApp(dataDir: dataDir, keychainGroup: keychainGroup)
@@ -284,6 +317,7 @@ final class AppManager: AppReconciler {
     }
 
     func logout() {
+        cancelDogfoodAgentFlow()
         authStore.clear()
         clearShareExtensionState()
         dispatch(.logout)
@@ -302,6 +336,7 @@ final class AppManager: AppReconciler {
     }
 
     func wipeLocalDataForDeveloperTools() {
+        cancelDogfoodAgentFlow()
         authStore.clear()
         clearShareExtensionState()
         ensureMigrationSentinelExists()
@@ -366,6 +401,28 @@ final class AppManager: AppReconciler {
 
     func getNsec() -> String? {
         authStore.getNsec()
+    }
+
+    func dogfoodAgentButtonState(for npub: String?) -> DogfoodAgentButtonState? {
+        guard isMicrovmDogfoodWhitelistedNpub(npub) else {
+            return nil
+        }
+        return dogfoodAgentFlowState.buttonState
+    }
+
+    func ensureDogfoodAgent() {
+        guard dogfoodAgentTask == nil else { return }
+        guard isMicrovmDogfoodWhitelistedNpub(currentNpub()) else { return }
+        guard let config = resolvedAgentApiConfiguration() else {
+            dogfoodAgentFlowState = .failed
+            return
+        }
+
+        dogfoodAgentTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.dogfoodAgentTask = nil }
+            await self.runDogfoodAgentFlow(config: config)
+        }
     }
 
     /// Moves existing data from the old app-private Application Support directory
@@ -577,6 +634,133 @@ final class AppManager: AppReconciler {
         }
     }
 
+    private func runDogfoodAgentFlow(config: AgentApiConfiguration) async {
+        dogfoodAgentFlowState = .ensuring
+
+        do {
+            let ensuredAgentId: String
+            do {
+                let ensured = try await agentControlClient.ensureAgent(config: config)
+                ensuredAgentId = ensured.agentId
+            } catch AgentControlClientError.agentExists {
+                ensuredAgentId = ""
+            }
+
+            dogfoodAgentFlowState = .polling
+            let ready = try await pollForReadyAgent(config: config, seedAgentId: ensuredAgentId)
+
+            dogfoodAgentFlowState = .openingChat
+            openOrCreateDirectChat(withPeer: ready.agentId)
+            dogfoodAgentFlowState = .idle
+        } catch is CancellationError {
+            // Flow was intentionally interrupted (logout/reset/app state change).
+        } catch {
+            NSLog("[PikaAppManager] dogfood agent flow failed: \(error)")
+            dogfoodAgentFlowState = .failed
+        }
+    }
+
+    private func pollForReadyAgent(
+        config: AgentApiConfiguration,
+        seedAgentId: String
+    ) async throws -> AgentStateResponse {
+        var latestAgentId = seedAgentId
+
+        for attempt in 0..<Self.dogfoodAgentPollMaxAttempts {
+            try Task.checkCancellation()
+
+            let state: AgentStateResponse
+            do {
+                state = try await agentControlClient.getMyAgent(config: config)
+            } catch AgentControlClientError.agentNotFound {
+                if attempt < Self.dogfoodAgentPollMaxAttempts - 1 {
+                    try await Task.sleep(nanoseconds: Self.dogfoodAgentPollDelayNanos)
+                    continue
+                }
+                throw AgentControlClientError.agentNotFound
+            }
+
+            latestAgentId = state.agentId
+            switch state.state {
+            case .ready:
+                return state
+            case .creating:
+                if attempt < Self.dogfoodAgentPollMaxAttempts - 1 {
+                    try await Task.sleep(nanoseconds: Self.dogfoodAgentPollDelayNanos)
+                }
+            case .error:
+                throw AgentControlClientError.remote("agent_in_error_state", statusCode: 500)
+            }
+        }
+
+        throw AgentControlClientError.remote(
+            latestAgentId.isEmpty ? "agent_timeout" : "agent_timeout_\(latestAgentId)",
+            statusCode: 504
+        )
+    }
+
+    private func openOrCreateDirectChat(withPeer peerKey: String) {
+        let normalized = normalizePeerKey(input: peerKey)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty, isValidPeerKey(input: normalized) else {
+            dogfoodAgentFlowState = .failed
+            return
+        }
+
+        if let chatId = existingDirectChatId(forPeer: normalized) {
+            dispatch(.openChat(chatId: chatId))
+            return
+        }
+        dispatch(.createChat(peerNpub: normalized))
+    }
+
+    private func existingDirectChatId(forPeer peerKey: String) -> String? {
+        state.chatList.first { chat in
+            guard !chat.isGroup, let member = chat.members.first else {
+                return false
+            }
+            let memberNpub = normalizePeerKey(input: member.npub)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let memberPubkey = member.pubkey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return memberNpub == peerKey || memberPubkey == peerKey
+        }?.chatId
+    }
+
+    private func cancelDogfoodAgentFlow() {
+        dogfoodAgentTask?.cancel()
+        dogfoodAgentTask = nil
+        dogfoodAgentFlowState = .idle
+    }
+
+    private func currentNpub() -> String? {
+        switch state.auth {
+        case .loggedIn(let npub, _, _):
+            return npub
+        default:
+            return nil
+        }
+    }
+
+    private func resolvedAgentApiConfiguration() -> AgentApiConfiguration? {
+        resolveAgentApiConfiguration(
+            appConfig: loadAppConfigDictionary(),
+            env: ProcessInfo.processInfo.environment
+        )
+    }
+
+    private func loadAppConfigDictionary() -> [String: Any] {
+        let fm = FileManager.default
+        let dataDir = Self.resolveDataDirURL(fm: fm)
+        let configPath = dataDir.appendingPathComponent("pika_config.json")
+        guard let data = try? Data(contentsOf: configPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return json
+    }
+
     private func isExpectedNostrConnectCallback(_ url: URL) -> Bool {
         guard url.host?.lowercased() == "nostrconnect-return" else { return false }
         guard let scheme = url.scheme?.lowercased() else { return false }
@@ -603,7 +787,9 @@ private func ensureDefaultConfig(
     callMoqUrl: String,
     callBroadcastPrefix: String,
     moqProbeOnStart: String,
-    notificationUrl: String
+    notificationUrl: String,
+    agentApiUrl: String,
+    agentOwnerToken: String
 ) {
     // Ensure call config exists even when no env overrides are set (call runtime requires `call_moq_url`).
     // If the file already exists, only fill missing keys to avoid clobbering user/tooling overrides.
@@ -620,6 +806,8 @@ private func ensureDefaultConfig(
         || !callBroadcastPrefix.isEmpty
         || moqProbeOnStart == "1"
         || !notificationUrl.isEmpty
+        || !agentApiUrl.isEmpty
+        || !agentOwnerToken.isEmpty
 
     let path = dataDirUrl.appendingPathComponent("pika_config.json")
     var obj: [String: Any] = [:]
@@ -682,6 +870,14 @@ private func ensureDefaultConfig(
 
         if !notificationUrl.isEmpty {
             obj["notification_url"] = notificationUrl
+            changed = true
+        }
+        if !agentApiUrl.isEmpty {
+            obj["agent_api_url"] = agentApiUrl
+            changed = true
+        }
+        if !agentOwnerToken.isEmpty {
+            obj["agent_owner_token"] = agentOwnerToken
             changed = true
         }
     }

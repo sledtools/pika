@@ -9,6 +9,12 @@ struct ChatListViewState: Equatable {
     let chats: [ChatSummary]
     let myNpub: String?
     let myProfile: MyProfileState
+    let dogfoodAgentButton: DogfoodAgentButtonState?
+}
+
+struct DogfoodAgentButtonState: Equatable {
+    let title: String
+    let isBusy: Bool
 }
 
 struct NewChatViewState: Equatable {

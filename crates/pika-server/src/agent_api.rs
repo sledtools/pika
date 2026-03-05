@@ -289,6 +289,23 @@ pub async fn get_my_agent(
     else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
+    Ok(Json(map_row_to_response(active)?))
+}
+
+pub async fn recover_my_agent(
+    Extension(state): Extension<State>,
+    headers: HeaderMap,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let requester = require_whitelisted_requester(&headers)?;
+    let mut conn = state
+        .db_pool
+        .get()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+    else {
+        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
+    };
     let vm_id = active
         .vm_id
         .clone()
@@ -310,23 +327,6 @@ pub async fn get_my_agent(
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     Ok(Json(map_row_to_response(updated)?))
-}
-
-pub async fn recover_my_agent(
-    Extension(state): Extension<State>,
-    headers: HeaderMap,
-) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let requester = require_whitelisted_requester(&headers)?;
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-    else {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
-    };
-    Ok(Json(map_row_to_response(active)?))
 }
 
 pub fn whitelist_healthcheck() -> anyhow::Result<()> {

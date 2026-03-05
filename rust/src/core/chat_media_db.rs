@@ -348,4 +348,86 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].original_hash_hex, "hash-1");
     }
+
+    // --- encrypted_hash_hex preservation tests ---
+
+    #[test]
+    fn upsert_with_empty_encrypted_hash_does_not_overwrite_existing() {
+        // Simulates: upload sets real hash, then receive-time upsert writes "".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_chat_media_db(&dir.path().to_string_lossy()).expect("open db");
+
+        let mut uploaded = sample_record("acc-a", "chat-a", "hash-a", 100);
+        uploaded.encrypted_hash_hex = "real-encrypted-hash".to_string();
+        upsert_chat_media(&conn, &uploaded).expect("upsert uploaded");
+
+        let mut received = sample_record("acc-a", "chat-a", "hash-a", 100);
+        received.encrypted_hash_hex = String::new();
+        upsert_chat_media(&conn, &received).expect("upsert received");
+
+        let got = get_chat_media(&conn, "acc-a", "chat-a", "hash-a").expect("record");
+        assert_eq!(
+            got.encrypted_hash_hex, "real-encrypted-hash",
+            "empty upsert must not overwrite existing encrypted hash"
+        );
+    }
+
+    #[test]
+    fn upsert_with_real_encrypted_hash_overwrites_empty() {
+        // Simulates: receive-time upsert writes "" first, then upload sets real hash.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_chat_media_db(&dir.path().to_string_lossy()).expect("open db");
+
+        let mut received = sample_record("acc-a", "chat-a", "hash-a", 100);
+        received.encrypted_hash_hex = String::new();
+        upsert_chat_media(&conn, &received).expect("upsert received");
+
+        let mut uploaded = sample_record("acc-a", "chat-a", "hash-a", 100);
+        uploaded.encrypted_hash_hex = "real-encrypted-hash".to_string();
+        upsert_chat_media(&conn, &uploaded).expect("upsert uploaded");
+
+        let got = get_chat_media(&conn, "acc-a", "chat-a", "hash-a").expect("record");
+        assert_eq!(
+            got.encrypted_hash_hex, "real-encrypted-hash",
+            "real hash must overwrite empty"
+        );
+    }
+
+    #[test]
+    fn upsert_with_real_encrypted_hash_overwrites_different_real_hash() {
+        // Simulates: re-upload or corrected hash replaces old one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_chat_media_db(&dir.path().to_string_lossy()).expect("open db");
+
+        let mut first = sample_record("acc-a", "chat-a", "hash-a", 100);
+        first.encrypted_hash_hex = "old-hash".to_string();
+        upsert_chat_media(&conn, &first).expect("upsert first");
+
+        let mut second = sample_record("acc-a", "chat-a", "hash-a", 100);
+        second.encrypted_hash_hex = "new-hash".to_string();
+        upsert_chat_media(&conn, &second).expect("upsert second");
+
+        let got = get_chat_media(&conn, "acc-a", "chat-a", "hash-a").expect("record");
+        assert_eq!(
+            got.encrypted_hash_hex, "new-hash",
+            "non-empty hash must overwrite previous"
+        );
+    }
+
+    #[test]
+    fn fresh_insert_with_empty_encrypted_hash_stores_empty() {
+        // First insert has no encrypted hash (receive before upload).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = open_chat_media_db(&dir.path().to_string_lossy()).expect("open db");
+
+        let mut record = sample_record("acc-a", "chat-a", "hash-a", 100);
+        record.encrypted_hash_hex = String::new();
+        upsert_chat_media(&conn, &record).expect("upsert");
+
+        let got = get_chat_media(&conn, "acc-a", "chat-a", "hash-a").expect("record");
+        assert_eq!(
+            got.encrypted_hash_hex, "",
+            "initial empty hash stored as-is"
+        );
+    }
 }

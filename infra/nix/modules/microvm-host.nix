@@ -38,6 +38,8 @@ in
     allowedTCPPorts = [ 53 ];
     allowedUDPPorts = [ 53 67 ];
   };
+  # vm-spawner control plane is only exposed on the WireGuard/Tailscale interface.
+  networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 8080 ];
 
   networking.firewall.extraCommands = ''
     # Log new outbound connections from microVMs and allow general egress for MVP.
@@ -112,7 +114,7 @@ in
       User = "root";
       Group = "root";
       Environment = [
-        "VM_SPAWNER_BIND=127.0.0.1:8080"
+        "VM_SPAWNER_BIND=0.0.0.0:8080"
         "VM_BRIDGE=${microvmBridge}"
         "VM_STATE_DIR=${spawnerStateDir}"
         "VM_DEFINITION_DIR=${spawnerDefinitionDir}"
@@ -154,7 +156,7 @@ in
     };
   };
 
-  # vm-spawner control plane API is localhost-only by default; use SSH tunnel for access.
+  # Keep public ingress closed; vm-spawner is reachable only via private tailnet/WireGuard path.
   networking.firewall.allowedTCPPorts = [ ];
 
   environment.etc."microvm-host.README".text = ''
@@ -163,9 +165,8 @@ in
     1. Restart vm-spawner:
        systemctl restart vm-spawner
 
-    2. Access vm-spawner over SSH tunnel:
-       ssh pika-build -L 8080:127.0.0.1:8080
-       curl http://127.0.0.1:8080/healthz
+    2. Access vm-spawner over private tailnet:
+       curl http://pika-build:8080/healthz
 
     Bridge network: ${microvmCidr}
     microvm.nix state dir: ${spawnerStateDir} -> ${spawnerStateBackingDir}

@@ -154,8 +154,7 @@ in
 
   security.sudo.wheelNeedsPassword = false;
 
-  # ── No Tailscale on this host ──────────────────────────────────────────
-  services.tailscale.enable = lib.mkForce false;
+  # ── Keep Tailnet enabled for private service-to-service control plane traffic ──
 
   # ── GC: less aggressive (this is the cache) ───────────────────────────
   nix.gc = lib.mkForce {

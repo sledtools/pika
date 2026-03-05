@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use axum::http::Uri;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
     AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
@@ -27,6 +29,7 @@ const DEFAULT_CONTROL_STATE_PATH: &str = ".pika-agent-control-state.json";
 const DEFAULT_CONTROL_LOOKBACK_SECS: u64 = 600;
 const DEFAULT_IDEMPOTENCY_MAX_ENTRIES: usize = 8192;
 const EVENT_DEDUP_WINDOW: usize = 8192;
+const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
 
 #[derive(Clone)]
 pub struct AgentControlRuntime {
@@ -271,6 +274,69 @@ fn env_u64(key: &str) -> Option<u64> {
     std::env::var(key)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+fn default_microvm_spawner_url_from_env() -> Option<String> {
+    std::env::var(MICROVM_SPAWNER_URL_ENV)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_private_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    let is_cgnat = octets[0] == 100 && (64..=127).contains(&octets[1]);
+    ip.is_private() || ip.is_loopback() || ip.is_link_local() || is_cgnat
+}
+
+fn is_private_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unicast_link_local() || ip.is_unique_local()
+}
+
+fn ensure_private_microvm_spawner_url(spawner_url: &str) -> anyhow::Result<()> {
+    let uri: Uri = spawner_url.parse().with_context(|| {
+        format!("{MICROVM_SPAWNER_URL_ENV} must be a valid URL or URI host, got: {spawner_url}")
+    })?;
+    let host = uri.host().with_context(|| {
+        format!(
+            "microvm spawner URL must include an explicit host: {}",
+            spawner_url
+        )
+    })?;
+    let normalized_host = host.trim_matches(|c| c == '[' || c == ']');
+
+    if normalized_host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+    if let Ok(ipv4) = normalized_host.parse::<Ipv4Addr>() {
+        if is_private_ipv4(ipv4) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "microvm spawner host must be private (RFC1918/CGNAT/loopback), got public IPv4 {}",
+            normalized_host
+        );
+    }
+    if let Ok(ipv6) = normalized_host.parse::<Ipv6Addr>() {
+        if is_private_ipv6(ipv6) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "microvm spawner host must be private (ULA/link-local/loopback), got public IPv6 {}",
+            normalized_host
+        );
+    }
+
+    let is_private_dns_name = normalized_host.ends_with(".internal")
+        || normalized_host.ends_with(".tailnet")
+        || normalized_host.ends_with(".tailnet.ts.net");
+    if is_private_dns_name {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "microvm spawner host must be private DNS (.internal/.tailnet/.tailnet.ts.net) or private IP, got {}",
+        normalized_host
+    );
 }
 
 fn control_cmd_lookback_secs() -> u64 {
@@ -1671,8 +1737,18 @@ impl ProviderAdapter for MicrovmAdapter {
         provision: &ProvisionCommand,
     ) -> anyhow::Result<ProvisionedRuntime> {
         let profile = runtime_profile(ProviderKind::Microvm);
-        let params = provision.microvm.clone().unwrap_or_default();
+        let mut params = provision.microvm.clone().unwrap_or_default();
+        if params
+            .spawner_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            params.spawner_url = default_microvm_spawner_url_from_env();
+        }
         let resolved = resolve_params(&params, provision.keep);
+        ensure_private_microvm_spawner_url(&resolved.spawner_url)?;
         let relay_urls = if provision.relay_urls.is_empty() {
             default_relay_urls()
         } else {
@@ -2791,6 +2867,41 @@ mod tests {
 
         let result = env_json_for_provider(ProviderKind::Fly, &unique);
         assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn private_spawner_url_accepts_private_hosts() {
+        for url in [
+            "http://127.0.0.1:8080",
+            "http://10.10.2.5:8080",
+            "http://172.20.0.8:8080",
+            "http://192.168.83.1:8080",
+            "http://100.100.3.4:8080",
+            "http://localhost:8080",
+            "http://pika-build.internal:8080",
+            "http://pika-build.tailnet:8080",
+            "http://pika-build.tailnet.ts.net:8080",
+            "http://[fd7a:115c:a1e0::1]:8080",
+        ] {
+            ensure_private_microvm_spawner_url(url)
+                .unwrap_or_else(|_| panic!("expected private URL to pass: {url}"));
+        }
+    }
+
+    #[test]
+    fn private_spawner_url_rejects_public_hosts() {
+        for url in [
+            "http://8.8.8.8:8080",
+            "http://1.1.1.1:8080",
+            "http://example.com:8080",
+            "http://api.pikachat.org:8080",
+            "http://[2001:4860:4860::8888]:8080",
+        ] {
+            assert!(
+                ensure_private_microvm_spawner_url(url).is_err(),
+                "expected public URL to fail: {url}"
+            );
+        }
     }
 
     #[tokio::test]

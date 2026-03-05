@@ -97,6 +97,8 @@ in
       APNS_TEAM_ID=${config.sops.placeholder."apns_team_id"}
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
+      # vm-spawner is reached over private WireGuard/Tailscale network.
+      PIKA_AGENT_MICROVM_SPAWNER_URL=http://pika-build:8080
       RUST_LOG=info
     '';
   };

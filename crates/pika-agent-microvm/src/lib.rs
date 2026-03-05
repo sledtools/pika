@@ -23,6 +23,7 @@ pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.j
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
+const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
@@ -117,6 +118,23 @@ impl MicrovmSpawnerClient {
             anyhow::bail!("failed to delete vm {vm_id}: {status} {text}");
         }
         Ok(())
+    }
+
+    pub async fn recover_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        let url = format!("{}/vms/{vm_id}/recover", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .timeout(RECOVER_VM_TIMEOUT)
+            .send()
+            .await
+            .context("send recover vm request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("failed to recover vm {vm_id}: {status} {text}");
+        }
+        resp.json().await.context("decode recover vm response")
     }
 }
 
@@ -833,6 +851,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recover_vm_contract_request_shape() {
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","ip":"192.168.0.11"}"#);
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let recovered = client
+            .recover_vm("vm-recover-1")
+            .await
+            .expect("recover vm succeeds");
+        assert_eq!(recovered.id, "vm-recover-1");
+        assert_eq!(recovered.ip, "192.168.0.11");
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/vms/vm-recover-1/recover");
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn create_vm_surfaces_error_body() {
         let (base_url, _rx) = spawn_one_shot_server("503 Service Unavailable", "spawner down");
         let client = MicrovmSpawnerClient::new(base_url);
@@ -870,6 +909,21 @@ mod tests {
         assert!(msg.contains("failed to delete vm vm-stuck"));
         assert!(msg.contains("500 Internal Server Error"));
         assert!(msg.contains("vm stuck in cleanup"));
+    }
+
+    #[tokio::test]
+    async fn recover_vm_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("503 Service Unavailable", "vm reboot failed");
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let err = client
+            .recover_vm("vm-bad")
+            .await
+            .expect_err("expected recover_vm failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to recover vm vm-bad"));
+        assert!(msg.contains("503 Service Unavailable"));
+        assert!(msg.contains("vm reboot failed"));
     }
 
     #[test]

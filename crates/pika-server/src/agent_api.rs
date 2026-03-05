@@ -21,6 +21,7 @@ use crate::State;
 use pika_agent_control_plane::MicrovmProvisionParams;
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
+    ResolvedMicrovmParams,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -189,8 +190,7 @@ fn generate_agent_id() -> String {
     format!("agent-{suffix:016x}")
 }
 
-async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
-    let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
+fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
     let params = MicrovmProvisionParams {
         spawner_url: default_microvm_spawner_url_from_env(),
         ..MicrovmProvisionParams::default()
@@ -198,6 +198,12 @@ async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
     let resolved = resolve_params(&params, false);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
+    Ok(resolved)
+}
+
+async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
+    let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
+    let resolved = resolved_spawner_params()?;
 
     let bot_keys = Keys::generate();
     let bot_pubkey = bot_keys.public_key().to_hex();
@@ -283,7 +289,27 @@ pub async fn get_my_agent(
     else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
-    Ok(Json(map_row_to_response(active)?))
+    let vm_id = active
+        .vm_id
+        .clone()
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+
+    let resolved = resolved_spawner_params()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let recovered = spawner
+        .recover_vm(&vm_id)
+        .await
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+
+    let updated = AgentInstance::update_phase(
+        &mut conn,
+        &active.agent_id,
+        AGENT_PHASE_CREATING,
+        Some(&recovered.id),
+    )
+    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    Ok(Json(map_row_to_response(updated)?))
 }
 
 pub async fn recover_my_agent(

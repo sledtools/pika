@@ -454,6 +454,82 @@ impl VmManager {
         Ok(())
     }
 
+    pub async fn recover(&self, id: &str) -> anyhow::Result<VmResponse> {
+        let vm = {
+            let guard = self.inner.lock().await;
+            guard
+                .vms
+                .get(id)
+                .cloned()
+                .ok_or_else(|| anyhow!("vm not found: {id}"))?
+        };
+        let variant = SpawnVariant::parse(&vm.spawn_variant)
+            .with_context(|| format!("parse spawn variant for recover: {}", vm.spawn_variant))?;
+
+        let total_started = Instant::now();
+        let mut timings = BTreeMap::<String, u64>::new();
+        let mut phase_start = Instant::now();
+
+        let reboot_result = self.try_reboot_vm(&vm).await;
+        timings.insert("reboot_attempt_ms".into(), to_ms(phase_start.elapsed()));
+        phase_start = Instant::now();
+
+        let runtime_status = match reboot_result {
+            Ok(()) => "running",
+            Err(reboot_err) => match variant {
+                SpawnVariant::Prebuilt | SpawnVariant::PrebuiltCow => {
+                    warn!(
+                        vm_id = %id,
+                        error = %reboot_err,
+                        "reboot failed; attempting recreate with existing persistent home"
+                    );
+                    self.recreate_prebuilt_vm_with_existing_home(&vm).await?;
+                    timings.insert("recreate_fallback_ms".into(), to_ms(phase_start.elapsed()));
+                    if wait_for_unit_active_or_fail_fast(
+                        &self.cfg.systemctl_cmd,
+                        &format!("microvm@{id}.service"),
+                        Duration::from_secs(2),
+                    )
+                    .await?
+                    {
+                        "running"
+                    } else {
+                        "starting"
+                    }
+                }
+                SpawnVariant::Legacy => {
+                    return Err(reboot_err)
+                        .context("legacy variant recover does not support recreate fallback");
+                }
+            },
+        };
+
+        timings.insert("recover_total_ms".into(), to_ms(total_started.elapsed()));
+
+        let mut guard = self.inner.lock().await;
+        let vm_snapshot = {
+            let vm_mut = guard
+                .vms
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("vm disappeared during recover: {id}"))?;
+            vm_mut.status = runtime_status.to_string();
+            self.persist_vm(vm_mut)?;
+            vm_mut.clone()
+        };
+        self.persist_sessions_locked(&guard.vms)?;
+        drop(guard);
+
+        let private_key =
+            fs::read_to_string(&vm_snapshot.ssh_private_key_path).with_context(|| {
+                format!(
+                    "read private key {}",
+                    vm_snapshot.ssh_private_key_path.display()
+                )
+            })?;
+
+        Ok(vm_snapshot.to_response(private_key, &self.cfg.llm_base_url, timings))
+    }
+
     pub async fn reap_expired(&self) -> anyhow::Result<Vec<String>> {
         let now = Utc::now();
         let expired_ids = {
@@ -709,6 +785,63 @@ impl VmManager {
             &PathBuf::from(format!("/nix/var/nix/gcroots/microvm/booted-{id}")),
         )?;
 
+        Ok(())
+    }
+
+    async fn try_reboot_vm(&self, vm: &PersistedVm) -> anyhow::Result<()> {
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("restart")
+                .arg(format!("microvm@{}.service", vm.id)),
+            "restart microvm service",
+        )
+        .await?;
+
+        if !wait_for_unit_active_or_fail_fast(
+            &self.cfg.systemctl_cmd,
+            &format!("microvm@{}.service", vm.id),
+            Duration::from_secs(3),
+        )
+        .await?
+        {
+            anyhow::bail!("microvm service did not become active after reboot");
+        }
+
+        ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
+        Ok(())
+    }
+
+    async fn recreate_prebuilt_vm_with_existing_home(
+        &self,
+        vm: &PersistedVm,
+    ) -> anyhow::Result<()> {
+        let unit_name = format!("microvm@{}.service", vm.id);
+        let _ = Command::new(&self.cfg.systemctl_cmd)
+            .arg("stop")
+            .arg(&unit_name)
+            .status()
+            .await;
+        let _ = Command::new(&self.cfg.ip_cmd)
+            .arg("link")
+            .arg("del")
+            .arg(&vm.tap_name)
+            .status()
+            .await;
+
+        self.ensure_runtime_artifacts().await?;
+        let runner_path = self.ensure_prebuilt_runner(vm.cpu, vm.memory_mb).await?;
+        self.install_prebuilt_vm_state(&vm.id, &vm.microvm_state_dir, &runner_path)
+            .await?;
+        create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
+        ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("start")
+                .arg("--no-block")
+                .arg(&unit_name),
+            "start microvm service",
+        )
+        .await?;
         Ok(())
     }
 

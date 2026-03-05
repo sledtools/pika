@@ -6,6 +6,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::{Context, anyhow, bail};
+use base64::Engine;
+use nostr_sdk::ToBech32;
+use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
+use reqwest::Method;
 use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -61,8 +65,6 @@ fn scenario_request(name: &str) -> ScenarioRequest {
     }
 }
 
-const HTTP_AGENT_TEST_OWNER_NPUB: &str =
-    "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
 static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 struct ScopedEnvVar {
@@ -167,6 +169,43 @@ fn spawn_mock_vm_spawner() -> Result<(String, thread::JoinHandle<Result<String>>
     });
 
     Ok((url, handle))
+}
+
+fn build_nip98_authorization_header(keys: &Keys, method: Method, url: &str) -> Result<String> {
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags([
+            Tag::custom(TagKind::custom("u"), [url]),
+            Tag::custom(
+                TagKind::custom("method"),
+                [method.as_str().to_ascii_uppercase()],
+            ),
+        ])
+        .sign_with_keys(keys)
+        .context("sign NIP-98 event")?;
+    let payload = serde_json::to_vec(&event).context("serialize NIP-98 event")?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+    Ok(format!("Nostr {encoded}"))
+}
+
+fn insert_agent_allowlist_row(database_url: &str, npub: &str) -> Result<()> {
+    let escaped_npub = npub.replace('\'', "''");
+    let sql = format!(
+        "INSERT INTO agent_allowlist (npub, active, note, updated_by, updated_at) \
+         VALUES ('{escaped_npub}', TRUE, 'deterministic', '{escaped_npub}', now()) \
+         ON CONFLICT (npub) DO UPDATE \
+         SET active = EXCLUDED.active, note = EXCLUDED.note, updated_by = EXCLUDED.updated_by, updated_at = now();"
+    );
+    let output = std::process::Command::new("psql")
+        .args(["-v", "ON_ERROR_STOP=1", "-d", database_url, "-c", &sql])
+        .output()
+        .context("run psql to upsert agent allowlist")?;
+    if !output.status.success() {
+        bail!(
+            "psql failed upserting agent allowlist row: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -402,17 +441,25 @@ fn call_with_pikachat_daemon_boundary() -> Result<()> {
 #[ignore = "integration scenario; run in deterministic lane"]
 async fn agent_http_ensure_local() -> Result<()> {
     let _env_lock = ENV_LOCK.lock().await;
+    // Keep temp paths short enough for postgres unix socket limits while preserving
+    // TestContext auto-state lifecycle (including PreserveOnFailure behavior).
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
     let mut context = TestContext::builder("agent-http-ensure-local")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
     let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
-    let token = format!("agent-http-token-{}", std::process::id());
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
 
     let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
-    let _token_env = ScopedEnvVar::set(
-        "PIKA_AGENT_OWNER_TOKEN_MAP",
-        &format!("{token}={HTTP_AGENT_TEST_OWNER_NPUB}"),
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
     );
 
     let fixture = start_fixture(
@@ -424,11 +471,22 @@ async fn agent_http_ensure_local() -> Result<()> {
         .server_url()
         .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
         .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let client = reqwest::Client::new();
+    let ensure_url = format!("{server_url}/v1/agents/ensure");
+    let ensure_auth = build_nip98_authorization_header(&owner_keys, Method::POST, &ensure_url)?;
     let ensure_resp = client
-        .post(format!("{server_url}/v1/agents/ensure"))
-        .header("Authorization", format!("Bearer {token}"))
+        .post(&ensure_url)
+        .header("Authorization", ensure_auth)
+        .json(&serde_json::json!({}))
         .send()
         .await
         .context("send /v1/agents/ensure")?;
@@ -461,9 +519,11 @@ async fn agent_http_ensure_local() -> Result<()> {
         bail!("expected vm_id=vm-test-1, got: {vm_id}");
     }
 
+    let me_url = format!("{server_url}/v1/agents/me");
+    let me_auth = build_nip98_authorization_header(&owner_keys, Method::GET, &me_url)?;
     let me_resp = client
-        .get(format!("{server_url}/v1/agents/me"))
-        .header("Authorization", format!("Bearer {token}"))
+        .get(&me_url)
+        .header("Authorization", me_auth)
         .send()
         .await
         .context("send /v1/agents/me")?;
@@ -496,17 +556,26 @@ async fn agent_http_ensure_local() -> Result<()> {
 #[ignore = "integration scenario; run in deterministic lane"]
 async fn agent_http_cli_new_local() -> Result<()> {
     let _env_lock = ENV_LOCK.lock().await;
+    // Keep temp paths short enough for postgres unix socket limits while preserving
+    // TestContext auto-state lifecycle (including PreserveOnFailure behavior).
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
     let mut context = TestContext::builder("agent-http-cli-new-local")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
     let (spawner_url, spawner_thread) = spawn_mock_vm_spawner()?;
-    let token = format!("agent-http-cli-token-{}", std::process::id());
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
+    let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
     let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
-    let _token_env = ScopedEnvVar::set(
-        "PIKA_AGENT_OWNER_TOKEN_MAP",
-        &format!("{token}={HTTP_AGENT_TEST_OWNER_NPUB}"),
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
     );
 
     let fixture = start_fixture(
@@ -518,6 +587,14 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .server_url()
         .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
         .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
     let output = runner.run(
@@ -533,8 +610,8 @@ async fn agent_http_cli_new_local() -> Result<()> {
                 "new",
                 "--api-base-url",
                 &server_url,
-                "--token",
-                &token,
+                "--nsec",
+                &owner_nsec,
             ])
             .capture_name("agent-http-cli-new"),
     )?;
@@ -552,9 +629,11 @@ async fn agent_http_cli_new_local() -> Result<()> {
         bail!("expected CLI ensure state=creating, got: {state}");
     }
 
+    let me_url = format!("{server_url}/v1/agents/me");
+    let me_auth = build_nip98_authorization_header(&owner_keys, Method::GET, &me_url)?;
     let me_resp = reqwest::Client::new()
-        .get(format!("{server_url}/v1/agents/me"))
-        .header("Authorization", format!("Bearer {token}"))
+        .get(&me_url)
+        .header("Authorization", me_auth)
         .send()
         .await
         .context("send /v1/agents/me")?;

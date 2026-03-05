@@ -51,7 +51,7 @@ info:
     @echo "    just agent-microvm"
     @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
-    @echo "    just cli agent new --token <token>"
+    @echo "    just cli agent new --nsec <nsec>"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -266,6 +266,7 @@ pre-merge-pikachat:
 pre-merge-agent-contracts:
     cargo test -p pika-agent-microvm
     cargo test -p pika-server -- agent_api::tests
+    cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
     cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
     @echo "pre-merge-agent-contracts complete"
@@ -855,7 +856,7 @@ cli-smoke:
 cli-smoke-media:
     cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 
-# Run the HTTP agent ensure demo (`pikachat agent new --token ...`).
+# Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
 agent-microvm *ARGS="":
     set -euo pipefail; \
     if [ -f .env ]; then \

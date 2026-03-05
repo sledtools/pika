@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use base64::Engine;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
@@ -379,19 +380,19 @@ If --output is omitted, the original filename from the sender is used.")]
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Ensure an agent exists for the configured owner token
+    /// Ensure an agent exists for the configured Nostr signer
     New {
         #[command(flatten)]
         http: AgentHttpArgs,
     },
 
-    /// Fetch the current agent state for the configured owner token
+    /// Fetch the current agent state for the configured Nostr signer
     Me {
         #[command(flatten)]
         http: AgentHttpArgs,
     },
 
-    /// Ask the server to recover the current agent VM
+    /// Ask the server to recover the current agent VM for the configured signer
     Recover {
         #[command(flatten)]
         http: AgentHttpArgs,
@@ -409,9 +410,9 @@ struct AgentHttpArgs {
     #[arg(long, env = "PIKA_AGENT_API_BASE_URL", default_value = DEFAULT_AGENT_API_BASE_URL)]
     api_base_url: String,
 
-    /// Bearer token configured in `PIKA_AGENT_OWNER_TOKEN_MAP` on pika-server
-    #[arg(long, env = "PIKA_AGENT_API_TOKEN")]
-    token: String,
+    /// Nostr secret key (nsec1... or hex) used for NIP-98 request signing
+    #[arg(long, env = "PIKA_AGENT_API_NSEC")]
+    nsec: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1644,10 +1645,43 @@ fn normalized_agent_api_base_url(raw: &str) -> anyhow::Result<String> {
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
-fn agent_api_token_value(raw: &str) -> anyhow::Result<&str> {
-    let token = raw.trim();
-    anyhow::ensure!(!token.is_empty(), "agent api token cannot be empty");
-    Ok(token)
+fn agent_api_nsec_value(raw: Option<&str>) -> anyhow::Result<String> {
+    let candidate = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("PIKA_TEST_NSEC")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .ok_or_else(|| {
+            anyhow!("agent api nsec is required (--nsec, PIKA_AGENT_API_NSEC, or PIKA_TEST_NSEC)")
+        })?;
+    Keys::parse(&candidate).context("parse agent api nsec")?;
+    Ok(candidate)
+}
+
+fn build_nip98_authorization_header(
+    nsec: &str,
+    method: &reqwest::Method,
+    url: &str,
+) -> anyhow::Result<String> {
+    let keys = Keys::parse(nsec).context("parse Nostr signing key")?;
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags([
+            Tag::custom(TagKind::custom("u"), [url]),
+            Tag::custom(
+                TagKind::custom("method"),
+                [method.as_str().to_ascii_uppercase()],
+            ),
+        ])
+        .sign_with_keys(&keys)
+        .context("sign NIP-98 event")?;
+    let payload = serde_json::to_vec(&event).context("serialize NIP-98 event")?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+    Ok(format!("Nostr {encoded}"))
 }
 
 async fn call_agent_api(
@@ -1656,11 +1690,21 @@ async fn call_agent_api(
     path: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let base_url = normalized_agent_api_base_url(&http.api_base_url)?;
-    let token = agent_api_token_value(&http.token)?;
+    let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
     let url = format!("{base_url}{path}");
-    let response = reqwest::Client::new()
+    let auth = build_nip98_authorization_header(&nsec, &method, &url)?;
+
+    let mut request = reqwest::Client::new()
         .request(method.clone(), &url)
-        .bearer_auth(token)
+        .header("Authorization", auth)
+        .header("Accept", "application/json");
+    if method == reqwest::Method::POST {
+        request = request
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({}));
+    }
+
+    let response = request
         .send()
         .await
         .with_context(|| format!("send {} {}", method, url))?;
@@ -2037,7 +2081,7 @@ mod tests {
 
     struct AgentHttpParse {
         api_base_url: String,
-        token: String,
+        nsec: Option<String>,
     }
 
     fn parse_agent_new(args: &[&str]) -> AgentHttpParse {
@@ -2047,7 +2091,7 @@ mod tests {
                 cmd: AgentCommand::New { http },
             } => AgentHttpParse {
                 api_base_url: http.api_base_url,
-                token: http.token,
+                nsec: http.nsec,
             },
             _ => panic!("expected agent new command"),
         }
@@ -2060,7 +2104,7 @@ mod tests {
                 cmd: AgentCommand::Me { http },
             } => AgentHttpParse {
                 api_base_url: http.api_base_url,
-                token: http.token,
+                nsec: http.nsec,
             },
             _ => panic!("expected agent me command"),
         }
@@ -2074,18 +2118,24 @@ mod tests {
             "new",
             "--api-base-url",
             "http://127.0.0.1:18080",
-            "--token",
-            "dev-token",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
         ]);
         assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
-        assert_eq!(parsed.token, "dev-token");
+        assert!(parsed.nsec.is_some());
     }
 
     #[test]
     fn agent_new_defaults_base_url() {
-        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--token", "dev-token"]);
+        let parsed = parse_agent_new(&[
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+        ]);
         assert_eq!(parsed.api_base_url, DEFAULT_AGENT_API_BASE_URL);
-        assert_eq!(parsed.token, "dev-token");
+        assert!(parsed.nsec.is_some());
     }
 
     #[test]
@@ -2096,11 +2146,11 @@ mod tests {
             "me",
             "--api-base-url",
             "http://127.0.0.1:18080",
-            "--token",
-            "dev-token",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
         ]);
         assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
-        assert_eq!(parsed.token, "dev-token");
+        assert!(parsed.nsec.is_some());
     }
 
     #[test]

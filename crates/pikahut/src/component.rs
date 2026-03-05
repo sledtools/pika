@@ -10,33 +10,6 @@ use tracing::{info, warn};
 use crate::config::ResolvedConfig;
 use crate::health;
 
-const PIKAHUT_AGENT_API_TOKEN: &str = "pikahut-dev-agent-token";
-const PIKAHUT_AGENT_OWNER_NPUB: &str =
-    "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
-
-fn resolve_owner_token_map(configured: Option<&str>) -> (String, String) {
-    let default_owner_token_map = format!("{PIKAHUT_AGENT_API_TOKEN}={PIKAHUT_AGENT_OWNER_NPUB}");
-    let owner_token_map = configured
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or(default_owner_token_map);
-    let agent_api_token = owner_token_map
-        .split(',')
-        .find_map(|entry| {
-            let trimmed = entry.trim();
-            let (token, _) = trimmed.split_once('=')?;
-            let token = token.trim();
-            if token.is_empty() {
-                None
-            } else {
-                Some(token.to_string())
-            }
-        })
-        .unwrap_or_else(|| PIKAHUT_AGENT_API_TOKEN.to_string());
-    (owner_token_map, agent_api_token)
-}
-
 pub struct Postgres {
     pub pgdata: PathBuf,
     pub database_url: String,
@@ -371,7 +344,6 @@ impl MoqRelay {
 pub struct Server {
     pub child: Child,
     pub url: String,
-    pub agent_api_token: String,
 }
 
 impl Server {
@@ -384,9 +356,6 @@ impl Server {
         let port = config.server_port;
         let url = config.server_url();
         let log_path = state_dir.join("server.log");
-        let configured_owner_token_map = std::env::var("PIKA_AGENT_OWNER_TOKEN_MAP").ok();
-        let (owner_token_map, agent_api_token) =
-            resolve_owner_token_map(configured_owner_token_map.as_deref());
 
         info!("[server] Starting pika-server on port {port}...");
         let log_file = std::fs::File::create(&log_path)?;
@@ -397,7 +366,6 @@ impl Server {
             .env("RELAYS", relay_url)
             .env("DATABASE_URL", database_url)
             .env("NOTIFICATION_PORT", port.to_string())
-            .env("PIKA_AGENT_OWNER_TOKEN_MAP", owner_token_map)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
@@ -413,11 +381,7 @@ impl Server {
         health::wait_for_http(&health_url, Duration::from_secs(60)).await?;
 
         info!("[server] Ready ({url})");
-        Ok(Self {
-            child,
-            url,
-            agent_api_token,
-        })
+        Ok(Self { child, url })
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -548,26 +512,4 @@ pub fn kill_pid(pid: u32) {
 
     warn!("PID {pid} did not exit after SIGTERM, sending SIGKILL");
     let _ = kill(nix_pid, Signal::SIGKILL);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_owner_token_map_uses_default_when_unset() {
-        let (map, token) = resolve_owner_token_map(None);
-        assert_eq!(
-            map,
-            format!("{PIKAHUT_AGENT_API_TOKEN}={PIKAHUT_AGENT_OWNER_NPUB}")
-        );
-        assert_eq!(token, PIKAHUT_AGENT_API_TOKEN);
-    }
-
-    #[test]
-    fn resolve_owner_token_map_prefers_configured_token() {
-        let (map, token) = resolve_owner_token_map(Some("test-token=npub1abc"));
-        assert_eq!(map, "test-token=npub1abc");
-        assert_eq!(token, "test-token");
-    }
 }

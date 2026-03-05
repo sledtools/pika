@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local PTY client for pika-cli agent mode.
 
-Spawns a local marmotd daemon, invites the remote bot into a data call over MoQ,
+Spawns a local pikachat daemon, invites the remote bot into a data call over MoQ,
 then forwards local terminal input/output over encrypted call data frames.
 """
 
@@ -62,7 +62,7 @@ def env_float(name: str, default: float) -> float:
     return default
 
 
-MARMOTD_BIN = required_env("PIKA_AGENT_MARMOTD_BIN")
+PIKACHAT_BIN = required_env("PIKA_AGENT_PIKACHAT_BIN")
 STATE_DIR = required_env("PIKA_AGENT_STATE_DIR")
 GROUP_ID = required_env("PIKA_AGENT_GROUP_ID")
 BOT_PUBKEY = required_env("PIKA_AGENT_BOT_PUBKEY").lower()
@@ -173,7 +173,7 @@ def daemon_stderr_reader(proc: subprocess.Popen[str]) -> None:
 def spawn_daemon() -> subprocess.Popen[str]:
     env = os.environ.copy()
     env.setdefault("RUST_LOG", "error")
-    cmd = [MARMOTD_BIN, "daemon", "--state-dir", STATE_DIR, "--allow-pubkey", BOT_PUBKEY]
+    cmd = [PIKACHAT_BIN, "daemon", "--state-dir", STATE_DIR, "--allow-pubkey", BOT_PUBKEY]
     for relay in RELAYS:
         cmd.extend(["--relay", relay])
     proc = subprocess.Popen(
@@ -293,7 +293,7 @@ def wait_for_ready(timeout_sec: float = 15.0) -> None:
         msg_type = str(msg.get("type", ""))
         if msg_type == "ready":
             return
-    raise RuntimeError("timed out waiting for marmotd ready")
+    raise RuntimeError("timed out waiting for pikachat daemon ready")
 
 
 def next_event(timeout: float = 0.0) -> dict[str, Any] | None:

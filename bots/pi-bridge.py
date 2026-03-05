@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge between marmotd JSONL (stdin/stdout) and Pi.
+"""Bridge between pikachat JSONL (stdin/stdout) and Pi.
 
 Modes:
 - PTY call mode (default): auto-accept data calls and attach remote Pi TUI over MoQ call data.
@@ -80,7 +80,7 @@ def log(msg: str) -> None:
     print(f"[pi-bridge] {msg}", file=sys.stderr, flush=True)
 
 
-def send_to_marmotd(cmd: dict) -> None:
+def send_to_pikachat(cmd: dict) -> None:
     line = json.dumps(cmd, separators=(",", ":"))
     with SEND_LOCK:
         print(line, flush=True)
@@ -94,7 +94,7 @@ def send_to_pi(proc: subprocess.Popen[bytes], msg: dict) -> None:
 
 
 def emit_pi_event(group_id: str, payload: dict) -> None:
-    send_to_marmotd(
+    send_to_pikachat(
         {
             "cmd": "send_message",
             "nostr_group_id": group_id,
@@ -229,7 +229,7 @@ def decode_call_payload(msg: dict) -> dict | None:
 
 
 def send_call_payload(call_id: str, payload_obj: dict) -> None:
-    send_to_marmotd(
+    send_to_pikachat(
         {
             "cmd": "send_call_data",
             "call_id": call_id,
@@ -401,7 +401,7 @@ def pty_reader_loop(call_id: str, pid: int, fd: int) -> None:
         flush_pending()
         exit_code = reap_child_exit_code(pid)
         send_call_payload(call_id, {"t": "exit", "code": exit_code})
-        send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "pty_exit"})
+        send_to_pikachat({"cmd": "end_call", "call_id": call_id, "reason": "pty_exit"})
         with PTY_LOCK:
             if active_call_id == call_id:
                 active_call_id = None
@@ -448,7 +448,7 @@ def replay_loop(call_id: str) -> None:
             next_seq += 1
     finally:
         send_call_payload(call_id, {"t": "exit", "code": 0})
-        send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "replay_done"})
+        send_to_pikachat({"cmd": "end_call", "call_id": call_id, "reason": "replay_done"})
         with PTY_LOCK:
             if active_call_id == call_id:
                 active_call_id = None
@@ -538,7 +538,7 @@ def handle_call_data(msg: dict) -> None:
         return
     msg_type = str(payload.get("t", ""))
     if msg_type == "exit":
-        send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "peer_exit"})
+        send_to_pikachat({"cmd": "end_call", "call_id": call_id, "reason": "peer_exit"})
         return
 
     with PTY_LOCK:
@@ -622,7 +622,7 @@ def send_rpc_framed_payload(call_id: str, stream: str, payload: bytes) -> None:
         if rpc_transport == "call":
             send_call_payload(call_id, envelope)
         else:
-            send_to_marmotd(
+            send_to_pikachat(
                 {
                     "cmd": "send_message",
                     "nostr_group_id": target_group_id,
@@ -675,7 +675,7 @@ def rpc_reader_loop(call_id: str, proc: subprocess.Popen[bytes]) -> None:
             },
         )
         if rpc_transport == "call":
-            send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "rpc_exit"})
+            send_to_pikachat({"cmd": "end_call", "call_id": call_id, "reason": "rpc_exit"})
         with RPC_LOCK:
             if rpc_transport == "call" and rpc_call_id == call_id:
                 rpc_call_id = None
@@ -865,7 +865,7 @@ def handle_complete_rpc_frame(call_id: str, session_id: str, stream: str, payloa
         )
     elif ctrl_type == "close":
         if rpc_transport == "call":
-            send_to_marmotd({"cmd": "end_call", "call_id": call_id, "reason": "peer_close"})
+            send_to_pikachat({"cmd": "end_call", "call_id": call_id, "reason": "peer_close"})
         else:
             stop_pi_rpc_nostr("peer_close")
 
@@ -1003,8 +1003,8 @@ def main() -> None:
         msg_type = msg.get("type")
         if msg_type == "ready":
             my_pubkey = msg.get("pubkey")
-            log(f"marmotd ready, pubkey={my_pubkey}")
-            send_to_marmotd(build_publish_keypackage_cmd())
+            log(f"pikachat daemon ready, pubkey={my_pubkey}")
+            send_to_pikachat(build_publish_keypackage_cmd())
 
         if msg_type == "call_invite_received":
             call_id = str(msg.get("call_id", ""))
@@ -1015,11 +1015,11 @@ def main() -> None:
                 with RPC_LOCK:
                     busy = rpc_call_id is not None
             if busy:
-                send_to_marmotd(
+                send_to_pikachat(
                     {"cmd": "reject_call", "call_id": call_id, "reason": "busy"}
                 )
             else:
-                send_to_marmotd({"cmd": "accept_call", "call_id": call_id})
+                send_to_pikachat({"cmd": "accept_call", "call_id": call_id})
             continue
 
         if msg_type == "call_session_started":
@@ -1065,7 +1065,7 @@ def main() -> None:
                 emit_pi_event(group_id, {"kind": "status", "message": "processing"})
                 response = collect_pi_response(pi_proc, group_id)
                 if response.strip():
-                    send_to_marmotd(
+                    send_to_pikachat(
                         {
                             "cmd": "send_message",
                             "nostr_group_id": group_id,

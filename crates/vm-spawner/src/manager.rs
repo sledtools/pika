@@ -343,8 +343,14 @@ impl VmManager {
                     timings.insert("runner_resolve_ms".into(), to_ms(phase_start.elapsed()));
                     phase_start = Instant::now();
 
-                    let marmotd_bin = packaged_marmotd_path()?;
-                    timings.insert("marmotd_resolve_ms".into(), to_ms(phase_start.elapsed()));
+                    let daemon_bin = resolve_agent_daemon_bin();
+                    if daemon_bin.is_none() {
+                        warn!(
+                            vm_id = %id,
+                            "no packaged pikachat binary found; relying on guest PATH"
+                        );
+                    }
+                    timings.insert("daemon_resolve_ms".into(), to_ms(phase_start.elapsed()));
                     phase_start = Instant::now();
 
                     write_runtime_metadata(
@@ -362,7 +368,7 @@ impl VmManager {
                         &self.cfg.runtime_artifacts_guest_mount,
                         variant.workspace_mode(),
                         &self.cfg.workspace_template_path,
-                        Some(&marmotd_bin),
+                        daemon_bin.as_deref(),
                         guest_autostart.as_ref(),
                     )?;
                     timings.insert("metadata_write_ms".into(), to_ms(phase_start.elapsed()));
@@ -1043,31 +1049,39 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn packaged_marmotd_path() -> anyhow::Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("VM_MARMOTD_BIN") {
-        let path = PathBuf::from(override_path);
-        if path.exists() {
-            return Ok(path);
+fn env_existing_path(name: &str) -> Option<PathBuf> {
+    let value = std::env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn resolve_agent_daemon_bin() -> Option<PathBuf> {
+    if let Some(path) = env_existing_path("VM_PIKACHAT_BIN") {
+        return Some(path);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            let pikachat = bin_dir.join("pikachat");
+            if pikachat.exists() {
+                return Some(pikachat);
+            }
         }
     }
 
-    let exe = std::env::current_exe().context("resolve vm-spawner binary path")?;
-    let bin_dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("vm-spawner binary has no parent directory"))?;
-    let marmotd = bin_dir.join("marmotd");
-    if marmotd.exists() {
-        return Ok(marmotd);
+    if let Some(path) = find_in_path("pikachat") {
+        return Some(path);
     }
 
-    if let Some(path) = find_in_path("marmotd") {
-        return Ok(path);
-    }
-
-    anyhow::bail!(
-        "packaged marmotd binary missing at {} (set VM_MARMOTD_BIN or ensure marmotd is on PATH)",
-        marmotd.display()
-    );
+    None
 }
 
 fn find_in_path(bin_name: &str) -> Option<PathBuf> {
@@ -1097,7 +1111,7 @@ fn write_runtime_metadata(
     runtime_artifacts_guest_mount: &Path,
     workspace_mode: &str,
     workspace_template_path: &Path,
-    marmotd_bin: Option<&Path>,
+    daemon_bin: Option<&Path>,
     guest_autostart: Option<&GuestAutostartRequest>,
 ) -> anyhow::Result<()> {
     let metadata_dir = vm_state_dir.join("metadata");
@@ -1127,9 +1141,9 @@ fn write_runtime_metadata(
         "PIKA_RUNTIME_ARTIFACTS_GUEST={}\n",
         shell_quote(&runtime_artifacts_guest_mount.display().to_string()),
     ));
-    if let Some(path) = marmotd_bin {
+    if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
-            "PIKA_MARMOTD_BIN={}\n",
+            "PIKA_PIKACHAT_BIN={}\n",
             shell_quote(&path.display().to_string())
         ));
     }

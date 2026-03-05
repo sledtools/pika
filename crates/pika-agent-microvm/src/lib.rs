@@ -284,15 +284,13 @@ if [[ ${#relay_args[@]} -eq 0 ]]; then
 fi
 
 bin=""
-if command -v pikachat >/dev/null 2>&1; then
+if [[ -n "${PIKA_PIKACHAT_BIN:-}" ]]; then
+  bin="${PIKA_PIKACHAT_BIN}"
+elif command -v pikachat >/dev/null 2>&1; then
   bin="pikachat"
-elif [[ -n "${PIKA_MARMOTD_BIN:-}" ]]; then
-  bin="${PIKA_MARMOTD_BIN}"
-elif command -v marmotd >/dev/null 2>&1; then
-  bin="marmotd"
 fi
 if [[ -z "$bin" ]]; then
-  echo "[microvm-agent] could not find pikachat or marmotd binary" >&2
+  echo "[microvm-agent] could not find pikachat binary" >&2
   exit 1
 fi
 

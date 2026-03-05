@@ -49,6 +49,8 @@ info:
     @echo "    just pikahut-up"
     @echo "  Agent HTTP demo:"
     @echo "    just agent-microvm"
+    @echo "  Agent chat demo (ensure/reuse + send + listen):"
+    @echo "    just agent-microvm-chat \"hello\""
     @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
     @echo "    just cli agent new --nsec <nsec>"
@@ -269,6 +271,7 @@ pre-merge-agent-contracts:
     cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
     cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
     @echo "pre-merge-agent-contracts complete"
 
@@ -866,6 +869,10 @@ agent-microvm *ARGS="":
       set +a; \
     fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
+
+# Ensure/reuse personal agent, send one message, then optionally listen for reply.
+agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
+    ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
 
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:

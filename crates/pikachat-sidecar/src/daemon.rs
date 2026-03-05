@@ -2674,10 +2674,35 @@ pub async fn daemon_main(
                             }
                         };
                         match mdk.get_pending_welcomes(None) {
-                            Ok(list) => {
-                                let found = list.into_iter().find(|w| w.wrapper_event_id == wrapper);
+                            Ok(mut list) => {
+                                let mut found = list
+                                    .iter()
+                                    .position(|w| w.wrapper_event_id == wrapper)
+                                    .map(|idx| list.swap_remove(idx));
+                                if found.is_none() {
+                                    found = list
+                                        .iter()
+                                        .position(|w| w.id == wrapper)
+                                        .map(|idx| list.swap_remove(idx));
+                                }
+                                if found.is_none() && list.len() == 1 {
+                                    let fallback = list.swap_remove(0);
+                                    warn!(
+                                        "[pikachat] accept_welcome wrapper_id={} not found; falling back to sole pending welcome wrapper_id={} welcome_event_id={}",
+                                        wrapper_event_id,
+                                        fallback.wrapper_event_id.to_hex(),
+                                        fallback.id.to_hex()
+                                    );
+                                    found = Some(fallback);
+                                }
                                 let Some(w) = found else {
-                                    reply_tx.send(out_error(request_id, "not_found", "pending welcome not found")).ok();
+                                    reply_tx
+                                        .send(out_error(
+                                            request_id,
+                                            "not_found",
+                                            "pending welcome not found",
+                                        ))
+                                        .ok();
                                     continue;
                                 };
                                 let nostr_group_id_hex = hex::encode(w.nostr_group_id);

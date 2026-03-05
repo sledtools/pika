@@ -510,8 +510,8 @@ async fn agent_http_ensure_local() -> Result<()> {
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "creating" {
-        bail!("expected state=creating after ensure, got: {state}");
+    if state != "ready" {
+        bail!("expected state=ready after ensure, got: {state}");
     }
     let agent_id = ensure_json
         .get("agent_id")
@@ -637,8 +637,8 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .and_then(|value| value.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "creating" {
-        bail!("expected CLI ensure state=creating, got: {state}");
+    if state != "ready" {
+        bail!("expected CLI ensure state=ready, got: {state}");
     }
 
     let me_url = format!("{server_url}/v1/agents/me");
@@ -662,6 +662,138 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
     if !spawner_request_line.starts_with("POST /vms ") {
         bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_cli_new_idempotent_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-http-cli-new-idempotent-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
+    let owner_nsec = owner_keys.secret_key().to_secret_hex();
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
+
+    let runner = CommandRunner::new(&context);
+
+    let first_new_output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "new",
+                "--api-base-url",
+                &server_url,
+                "--nsec",
+                &owner_nsec,
+            ])
+            .capture_name("agent-http-cli-new-idempotent-first"),
+    )?;
+    let first_stdout =
+        String::from_utf8(first_new_output.stdout).context("decode first new stdout")?;
+    let first_json: Value =
+        serde_json::from_str(first_stdout.trim()).context("decode first new")?;
+    if first_json.get("operation").and_then(Value::as_str) != Some("ensure") {
+        bail!("unexpected first CLI new payload: {first_json}");
+    }
+    if first_json.get("created").and_then(Value::as_bool) != Some(true) {
+        bail!("expected first CLI new to set created=true, got: {first_json}");
+    }
+    let first_agent_id = first_json
+        .get("agent")
+        .and_then(|value| value.get("agent_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("first CLI new missing agent.agent_id"))?;
+
+    let second_new_output = runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
+                "agent",
+                "new",
+                "--api-base-url",
+                &server_url,
+                "--nsec",
+                &owner_nsec,
+            ])
+            .capture_name("agent-http-cli-new-idempotent-second"),
+    )?;
+    let second_stdout =
+        String::from_utf8(second_new_output.stdout).context("decode second new stdout")?;
+    let second_json: Value =
+        serde_json::from_str(second_stdout.trim()).context("decode second new")?;
+    if second_json.get("operation").and_then(Value::as_str) != Some("ensure") {
+        bail!("unexpected second CLI new payload: {second_json}");
+    }
+    if second_json.get("created").and_then(Value::as_bool) != Some(false) {
+        bail!("expected second CLI new to set created=false, got: {second_json}");
+    }
+    let second_agent_id = second_json
+        .get("agent")
+        .and_then(|value| value.get("agent_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("second CLI new missing agent.agent_id"))?;
+    if second_agent_id != first_agent_id {
+        bail!("expected same agent_id across idempotent new calls");
+    }
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 1 {
+        bail!("expected exactly one vm-spawner request, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines[0].starts_with("POST /vms ") {
+        bail!(
+            "expected vm-spawner POST /vms on first ensure, got: {}",
+            spawner_request_lines[0]
+        );
     }
 
     context.mark_success();
@@ -789,8 +921,8 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .and_then(|value| value.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    if recover_state != "creating" {
-        bail!("expected CLI recover state=creating, got: {recover_state}");
+    if recover_state != "ready" {
+        bail!("expected CLI recover state=ready, got: {recover_state}");
     }
 
     let spawner_request_lines = spawner_thread

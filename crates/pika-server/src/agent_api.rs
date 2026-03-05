@@ -297,7 +297,7 @@ pub async fn ensure_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        AGENT_PHASE_CREATING,
+        AGENT_PHASE_READY,
         Some(&vm_id),
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
@@ -319,7 +319,18 @@ pub async fn get_my_agent(
     else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
-    Ok(Json(map_row_to_response(active)?))
+    let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {
+        AgentInstance::update_phase(
+            &mut conn,
+            &active.agent_id,
+            AGENT_PHASE_READY,
+            active.vm_id.as_deref(),
+        )
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+    } else {
+        active
+    };
+    Ok(Json(map_row_to_response(normalized)?))
 }
 
 pub async fn recover_my_agent(
@@ -353,7 +364,7 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        AGENT_PHASE_CREATING,
+        AGENT_PHASE_READY,
         Some(&recovered.id),
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;

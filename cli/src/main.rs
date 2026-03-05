@@ -397,6 +397,31 @@ enum AgentCommand {
         #[command(flatten)]
         http: AgentHttpArgs,
     },
+
+    /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
+    Chat {
+        #[command(flatten)]
+        http: AgentHttpArgs,
+
+        /// Message content to send to your personal agent
+        message: String,
+
+        /// Listen duration (seconds) after sending (0 disables listening)
+        #[arg(long, default_value_t = 120)]
+        listen_timeout: u64,
+
+        /// Max status poll attempts while waiting for ready
+        #[arg(long, default_value_t = 45)]
+        poll_attempts: u32,
+
+        /// Delay between status polls (seconds)
+        #[arg(long, default_value_t = 2)]
+        poll_delay_sec: u64,
+
+        /// Trigger recover after this many creating-state polls (0 disables)
+        #[arg(long, default_value_t = 20)]
+        recover_after_attempt: u32,
+    },
 }
 
 const DEFAULT_AGENT_API_BASE_URL: &str = "http://127.0.0.1:8080";
@@ -673,6 +698,25 @@ async fn main() -> anyhow::Result<()> {
             AgentCommand::New { http } => cmd_agent_new(http).await,
             AgentCommand::Me { http } => cmd_agent_me(http).await,
             AgentCommand::Recover { http } => cmd_agent_recover(http).await,
+            AgentCommand::Chat {
+                http,
+                message,
+                listen_timeout,
+                poll_attempts,
+                poll_delay_sec,
+                recover_after_attempt,
+            } => {
+                cmd_agent_chat(
+                    &cli,
+                    http,
+                    message,
+                    *listen_timeout,
+                    *poll_attempts,
+                    *poll_delay_sec,
+                    *recover_after_attempt,
+                )
+                .await
+            }
         },
     }
 }
@@ -1278,15 +1322,37 @@ async fn cmd_send(
                 // Auto-create a DM group.
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-
-                let peer_kp = relay_util::fetch_latest_key_package(
+                let peer_kp = match relay_util::fetch_latest_key_package(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
                     Duration::from_secs(10),
                 )
                 .await
-                .context("fetch peer key package — has the peer run `pikachat init`?")?;
+                {
+                    Ok(kp) => kp,
+                    Err(primary_err) => {
+                        // If kp relays are defaults, retry on active message relays.
+                        if cli.kp_relay.is_empty() && kp_relays != relays {
+                            relay_util::fetch_latest_key_package(
+                                &c,
+                                &peer_pubkey,
+                                &relays,
+                                Duration::from_secs(10),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "fetch peer key package failed on default kp relays and message relays; has the peer run `pikachat init`? primary={primary_err}"
+                                )
+                            })?
+                        } else {
+                            return Err(primary_err).context(
+                                "fetch peer key package — has the peer run `pikachat init`?",
+                            );
+                        }
+                    }
+                };
 
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
@@ -1458,14 +1524,36 @@ async fn cmd_send_hypernote(
             } else {
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-                let peer_kp = relay_util::fetch_latest_key_package(
+                let peer_kp = match relay_util::fetch_latest_key_package(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
                     Duration::from_secs(10),
                 )
                 .await
-                .context("fetch peer key package — has the peer run `pikachat init`?")?;
+                {
+                    Ok(kp) => kp,
+                    Err(primary_err) => {
+                        if cli.kp_relay.is_empty() && kp_relays != relays {
+                            relay_util::fetch_latest_key_package(
+                                &c,
+                                &peer_pubkey,
+                                &relays,
+                                Duration::from_secs(10),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "fetch peer key package failed on default kp relays and message relays; has the peer run `pikachat init`? primary={primary_err}"
+                                )
+                            })?
+                        } else {
+                            return Err(primary_err).context(
+                                "fetch peer key package — has the peer run `pikachat init`?",
+                            );
+                        }
+                    }
+                };
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),
@@ -1612,10 +1700,11 @@ async fn cmd_download_media(
 }
 
 async fn cmd_agent_new(http: &AgentHttpArgs) -> anyhow::Result<()> {
-    let agent = call_agent_api(http, reqwest::Method::POST, AGENT_API_ENSURE_PATH).await?;
+    let ensured = ensure_agent_idempotent(http).await?;
     print(json!({
         "operation": "ensure",
-        "agent": agent,
+        "created": ensured.created,
+        "agent": ensured.agent,
     }));
     Ok(())
 }
@@ -1636,6 +1725,201 @@ async fn cmd_agent_recover(http: &AgentHttpArgs) -> anyhow::Result<()> {
         "agent": agent,
     }));
     Ok(())
+}
+
+#[derive(Debug)]
+struct EnsureAgentResult {
+    agent: serde_json::Value,
+    created: bool,
+}
+
+async fn ensure_agent_idempotent(http: &AgentHttpArgs) -> anyhow::Result<EnsureAgentResult> {
+    let method = reqwest::Method::POST;
+    let (status, body) = call_agent_api_raw(http, method.clone(), AGENT_API_ENSURE_PATH).await?;
+    if status.is_success() {
+        return Ok(EnsureAgentResult {
+            agent: parse_agent_api_response_json(&body, AGENT_API_ENSURE_PATH)?,
+            created: true,
+        });
+    }
+
+    if status == reqwest::StatusCode::CONFLICT
+        && agent_api_error_code(&body).as_deref() == Some("agent_exists")
+    {
+        return Ok(EnsureAgentResult {
+            agent: call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?,
+            created: false,
+        });
+    }
+
+    Err(agent_api_http_error(
+        &method,
+        AGENT_API_ENSURE_PATH,
+        status,
+        &body,
+    ))
+}
+
+fn parse_agent_fields(agent: &serde_json::Value) -> anyhow::Result<(String, String)> {
+    let agent_id = agent
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("agent response missing agent_id"))?
+        .to_string();
+    let state = agent
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("agent response missing state"))?
+        .to_string();
+    Ok((agent_id, state))
+}
+
+async fn send_to_agent_and_optionally_listen(
+    chat_cli: &Cli,
+    agent_npub: &str,
+    message: &str,
+    listen_timeout: u64,
+) -> anyhow::Result<()> {
+    cmd_send(
+        chat_cli,
+        None,
+        Some(agent_npub),
+        message,
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await?;
+    if listen_timeout > 0 {
+        cmd_listen(chat_cli, listen_timeout, 86400).await?;
+    }
+    Ok(())
+}
+
+fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let identity_path = state_dir.join("identity.json");
+    let identity = mdk_util::IdentityFile {
+        secret_key_hex: keys.secret_key().to_secret_hex(),
+        public_key_hex: keys.public_key().to_hex(),
+    };
+    std::fs::write(
+        &identity_path,
+        format!("{}\n", serde_json::to_string_pretty(&identity)?),
+    )
+    .with_context(|| format!("write {}", identity_path.display()))?;
+    let _ = mdk_util::open_mdk(state_dir)?;
+    Ok(())
+}
+
+async fn cmd_agent_chat(
+    cli: &Cli,
+    http: &AgentHttpArgs,
+    message: &str,
+    listen_timeout: u64,
+    poll_attempts: u32,
+    poll_delay_sec: u64,
+    recover_after_attempt: u32,
+) -> anyhow::Result<()> {
+    let message = message.trim();
+    anyhow::ensure!(!message.is_empty(), "message cannot be empty");
+    anyhow::ensure!(poll_attempts > 0, "--poll-attempts must be > 0");
+    let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
+    let owner_keys = Keys::parse(&nsec).context("parse agent api nsec")?;
+    let owner_chat_state_dir = cli
+        .state_dir
+        .join("agent-chat")
+        .join(owner_keys.public_key().to_hex());
+    ensure_identity_for_state_dir(&owner_chat_state_dir, &owner_keys)?;
+    let chat_cli = Cli {
+        state_dir: owner_chat_state_dir,
+        relay: cli.relay.clone(),
+        kp_relay: cli.kp_relay.clone(),
+        remote: false,
+        cmd: Command::Identity,
+    };
+
+    let ensured = ensure_agent_idempotent(http).await?;
+    let mut tried_optimistic_send = false;
+    let mut recovered_stalled_creating = false;
+    let poll_delay = Duration::from_secs(poll_delay_sec);
+    let mut last_state = String::new();
+    let mut last_agent_npub = String::new();
+
+    for attempt in 1..=poll_attempts {
+        let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+        let (agent_npub, state) = parse_agent_fields(&me)?;
+        last_state = state.clone();
+        last_agent_npub = agent_npub.clone();
+
+        if state == "ready" {
+            return send_to_agent_and_optionally_listen(
+                &chat_cli,
+                &agent_npub,
+                message,
+                listen_timeout,
+            )
+            .await;
+        }
+
+        if state == "creating" && !ensured.created && !tried_optimistic_send {
+            if send_to_agent_and_optionally_listen(&chat_cli, &agent_npub, message, listen_timeout)
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            tried_optimistic_send = true;
+            eprintln!("optimistic send failed; continuing with recover/poll");
+        }
+
+        if state == "error" {
+            eprintln!("agent in error state; requesting recover");
+            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+        } else if state == "creating"
+            && !recovered_stalled_creating
+            && recover_after_attempt > 0
+            && attempt >= recover_after_attempt
+        {
+            eprintln!("agent still creating after {attempt} checks; requesting recover");
+            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+            recovered_stalled_creating = true;
+        }
+
+        if attempt < poll_attempts {
+            tokio::time::sleep(poll_delay).await;
+        }
+    }
+
+    anyhow::ensure!(
+        !last_agent_npub.is_empty(),
+        "timed out waiting for personal agent"
+    );
+    eprintln!(
+        "agent did not become ready (state={}); trying best-effort send",
+        last_state
+    );
+    if send_to_agent_and_optionally_listen(&chat_cli, &last_agent_npub, message, listen_timeout)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "agent chat failed: state remained {} and send failed; try `pikachat agent recover --api-base-url {} --nsec <nsec>`",
+        if last_state.is_empty() {
+            "unknown"
+        } else {
+            &last_state
+        },
+        http.api_base_url
+    );
 }
 
 fn normalized_agent_api_base_url(raw: &str) -> anyhow::Result<String> {
@@ -1689,6 +1973,18 @@ async fn call_agent_api(
     method: reqwest::Method,
     path: &str,
 ) -> anyhow::Result<serde_json::Value> {
+    let (status, body) = call_agent_api_raw(http, method.clone(), path).await?;
+    if !status.is_success() {
+        return Err(agent_api_http_error(&method, path, status, &body));
+    }
+    parse_agent_api_response_json(&body, path)
+}
+
+async fn call_agent_api_raw(
+    http: &AgentHttpArgs,
+    method: reqwest::Method,
+    path: &str,
+) -> anyhow::Result<(reqwest::StatusCode, String)> {
     let base_url = normalized_agent_api_base_url(&http.api_base_url)?;
     let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
     let url = format!("{base_url}{path}");
@@ -1710,33 +2006,47 @@ async fn call_agent_api(
         .with_context(|| format!("send {} {}", method, url))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        let error_code = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(|raw| raw.as_str())
-                    .map(str::to_string)
-            });
-        if let Some(code) = error_code {
-            anyhow::bail!(
-                "agent api {} {} failed: HTTP {} ({code})",
-                method,
-                path,
-                status
-            );
-        }
-        anyhow::bail!(
+    Ok((status, body))
+}
+
+fn parse_agent_api_response_json(body: &str, path: &str) -> anyhow::Result<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .with_context(|| format!("decode agent api response for {path}"))
+}
+
+fn agent_api_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|raw| raw.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn agent_api_http_error(
+    method: &reqwest::Method,
+    path: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> anyhow::Error {
+    if let Some(code) = agent_api_error_code(body) {
+        anyhow!(
+            "agent api {} {} failed: HTTP {} ({code})",
+            method,
+            path,
+            status
+        )
+    } else {
+        anyhow!(
             "agent api {} {} failed: HTTP {} body={}",
             method,
             path,
             status,
             body
-        );
+        )
     }
-    serde_json::from_str::<serde_json::Value>(&body)
-        .with_context(|| format!("decode agent api response for {path}"))
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {
@@ -2111,6 +2421,54 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_http_parse() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "chat",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--listen-timeout",
+            "9",
+            "--poll-attempts",
+            "7",
+            "--poll-delay-sec",
+            "3",
+            "--recover-after-attempt",
+            "4",
+            "hello",
+        ])
+        .expect("parse args");
+        match cli.cmd {
+            Command::Agent {
+                cmd:
+                    AgentCommand::Chat {
+                        http,
+                        message,
+                        listen_timeout,
+                        poll_attempts,
+                        poll_delay_sec,
+                        recover_after_attempt,
+                    },
+            } => {
+                assert_eq!(http.api_base_url, "http://127.0.0.1:18080");
+                assert_eq!(
+                    http.nsec.as_deref(),
+                    Some("nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v")
+                );
+                assert_eq!(message, "hello");
+                assert_eq!(listen_timeout, 9);
+                assert_eq!(poll_attempts, 7);
+                assert_eq!(poll_delay_sec, 3);
+                assert_eq!(recover_after_attempt, 4);
+            }
+            _ => panic!("expected agent chat command"),
+        }
+    }
+
+    #[test]
     fn agent_new_http_parse() {
         let parsed = parse_agent_new(&[
             "pikachat",
@@ -2160,5 +2518,27 @@ mod tests {
                 .expect_err("legacy runtime command should fail");
             assert!(err.to_string().contains("unrecognized subcommand"));
         }
+    }
+
+    #[test]
+    fn agent_api_error_code_extracts_json_error() {
+        let body = r#"{"error":"agent_exists"}"#;
+        assert_eq!(agent_api_error_code(body).as_deref(), Some("agent_exists"));
+    }
+
+    #[test]
+    fn agent_api_error_code_handles_non_json_payload() {
+        assert!(agent_api_error_code("not-json").is_none());
+    }
+
+    #[test]
+    fn parse_agent_fields_extracts_required_keys() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating"
+        });
+        let (agent_id, state) = parse_agent_fields(&payload).expect("extract fields");
+        assert_eq!(agent_id, "npub1test");
+        assert_eq!(state, "creating");
     }
 }

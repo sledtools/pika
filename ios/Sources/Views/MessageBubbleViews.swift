@@ -455,16 +455,6 @@ private struct MessageBubble: View {
         let segments = message.segments.isEmpty ? fallbackSegments() : message.segments
 
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 0) {
-            if let replyToId = message.replyToMessageId {
-                ReplyPreviewCard(
-                    replyToMessageId: replyToId,
-                    target: replyTargetsById[replyToId],
-                    isMine: message.isMine,
-                    onTap: onJumpToMessage
-                )
-                .padding(.bottom, 3)
-            }
-
             if let hypernote = message.hypernote {
                 HypernoteRenderer(
                     astJson: hypernote.astJson,
@@ -697,18 +687,32 @@ private struct MessageBubble: View {
     }
 
     private func markdownBubble(text: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Markdown(text)
-                .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
-                .multilineTextAlignment(.leading)
+        VStack(alignment: .leading, spacing: 0) {
+            if let replyToId = message.replyToMessageId {
+                ReplyPreviewCard(
+                    replyToMessageId: replyToId,
+                    target: replyTargetsById[replyToId],
+                    isMine: message.isMine,
+                    onTap: onJumpToMessage
+                )
+                .padding(.horizontal, 6)
+                .padding(.top, 6)
+            }
 
-            Text(timestampText)
-                .font(.caption2)
-                .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+            VStack(alignment: .leading, spacing: 3) {
+                Markdown(text)
+                    .markdownTheme(message.isMine ? .pikaOutgoing : .pikaIncoming)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(timestampText)
+                    .font(.caption2)
+                    .foregroundStyle(message.isMine ? Color.white.opacity(0.78) : Color.secondary.opacity(0.9))
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
         .background(message.isMine ? Color.blue : Color.gray.opacity(0.2))
         .clipShape(UnevenRoundedRectangleCompat(cornerRadii: bubbleRadii, style: .continuous))
     }

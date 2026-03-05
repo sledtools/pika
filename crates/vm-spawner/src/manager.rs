@@ -493,7 +493,6 @@ impl VmManager {
             &flake_dir,
             cpu,
             memory_mb,
-            self.cfg.workspace_size_mb,
             &self.cfg.runtime_artifacts_host_dir,
             &self.cfg.runtime_artifacts_guest_mount,
         )?;
@@ -675,6 +674,12 @@ impl VmManager {
     ) -> anyhow::Result<()> {
         fs::create_dir_all(vm_state_dir)
             .with_context(|| format!("create vm state dir {}", vm_state_dir.display()))?;
+        fs::create_dir_all(vm_state_dir.join("home")).with_context(|| {
+            format!(
+                "create persistent home dir {}",
+                vm_state_dir.join("home").display()
+            )
+        })?;
 
         symlink_force(runner_path, &vm_state_dir.join("current"))?;
 
@@ -1155,7 +1160,6 @@ fn write_prebuilt_base_flake(
     flake_dir: &Path,
     cpu: u32,
     memory_mb: u32,
-    workspace_size_mb: u32,
     runtime_artifacts_host_dir: &Path,
     runtime_artifacts_guest_mount: &Path,
 ) -> anyhow::Result<()> {
@@ -1256,6 +1260,12 @@ fn write_prebuilt_base_flake(
                 cp /run/agent-meta/env /etc/agent-env
                 chmod 0644 /etc/agent-env
               fi
+
+              # v1 durability contract:
+              # - /root is backed by host persistent storage (virtiofs share)
+              # - /workspace resolves to /root
+              rm -rf /workspace
+              ln -sfn /root /workspace
             '';
           }};
 
@@ -1343,12 +1353,6 @@ fn write_prebuilt_base_flake(
             '';
           }};
 
-          fileSystems."/workspace" = {{
-            device = "tmpfs";
-            fsType = "tmpfs";
-            options = [ "size={workspace_size_mb}M" "mode=0755" ];
-          }};
-
           microvm = {{
             hypervisor = "cloud-hypervisor";
             vcpu = {cpu};
@@ -1376,6 +1380,13 @@ fn write_prebuilt_base_flake(
                 source = "{runtime_artifacts_host_dir}";
                 mountPoint = "{runtime_artifacts_guest_mount}";
                 readOnly = true;
+              }}
+              {{
+                proto = "virtiofs";
+                tag = "agent-home";
+                source = "./home";
+                mountPoint = "/root";
+                readOnly = false;
               }}
             ];
 

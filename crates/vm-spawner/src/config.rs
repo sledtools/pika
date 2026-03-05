@@ -21,7 +21,6 @@ pub struct Config {
     pub runner_cache_dir: PathBuf,
     pub runner_flake_dir: PathBuf,
     pub workspace_template_path: PathBuf,
-    pub workspace_size_mb: u32,
     pub runtime_artifacts_host_dir: PathBuf,
     pub runtime_artifacts_guest_mount: PathBuf,
     pub runtime_artifacts: Vec<RuntimeArtifactSpec>,
@@ -86,7 +85,6 @@ impl Config {
             std::env::var("VM_WORKSPACE_TEMPLATE_PATH")
                 .unwrap_or_else(|_| "/data/microvm-workspace/template.img".into()),
         );
-        let workspace_size_mb = parse_u32_env("VM_WORKSPACE_SIZE_MB", 8192);
         let runtime_artifacts_host_dir = PathBuf::from(
             std::env::var("VM_RUNTIME_ARTIFACTS_HOST_DIR")
                 .unwrap_or_else(|_| "/data/microvm-shared/artifacts".into()),
@@ -150,7 +148,6 @@ impl Config {
             runner_cache_dir,
             runner_flake_dir,
             workspace_template_path,
-            workspace_size_mb,
             runtime_artifacts_host_dir,
             runtime_artifacts_guest_mount,
             runtime_artifacts,

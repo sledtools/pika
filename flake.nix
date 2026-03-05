@@ -44,22 +44,23 @@
 
       serverPkgs = import nixpkgs { system = "x86_64-linux"; };
       armPkgs = import nixpkgs { system = "aarch64-linux"; };
+      rustWorkspaceSrc = serverPkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = serverPkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./Cargo.lock
+          ./config
+          ./crates
+          ./rust
+          ./cli
+          ./uniffi-bindgen
+        ];
+      };
 
       pikaServerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "pika-server";
         version = "0.1.0";
-        src = serverPkgs.lib.cleanSourceWith {
-          src = serverPkgs.lib.sourceByRegex ./. [
-            "Cargo\\.toml"
-            "Cargo\\.lock"
-            "config(/.*)?"
-            "crates(/.*)?"
-            "rust(/.*)?"
-            "cli(/.*)?"
-            "uniffi-bindgen(/.*)?"
-          ];
-          filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
-        };
+        src = rustWorkspaceSrc;
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
@@ -77,18 +78,7 @@
       pikaNewsPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "pika-news";
         version = "0.1.0";
-        src = serverPkgs.lib.cleanSourceWith {
-          src = serverPkgs.lib.sourceByRegex ./. [
-            "Cargo\\.toml"
-            "Cargo\\.lock"
-            "config(/.*)?"
-            "crates(/.*)?"
-            "rust(/.*)?"
-            "cli(/.*)?"
-            "uniffi-bindgen(/.*)?"
-          ];
-          filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
-        };
+        src = rustWorkspaceSrc;
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
@@ -106,17 +96,7 @@
       pikachatPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "pikachat";
         version = "0.1.0";
-        src = serverPkgs.lib.cleanSourceWith {
-          src = serverPkgs.lib.sourceByRegex ./. [
-            "Cargo\\.toml"
-            "Cargo\\.lock"
-            "crates(/.*)?"
-            "rust(/.*)?"
-            "cli(/.*)?"
-            "uniffi-bindgen(/.*)?"
-          ];
-          filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
-        };
+        src = rustWorkspaceSrc;
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
@@ -134,17 +114,7 @@
       vmSpawnerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "vm-spawner";
         version = "0.1.0";
-        src = serverPkgs.lib.cleanSourceWith {
-          src = serverPkgs.lib.sourceByRegex ./. [
-            "Cargo\\.toml"
-            "Cargo\\.lock"
-            "crates(/.*)?"
-            "rust(/.*)?"
-            "cli(/.*)?"
-            "uniffi-bindgen(/.*)?"
-          ];
-          filter = path: type: !(serverPkgs.lib.hasInfix ".pgdata" path);
-        };
+        src = rustWorkspaceSrc;
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {

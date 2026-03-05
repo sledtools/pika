@@ -1,3 +1,4 @@
+mod agent_api;
 mod agent_api_v1_contract;
 mod agent_clients;
 mod agent_control;
@@ -5,6 +6,10 @@ mod listener;
 mod models;
 mod routes;
 
+use crate::agent_api::{ensure_agent, get_my_agent, recover_my_agent};
+use crate::agent_api_v1_contract::{
+    V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH, V1_AGENTS_RECOVER_PATH,
+};
 use crate::models::group_subscription::{GroupFilterInfo, GroupSubscription};
 use crate::models::MIGRATIONS;
 use crate::routes::{broadcast, health_check, register, subscribe_groups, unsubscribe_groups};
@@ -41,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     agent_control::control_schema_healthcheck()?;
     agent_api_v1_contract::contract_healthcheck()?;
+    agent_api::whitelist_healthcheck()?;
 
     // APNs configuration (optional — logs only when not configured)
     let apns_topic = std::env::var("APNS_TOPIC").unwrap_or_default();
@@ -168,6 +174,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/subscribe-groups", post(subscribe_groups))
         .route("/unsubscribe-groups", post(unsubscribe_groups))
         .route("/broadcast", post(broadcast))
+        .route(V1_AGENTS_ENSURE_PATH, post(ensure_agent))
+        .route(V1_AGENTS_ME_PATH, get(get_my_agent))
+        .route(V1_AGENTS_RECOVER_PATH, post(recover_my_agent))
         .fallback(fallback)
         .layer(Extension(state));
 

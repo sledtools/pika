@@ -691,8 +691,8 @@ ios-xcodeproj:
     # If PIKA_IOS_DEVELOPMENT_TEAM is set, stamp it on all targets so Xcode
     # opens with signing already configured (no manual team picker step).
     if [ -n "${PIKA_IOS_DEVELOPMENT_TEAM:-}" ]; then
-      sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ${PIKA_IOS_DEVELOPMENT_TEAM};/" \
-        Pika.xcodeproj/project.pbxproj
+      sed -i.bak "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ${PIKA_IOS_DEVELOPMENT_TEAM};/" \
+        Pika.xcodeproj/project.pbxproj && rm -f Pika.xcodeproj/project.pbxproj.bak
     fi
 
 # Prepare for App Store: build xcframework, regenerate project, open Xcode.

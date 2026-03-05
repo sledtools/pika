@@ -1,20 +1,27 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use axum::extract::Extension;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::{response::IntoResponse, Json};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
-use nostr_sdk::prelude::PublicKey;
+use nostr_sdk::prelude::{Keys, PublicKey};
 use rand::Rng;
 use serde::Serialize;
 
 use crate::agent_api_v1_contract::{AgentApiErrorCode, AgentAppState};
-use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_READY};
+use crate::models::agent_instance::{
+    AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
+};
 use crate::State;
+use pika_agent_control_plane::MicrovmProvisionParams;
+use pika_agent_microvm::{
+    build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
+};
+use pika_relay_profiles::default_message_relays;
 
-const OWNER_NPUB_HEADER: &str = "x-pika-owner-npub";
+const OWNER_TOKEN_MAP_ENV: &str = "PIKA_AGENT_OWNER_TOKEN_MAP";
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const FIXED_ALLOWLIST_NPUBS: [&str; 3] = [
     // justin
@@ -52,7 +59,6 @@ impl IntoResponse for AgentApiError {
 #[derive(Debug, Clone)]
 struct RequesterIdentity {
     owner_npub: String,
-    pubkey_hex: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,41 +83,77 @@ fn fixed_allowlist_pubkeys_hex() -> &'static HashSet<String> {
     })
 }
 
-fn requester_identity(headers: &HeaderMap) -> Result<RequesterIdentity, AgentApiError> {
-    let raw = headers
-        .get(OWNER_NPUB_HEADER)
+fn parse_owner_token_map(raw: &str) -> anyhow::Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    for entry in raw.split(',') {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (token, owner_npub) = trimmed.split_once('=').with_context(|| {
+            format!("invalid token map entry `{trimmed}` (expected token=npub)")
+        })?;
+        let token = token.trim();
+        let owner_npub = owner_npub.trim();
+        anyhow::ensure!(!token.is_empty(), "token cannot be empty");
+        anyhow::ensure!(!owner_npub.is_empty(), "owner npub cannot be empty");
+        anyhow::ensure!(
+            owner_npub.starts_with("npub1"),
+            "owner must be provided as npub in token map: {owner_npub}"
+        );
+        PublicKey::parse(owner_npub)
+            .with_context(|| format!("invalid owner npub in token map: {owner_npub}"))?;
+        map.insert(token.to_string(), owner_npub.to_string());
+    }
+    Ok(map)
+}
+
+fn configured_owner_token_map() -> anyhow::Result<HashMap<String, String>> {
+    let raw = std::env::var(OWNER_TOKEN_MAP_ENV).unwrap_or_default();
+    parse_owner_token_map(&raw)
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AgentApiError> {
+    let auth = headers
+        .get(header::AUTHORIZATION)
         .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    let owner_npub = raw
+    let auth = auth
         .to_str()
         .ok()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    if !owner_npub.starts_with("npub1") {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::Unauthorized));
-    }
-    let pubkey_hex = PublicKey::parse(owner_npub)
-        .map(|pk| pk.to_hex())
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    Ok(RequesterIdentity {
-        owner_npub: owner_npub.to_string(),
-        pubkey_hex,
-    })
+    let token = auth
+        .strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    Ok(token.to_string())
 }
 
 fn require_whitelisted_requester(headers: &HeaderMap) -> Result<RequesterIdentity, AgentApiError> {
-    let requester = requester_identity(headers)?;
-    if !fixed_allowlist_pubkeys_hex().contains(&requester.pubkey_hex) {
+    let token = extract_bearer_token(headers)?;
+    let owner_npub = configured_owner_token_map()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?
+        .get(&token)
+        .cloned()
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+
+    let pubkey_hex = PublicKey::parse(&owner_npub)
+        .map(|pk| pk.to_hex())
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
+    if !fixed_allowlist_pubkeys_hex().contains(&pubkey_hex) {
         return Err(AgentApiError::from_code(AgentApiErrorCode::NotWhitelisted));
     }
-    Ok(requester)
+    Ok(RequesterIdentity { owner_npub })
 }
 
 fn phase_to_state(phase: &str) -> Option<AgentAppState> {
     match phase {
         AGENT_PHASE_CREATING => Some(AgentAppState::Creating),
         AGENT_PHASE_READY => Some(AgentAppState::Ready),
-        "error" => Some(AgentAppState::Error),
+        AGENT_PHASE_ERROR => Some(AgentAppState::Error),
         _ => None,
     }
 }
@@ -142,6 +184,29 @@ fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
 fn generate_agent_id() -> String {
     let suffix = rand::thread_rng().r#gen::<u64>();
     format!("agent-{suffix:016x}")
+}
+
+async fn provision_vm_for_owner(owner_npub: &str) -> anyhow::Result<String> {
+    let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
+    let params = MicrovmProvisionParams::default();
+    let resolved = resolve_params(&params, false);
+
+    let bot_keys = Keys::generate();
+    let bot_pubkey = bot_keys.public_key().to_hex();
+    let bot_secret = bot_keys.secret_key().to_secret_hex();
+    let create_vm = build_create_vm_request(
+        &resolved,
+        &owner_pubkey,
+        &default_message_relays(),
+        &bot_secret,
+        &bot_pubkey,
+    );
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
+    let vm = spawner
+        .create_vm(&create_vm)
+        .await
+        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))?;
+    Ok(vm.id)
 }
 
 pub async fn ensure_agent(
@@ -176,7 +241,24 @@ pub async fn ensure_agent(
         }
     })?;
 
-    Ok((StatusCode::ACCEPTED, Json(map_row_to_response(created)?)))
+    let vm_id = match provision_vm_for_owner(&requester.owner_npub).await {
+        Ok(vm_id) => vm_id,
+        Err(_) => {
+            let _ =
+                AgentInstance::update_phase(&mut conn, &created.agent_id, AGENT_PHASE_ERROR, None);
+            return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
+        }
+    };
+
+    let updated = AgentInstance::update_phase(
+        &mut conn,
+        &created.agent_id,
+        AGENT_PHASE_CREATING,
+        Some(&vm_id),
+    )
+    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+
+    Ok((StatusCode::ACCEPTED, Json(map_row_to_response(updated)?)))
 }
 
 pub async fn get_my_agent(
@@ -210,7 +292,6 @@ pub async fn recover_my_agent(
     else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
-    // v1 step 5 keeps recover behavior simple; dedicated recover flow is implemented in step 9.
     Ok(Json(map_row_to_response(active)?))
 }
 
@@ -230,6 +311,19 @@ pub fn whitelist_healthcheck() -> anyhow::Result<()> {
             "duplicate npub in fixed allowlist"
         );
     }
+
+    if let Ok(map) = configured_owner_token_map() {
+        for owner_npub in map.values() {
+            let owner_hex = PublicKey::parse(owner_npub)?.to_hex();
+            anyhow::ensure!(
+                fixed_allowlist_pubkeys_hex().contains(&owner_hex),
+                "owner in {} is not part of fixed 3-npub allowlist: {}",
+                OWNER_TOKEN_MAP_ENV,
+                owner_npub
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -244,32 +338,24 @@ mod tests {
     }
 
     #[test]
-    fn whitelist_rejects_non_allowed_requester() {
-        let random_npub = "npub1y2z0c7un9dwmhk4zrpw8df8p0gh0j2x54qhznwqjnp452ju4078srmwp70";
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            OWNER_NPUB_HEADER,
-            random_npub.parse().expect("header value"),
-        );
-
-        let err = require_whitelisted_requester(&headers).expect_err("must reject non allowlist");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(err.code, AgentApiErrorCode::NotWhitelisted);
+    fn parse_owner_token_map_accepts_valid_entries() {
+        let raw = "token-a=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+        let map = parse_owner_token_map(raw).expect("parse token map");
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("token-a"));
     }
 
     #[test]
-    fn whitelist_requires_owner_npub_header() {
+    fn parse_owner_token_map_rejects_invalid_entries() {
+        let raw = "missing_equals";
+        let err = parse_owner_token_map(raw).expect_err("invalid format must fail");
+        assert!(err.to_string().contains("expected token=npub"));
+    }
+
+    #[test]
+    fn extract_bearer_token_requires_authorization_header() {
         let headers = HeaderMap::new();
-        let err = require_whitelisted_requester(&headers).expect_err("missing header must fail");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
-    }
-
-    #[test]
-    fn whitelist_rejects_non_npub_header_values() {
-        let mut headers = HeaderMap::new();
-        headers.insert(OWNER_NPUB_HEADER, "abc123".parse().expect("header value"));
-        let err = require_whitelisted_requester(&headers).expect_err("invalid header must fail");
+        let err = extract_bearer_token(&headers).expect_err("missing header must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
     }

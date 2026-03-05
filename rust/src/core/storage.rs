@@ -691,19 +691,35 @@ impl AppCore {
         original_hash_hex: &str,
         local_path: Option<String>,
     ) -> bool {
+        let hash = original_hash_hex.to_string();
+        self.mutate_current_chat_messages(chat_id, |msgs| {
+            let found = msgs.iter_mut().find_map(|msg| {
+                msg.media
+                    .iter_mut()
+                    .find(|att| att.original_hash_hex == hash)
+            });
+            if let Some(att) = found {
+                att.local_path = local_path;
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Apply a mutation to the current chat's messages without re-fetching from storage.
+    /// Returns true if the chat was open and the closure returned true (i.e., something changed).
+    pub(super) fn mutate_current_chat_messages<F>(&mut self, chat_id: &str, mutate: F) -> bool
+    where
+        F: FnOnce(&mut Vec<ChatMessage>) -> bool,
+    {
         let Some(cur) = self.state.current_chat.as_mut() else {
             return false;
         };
         if cur.chat_id != chat_id {
             return false;
         }
-        let found = cur.messages.iter_mut().find_map(|msg| {
-            msg.media
-                .iter_mut()
-                .find(|att| att.original_hash_hex == original_hash_hex)
-        });
-        if let Some(att) = found {
-            att.local_path = local_path;
+        if mutate(&mut cur.messages) {
             self.emit_current_chat();
             true
         } else {

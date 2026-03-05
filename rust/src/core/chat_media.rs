@@ -1109,17 +1109,28 @@ impl AppCore {
                 }
             }
 
+            let delivery = MessageDeliveryState::Failed {
+                reason: format!("Upload failed: {e}"),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: format!("Upload failed: {e}"),
-                    },
-                );
+                .insert(temp_rumor_id.clone(), delivery.clone());
 
-            self.refresh_current_chat_if_open(&chat_id);
+            // Try in-place update: clear progress spinner and set failed delivery.
+            if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == temp_rumor_id) {
+                    msg.delivery = delivery;
+                    for att in &mut msg.media {
+                        att.upload_progress = None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                self.refresh_current_chat_if_open(&chat_id);
+            }
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1238,17 +1249,27 @@ impl AppCore {
                 }
             }
 
+            let delivery = MessageDeliveryState::Failed {
+                reason: format!("Upload failed: {e}"),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: format!("Upload failed: {e}"),
-                    },
-                );
+                .insert(temp_rumor_id.clone(), delivery.clone());
 
-            self.refresh_current_chat_if_open(&chat_id);
+            if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == temp_rumor_id) {
+                    msg.delivery = delivery;
+                    for att in &mut msg.media {
+                        att.upload_progress = None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                self.refresh_current_chat_if_open(&chat_id);
+            }
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1284,16 +1305,26 @@ impl AppCore {
                     }
                 }
             }
+            let delivery = MessageDeliveryState::Failed {
+                reason: "Upload failed: hash mismatch".to_string(),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: "Upload failed: hash mismatch".to_string(),
-                    },
-                );
-            self.refresh_current_chat_if_open(&chat_id);
+                .insert(temp_rumor_id.clone(), delivery.clone());
+            if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == temp_rumor_id) {
+                    msg.delivery = delivery;
+                    for att in &mut msg.media {
+                        att.upload_progress = None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                self.refresh_current_chat_if_open(&chat_id);
+            }
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1344,7 +1375,20 @@ impl AppCore {
                     local_keys,
                 );
             }
-            self.refresh_current_chat_if_open(&chat_id);
+            // In-place: clear progress on the completed item's attachment.
+            let rid = temp_rumor_id.clone();
+            if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == rid) {
+                    if let Some(att) = msg.media.get_mut(item_idx) {
+                        att.upload_progress = None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                self.refresh_current_chat_if_open(&chat_id);
+            }
             self.refresh_chat_list_from_storage();
             return;
         }

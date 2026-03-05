@@ -3421,26 +3421,36 @@ impl AppCore {
             %rumor_id,
             "message_publish_result"
         );
+        let delivery;
         let per_chat = self.delivery_overrides.entry(chat_id.clone()).or_default();
         if ok {
-            per_chat.insert(rumor_id.clone(), MessageDeliveryState::Sent);
+            delivery = MessageDeliveryState::Sent;
+            per_chat.insert(rumor_id.clone(), delivery.clone());
             self.pending_sends
                 .remove(&chat_id, &rumor_id, self.profile_db.as_ref());
             self.failed_sends
                 .remove(&rumor_id, self.profile_db.as_ref());
         } else {
             let reason = error.unwrap_or_else(|| "publish failed".into());
-            per_chat.insert(
-                rumor_id.clone(),
-                MessageDeliveryState::Failed {
-                    reason: reason.clone(),
-                },
-            );
+            delivery = MessageDeliveryState::Failed {
+                reason: reason.clone(),
+            };
+            per_chat.insert(rumor_id.clone(), delivery.clone());
             self.failed_sends
                 .insert(&rumor_id, &chat_id, &reason, self.profile_db.as_ref());
         }
         self.refresh_chat_list_from_storage();
-        self.refresh_current_chat_if_open(&chat_id);
+        // Try lightweight in-place delivery update; fall back to full refresh.
+        if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+            if let Some(msg) = msgs.iter_mut().find(|m| m.id == rumor_id) {
+                msg.delivery = delivery;
+                true
+            } else {
+                false
+            }
+        }) {
+            self.refresh_current_chat_if_open(&chat_id);
+        }
     }
 
     fn handle_peer_key_package_fetched(
@@ -5038,7 +5048,20 @@ impl AppCore {
                             }
                         }
                     }
-                    self.refresh_current_chat_if_open(&chat_id);
+                    let mid = message_id.clone();
+                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                            msg.delivery = MessageDeliveryState::Pending;
+                            if let Some(att) = msg.media.first_mut() {
+                                att.upload_progress = Some(0.0);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        self.refresh_current_chat_if_open(&chat_id);
+                    }
                     self.refresh_chat_list_from_storage();
                     let blossom_servers = self.blossom_servers();
 
@@ -5113,7 +5136,20 @@ impl AppCore {
                             .unwrap_or(0);
                         batch.next_upload_index = restart_idx + 1;
                     }
-                    self.refresh_current_chat_if_open(&chat_id);
+                    let mid = message_id.clone();
+                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                            msg.delivery = MessageDeliveryState::Pending;
+                            for att in &mut msg.media {
+                                att.upload_progress = Some(0.0);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        self.refresh_current_chat_if_open(&chat_id);
+                    }
                     self.refresh_chat_list_from_storage();
                     let blossom_servers = self.blossom_servers();
 
@@ -5162,7 +5198,17 @@ impl AppCore {
                     .entry(chat_id.clone())
                     .or_default()
                     .insert(message_id.clone(), MessageDeliveryState::Pending);
-                self.refresh_current_chat_if_open(&chat_id);
+                let mid = message_id.clone();
+                if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                    if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                        msg.delivery = MessageDeliveryState::Pending;
+                        true
+                    } else {
+                        false
+                    }
+                }) {
+                    self.refresh_current_chat_if_open(&chat_id);
+                }
                 self.refresh_chat_list_from_storage();
 
                 if !network_enabled {

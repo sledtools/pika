@@ -192,6 +192,7 @@ impl VmManager {
             .ttl_seconds
             .unwrap_or(self.cfg.default_ttl_seconds)
             .clamp(60, 86400);
+        let keep = req.keep;
 
         let variant_raw = req
             .spawn_variant
@@ -237,6 +238,7 @@ impl VmManager {
                     created_at,
                     expires_at,
                     status: "starting".into(),
+                    keep,
                     spawn_variant: variant.as_str().into(),
                 },
             );
@@ -543,7 +545,7 @@ impl VmManager {
             guard
                 .vms
                 .values()
-                .filter(|vm| vm.expires_at <= now)
+                .filter(|vm| is_vm_expired(vm, now))
                 .map(|vm| vm.id.clone())
                 .collect::<Vec<_>>()
         };
@@ -1014,6 +1016,10 @@ impl VmManager {
             .with_context(|| format!("write vm metadata {}", vm_json.display()))?;
         Ok(())
     }
+}
+
+fn is_vm_expired(vm: &PersistedVm, now: chrono::DateTime<Utc>) -> bool {
+    !vm.keep && vm.expires_at <= now
 }
 
 fn sanitize_flake_ref(value: String) -> anyhow::Result<String> {
@@ -1960,4 +1966,44 @@ fn total_memory_mb() -> Option<u64> {
 
 fn to_ms(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration as ChronoDuration;
+
+    fn test_vm(keep: bool, expires_at: chrono::DateTime<Utc>) -> PersistedVm {
+        PersistedVm {
+            id: "vm-test".to_string(),
+            flake_ref: "github:sledtools/pika".to_string(),
+            dev_shell: "default".to_string(),
+            cpu: 1,
+            memory_mb: 1024,
+            ttl_seconds: 7200,
+            ip: "192.168.83.10".to_string(),
+            tap_name: "vm-test".to_string(),
+            mac_address: "02:00:00:00:00:01".to_string(),
+            microvm_state_dir: PathBuf::from("/tmp/vm-test"),
+            definition_dir: PathBuf::from("/tmp/vm-def"),
+            ssh_private_key_path: PathBuf::from("/tmp/ssh-key"),
+            ssh_public_key_path: PathBuf::from("/tmp/ssh-key.pub"),
+            llm_session_token: "session-vm-test".to_string(),
+            created_at: expires_at - ChronoDuration::seconds(60),
+            expires_at,
+            status: "running".to_string(),
+            keep,
+            spawn_variant: "prebuilt-cow".to_string(),
+        }
+    }
+
+    #[test]
+    fn keep_vms_are_not_considered_expired() {
+        let now = Utc::now();
+        let kept = test_vm(true, now - ChronoDuration::seconds(1));
+        assert!(!is_vm_expired(&kept, now));
+
+        let expiring = test_vm(false, now - ChronoDuration::seconds(1));
+        assert!(is_vm_expired(&expiring, now));
+    }
 }

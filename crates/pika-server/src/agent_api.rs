@@ -223,7 +223,7 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
         spawner_url: Some(spawner_url),
         ..MicrovmProvisionParams::default()
     };
-    let resolved = resolve_params(&params, false);
+    let resolved = resolve_params(&params, true);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
     Ok(resolved)
@@ -317,6 +317,14 @@ pub async fn get_my_agent(
     let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     else {
+        let Some(latest) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+        else {
+            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
+        };
+        if latest.phase == AGENT_PHASE_ERROR {
+            return Ok(Json(map_row_to_response(latest)?));
+        }
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
     let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {

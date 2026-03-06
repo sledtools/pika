@@ -11,6 +11,8 @@ pub struct CreateVmRequest {
     pub cpu: Option<u32>,
     pub memory_mb: Option<u32>,
     pub ttl_seconds: Option<u64>,
+    #[serde(default)]
+    pub keep: bool,
     pub spawn_variant: Option<String>,
     pub guest_autostart: Option<GuestAutostartRequest>,
 }
@@ -36,6 +38,7 @@ pub struct VmResponse {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub ttl_seconds: u64,
+    pub keep: bool,
     pub flake_ref: String,
     pub dev_shell: String,
     pub spawn_variant: String,
@@ -83,6 +86,8 @@ pub struct PersistedVm {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub status: String,
+    #[serde(default)]
+    pub keep: bool,
     #[serde(default = "default_spawn_variant")]
     pub spawn_variant: String,
 }
@@ -105,6 +110,7 @@ impl PersistedVm {
             status: self.status.clone(),
             created_at: self.created_at,
             ttl_seconds: self.ttl_seconds,
+            keep: self.keep,
             flake_ref: self.flake_ref.clone(),
             dev_shell: self.dev_shell.clone(),
             spawn_variant: self.spawn_variant.clone(),

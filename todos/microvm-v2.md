@@ -47,3 +47,19 @@ Acceptance criteria: admin tools show owner, vm id, lifecycle phase, and last fa
 
 6. Execute pilot opening gate for first-100.
 Acceptance criteria: team validates allowlist flow, capacity behavior, isolation checks, and recovery workflow before enabling broader onboarding.
+
+## Carryover From v1 Dogfood Baseline
+
+These items were intentionally deferred from `microvm-v1.md` and should be completed before treating the dogfood baseline as fully hardened.
+
+1. Readiness semantics hardening.
+Current behavior can promote `creating` to `ready` based on DB/VM-id heuristics before the guest daemon is actually usable.
+Follow-up: gate `ready` on runtime-verified status from vm-spawner.
+
+2. App-side dogfood button gating alignment.
+Current iOS dogfood UI gating is signer-mode based and not allowlist-aware.
+Follow-up: make button visibility/prompting align with server allowlist outcomes to reduce dead-end UX.
+
+3. Deterministic reply-path coverage.
+Current deterministic CI focuses on ensure/me/recover contracts and does not assert end-to-end chat reply readiness.
+Follow-up: add deterministic `agent chat` reply-path coverage so regressions are caught pre-merge.

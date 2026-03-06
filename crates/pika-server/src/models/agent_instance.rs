@@ -85,6 +85,19 @@ impl AgentInstance {
         Ok(found)
     }
 
+    pub fn find_latest_by_owner(
+        conn: &mut PgConnection,
+        owner_npub: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let found = agent_instances::table
+            .filter(agent_instances::owner_npub.eq(owner_npub))
+            .order(agent_instances::created_at.desc())
+            .select(Self::as_select())
+            .first::<Self>(conn)
+            .optional()?;
+        Ok(found)
+    }
+
     pub fn update_phase(
         conn: &mut PgConnection,
         agent_id: &str,

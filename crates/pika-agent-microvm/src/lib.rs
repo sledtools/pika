@@ -44,6 +44,7 @@ pub struct CreateVmRequest {
     pub cpu: Option<u32>,
     pub memory_mb: Option<u32>,
     pub ttl_seconds: Option<u64>,
+    pub keep: bool,
     pub spawn_variant: Option<String>,
     pub guest_autostart: Option<GuestAutostartRequest>,
 }
@@ -225,6 +226,7 @@ pub fn build_create_vm_request(
         cpu: Some(resolved.cpu),
         memory_mb: Some(resolved.memory_mb),
         ttl_seconds: Some(resolved.ttl_seconds),
+        keep: resolved.keep,
         spawn_variant: Some(resolved.spawn_variant.clone()),
         guest_autostart: Some(GuestAutostartRequest {
             command: AUTOSTART_COMMAND.to_string(),
@@ -722,7 +724,7 @@ mod tests {
 
     #[test]
     fn build_create_vm_request_serializes_guest_autostart() {
-        let resolved = resolve_params(&MicrovmProvisionParams::default(), false);
+        let resolved = resolve_params(&MicrovmProvisionParams::default(), true);
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -738,6 +740,7 @@ mod tests {
         let value = serde_json::to_value(req).expect("serialize create vm request");
 
         assert_eq!(value["spawn_variant"], "prebuilt-cow");
+        assert_eq!(value["keep"], true);
         assert_eq!(value["guest_autostart"]["command"], AUTOSTART_COMMAND);
         assert_eq!(
             value["guest_autostart"]["env"]["PIKA_OWNER_PUBKEY"],
@@ -805,6 +808,7 @@ mod tests {
             cpu: Some(2),
             memory_mb: Some(1024),
             ttl_seconds: Some(600),
+            keep: true,
             spawn_variant: Some("prebuilt-cow".to_string()),
             guest_autostart: Some(GuestAutostartRequest {
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
@@ -830,6 +834,7 @@ mod tests {
         assert_eq!(json["cpu"], 2);
         assert_eq!(json["memory_mb"], 1024);
         assert_eq!(json["ttl_seconds"], 600);
+        assert_eq!(json["keep"], true);
         assert_eq!(json["spawn_variant"], "prebuilt-cow");
         assert_eq!(
             json["guest_autostart"]["command"],
@@ -890,6 +895,7 @@ mod tests {
             cpu: None,
             memory_mb: None,
             ttl_seconds: None,
+            keep: false,
             spawn_variant: None,
             guest_autostart: None,
         };

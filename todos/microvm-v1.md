@@ -68,19 +68,7 @@ Acceptance criteria: app shows button only for whitelisted npubs, calls `ensure`
 11. Execute 3-dev checkpoint gate.
 Acceptance criteria: Justin, Ben, and Paul each complete create -> ready -> Marmot exchange; at least one restart/recover preserves state/files.
 
-## Deferred Follow-Ups (Post-PR)
+## Carryover Tracking
 
 Decision update (2026-03-05):
-Ship the v1 baseline now and iterate on master. The items below are intentionally deferred and should be completed next.
-
-1. Readiness semantics hardening.
-Current behavior can promote `creating` to `ready` based on DB/VM-id heuristics before the guest daemon is actually usable.
-Follow-up: gate `ready` on runtime-verified status from vm-spawner.
-
-2. App-side dogfood button gating alignment.
-Current iOS dogfood UI gating is signer-mode based and not allowlist-aware.
-Follow-up: make button visibility/prompting align with server allowlist outcomes to reduce dead-end UX.
-
-3. Deterministic reply-path coverage.
-Current deterministic CI focuses on ensure/me/recover contracts and does not assert end-to-end chat reply readiness.
-Follow-up: add deterministic `agent chat` reply-path coverage so regressions are caught pre-merge.
+The remaining post-v1 dogfood carryovers are now tracked in `todos/microvm-v2.md` under a dedicated end-of-file section so the next phase has one home for unfinished work.

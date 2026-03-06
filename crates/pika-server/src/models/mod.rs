@@ -192,6 +192,43 @@ mod test {
             .expect("active row should exist");
         assert_eq!(active.agent_id, "agent-1");
 
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row should exist");
+        assert_eq!(latest.agent_id, "agent-3");
+        assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_agent_instance_latest_owner_row_surfaces_error_without_active_row() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let owner_npub = "npub1ownererrortest";
+
+        let errored = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-error",
+            Some("vm-error"),
+            AGENT_PHASE_ERROR,
+        )
+        .expect("insert error row");
+        assert_eq!(errored.phase, AGENT_PHASE_ERROR);
+
+        let active =
+            AgentInstance::find_active_by_owner(&mut conn, owner_npub).expect("query active row");
+        assert!(active.is_none(), "error row must not be treated as active");
+
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row should exist");
+        assert_eq!(latest.agent_id, "agent-error");
+        assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+
         clear_database(&db_pool);
     }
 

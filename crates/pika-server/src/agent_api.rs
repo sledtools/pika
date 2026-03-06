@@ -197,6 +197,36 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
     })
 }
 
+fn select_visible_agent_row(
+    active: Option<AgentInstance>,
+    latest: Option<AgentInstance>,
+) -> Option<AgentInstance> {
+    active.or_else(|| latest.filter(|row| row.phase == AGENT_PHASE_ERROR))
+}
+
+fn load_visible_agent_row(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+) -> Result<Option<AgentInstance>, AgentApiError> {
+    let active = AgentInstance::find_active_by_owner(conn, owner_npub)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let latest = if active.is_none() {
+        AgentInstance::find_latest_by_owner(conn, owner_npub)
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+    } else {
+        None
+    };
+    Ok(select_visible_agent_row(active, latest))
+}
+
+fn load_recoverable_agent_row(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+) -> Result<Option<AgentInstance>, AgentApiError> {
+    AgentInstance::find_active_by_owner(conn, owner_npub)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))
+}
+
 fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
     if let Some(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)) =
         err.downcast_ref::<DieselError>()
@@ -354,17 +384,7 @@ pub async fn get_my_agent(
         V1_AGENTS_ME_PATH,
         state.trust_forwarded_host,
     )?;
-    let Some(active) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-    else {
-        let Some(latest) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
-            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-        else {
-            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
-        };
-        if latest.phase == AGENT_PHASE_ERROR {
-            return Ok(Json(map_row_to_response(latest)?));
-        }
+    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)? else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
     let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {
@@ -396,9 +416,7 @@ pub async fn recover_my_agent(
         V1_AGENTS_RECOVER_PATH,
         state.trust_forwarded_host,
     )?;
-    let Some(active) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-    else {
+    let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)? else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
     let vm_id = active
@@ -434,7 +452,25 @@ mod tests {
     use super::*;
     use axum::http::header;
     use base64::Engine;
+    use chrono::NaiveDate;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
+
+    fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
+        AgentInstance {
+            agent_id: agent_id.to_string(),
+            owner_npub: "npub1testowner".to_string(),
+            vm_id: vm_id.map(str::to_string),
+            phase: phase.to_string(),
+            created_at: NaiveDate::from_ymd_opt(2026, 3, 6)
+                .expect("valid date")
+                .and_hms_opt(0, 0, 0)
+                .expect("valid timestamp"),
+            updated_at: NaiveDate::from_ymd_opt(2026, 3, 6)
+                .expect("valid date")
+                .and_hms_opt(0, 0, 0)
+                .expect("valid timestamp"),
+        }
+    }
 
     #[test]
     fn authenticated_requester_npub_requires_nostr_authorization_header() {
@@ -617,5 +653,40 @@ mod tests {
         let err = ensure_private_microvm_spawner_url("https://example.com")
             .expect_err("public host must be rejected");
         assert!(err.to_string().contains("private DNS"));
+    }
+
+    #[test]
+    fn select_visible_agent_row_prefers_active_row_over_newer_error_row() {
+        let active = test_agent_instance("agent-active", AGENT_PHASE_READY, Some("vm-active"));
+        let latest_error = test_agent_instance("agent-error", AGENT_PHASE_ERROR, None);
+
+        let selected = select_visible_agent_row(Some(active.clone()), Some(latest_error))
+            .expect("active row should win");
+
+        assert_eq!(selected.agent_id, active.agent_id);
+        assert_eq!(selected.phase, AGENT_PHASE_READY);
+    }
+
+    #[test]
+    fn select_visible_agent_row_falls_back_to_latest_error_row() {
+        let latest_error = test_agent_instance("agent-error", AGENT_PHASE_ERROR, None);
+
+        let selected = select_visible_agent_row(None, Some(latest_error.clone()))
+            .expect("error row should be visible when no active row exists");
+
+        assert_eq!(selected.agent_id, latest_error.agent_id);
+        assert_eq!(selected.phase, AGENT_PHASE_ERROR);
+    }
+
+    #[test]
+    fn select_visible_agent_row_ignores_non_error_latest_without_active_row() {
+        let latest_ready = test_agent_instance("agent-ready", AGENT_PHASE_READY, Some("vm-ready"));
+
+        let selected = select_visible_agent_row(None, Some(latest_ready));
+
+        assert!(
+            selected.is_none(),
+            "non-error latest row must not replace active lookup"
+        );
     }
 }

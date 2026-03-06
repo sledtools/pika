@@ -6,24 +6,54 @@
     <title>{% block title %}pika-news{% endblock %}</title>
     {% block head_extra %}{% endblock %}
     <style>
-      :root { color-scheme: light; }
+      :root {
+        color-scheme: light dark;
+        --bg-start: #f8fbff; --bg-end: #f2f5f9;
+        --text: #1e293b; --text-secondary: #334155; --text-muted: #475569;
+        --link: #0f4c81;
+        --nav-bg: #fff; --nav-border: #d4deea;
+        --surface: #ffffffee; --surface-solid: #ffffffeb;
+        --border: #d6dde8; --border-light: #b8c5d8;
+        --input-border: #9eb3cb;
+        --badge-bg: #f0f4f9; --badge-bg-alt: #f7fafc; --badge-bg-row: #f8fafc;
+        --btn-bg: #f3f8ff; --btn-bg-hover: #e2e8f0; --btn-bg-active: #cbd5e1;
+        --accent: #7b3fe4; --accent-hover: #6930c3;
+        --chat-user-bg: #0f4c81; --chat-user-text: #fff;
+        --chat-assistant-bg: #f0f4f9; --chat-assistant-text: #1e293b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-start: #0f1117; --bg-end: #181b23;
+          --text: #e2e8f0; --text-secondary: #cbd5e1; --text-muted: #94a3b8;
+          --link: #60a5fa;
+          --nav-bg: #1a1d27; --nav-border: #2d3348;
+          --surface: #1e2130ee; --surface-solid: #1e2130eb;
+          --border: #2d3348; --border-light: #3b4263;
+          --input-border: #3b4263;
+          --badge-bg: #262a3a; --badge-bg-alt: #222639; --badge-bg-row: #1e2130;
+          --btn-bg: #262a3a; --btn-bg-hover: #2d3348; --btn-bg-active: #3b4263;
+          --accent: #9061f0; --accent-hover: #7b3fe4;
+          --chat-user-bg: #2563eb; --chat-user-text: #fff;
+          --chat-assistant-bg: #262a3a; --chat-assistant-text: #e2e8f0;
+        }
+      }
       * { box-sizing: border-box; }
-      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 0; background: linear-gradient(180deg, #f8fbff 0%, #f2f5f9 100%); color: #1e293b; min-height: 100vh; }
-      a { color: #0f4c81; text-decoration: none; }
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 0; background: linear-gradient(180deg, var(--bg-start) 0%, var(--bg-end) 100%); color: var(--text); min-height: 100vh; }
+      a { color: var(--link); text-decoration: none; }
       a:hover { text-decoration: underline; }
 
       /* Nav */
-      .site-nav { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1.5rem; background: #fff; border-bottom: 1px solid #d4deea; }
-      .site-nav .nav-brand { font-weight: 700; font-size: 1rem; color: #0f4c81; text-decoration: none; }
+      .site-nav { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1.5rem; background: var(--nav-bg); border-bottom: 1px solid var(--nav-border); }
+      .site-nav .nav-brand { font-weight: 700; font-size: 1rem; color: var(--link); text-decoration: none; }
       .site-nav .nav-brand:hover { text-decoration: none; }
       .site-nav .nav-right { display: flex; align-items: center; gap: 0.75rem; }
-      .nostr-btn { background: #7b3fe4; color: #fff; border: none; padding: 0.38rem 1rem; font-size: 0.85rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
-      .nostr-btn:hover { background: #6930c3; }
+      .nostr-btn { background: var(--accent); color: #fff; border: none; padding: 0.38rem 1rem; font-size: 0.85rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .nostr-btn:hover { background: var(--accent-hover); }
       .nostr-btn:disabled { opacity: 0.6; cursor: default; }
-      .nav-user { display: flex; align-items: center; gap: 0.6rem; font-size: 0.84rem; color: #334155; }
-      .nav-user .npub-display { font-family: monospace; font-size: 0.8rem; background: #f0f4f9; padding: 0.2rem 0.5rem; border-radius: 6px; }
-      .regen-btn { background: #e2e8f0; border: 1px solid #9eb3cb; color: #334155; font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
-      .regen-btn:hover { background: #cbd5e1; }
+      .nav-user { display: flex; align-items: center; gap: 0.6rem; font-size: 0.84rem; color: var(--text-secondary); }
+      .nav-user .npub-display { font-family: monospace; font-size: 0.8rem; background: var(--badge-bg); padding: 0.2rem 0.5rem; border-radius: 6px; }
+      .regen-btn { background: var(--btn-bg-hover); border: 1px solid var(--input-border); color: var(--text-secondary); font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .regen-btn:hover { background: var(--btn-bg-active); }
 
       {% block styles %}{% endblock %}
     </style>

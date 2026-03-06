@@ -9,6 +9,7 @@ use diesel::PgConnection;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use serde::Serialize;
+use tracing::error;
 
 use crate::agent_api_v1_contract::{
     AgentApiErrorCode, AgentAppState, V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH,
@@ -330,7 +331,8 @@ pub async fn ensure_agent(
 
     let vm = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
         Ok(vm) => vm,
-        Err(_) => {
+        Err(err) => {
+            error!(owner_npub = %requester.owner_npub, error = %err, "failed to provision microvm for agent");
             if let Ok(mut conn) = state.db_pool.get() {
                 let _ = AgentInstance::update_phase(
                     &mut conn,
@@ -353,7 +355,10 @@ pub async fn ensure_agent(
         phase_from_vm_status(&vm.status),
         Some(&vm.id),
     )
-    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    .map_err(|err| {
+        error!(agent_id = %created.agent_id, error = %err, "failed to update agent phase after provision");
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+    })?;
 
     Ok((StatusCode::ACCEPTED, Json(map_row_to_response(updated)?)))
 }

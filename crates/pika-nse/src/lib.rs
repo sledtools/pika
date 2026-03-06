@@ -30,8 +30,8 @@ pub enum PushNotificationResult {
         caller_picture_url: Option<String>,
         is_video: bool,
     },
-    /// Recognised but should not alert (self-message, call signal, etc.).
-    Suppress,
+    /// Something went wrong during decryption / processing.
+    Error { message: String },
 }
 
 #[derive(serde::Deserialize)]
@@ -63,14 +63,42 @@ pub fn decrypt_push_notification(
 ) -> Option<PushNotificationResult> {
     pika_tls::init_rustls_crypto_provider();
 
-    let keys = nostr::Keys::parse(&nsec).ok()?;
+    let keys = match nostr::Keys::parse(&nsec) {
+        Ok(k) => k,
+        Err(e) => {
+            return Some(PushNotificationResult::Error {
+                message: format!("failed to parse nsec: {e}"),
+            })
+        }
+    };
     let pubkey = keys.public_key();
 
-    let mdk = mdk_support::open_mdk(&data_dir, &pubkey, &keychain_group).ok()?;
+    let mdk = match mdk_support::open_mdk(&data_dir, &pubkey, &keychain_group) {
+        Ok(m) => m,
+        Err(e) => {
+            return Some(PushNotificationResult::Error {
+                message: format!("failed to open mdk: {e}"),
+            })
+        }
+    };
 
-    let event: Event = serde_json::from_str(&event_json).ok()?;
+    let event: Event = match serde_json::from_str(&event_json) {
+        Ok(e) => e,
+        Err(e) => {
+            return Some(PushNotificationResult::Error {
+                message: format!("failed to parse event json: {e}"),
+            })
+        }
+    };
 
-    let result = mdk.process_message(&event).ok()?;
+    let result = match mdk.process_message(&event) {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(PushNotificationResult::Error {
+                message: format!("failed to process message: {e}"),
+            })
+        }
+    };
 
     let msg = match result {
         MessageProcessingResult::ApplicationMessage(msg) => msg,
@@ -79,14 +107,26 @@ pub fn decrypt_push_notification(
 
     // Don't notify for self-messages.
     if msg.pubkey == pubkey {
-        return Some(PushNotificationResult::Suppress);
+        return None;
     }
 
-    let group = mdk.get_group(&msg.mls_group_id).ok()??;
-    let chat_id = hex::encode(group.nostr_group_id);
+    // Helper: fetch group only in branches that need it.
+    let get_group = || match mdk.get_group(&msg.mls_group_id) {
+        Ok(Some(g)) => Ok(g),
+        Ok(None) => Err("group not found".to_string()),
+        Err(e) => Err(format!("failed to get group: {e}")),
+    };
 
     match msg.kind {
         Kind::ChatMessage | Kind::Reaction => {
+            let group = match get_group() {
+                Ok(g) => g,
+                Err(e) => {
+                    return Some(PushNotificationResult::Error { message: e });
+                }
+            };
+            let chat_id = hex::encode(group.nostr_group_id);
+
             let media = match msg.kind {
                 Kind::ChatMessage => notif_media(&msg.tags),
                 _ => None,
@@ -101,7 +141,7 @@ pub fn decrypt_push_notification(
                             format!("{} {}", media.kind.emoji(), msg.content)
                         }
                     } else if msg.content.is_empty() {
-                        return Some(PushNotificationResult::Suppress);
+                        return None;
                     } else {
                         msg.content
                     }
@@ -150,10 +190,24 @@ pub fn decrypt_push_notification(
             })
         }
         Kind::Custom(10) => {
-            let probe: CallProbe = serde_json::from_str(&msg.content).ok()?;
+            let probe: CallProbe = match serde_json::from_str(&msg.content) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Some(PushNotificationResult::Error {
+                        message: format!("failed to parse call probe: {e}"),
+                    })
+                }
+            };
             if probe.msg_type != "call.invite" {
-                return Some(PushNotificationResult::Suppress);
+                return None;
             }
+            let group = match get_group() {
+                Ok(g) => g,
+                Err(e) => {
+                    return Some(PushNotificationResult::Error { message: e });
+                }
+            };
+            let chat_id = hex::encode(group.nostr_group_id);
             let is_video = probe
                 .body
                 .as_ref()
@@ -170,7 +224,7 @@ pub fn decrypt_push_notification(
                 is_video,
             })
         }
-        _ => Some(PushNotificationResult::Suppress),
+        _ => None,
     }
 }
 

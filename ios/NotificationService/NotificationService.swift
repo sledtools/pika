@@ -75,21 +75,21 @@ class NotificationService: UNNotificationServiceExtension {
                 )
                 contentHandler(updated)
             }
-        case .callInvite(let info):
-            content.title = info.callerName
-            content.body = info.isVideo ? "Incoming video call" : "Incoming call"
+        case .callInvite(let chatId, let callId, let callerName, let callerPictureUrl, let isVideo):
+            content.title = callerName
+            content.body = isVideo ? "Incoming video call" : "Incoming call"
             content.sound = .defaultCritical
-            content.userInfo["chat_id"] = info.chatId
-            content.userInfo["call_id"] = info.callId
-            content.threadIdentifier = info.chatId
+            content.userInfo["chat_id"] = chatId
+            content.userInfo["call_id"] = callId
+            content.threadIdentifier = chatId
 
-            if let urlStr = info.callerPictureUrl, let url = URL(string: urlStr) {
+            if let urlStr = callerPictureUrl, let url = URL(string: urlStr) {
                 Self.downloadAvatar(url: url) { image in
                     let updated = Self.applyCommNotification(
                         to: content,
-                        senderName: info.callerName,
-                        senderPubkey: info.chatId,
-                        chatId: info.chatId,
+                        senderName: callerName,
+                        senderPubkey: chatId,
+                        chatId: chatId,
                         senderImage: image
                     )
                     contentHandler(updated)
@@ -97,17 +97,22 @@ class NotificationService: UNNotificationServiceExtension {
             } else {
                 let updated = Self.applyCommNotification(
                     to: content,
-                    senderName: info.callerName,
-                    senderPubkey: info.chatId,
-                    chatId: info.chatId,
+                    senderName: callerName,
+                    senderPubkey: chatId,
+                    chatId: chatId,
                     senderImage: nil
                 )
                 contentHandler(updated)
             }
-        case .suppress, nil:
-            // Suppress: self-message, call signal, already processed, or decrypt failure.
-            // Deliver a fresh empty content so iOS has no alert to display.
-            contentHandler(UNMutableNotificationContent())
+        case .error(let message):
+            let errContent = UNMutableNotificationContent()
+            errContent.body = "[error] \(message)"
+            contentHandler(errContent)
+        case nil:
+            // Suppressed: self-message, call signal, non-app MLS message, etc.
+            let suppressed = UNMutableNotificationContent()
+            suppressed.body = "[suppressed]"
+            contentHandler(suppressed)
         }
     }
 

@@ -322,6 +322,7 @@ enum PreviewAppState {
             callTimeline: callTimeline,
             toast: toast,
             developerMode: false,
+            updateRequired: false,
             voiceRecording: nil,
             mediaGallery: nil
         )

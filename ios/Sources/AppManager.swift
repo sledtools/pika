@@ -203,7 +203,8 @@ final class AppManager: AppReconciler {
             agentApiUrl: agentApiUrl
         )
 
-        let core = FfiApp(dataDir: dataDir, keychainGroup: keychainGroup)
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let core = FfiApp(dataDir: dataDir, keychainGroup: keychainGroup, appVersion: appVersion)
         core.setExternalSignerBridge(bridge: IOSExternalSignerBridge())
         self.init(core: core, authStore: authStore)
     }

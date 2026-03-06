@@ -876,6 +876,18 @@ agent-microvm *ARGS="":
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
     ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
 
+# Tail local pika-server logs from the pikahut backend state dir.
+agent-microvm-server-logs STATE_DIR=".pikahut":
+    cargo run -p pikahut -- logs --state-dir {{ STATE_DIR }} --follow --component server
+
+# Tail remote vm-spawner logs on the pika-build microVM host.
+agent-microvm-vmspawner-logs:
+    nix develop .#infra -c just -f infra/justfile build-vmspawner-logs
+
+# Tail the guest agent log for a specific VM on the pika-build microVM host.
+agent-microvm-guest-logs VM_ID:
+    nix develop .#infra -c just -f infra/justfile build-guest-logs {{ VM_ID }}
+
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel

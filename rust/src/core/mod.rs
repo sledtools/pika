@@ -4869,6 +4869,9 @@ impl AppCore {
                     }
                 };
 
+                if self.state.busy.creating_chat {
+                    return;
+                }
                 self.set_busy(|b| b.creating_chat = true);
 
                 // Allow "note to self" flow for local/offline testing.
@@ -7301,6 +7304,7 @@ mod tests {
     mod group_management_validation {
         use super::*;
         use crate::actions::AppAction;
+        use nostr_sdk::{Keys, ToBech32};
 
         /// Create a core with a minimal session (logged in, no groups registered).
         fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
@@ -7375,6 +7379,25 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("Invalid npub"));
+        }
+
+        #[test]
+        fn create_chat_ignores_second_dispatch_while_busy() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_npub = peer_keys.public_key().to_bech32().unwrap();
+
+            // Simulate first dispatch already in progress.
+            core.set_busy(|b| b.creating_chat = true);
+
+            core.handle_action(AppAction::CreateChat {
+                peer_npub: peer_npub.clone(),
+            });
+
+            // Should be a no-op: no toast, no navigation, still busy.
+            assert!(core.state.toast.is_none());
+            assert!(core.state.router.screen_stack.is_empty());
+            assert!(core.state.busy.creating_chat);
         }
 
         #[test]

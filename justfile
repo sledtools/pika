@@ -938,3 +938,32 @@ news MAX_PRS="2":
       --config crates/pika-news/pika-news.toml \
       --db .tmp/pika-news.db \
       --max-prs {{ MAX_PRS }}"
+
+# Run pika-dev with auto-reload friendly TypeScript runtime.
+dev MAX_SESSIONS="2" BACKEND="fake":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f .env ]; then
+      set -a; source .env; set +a
+    fi
+    export GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token)}"
+    cd crates/pika-dev
+    if [ ! -d node_modules ]; then
+      npm install
+    fi
+    npx tsx src/index.ts \
+      --config pika-dev.toml \
+      --db ../../.tmp/pika-dev.db \
+      --max-sessions {{ MAX_SESSIONS }} \
+      --agent-backend {{ BACKEND }}
+
+# Fork a pika-dev agent branch locally for issue handoff.
+dev-fork ISSUE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Fetching pika-dev branch for issue #{{ ISSUE }}..."
+    git fetch origin "pika-dev/issue-{{ ISSUE }}"
+    git checkout "pika-dev/issue-{{ ISSUE }}"
+    echo ""
+    echo "You're now on the agent branch."
+    echo "Continue with your preferred tool."

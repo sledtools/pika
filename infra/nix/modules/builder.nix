@@ -3,6 +3,7 @@
 let
   cachePort = 5000;
   newsPort = 8788;
+  devPort = 8789;
 in
 {
   imports = [
@@ -10,6 +11,7 @@ in
     ../modules/base.nix
     ../modules/microvm-host.nix
     ../modules/pika-news.nix
+    ../modules/pika-dev.nix
   ];
 
   networking.hostName = "pika-build";
@@ -111,6 +113,11 @@ in
     virtualHosts."news.pikachat.org" = {
       extraConfig = ''
         reverse_proxy 127.0.0.1:${toString newsPort}
+      '';
+    };
+    virtualHosts."dev.pikachat.org" = {
+      extraConfig = ''
+        reverse_proxy 127.0.0.1:${toString devPort}
       '';
     };
   };

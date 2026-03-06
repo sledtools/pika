@@ -1,0 +1,32 @@
+{
+  "name": "pika-dev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Automated issue solver for sledtools/pika",
+  "bin": {
+    "pika-dev": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.6",
+    "@iarna/toml": "^2.2.5",
+    "@mariozechner/pi-ai": "^0.54.2",
+    "@mariozechner/pi-coding-agent": "^0.54.2",
+    "better-sqlite3": "^12.4.1",
+    "hono": "^4.10.5",
+    "nostr-tools": "^2.17.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.18.10",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}

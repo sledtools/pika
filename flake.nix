@@ -101,6 +101,34 @@
         buildInputs = [ serverPkgs.openssl ];
       };
 
+      pikaDevPkg = serverPkgs.buildNpmPackage rec {
+        pname = "pika-dev";
+        version = "0.1.0";
+        src = ./crates/pika-dev;
+
+        npmDepsHash = "sha256-yN+wiawnDl2nD9uYWOmv7xTdV/1BaR9txYk5w6gU6PM=";
+        npmBuildScript = "build";
+        dontNpmPrune = false;
+
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out/libexec/pika-dev"
+          cp -R dist node_modules package.json package-lock.json static pika-dev.toml "$out/libexec/pika-dev"/
+          mkdir -p "$out/bin"
+          makeWrapper ${serverPkgs.nodejs}/bin/node "$out/bin/pika-dev" \
+            --add-flags "$out/libexec/pika-dev/dist/index.js"
+          runHook postInstall
+        '';
+
+        nativeBuildInputs = [ serverPkgs.makeWrapper ];
+
+        meta = with serverPkgs.lib; {
+          description = "Automated issue solver service for pika-dev issues";
+          license = licenses.mit;
+          platforms = platforms.linux;
+        };
+      };
+
       vmSpawnerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "vm-spawner";
         version = "0.1.0";
@@ -565,6 +593,7 @@ EOF
       packages."x86_64-linux" = {
         vm-spawner = vmSpawnerPkg;
         pi-agent-runtime = piAgentPkg;
+        pika-dev = pikaDevPkg;
       };
 
       nixosConfigurations = {
@@ -585,7 +614,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg; };
+          specialArgs = { inherit sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikaDevPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops

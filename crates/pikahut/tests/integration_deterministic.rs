@@ -115,7 +115,9 @@ fn spawn_mock_vm_spawner(
     let handle = thread::spawn(move || -> Result<Vec<String>> {
         let mut request_lines = Vec::with_capacity(expected_requests);
         for _ in 0..expected_requests {
-            let deadline = Instant::now() + Duration::from_secs(30);
+            // Cold CI workers can spend tens of seconds building and starting the
+            // fixture before the first request reaches the mock spawner.
+            let deadline = Instant::now() + Duration::from_secs(120);
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(pair) => break pair,

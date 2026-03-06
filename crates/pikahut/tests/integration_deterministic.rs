@@ -1,8 +1,8 @@
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::{Context, anyhow, bail};
@@ -106,31 +106,13 @@ fn spawn_mock_vm_spawner(
     expected_requests: usize,
 ) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
-    listener
-        .set_nonblocking(true)
-        .context("set mock vm-spawner nonblocking")?;
     let addr = listener.local_addr().context("read mock vm-spawner addr")?;
     let url = format!("http://{}", addr);
 
     let handle = thread::spawn(move || -> Result<Vec<String>> {
         let mut request_lines = Vec::with_capacity(expected_requests);
         for _ in 0..expected_requests {
-            let accept_deadline = Instant::now() + Duration::from_secs(10);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok(accepted) => break accepted,
-                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        if Instant::now() >= accept_deadline {
-                            bail!("timed out waiting for spawner request");
-                        }
-                        thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(err) => return Err(err).context("accept spawner request"),
-                }
-            };
-            stream
-                .set_nonblocking(false)
-                .context("set spawner stream blocking")?;
+            let (mut stream, _) = listener.accept().context("accept spawner request")?;
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .context("set spawner read timeout")?;

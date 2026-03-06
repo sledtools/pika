@@ -129,6 +129,9 @@ fn spawn_mock_vm_spawner(
                 }
             };
             stream
+                .set_nonblocking(false)
+                .context("set spawner stream blocking")?;
+            stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .context("set spawner read timeout")?;
 

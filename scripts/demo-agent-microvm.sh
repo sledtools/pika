@@ -16,10 +16,10 @@ cmd=(
   just cli
   agent new
   --api-base-url "$AGENT_API_BASE_URL"
-  --nsec "$AGENT_API_NSEC"
 )
 
 cmd+=("$@")
 
 echo "Running agent HTTP ensure demo..."
+export PIKA_AGENT_API_NSEC="$AGENT_API_NSEC"
 exec "${cmd[@]}"

@@ -1881,15 +1881,25 @@ async fn cmd_agent_chat(
 
         if state == "error" {
             eprintln!("agent in error state; requesting recover");
-            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+            if let Err(err) =
+                call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await
+            {
+                eprintln!("recover request failed while state=error on attempt {attempt}: {err}");
+            }
         } else if state == "creating"
             && !recovered_stalled_creating
             && recover_after_attempt > 0
             && attempt >= recover_after_attempt
         {
             eprintln!("agent still creating after {attempt} checks; requesting recover");
-            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
-            recovered_stalled_creating = true;
+            match call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await {
+                Ok(_) => recovered_stalled_creating = true,
+                Err(err) => {
+                    eprintln!(
+                        "recover request failed while state=creating on attempt {attempt}: {err}"
+                    );
+                }
+            }
         }
 
         if attempt < poll_attempts {
@@ -1987,7 +1997,12 @@ async fn call_agent_api_raw(
     let url = format!("{base_url}{path}");
     let auth = build_nip98_authorization_header(&nsec, &method, &url)?;
 
-    let mut request = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("build agent api client")?;
+    let mut request = client
         .request(method.clone(), &url)
         .header("Authorization", auth)
         .header("Accept", "application/json");

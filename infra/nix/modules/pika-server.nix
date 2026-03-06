@@ -1,4 +1,4 @@
-{ hostname, domain }:
+{ hostname, domain, microvmSpawnerUrl ? null }:
 
 { config, lib, pkgs, modulesPath, pikaServerPkg, sops-nix, ... }:
 
@@ -10,9 +10,17 @@ let
   serviceStateDir = "/var/lib/pika-server";
   prodAdmins = import ../lib/prod-admins.nix;
   prodAdminNpubs = map (admin: admin.npub) prodAdmins;
+  adminSessionSecretPath = "${serviceStateDir}/admin-session-secret";
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
-    export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/sha256sum ${serviceStateDir}/apns-key.p8 | ${pkgs.gawk}/bin/awk '{print $1}')"
+    if [ -z "''${PIKA_ADMIN_SESSION_SECRET:-}" ]; then
+      if [ ! -s "${adminSessionSecretPath}" ]; then
+        umask 077
+        ${pkgs.openssl}/bin/openssl rand -hex 32 > "${adminSessionSecretPath}.tmp"
+        ${pkgs.coreutils}/bin/mv "${adminSessionSecretPath}.tmp" "${adminSessionSecretPath}"
+      fi
+      export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/tr -d '\n' < "${adminSessionSecretPath}")"
+    fi
     exec ${pikaServerPkg}/bin/pika-server
   '';
 in
@@ -104,10 +112,11 @@ in
       APNS_TEAM_ID=${config.sops.placeholder."apns_team_id"}
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
-      # vm-spawner is reached over private WireGuard/Tailscale network.
-      # Use the builder's stable tailnet IPv4 directly because MagicDNS
-      # names may not resolve on this host.
-      PIKA_AGENT_MICROVM_SPAWNER_URL=http://100.81.250.67:8080
+      ${lib.optionalString (microvmSpawnerUrl != null) ''
+      # vm-spawner is reached over a private network; inject the host-specific URL
+      # from the machine import instead of hardcoding it in the shared module.
+      PIKA_AGENT_MICROVM_SPAWNER_URL=${microvmSpawnerUrl}
+      ''}
       PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," prodAdminNpubs}
       RUST_LOG=info
     '';

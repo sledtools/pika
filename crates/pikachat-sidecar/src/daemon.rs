@@ -37,6 +37,20 @@ const PROTOCOL_VERSION: u32 = 1;
 const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
 const RELAY_AUTH_HEX_LEN: usize = 64;
 
+fn find_pending_welcome_index<T>(
+    list: &[T],
+    target: &EventId,
+    wrapper_id: impl Fn(&T) -> &EventId,
+    welcome_id: impl Fn(&T) -> &EventId,
+) -> Option<usize> {
+    list.iter()
+        .position(|welcome| wrapper_id(welcome) == target)
+        .or_else(|| {
+            list.iter()
+                .position(|welcome| welcome_id(welcome) == target)
+        })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum InCmd {
@@ -2675,26 +2689,13 @@ pub async fn daemon_main(
                         };
                         match mdk.get_pending_welcomes(None) {
                             Ok(mut list) => {
-                                let mut found = list
-                                    .iter()
-                                    .position(|w| w.wrapper_event_id == wrapper)
-                                    .map(|idx| list.swap_remove(idx));
-                                if found.is_none() {
-                                    found = list
-                                        .iter()
-                                        .position(|w| w.id == wrapper)
-                                        .map(|idx| list.swap_remove(idx));
-                                }
-                                if found.is_none() && list.len() == 1 {
-                                    let fallback = list.swap_remove(0);
-                                    warn!(
-                                        "[pikachat] accept_welcome wrapper_id={} not found; falling back to sole pending welcome wrapper_id={} welcome_event_id={}",
-                                        wrapper_event_id,
-                                        fallback.wrapper_event_id.to_hex(),
-                                        fallback.id.to_hex()
-                                    );
-                                    found = Some(fallback);
-                                }
+                                let found = find_pending_welcome_index(
+                                    &list,
+                                    &wrapper,
+                                    |welcome| &welcome.wrapper_event_id,
+                                    |welcome| &welcome.id,
+                                )
+                                .map(|idx| list.swap_remove(idx));
                                 let Some(w) = found else {
                                     reply_tx
                                         .send(out_error(
@@ -4432,6 +4433,42 @@ pub async fn daemon_main(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event_id(hex: &str) -> EventId {
+        EventId::from_hex(hex).expect("valid event id")
+    }
+
+    #[test]
+    fn find_pending_welcome_index_matches_wrapper_or_welcome_id_only() {
+        let items = vec![
+            (
+                event_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                event_id("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            ),
+            (
+                event_id("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                event_id("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+            ),
+        ];
+
+        assert_eq!(
+            find_pending_welcome_index(&items, &items[0].0, |item| &item.0, |item| &item.1),
+            Some(0)
+        );
+        assert_eq!(
+            find_pending_welcome_index(&items, &items[1].1, |item| &item.0, |item| &item.1),
+            Some(1)
+        );
+        assert_eq!(
+            find_pending_welcome_index(
+                &items,
+                &event_id("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+                |item| &item.0,
+                |item| &item.1,
+            ),
+            None
+        );
+    }
 
     #[test]
     fn parses_call_invite_signal() {

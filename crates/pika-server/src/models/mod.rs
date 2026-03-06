@@ -228,7 +228,6 @@ mod test {
             .expect("latest row should exist");
         assert_eq!(latest.agent_id, "agent-error");
         assert_eq!(latest.phase, AGENT_PHASE_ERROR);
-
         clear_database(&db_pool);
     }
 

@@ -39,6 +39,14 @@ pub struct State {
     pub apns_topic: String,
     pub channel: Arc<Mutex<watch::Sender<GroupFilterInfo>>>,
     pub admin_config: Arc<admin::AdminConfig>,
+    pub trust_forwarded_host: bool,
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 #[tokio::main]
@@ -170,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
         apns_topic: apns_topic.clone(),
         channel,
         admin_config: Arc::new(admin::AdminConfig::from_env()?),
+        trust_forwarded_host: env_truthy("PIKA_TRUST_X_FORWARDED_HOST"),
     };
 
     let addr: std::net::SocketAddr = format!("0.0.0.0:{port}")

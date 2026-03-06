@@ -60,6 +60,7 @@ pub struct GuestAutostartRequest {
 pub struct VmResponse {
     pub id: String,
     pub ip: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +137,23 @@ impl MicrovmSpawnerClient {
             anyhow::bail!("failed to recover vm {vm_id}: {status} {text}");
         }
         resp.json().await.context("decode recover vm response")
+    }
+
+    pub async fn get_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        let url = format!("{}/vms/{vm_id}", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(RECOVER_VM_TIMEOUT)
+            .send()
+            .await
+            .context("send get vm request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("failed to get vm {vm_id}: {status} {text}");
+        }
+        resp.json().await.context("decode get vm response")
     }
 }
 
@@ -799,8 +817,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_vm_contract_request_shape() {
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", r#"{"id":"vm-123","ip":"192.168.0.10"}"#);
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-123","ip":"192.168.0.10","status":"running"}"#,
+        );
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
             flake_ref: Some(".#nixpi".to_string()),
@@ -820,6 +840,7 @@ mod tests {
         let vm = client.create_vm(&req).await.expect("create vm succeeds");
         assert_eq!(vm.id, "vm-123");
         assert_eq!(vm.ip, "192.168.0.10");
+        assert_eq!(vm.status, "running");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -866,8 +887,10 @@ mod tests {
 
     #[tokio::test]
     async fn recover_vm_contract_request_shape() {
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","ip":"192.168.0.11"}"#);
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-recover-1","ip":"192.168.0.11","status":"starting"}"#,
+        );
         let client = MicrovmSpawnerClient::new(base_url);
 
         let recovered = client
@@ -876,12 +899,34 @@ mod tests {
             .expect("recover vm succeeds");
         assert_eq!(recovered.id, "vm-recover-1");
         assert_eq!(recovered.ip, "192.168.0.11");
+        assert_eq!(recovered.status, "starting");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
             .expect("captured request");
         assert_eq!(captured.method, "POST");
         assert_eq!(captured.path, "/vms/vm-recover-1/recover");
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vm_contract_request_shape() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-get-1","ip":"192.168.0.12","status":"running"}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let vm = client.get_vm("vm-get-1").await.expect("get vm succeeds");
+        assert_eq!(vm.id, "vm-get-1");
+        assert_eq!(vm.ip, "192.168.0.12");
+        assert_eq!(vm.status, "running");
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-get-1");
         assert!(captured.body.is_empty());
     }
 

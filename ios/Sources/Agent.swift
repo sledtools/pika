@@ -6,7 +6,8 @@ func isAgentEligible(npub: String?, auth: AuthState) -> Bool {
         return false
     }
 
-    guard case .loggedIn(_, _, let mode) = auth else {
+    guard case .loggedIn(let authNpub, _, let mode) = auth,
+          authNpub.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized else {
         return false
     }
     switch mode {

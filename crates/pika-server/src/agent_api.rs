@@ -139,10 +139,11 @@ fn authenticated_requester_npub(
     headers: &HeaderMap,
     expected_method: &str,
     expected_path: &str,
+    trust_forwarded_host: bool,
 ) -> Result<String, AgentApiError> {
     let event = event_from_authorization_header(headers)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
-    let expected_host = expected_host_from_headers(headers)
+    let expected_host = expected_host_from_headers(headers, trust_forwarded_host)
         .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Unauthorized))?;
     verify_nip98_event(
         &event,
@@ -159,8 +160,14 @@ fn require_whitelisted_requester(
     headers: &HeaderMap,
     expected_method: &str,
     expected_path: &str,
+    trust_forwarded_host: bool,
 ) -> Result<RequesterIdentity, AgentApiError> {
-    let owner_npub = authenticated_requester_npub(headers, expected_method, expected_path)?;
+    let owner_npub = authenticated_requester_npub(
+        headers,
+        expected_method,
+        expected_path,
+        trust_forwarded_host,
+    )?;
     let is_active = AgentAllowlistEntry::is_active(conn, &owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     if !is_active {
@@ -187,6 +194,14 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
         vm_id: row.vm_id,
         state,
     })
+}
+
+fn phase_from_vm_status(status: &str) -> &'static str {
+    if status.eq_ignore_ascii_case("running") {
+        AGENT_PHASE_READY
+    } else {
+        AGENT_PHASE_CREATING
+    }
 }
 
 fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
@@ -232,7 +247,7 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
 async fn provision_vm_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<pika_agent_microvm::VmResponse> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     let resolved = resolved_spawner_params()?;
     let create_vm = build_create_vm_request(
@@ -243,62 +258,100 @@ async fn provision_vm_for_owner(
         &bot_identity.pubkey_hex,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    let vm = spawner
+    spawner
         .create_vm(&create_vm)
         .await
-        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))?;
-    Ok(vm.id)
+        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))
+}
+
+async fn refresh_agent_phase_from_spawner(
+    active: &AgentInstance,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let Some(vm_id) = active.vm_id.as_deref() else {
+        return Ok(None);
+    };
+    let resolved = resolved_spawner_params()?;
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let vm = spawner.get_vm(vm_id).await?;
+    let phase = phase_from_vm_status(&vm.status);
+    if active.phase == phase && active.vm_id.as_deref() == Some(vm.id.as_str()) {
+        return Ok(None);
+    }
+    Ok(Some((phase.to_string(), Some(vm.id))))
 }
 
 pub async fn ensure_agent(
     Extension(state): Extension<State>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester =
-        require_whitelisted_requester(&mut conn, &headers, "POST", V1_AGENTS_ENSURE_PATH)?;
+    let requester = {
+        let mut conn = state
+            .db_pool
+            .get()
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+        let requester = require_whitelisted_requester(
+            &mut conn,
+            &headers,
+            "POST",
+            V1_AGENTS_ENSURE_PATH,
+            state.trust_forwarded_host,
+        )?;
+        if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+            .is_some()
+        {
+            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists));
+        }
+        requester
+    };
     let bot_identity = generate_provisioning_bot_identity()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
 
-    if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-        .is_some()
-    {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists));
-    }
+    let created = {
+        let mut conn = state
+            .db_pool
+            .get()
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+        AgentInstance::create(
+            &mut conn,
+            &requester.owner_npub,
+            &bot_identity.pubkey_npub,
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .map_err(|err| {
+            if is_owner_active_unique_violation(&err) {
+                AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+            } else {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+            }
+        })?
+    };
 
-    let created = AgentInstance::create(
-        &mut conn,
-        &requester.owner_npub,
-        &bot_identity.pubkey_npub,
-        None,
-        AGENT_PHASE_CREATING,
-    )
-    .map_err(|err| {
-        if is_owner_active_unique_violation(&err) {
-            AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-        } else {
-            AgentApiError::from_code(AgentApiErrorCode::Internal)
-        }
-    })?;
-
-    let vm_id = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
-        Ok(vm_id) => vm_id,
+    let vm = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
+        Ok(vm) => vm,
         Err(_) => {
-            let _ =
-                AgentInstance::update_phase(&mut conn, &created.agent_id, AGENT_PHASE_ERROR, None);
+            if let Ok(mut conn) = state.db_pool.get() {
+                let _ = AgentInstance::update_phase(
+                    &mut conn,
+                    &created.agent_id,
+                    AGENT_PHASE_ERROR,
+                    None,
+                );
+            }
             return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
         }
     };
 
+    let mut conn = state
+        .db_pool
+        .get()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        AGENT_PHASE_READY,
-        Some(&vm_id),
+        phase_from_vm_status(&vm.status),
+        Some(&vm.id),
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
 
@@ -313,8 +366,14 @@ pub async fn get_my_agent(
         .db_pool
         .get()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester = require_whitelisted_requester(&mut conn, &headers, "GET", V1_AGENTS_ME_PATH)?;
-    let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+    let requester = require_whitelisted_requester(
+        &mut conn,
+        &headers,
+        "GET",
+        V1_AGENTS_ME_PATH,
+        state.trust_forwarded_host,
+    )?;
+    let Some(active) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     else {
         let Some(latest) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
@@ -328,13 +387,13 @@ pub async fn get_my_agent(
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
     let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {
-        AgentInstance::update_phase(
-            &mut conn,
-            &active.agent_id,
-            AGENT_PHASE_READY,
-            active.vm_id.as_deref(),
-        )
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+        match refresh_agent_phase_from_spawner(&active).await {
+            Ok(Some((phase, vm_id))) => {
+                AgentInstance::update_phase(&mut conn, &active.agent_id, &phase, vm_id.as_deref())
+                    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+            }
+            Ok(None) | Err(_) => active,
+        }
     } else {
         active
     };
@@ -349,9 +408,14 @@ pub async fn recover_my_agent(
         .db_pool
         .get()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let requester =
-        require_whitelisted_requester(&mut conn, &headers, "POST", V1_AGENTS_RECOVER_PATH)?;
-    let Some(active) = AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+    let requester = require_whitelisted_requester(
+        &mut conn,
+        &headers,
+        "POST",
+        V1_AGENTS_RECOVER_PATH,
+        state.trust_forwarded_host,
+    )?;
+    let Some(active) = AgentInstance::find_latest_by_owner(&mut conn, &requester.owner_npub)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
@@ -372,7 +436,7 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        AGENT_PHASE_READY,
+        phase_from_vm_status(&recovered.status),
         Some(&recovered.id),
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
@@ -394,7 +458,7 @@ mod tests {
     #[test]
     fn authenticated_requester_npub_requires_nostr_authorization_header() {
         let headers = HeaderMap::new();
-        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, false)
             .expect_err("missing header must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
@@ -420,7 +484,7 @@ mod tests {
         );
         headers.insert(header::HOST, "example.com".parse().expect("host value"));
 
-        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, false)
             .expect("extract authenticated npub");
         assert_eq!(
             npub,
@@ -451,14 +515,14 @@ mod tests {
         );
         headers.insert(header::HOST, "example.com".parse().expect("host value"));
 
-        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, false)
             .expect_err("mismatched authority must fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
     }
 
     #[test]
-    fn authenticated_requester_npub_prefers_x_forwarded_host_over_host() {
+    fn authenticated_requester_npub_prefers_x_forwarded_host_when_trusted() {
         let keys = Keys::generate();
         let event = EventBuilder::new(Kind::Custom(27235), "")
             .tags([
@@ -487,7 +551,7 @@ mod tests {
             "public.example.com".parse().expect("forwarded host value"),
         );
 
-        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH)
+        let npub = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, true)
             .expect("extract authenticated npub");
         assert_eq!(
             npub,
@@ -496,6 +560,42 @@ mod tests {
                 .expect("encode npub")
                 .to_lowercase()
         );
+    }
+
+    #[test]
+    fn authenticated_requester_npub_rejects_untrusted_forwarded_host_override() {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(27235), "")
+            .tags([
+                Tag::custom(
+                    TagKind::custom("u"),
+                    ["https://public.example.com/v1/agents/me"],
+                ),
+                Tag::custom(TagKind::custom("method"), ["GET"]),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign nip98 event");
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(serde_json::to_vec(&event).expect("serialize event"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Nostr {encoded}").parse().expect("auth value"),
+        );
+        headers.insert(
+            header::HOST,
+            "127.0.0.1:8080".parse().expect("internal host value"),
+        );
+        headers.insert(
+            "x-forwarded-host",
+            "public.example.com".parse().expect("forwarded host value"),
+        );
+
+        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, false)
+            .expect_err("untrusted forwarded host must fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
     }
 
     #[test]
@@ -536,5 +636,12 @@ mod tests {
         let err = ensure_private_microvm_spawner_url("https://example.com")
             .expect_err("public host must be rejected");
         assert!(err.to_string().contains("private DNS"));
+    }
+
+    #[test]
+    fn phase_from_vm_status_maps_running_to_ready() {
+        assert_eq!(phase_from_vm_status("running"), AGENT_PHASE_READY);
+        assert_eq!(phase_from_vm_status("starting"), AGENT_PHASE_CREATING);
+        assert_eq!(phase_from_vm_status("booting"), AGENT_PHASE_CREATING);
     }
 }

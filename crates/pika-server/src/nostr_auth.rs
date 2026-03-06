@@ -61,7 +61,10 @@ fn split_signed_u_tag(value: &str) -> anyhow::Result<(Option<String>, String)> {
     Ok((Some(authority), path))
 }
 
-pub fn expected_host_from_headers(headers: &HeaderMap) -> Option<String> {
+pub fn expected_host_from_headers(
+    headers: &HeaderMap,
+    trust_forwarded_host: bool,
+) -> Option<String> {
     let forwarded = headers
         .get("x-forwarded-host")
         .and_then(|v| v.to_str().ok())
@@ -74,7 +77,11 @@ pub fn expected_host_from_headers(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_ascii_lowercase());
-    forwarded.or(host)
+    if trust_forwarded_host {
+        forwarded.or(host)
+    } else {
+        host
+    }
 }
 
 fn tag_content(event: &Event, tag_name: &str) -> Option<String> {
@@ -145,4 +152,39 @@ pub fn verify_nip98_event(
     }
 
     event.pubkey.to_bech32().context("encode requester npub")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expected_host_from_headers_ignores_forwarded_host_by_default() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "127.0.0.1:8080".parse().expect("host header"));
+        headers.insert(
+            "x-forwarded-host",
+            "public.example.com".parse().expect("forwarded host"),
+        );
+
+        assert_eq!(
+            expected_host_from_headers(&headers, false).as_deref(),
+            Some("127.0.0.1:8080")
+        );
+    }
+
+    #[test]
+    fn expected_host_from_headers_can_trust_forwarded_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "127.0.0.1:8080".parse().expect("host header"));
+        headers.insert(
+            "x-forwarded-host",
+            "public.example.com".parse().expect("forwarded host"),
+        );
+
+        assert_eq!(
+            expected_host_from_headers(&headers, true).as_deref(),
+            Some("public.example.com")
+        );
+    }
 }

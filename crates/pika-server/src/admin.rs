@@ -220,7 +220,9 @@ impl AdminConfig {
     fn session_npub_from_headers(&self, headers: &HeaderMap) -> Option<String> {
         let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
         for pair in cookie.split(';') {
-            let (name, value) = pair.trim().split_once('=')?;
+            let Some((name, value)) = pair.trim().split_once('=') else {
+                continue;
+            };
             if name == ADMIN_SESSION_COOKIE {
                 if let Ok(npub) = self.verify_session_token(value) {
                     return Some(npub);
@@ -285,11 +287,11 @@ fn verify_token<T: DeserializeOwned>(secret: &[u8], token: &str) -> anyhow::Resu
         .ok_or_else(|| anyhow::anyhow!("invalid token format"))?;
     let mut mac = HmacSha256::new_from_slice(secret).context("init hmac")?;
     mac.update(body_b64.as_bytes());
-    let expected = mac.finalize().into_bytes();
     let actual = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(sig_b64)
         .context("decode token signature")?;
-    anyhow::ensure!(actual == expected.as_slice(), "invalid token signature");
+    mac.verify_slice(&actual)
+        .map_err(|_| anyhow::anyhow!("invalid token signature"))?;
 
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(body_b64)
@@ -363,12 +365,13 @@ pub async fn verify(
             )
         })?;
 
-    let expected_host = expected_host_from_headers(&headers).ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "missing host for NIP-98 verification".to_string(),
-        )
-    })?;
+    let expected_host = expected_host_from_headers(&headers, state.trust_forwarded_host)
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "missing host for NIP-98 verification".to_string(),
+            )
+        })?;
     let npub = verify_nip98_event(
         &event,
         "POST",
@@ -554,6 +557,19 @@ pub async fn dev_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
+
+    fn test_admin_config(npub: &str) -> AdminConfig {
+        let mut bootstrap_admins = HashSet::new();
+        bootstrap_admins.insert(npub.to_string());
+        AdminConfig {
+            bootstrap_admins,
+            session_secret: b"0123456789abcdef0123456789abcdef".to_vec(),
+            dev_mode: false,
+            dev_npub: None,
+            cookie_secure: true,
+        }
+    }
 
     #[test]
     fn parse_npub_csv_rejects_invalid_items() {
@@ -568,5 +584,43 @@ mod tests {
         )
         .expect("valid set");
         assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn session_cookie_parsing_skips_malformed_pairs() {
+        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y".to_string();
+        let config = test_admin_config(&npub);
+        let token = config
+            .issue_session_token(&npub)
+            .expect("issue session token");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("broken-cookie; {ADMIN_SESSION_COOKIE}={token}")
+                .parse()
+                .expect("cookie header"),
+        );
+
+        assert_eq!(config.session_npub_from_headers(&headers), Some(npub));
+    }
+
+    #[test]
+    fn verify_token_rejects_tampered_signature() {
+        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y".to_string();
+        let config = test_admin_config(&npub);
+        let token = config
+            .issue_session_token(&npub)
+            .expect("issue session token");
+        let (body, sig) = token.split_once('.').expect("token parts");
+        let mut tampered = sig.as_bytes().to_vec();
+        tampered[0] = if tampered[0] == b'a' { b'b' } else { b'a' };
+        let tampered_sig = String::from_utf8(tampered).expect("tampered signature utf8");
+
+        let err = verify_token::<SessionPayload>(
+            &config.session_secret,
+            &format!("{body}.{tampered_sig}"),
+        )
+        .expect_err("tampered signature must fail");
+        assert!(err.to_string().contains("invalid token signature"));
     }
 }

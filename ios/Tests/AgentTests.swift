@@ -11,6 +11,16 @@ final class AgentTests: XCTestCase {
                 auth: .loggedIn(npub: npub, pubkey: String(repeating: "a", count: 64), mode: .localNsec)
             )
         )
+        XCTAssertFalse(
+            isDogfoodAgentEligible(
+                npub: npub,
+                auth: .loggedIn(
+                    npub: "npub1differentaccountqqqqqqqqqqqqqqqqqqqqqqqqqqqqj6y0r7",
+                    pubkey: String(repeating: "a", count: 64),
+                    mode: .localNsec
+                )
+            )
+        )
 
         XCTAssertFalse(
             isAgentEligible(

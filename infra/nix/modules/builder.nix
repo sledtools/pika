@@ -122,8 +122,8 @@ in
 
       for key in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET RESTIC_PASSWORD; do
         if [ -z "''${!key:-}" ]; then
-          echo "microvm backup env missing $key; skipping run"
-          exit 0
+          echo "microvm backup env missing $key; refusing backup run" >&2
+          exit 1
         fi
       done
 
@@ -230,6 +230,11 @@ in
       VM_ID="$1"
       SNAPSHOT="''${2:-latest}"
       ENV_FILE="${microvmBackupEnvFile}"
+
+      if [ -z "$VM_ID" ] || [[ "$VM_ID" =~ [^A-Za-z0-9._-] ]]; then
+        echo "invalid vm-id: $VM_ID" >&2
+        exit 2
+      fi
 
       if [ ! -f "$ENV_FILE" ]; then
         echo "missing backup env file: $ENV_FILE" >&2

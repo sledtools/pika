@@ -119,7 +119,6 @@ impl MicrovmSpawnerClient {
         }
         resp.json().await.context("decode recover vm response")
     }
-
 }
 
 pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {

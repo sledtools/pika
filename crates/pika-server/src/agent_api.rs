@@ -197,14 +197,6 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
     })
 }
 
-fn phase_from_vm_status(status: &str) -> &'static str {
-    if status.eq_ignore_ascii_case("running") {
-        AGENT_PHASE_READY
-    } else {
-        AGENT_PHASE_CREATING
-    }
-}
-
 fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
     if let Some(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)) =
         err.downcast_ref::<DieselError>()
@@ -247,7 +239,7 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
 async fn provision_vm_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
-) -> anyhow::Result<pika_agent_microvm::VmResponse> {
+) -> anyhow::Result<String> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     let resolved = resolved_spawner_params()?;
     let create_vm = build_create_vm_request(
@@ -258,26 +250,11 @@ async fn provision_vm_for_owner(
         &bot_identity.pubkey_hex,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    spawner
+    let vm = spawner
         .create_vm(&create_vm)
         .await
-        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))
-}
-
-async fn refresh_agent_phase_from_spawner(
-    active: &AgentInstance,
-) -> anyhow::Result<Option<(String, Option<String>)>> {
-    let Some(vm_id) = active.vm_id.as_deref() else {
-        return Ok(None);
-    };
-    let resolved = resolved_spawner_params()?;
-    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
-    let vm = spawner.get_vm(vm_id).await?;
-    let phase = phase_from_vm_status(&vm.status);
-    if active.phase == phase && active.vm_id.as_deref() == Some(vm.id.as_str()) {
-        return Ok(None);
-    }
-    Ok(Some((phase.to_string(), Some(vm.id))))
+        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))?;
+    Ok(vm.id)
 }
 
 pub async fn ensure_agent(
@@ -328,8 +305,8 @@ pub async fn ensure_agent(
         })?
     };
 
-    let vm = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
-        Ok(vm) => vm,
+    let vm_id = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
+        Ok(vm_id) => vm_id,
         Err(err) => {
             error!(owner_npub = %requester.owner_npub, error = %err, "failed to provision microvm for agent");
             if let Ok(mut conn) = state.db_pool.get() {
@@ -351,8 +328,8 @@ pub async fn ensure_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        phase_from_vm_status(&vm.status),
-        Some(&vm.id),
+        AGENT_PHASE_READY,
+        Some(&vm_id),
     )
     .map_err(|err| {
         error!(agent_id = %created.agent_id, error = %err, "failed to update agent phase after provision");
@@ -391,13 +368,13 @@ pub async fn get_my_agent(
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
     let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {
-        match refresh_agent_phase_from_spawner(&active).await {
-            Ok(Some((phase, vm_id))) => {
-                AgentInstance::update_phase(&mut conn, &active.agent_id, &phase, vm_id.as_deref())
-                    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-            }
-            Ok(None) | Err(_) => active,
-        }
+        AgentInstance::update_phase(
+            &mut conn,
+            &active.agent_id,
+            AGENT_PHASE_READY,
+            active.vm_id.as_deref(),
+        )
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
     } else {
         active
     };
@@ -440,7 +417,7 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        phase_from_vm_status(&recovered.status),
+        AGENT_PHASE_READY,
         Some(&recovered.id),
     )
     .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
@@ -640,12 +617,5 @@ mod tests {
         let err = ensure_private_microvm_spawner_url("https://example.com")
             .expect_err("public host must be rejected");
         assert!(err.to_string().contains("private DNS"));
-    }
-
-    #[test]
-    fn phase_from_vm_status_maps_running_to_ready() {
-        assert_eq!(phase_from_vm_status("running"), AGENT_PHASE_READY);
-        assert_eq!(phase_from_vm_status("starting"), AGENT_PHASE_CREATING);
-        assert_eq!(phase_from_vm_status("booting"), AGENT_PHASE_CREATING);
     }
 }

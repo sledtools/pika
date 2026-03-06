@@ -91,6 +91,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'cli/Cargo.toml'
+              - 'cli/src/**'
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/**'

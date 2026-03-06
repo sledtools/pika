@@ -15,7 +15,7 @@ These lanes are required in `.github/workflows/pre-merge.yml`:
 
 - `check-agent-contracts`:
   - Runs mocked HTTP control-plane contracts for MicroVM (no real cloud credentials/hosts).
-  - Covers: `pika-agent-microvm` tests, `pika-server` agent API tests, and `pikahut` deterministic HTTP integration probes (`agent_http_ensure_local`, `agent_http_cli_new_local`, `agent_http_cli_new_idempotent_local`, `agent_http_cli_new_me_recover_local`).
+  - Covers: `pika-agent-microvm` tests, `pika-server` agent API tests, and `pikahut` deterministic HTTP integration probes (`agent_http_ensure_local`, `agent_http_cli_new_local`, `agent_http_cli_new_idempotent_local`, `agent_http_cli_new_me_recover_local`, `agent_http_cli_chat_reply_local`, `agent_http_cli_chat_no_reply_timeout_local`).
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
 
 ## Advisory Integration Lanes
@@ -56,4 +56,4 @@ Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:
 - Touch `crates/pika-server/src/agent_api.rs`:
   - expected: `check-agent-contracts` runs.
 - Touch `cli/src/main.rs` only:
-  - expected: `check-pikachat` runs; `check-agent-contracts` is skipped.
+  - expected: `check-pikachat` and `check-agent-contracts` run.

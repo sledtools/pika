@@ -333,9 +333,15 @@ fn render_detail_template(
         media_links,
         error_message: record.error_message,
         steps,
-        diff_json: record
-            .unified_diff
-            .map(|d| serde_json::to_string(&d).unwrap_or_default()),
+        diff_json: record.unified_diff.map(|d| {
+            // Escape `</` as `<\/` to prevent the browser HTML parser from
+            // prematurely closing the <script> tag when the diff contains
+            // literal `</script>` sequences (e.g. from HTML source diffs).
+            // `<\/` is valid JSON so JSON.parse still recovers the original.
+            serde_json::to_string(&d)
+                .unwrap_or_default()
+                .replace("</", r"<\/")
+        }),
         chat_enabled,
     })
 }
@@ -408,7 +414,7 @@ async fn chat_history_handler(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "missing auth token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let npub = match state.auth.validate_token(&token) {
@@ -418,7 +424,7 @@ async fn chat_history_handler(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "invalid or expired token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -435,21 +441,21 @@ async fn chat_history_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "no session for this tutorial"})),
             )
-                .into_response()
+                .into_response();
         }
         Ok(Err(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -495,7 +501,7 @@ async fn chat_send_handler(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "missing auth token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let npub = match state.auth.validate_token(&token) {
@@ -505,7 +511,7 @@ async fn chat_send_handler(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "invalid or expired token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -524,21 +530,21 @@ async fn chat_send_handler(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "no session for this tutorial"})),
             )
-                .into_response()
+                .into_response();
         }
         Ok(Err(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -557,14 +563,14 @@ async fn chat_send_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -581,14 +587,14 @@ async fn chat_send_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -660,7 +666,7 @@ async fn regenerate_handler(
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "missing auth token"})),
             )
-                .into_response()
+                .into_response();
         }
     };
     if state.auth.validate_token(&token).is_none() {

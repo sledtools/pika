@@ -88,6 +88,16 @@ fun PikaApp(manager: AppManager) {
                                     isCallSurfacePresented = true
                                 },
                             )
+                        is Screen.ChatMedia ->
+                            ChatScreen(
+                                manager = manager,
+                                chatId = screen.chatId,
+                                padding = padding,
+                                onOpenCallSurface = { chatId ->
+                                    callSurfaceChatId = chatId
+                                    isCallSurfacePresented = true
+                                },
+                            )
                         is Screen.GroupInfo -> GroupInfoScreen(manager = manager, chatId = screen.chatId, padding = padding)
                         is Screen.Login -> LoginScreen(manager = manager, padding = padding)
                     }

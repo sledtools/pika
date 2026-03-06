@@ -108,13 +108,18 @@ pub async fn serve(
             {
                 Ok((poll_result, worker_result)) => {
                     match poll_result {
-                        Ok(pr) if pr.prs_seen > 0 || pr.queued_regenerations > 0 => {
+                        Ok(pr)
+                            if pr.prs_seen > 0
+                                || pr.queued_regenerations > 0
+                                || pr.stale_closed > 0 =>
+                        {
                             eprintln!(
-                                "poll: repos={} prs_seen={} queued={} head_changes={}",
+                                "poll: repos={} prs_seen={} queued={} head_changes={} stale_closed={}",
                                 pr.repos_polled,
                                 pr.prs_seen,
                                 pr.queued_regenerations,
-                                pr.head_sha_changes
+                                pr.head_sha_changes,
+                                pr.stale_closed
                             );
                         }
                         Ok(_) => {}

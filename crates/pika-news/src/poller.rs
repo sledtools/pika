@@ -13,6 +13,7 @@ pub struct PollResult {
     pub prs_seen: usize,
     pub queued_regenerations: usize,
     pub head_sha_changes: usize,
+    pub stale_closed: usize,
 }
 
 pub fn poll_once_limited(
@@ -29,6 +30,11 @@ pub fn poll_once_limited(
         let open = github
             .fetch_open_prs(repo)
             .with_context(|| format!("poll open PRs for {}", repo))?;
+
+        // Collect the definitive set of currently-open PR numbers before merging
+        // with the merged lookback list, so we can close stale PRs afterward.
+        let current_open_numbers: Vec<i64> = open.iter().map(|pr| pr.number).collect();
+
         let merged = github
             .fetch_merged_lookback(repo, config.merged_lookback_hours)
             .with_context(|| format!("poll merged lookback for {}", repo))?;
@@ -58,6 +64,13 @@ pub fn poll_once_limited(
                 result.head_sha_changes += 1;
             }
         }
+
+        // Any PR we have stored as "open" but GitHub no longer returns as
+        // open must have been closed or merged — mark it closed.
+        let closed = store
+            .close_stale_open_prs(repo, &current_open_numbers)
+            .with_context(|| format!("close stale open PRs for {}", repo))?;
+        result.stale_closed += closed;
 
         let open_cursor = processed
             .iter()

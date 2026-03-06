@@ -266,6 +266,67 @@ impl Store {
         })
     }
 
+    /// Mark any PRs stored as "open" for this repo as "closed" if their
+    /// pr_number is not in `current_open_numbers`. Returns the count updated.
+    pub fn close_stale_open_prs(
+        &self,
+        repo: &str,
+        current_open_numbers: &[i64],
+    ) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let repo_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM repos WHERE repo = ?1",
+                    params![repo],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup repo for stale-close")?;
+
+            let repo_id = match repo_id {
+                Some(id) => id,
+                None => return Ok(0),
+            };
+
+            // Build a comma-separated placeholder list for the IN clause.
+            if current_open_numbers.is_empty() {
+                // All open PRs are stale.
+                let rows = conn
+                    .execute(
+                        "UPDATE pull_requests SET state='closed', last_synced_at=CURRENT_TIMESTAMP
+                         WHERE repo_id = ?1 AND state = 'open'",
+                        params![repo_id],
+                    )
+                    .context("close all stale open PRs")?;
+                return Ok(rows);
+            }
+
+            let placeholders: Vec<String> = current_open_numbers
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 2))
+                .collect();
+            let sql = format!(
+                "UPDATE pull_requests SET state='closed', last_synced_at=CURRENT_TIMESTAMP
+                 WHERE repo_id = ?1 AND state = 'open' AND pr_number NOT IN ({})",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&sql).context("prepare stale-close query")?;
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            param_values.push(Box::new(repo_id));
+            for n in current_open_numbers {
+                param_values.push(Box::new(*n));
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt
+                .execute(param_refs.as_slice())
+                .context("close stale open PRs")?;
+            Ok(rows)
+        })
+    }
+
     pub fn list_feed_items(&self) -> anyhow::Result<Vec<FeedItem>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -274,6 +335,7 @@ impl Store {
                      FROM pull_requests pr
                      JOIN repos r ON r.id = pr.repo_id
                      LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                     WHERE pr.state IN ('open', 'merged')
                      ORDER BY CASE pr.state WHEN 'open' THEN 0 WHEN 'merged' THEN 1 ELSE 2 END, pr.updated_at DESC",
                 )
                 .context("prepare feed query")?;
@@ -874,5 +936,123 @@ mod tests {
             .claim_pending_generation_jobs(1)
             .expect("reclaim after recovery");
         assert_eq!(reclaimed.len(), 1);
+    }
+
+    #[test]
+    fn close_stale_open_prs_marks_missing_prs_as_closed() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let make_pr = |number: i64, state: &str| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: number,
+            title: format!("PR #{}", number),
+            url: format!("https://github.com/sledtools/pika/pull/{}", number),
+            state: state.to_string(),
+            head_sha: format!("sha-{}", number),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+
+        // Insert 3 open PRs
+        store.upsert_pull_request(&make_pr(1, "open")).unwrap();
+        store.upsert_pull_request(&make_pr(2, "open")).unwrap();
+        store.upsert_pull_request(&make_pr(3, "open")).unwrap();
+
+        // Simulate GitHub now only returning PR #1 as open (PRs #2 and #3 were closed)
+        let closed = store
+            .close_stale_open_prs("sledtools/pika", &[1])
+            .expect("close stale PRs");
+        assert_eq!(closed, 2);
+
+        // Feed should only show PR #1 (closed PRs are filtered out)
+        let feed = store.list_feed_items().expect("list feed");
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].pr_number, 1);
+        assert_eq!(feed[0].state, "open");
+    }
+
+    #[test]
+    fn close_stale_open_prs_with_empty_open_list_closes_all() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let make_pr = |number: i64| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: number,
+            title: format!("PR #{}", number),
+            url: format!("https://github.com/sledtools/pika/pull/{}", number),
+            state: "open".to_string(),
+            head_sha: format!("sha-{}", number),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+
+        store.upsert_pull_request(&make_pr(1)).unwrap();
+        store.upsert_pull_request(&make_pr(2)).unwrap();
+
+        // No open PRs on GitHub anymore
+        let closed = store
+            .close_stale_open_prs("sledtools/pika", &[])
+            .expect("close all stale PRs");
+        assert_eq!(closed, 2);
+
+        let feed = store.list_feed_items().expect("list feed");
+        assert_eq!(feed.len(), 0);
+    }
+
+    #[test]
+    fn close_stale_open_prs_does_not_affect_merged() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        // Insert one open and one merged PR
+        store
+            .upsert_pull_request(&PrUpsertInput {
+                repo: "sledtools/pika".to_string(),
+                pr_number: 1,
+                title: "Open PR".to_string(),
+                url: "https://github.com/sledtools/pika/pull/1".to_string(),
+                state: "open".to_string(),
+                head_sha: "sha-1".to_string(),
+                base_ref: "master".to_string(),
+                author_login: Some("alice".to_string()),
+                updated_at: "2026-03-01T00:00:00Z".to_string(),
+                merged_at: None,
+            })
+            .unwrap();
+        store
+            .upsert_pull_request(&PrUpsertInput {
+                repo: "sledtools/pika".to_string(),
+                pr_number: 2,
+                title: "Merged PR".to_string(),
+                url: "https://github.com/sledtools/pika/pull/2".to_string(),
+                state: "merged".to_string(),
+                head_sha: "sha-2".to_string(),
+                base_ref: "master".to_string(),
+                author_login: Some("bob".to_string()),
+                updated_at: "2026-03-01T00:00:00Z".to_string(),
+                merged_at: Some("2026-03-01T00:00:00Z".to_string()),
+            })
+            .unwrap();
+
+        // Close stale open PRs — PR #1 is no longer open on GitHub
+        let closed = store
+            .close_stale_open_prs("sledtools/pika", &[])
+            .expect("close stale PRs");
+        assert_eq!(closed, 1);
+
+        // Merged PR should still be in the feed
+        let feed = store.list_feed_items().expect("list feed");
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].pr_number, 2);
+        assert_eq!(feed[0].state, "merged");
     }
 }

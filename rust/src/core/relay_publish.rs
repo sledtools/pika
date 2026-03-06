@@ -74,12 +74,15 @@ pub(super) async fn publish_event_with_retry(
                 }
             }
         }
-        backoff_sleep(attempt).await;
+        if attempt + 1 < max_attempts {
+            backoff_sleep(attempt).await;
+        }
     }
     PublishOutcome::Err(last_err.unwrap_or_else(|| "unknown error".to_string()))
 }
 
 /// Gift-wrap a rumor to a peer with exponential-backoff retries.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn gift_wrap_with_retry(
     client: &Client,
     relays: &[RelayUrl],
@@ -88,9 +91,15 @@ pub(super) async fn gift_wrap_with_retry(
     tags: Vec<Tag>,
     max_attempts: u8,
     context: &str,
+    reconnect: bool,
 ) -> PublishOutcome {
     let mut last_err: Option<String> = None;
     for attempt in 0..max_attempts {
+        if reconnect {
+            client.connect().await;
+            client.wait_for_connection(Duration::from_secs(5)).await;
+        }
+
         match client
             .gift_wrap_to(relays, receiver, rumor.clone(), tags.clone())
             .await
@@ -122,7 +131,9 @@ pub(super) async fn gift_wrap_with_retry(
                 }
             }
         }
-        backoff_sleep(attempt).await;
+        if attempt + 1 < max_attempts {
+            backoff_sleep(attempt).await;
+        }
     }
     PublishOutcome::Err(last_err.unwrap_or_else(|| "unknown error".to_string()))
 }

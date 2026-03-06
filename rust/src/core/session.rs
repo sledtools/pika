@@ -457,6 +457,7 @@ impl AppCore {
                     tags.clone(),
                     4,
                     "welcome publish",
+                    true,
                 )
                 .await;
                 if let super::relay_publish::PublishOutcome::Err(err) = outcome {

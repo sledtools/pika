@@ -3866,7 +3866,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             63 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
                 )
-            63 -> AppAction.EnsurePersonalAgent
+            64 -> AppAction.EnsurePersonalAgent
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4663,7 +4663,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 Unit
             }
             is AppAction.EnsurePersonalAgent -> {
-                buf.putInt(63)
+                buf.putInt(64)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6749,4 +6749,3 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     )
     }
     
-

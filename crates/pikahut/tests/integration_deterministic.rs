@@ -473,7 +473,10 @@ async fn agent_http_ensure_local() -> Result<()> {
 
     let fixture = start_fixture(
         &context,
-        &FixtureSpec::builder(ProfileName::Backend).build(),
+        &FixtureSpec::builder(ProfileName::Backend)
+            .moq_port(0)
+            .server_port(0)
+            .build(),
     )
     .await?;
     let server_url = fixture
@@ -592,7 +595,10 @@ async fn agent_http_cli_new_local() -> Result<()> {
 
     let fixture = start_fixture(
         &context,
-        &FixtureSpec::builder(ProfileName::Backend).build(),
+        &FixtureSpec::builder(ProfileName::Backend)
+            .moq_port(0)
+            .server_port(0)
+            .build(),
     )
     .await?;
     let server_url = fixture
@@ -694,7 +700,10 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
 
     let fixture = start_fixture(
         &context,
-        &FixtureSpec::builder(ProfileName::Backend).build(),
+        &FixtureSpec::builder(ProfileName::Backend)
+            .moq_port(0)
+            .server_port(0)
+            .build(),
     )
     .await?;
     let server_url = fixture
@@ -826,7 +835,10 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
 
     let fixture = start_fixture(
         &context,
-        &FixtureSpec::builder(ProfileName::Backend).build(),
+        &FixtureSpec::builder(ProfileName::Backend)
+            .moq_port(0)
+            .server_port(0)
+            .build(),
     )
     .await?;
     let server_url = fixture

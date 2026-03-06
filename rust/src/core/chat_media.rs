@@ -55,6 +55,86 @@ fn maybe_resize_image(data: &[u8], mime_type: &str) -> Option<(Vec<u8>, u32, u32
     }
 }
 
+/// Result of preprocessing a single media item (decode, resize, hash, blurhash, file write).
+struct SingleMediaPreprocessed {
+    media_data: Vec<u8>,
+    media_mime: String,
+    local_filename: String,
+    pre_hash_hex: String,
+    local_path: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    blurhash: Option<String>,
+}
+
+/// Run the expensive media preprocessing off the main actor thread.
+fn preprocess_single_media(
+    data_dir: &str,
+    account_pubkey: &str,
+    chat_id: &str,
+    data_base64: &str,
+    mime_type: &str,
+    filename: &str,
+) -> Result<SingleMediaPreprocessed, String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(|e| format!("Invalid media data: {e}"))?;
+    if decoded.is_empty() {
+        return Err("Pick media first".into());
+    }
+    if decoded.len() > MAX_CHAT_MEDIA_BYTES {
+        return Err("Media too large (max 32 MB)".into());
+    }
+
+    let (media_data, media_mime, was_resized, resize_dims) =
+        match maybe_resize_image(&decoded, mime_type) {
+            Some((resized_bytes, w, h, out_mime)) => {
+                (resized_bytes, out_mime.to_string(), true, Some((w, h)))
+            }
+            None => (decoded, mime_type.to_string(), false, None),
+        };
+
+    let pre_hash = Sha256::digest(&media_data);
+    let pre_hash_hex = hex::encode(pre_hash);
+
+    let local_filename = if was_resized {
+        let stem = filename.rsplitn(2, '.').last().unwrap_or(filename);
+        let ext = if media_mime == "image/png" {
+            "png"
+        } else {
+            "jpg"
+        };
+        format!("{stem}.{ext}")
+    } else {
+        filename.to_string()
+    };
+
+    let local_path = media_file_path(
+        data_dir,
+        account_pubkey,
+        chat_id,
+        &pre_hash_hex,
+        &local_filename,
+    );
+    write_media_file(&local_path, &media_data).map_err(|e| format!("Media cache failed: {e}"))?;
+
+    let (width, height) = resize_dims
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+    let blurhash = compute_blurhash(&media_data);
+
+    Ok(SingleMediaPreprocessed {
+        media_data,
+        media_mime,
+        local_filename,
+        pre_hash_hex,
+        local_path: local_path.to_string_lossy().to_string(),
+        width,
+        height,
+        blurhash,
+    })
+}
+
 /// Encode a small blurhash (4×3 components) from image bytes.
 /// Returns `None` for non-image data or decode failures.
 fn compute_blurhash(data: &[u8]) -> Option<String> {
@@ -215,7 +295,7 @@ pub(super) fn media_root(data_dir: &str) -> PathBuf {
     Path::new(data_dir).join("chat_media")
 }
 
-fn media_file_path(
+pub(super) fn media_file_path(
     data_dir: &str,
     account_pubkey: &str,
     chat_id: &str,
@@ -250,7 +330,7 @@ pub(super) fn is_imeta_tag(tag: &Tag) -> bool {
     matches!(tag.kind(), TagKind::Custom(kind) if kind.as_ref() == "imeta")
 }
 
-fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
+pub(super) fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
     if mime_type.trim().is_empty() {
         mime_type_for_filename(filename)
     } else {
@@ -303,14 +383,35 @@ impl AppCore {
         reference: &MediaReference,
         encrypted_hash_hex: Option<String>,
     ) -> ChatMediaAttachment {
-        let original_hash_hex = hex::encode(reference.original_hash);
-        let local_path = path_if_exists(&media_file_path(
-            &self.data_dir,
-            account_pubkey,
+        self.attachment_from_reference_inner(
             chat_id,
-            &original_hash_hex,
-            &reference.filename,
-        ));
+            account_pubkey,
+            reference,
+            encrypted_hash_hex,
+            true,
+        )
+    }
+
+    fn attachment_from_reference_inner(
+        &self,
+        chat_id: &str,
+        account_pubkey: &str,
+        reference: &MediaReference,
+        encrypted_hash_hex: Option<String>,
+        check_local_path: bool,
+    ) -> ChatMediaAttachment {
+        let original_hash_hex = hex::encode(reference.original_hash);
+        let local_path = if check_local_path {
+            path_if_exists(&media_file_path(
+                &self.data_dir,
+                account_pubkey,
+                chat_id,
+                &original_hash_hex,
+                &reference.filename,
+            ))
+        } else {
+            None
+        };
         let (width, height) = reference
             .dimensions
             .map(|(w, h)| (Some(w), Some(h)))
@@ -333,6 +434,54 @@ impl AppCore {
             upload_progress: None,
             blurhash: None,
         }
+    }
+
+    /// Build media attachments without checking local file paths or persisting to DB.
+    /// Used for fast initial render — local paths are resolved asynchronously after.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn chat_media_attachments_fast(
+        &self,
+        mdk: &PikaMdk,
+        group_id: &GroupId,
+        chat_id: &str,
+        account_pubkey: &str,
+        tags: &Tags,
+    ) -> Vec<ChatMediaAttachment> {
+        let manager = mdk.media_manager(group_id.clone());
+        let path_cache = self.local_path_cache.get(chat_id);
+        let mut out = Vec::new();
+        for tag in tags.iter() {
+            if !is_imeta_tag(tag) {
+                continue;
+            }
+            let reference = match manager.parse_imeta_tag(tag) {
+                Ok(reference) => reference,
+                Err(e) => {
+                    tracing::warn!(%e, "invalid imeta tag in chat message");
+                    continue;
+                }
+            };
+            let hash = hex::encode(reference.original_hash);
+            let encrypted_hash_hex = self
+                .media_cache
+                .get(chat_id)
+                .and_then(|cache| cache.get(&hash))
+                .map(|r| r.encrypted_hash_hex.clone())
+                .filter(|h| !h.is_empty());
+            let mut att = self.attachment_from_reference_inner(
+                chat_id,
+                account_pubkey,
+                &reference,
+                encrypted_hash_hex,
+                false,
+            );
+            // Use cached local path from previous background resolution to avoid flicker.
+            if let Some(cached_path) = path_cache.and_then(|c| c.get(&hash)) {
+                att.local_path = Some(cached_path.clone());
+            }
+            out.push(att);
+        }
+        out
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -425,22 +574,6 @@ impl AppCore {
             return;
         }
 
-        let decoded = match base64::engine::general_purpose::STANDARD.decode(data_base64) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.toast(format!("Invalid media data: {e}"));
-                return;
-            }
-        };
-        if decoded.is_empty() {
-            self.toast("Pick media first");
-            return;
-        }
-        if decoded.len() > MAX_CHAT_MEDIA_BYTES {
-            self.toast("Media too large (max 32 MB)");
-            return;
-        }
-
         let filename = filename.trim().to_string();
         if filename.is_empty() {
             self.toast("Filename is required");
@@ -448,85 +581,36 @@ impl AppCore {
         }
 
         let mime_type = resolve_mime_type(&mime_type, &filename);
-
         let caption = caption.trim().to_string();
 
-        // --- Phase A: Preprocess + show bubble immediately ---
-
-        // Try to resize large JPEG/PNG images (bakes in EXIF orientation).
-        let (media_data, media_mime, was_resized, resize_dims) =
-            match maybe_resize_image(&decoded, &mime_type) {
-                Some((resized_bytes, w, h, out_mime)) => {
-                    (resized_bytes, out_mime.to_string(), true, Some((w, h)))
-                }
-                None => (decoded, mime_type.clone(), false, None),
-            };
-
-        // Compute hash of the data we'll give to MDK.
-        let pre_hash = Sha256::digest(&media_data);
-        let pre_hash_hex = hex::encode(pre_hash);
-
-        // Validate session state before writing anything.
-        let (account_pubkey, group, local_keys) = {
+        let account_pubkey = {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
-            let Some(group) = sess.groups.get(&chat_id).cloned() else {
+            if !sess.groups.contains_key(&chat_id) {
                 self.toast("Chat not found");
                 return;
-            };
-            let Some(local_keys) = sess.local_keys.clone() else {
-                self.toast("Media upload requires local key signer");
-                return;
-            };
-            (sess.pubkey.to_hex(), group, local_keys)
+            }
+            sess.pubkey.to_hex()
         };
 
-        // Write the (potentially resized) data to local cache.
-        let local_filename = if was_resized {
-            let stem = filename.rsplitn(2, '.').last().unwrap_or(&filename);
-            let ext = if media_mime == "image/png" {
-                "png"
-            } else {
-                "jpg"
-            };
-            format!("{stem}.{ext}")
-        } else {
-            filename.clone()
-        };
-        let local_path = media_file_path(
-            &self.data_dir,
-            &account_pubkey,
-            &chat_id,
-            &pre_hash_hex,
-            &local_filename,
-        );
-        if let Err(e) = write_media_file(&local_path, &media_data) {
-            self.toast(format!("Media cache failed: {e}"));
-            return;
-        }
-
-        // Build temporary attachment and insert outbox entry so the bubble appears now.
-        let (width, height) = resize_dims
-            .map(|(w, h)| (Some(w), Some(h)))
-            .unwrap_or((None, None));
-        let kind = infer_media_kind(&media_mime, &local_filename);
-        let blurhash = compute_blurhash(&media_data);
+        // Show a placeholder bubble immediately while preprocessing runs in background.
         let temp_rumor_id = uuid::Uuid::new_v4().to_string();
+        let kind = infer_media_kind(&mime_type, &filename);
         let temp_attachment = ChatMediaAttachment {
-            original_hash_hex: pre_hash_hex.clone(),
+            original_hash_hex: String::new(),
             encrypted_hash_hex: None,
             url: String::new(),
-            mime_type: media_mime.clone(),
-            filename: local_filename.clone(),
+            mime_type: mime_type.clone(),
+            filename: filename.clone(),
             kind,
-            width,
-            height,
+            width: None,
+            height: None,
             nonce_hex: String::new(),
             scheme_version: String::new(),
-            local_path: Some(local_path.to_string_lossy().to_string()),
+            local_path: None,
             upload_progress: Some(0.0),
-            blurhash,
+            blurhash: None,
         };
 
         self.delivery_overrides
@@ -561,26 +645,134 @@ impl AppCore {
                 },
             );
 
-        // Bubble is now visible in the UI.
         self.refresh_current_chat_if_open(&chat_id);
         self.refresh_chat_list_from_storage();
 
-        // --- Phase B: Encrypt ---
+        // --- Heavy work: decode, resize, hash, blurhash, file write — off main thread ---
+        let tx = self.core_sender.clone();
+        let data_dir = self.data_dir.clone();
+        self.runtime.spawn_blocking(move || {
+            let result = preprocess_single_media(
+                &data_dir,
+                &account_pubkey,
+                &chat_id,
+                &data_base64,
+                &mime_type,
+                &filename,
+            );
+            match result {
+                Ok(pp) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::ChatMediaPreprocessed {
+                            chat_id,
+                            caption,
+                            temp_rumor_id,
+                            account_pubkey,
+                            media_data: pp.media_data,
+                            media_mime: pp.media_mime,
+                            local_filename: pp.local_filename,
+                            pre_hash_hex: pp.pre_hash_hex,
+                            local_path: pp.local_path,
+                            width: pp.width,
+                            height: pp.height,
+                            blurhash: pp.blurhash,
+                            error: None,
+                        },
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::ChatMediaPreprocessed {
+                            chat_id,
+                            caption,
+                            temp_rumor_id,
+                            account_pubkey,
+                            media_data: vec![],
+                            media_mime: String::new(),
+                            local_filename: String::new(),
+                            pre_hash_hex: String::new(),
+                            local_path: String::new(),
+                            width: None,
+                            height: None,
+                            blurhash: None,
+                            error: Some(e),
+                        },
+                    )));
+                }
+            }
+        });
+    }
 
-        let (request_id, encrypted_data, expected_hash_hex, upload_mime, blossom_servers) = {
-            let Some(sess) = self.session.as_mut() else {
-                if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
-                    outbox.remove(&temp_rumor_id);
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn handle_chat_media_preprocessed(
+        &mut self,
+        chat_id: String,
+        caption: String,
+        temp_rumor_id: String,
+        account_pubkey: String,
+        media_data: Vec<u8>,
+        media_mime: String,
+        local_filename: String,
+        pre_hash_hex: String,
+        local_path: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        blurhash: Option<String>,
+        error: Option<String>,
+    ) {
+        if let Some(e) = error {
+            // Clean up the placeholder outbox entry.
+            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                outbox.remove(&temp_rumor_id);
+            }
+            if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
+                overrides.remove(&temp_rumor_id);
+            }
+            self.refresh_current_chat_if_open(&chat_id);
+            self.refresh_chat_list_from_storage();
+            self.toast(e);
+            return;
+        }
+
+        // Update the placeholder outbox attachment with real data.
+        let kind = infer_media_kind(&media_mime, &local_filename);
+        if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+            if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                if let Some(att) = entry.media.first_mut() {
+                    att.original_hash_hex = pre_hash_hex.clone();
+                    att.mime_type = media_mime.clone();
+                    att.filename = local_filename.clone();
+                    att.kind = kind;
+                    att.width = width;
+                    att.height = height;
+                    att.local_path = Some(local_path.clone());
+                    att.blurhash = blurhash;
                 }
-                if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
-                    overrides.remove(&temp_rumor_id);
-                }
-                let _ = std::fs::remove_file(&local_path);
-                self.refresh_current_chat_if_open(&chat_id);
-                self.refresh_chat_list_from_storage();
+            }
+        }
+
+        // Validate session and get group info for encryption.
+        let (group, local_keys) = {
+            let Some(sess) = self.session.as_ref() else {
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                 return;
             };
+            let Some(group) = sess.groups.get(&chat_id).cloned() else {
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
+                self.toast("Chat not found");
+                return;
+            };
+            let Some(local_keys) = sess.local_keys.clone() else {
+                self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
+                self.toast("Media upload requires local key signer");
+                return;
+            };
+            (group, local_keys)
+        };
 
+        // --- Encrypt (still on main thread — needs MDK) ---
+        let (request_id, encrypted_data, expected_hash_hex, upload_mime, blossom_servers) = {
+            let sess = self.session.as_mut().unwrap();
             let manager = sess.mdk.media_manager(group.mls_group_id.clone());
             let mut upload = match manager.encrypt_for_upload_with_options(
                 &media_data,
@@ -590,16 +782,7 @@ impl AppCore {
             ) {
                 Ok(upload) => upload,
                 Err(e) => {
-                    // Clean up the optimistic outbox entry and cache file on failure.
-                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
-                        outbox.remove(&temp_rumor_id);
-                    }
-                    if let Some(overrides) = self.delivery_overrides.get_mut(&chat_id) {
-                        overrides.remove(&temp_rumor_id);
-                    }
-                    let _ = std::fs::remove_file(&local_path);
-                    self.refresh_current_chat_if_open(&chat_id);
-                    self.refresh_chat_list_from_storage();
+                    self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                     self.toast(format!("Media encryption failed: {e}"));
                     return;
                 }
@@ -607,9 +790,7 @@ impl AppCore {
 
             let original_hash_hex = hex::encode(upload.original_hash);
 
-            // If MDK re-encoded (sanitize_exif: true), the hash may differ from our
-            // pre-computed one. Copy the local file under the new hash path so
-            // lookups by original_hash_hex find it, and update the outbox entry.
+            // If MDK re-encoded, the hash may differ. Update the outbox entry.
             if original_hash_hex != pre_hash_hex {
                 let final_local_path = media_file_path(
                     &self.data_dir,
@@ -618,13 +799,13 @@ impl AppCore {
                     &original_hash_hex,
                     &local_filename,
                 );
-                let effective_path = if final_local_path != local_path {
+                let local_path_buf = PathBuf::from(&local_path);
+                let effective_path = if final_local_path != local_path_buf {
                     if let Err(e) = write_media_file(&final_local_path, &media_data) {
                         tracing::warn!(%e, "failed to copy local preview to final hash path");
-                        // Fall back to original path — file still exists there.
-                        &local_path
+                        &local_path_buf
                     } else {
-                        let _ = std::fs::remove_file(&local_path);
+                        let _ = std::fs::remove_file(&local_path_buf);
                         &final_local_path
                     }
                 } else {
@@ -680,7 +861,7 @@ impl AppCore {
             )
         };
 
-        // --- Phase C: Upload (async, unchanged) ---
+        self.refresh_current_chat_if_open(&chat_id);
 
         self.spawn_media_upload(
             request_id,
@@ -690,6 +871,93 @@ impl AppCore {
             expected_hash_hex,
             local_keys,
         );
+    }
+
+    /// Handle resolved local paths from background file existence checks.
+    /// Patches local_path on media attachments in the current chat and triggers auto-downloads.
+    pub(super) fn handle_media_local_paths_resolved(
+        &mut self,
+        chat_id: String,
+        resolved: Vec<(String, Option<String>)>,
+    ) {
+        // Persist resolved paths so subsequent refresh_current_chat calls don't flicker.
+        // Remove entries for files that no longer exist to avoid stale paths.
+        let path_entry = self.local_path_cache.entry(chat_id.clone()).or_default();
+        for (hash, path) in &resolved {
+            if let Some(p) = path {
+                path_entry.insert(hash.clone(), p.clone());
+            } else {
+                path_entry.remove(hash);
+            }
+        }
+
+        let mut needs_download: Vec<(String, String)> = Vec::new();
+        let resolved_map: HashMap<String, Option<String>> = resolved.into_iter().collect();
+
+        self.mutate_current_chat_messages(&chat_id, |msgs| {
+            let mut changed = false;
+            for msg in msgs.iter_mut() {
+                for att in msg.media.iter_mut() {
+                    if let Some(local_path) = resolved_map.get(&att.original_hash_hex) {
+                        att.local_path = local_path.clone();
+                        changed = true;
+                        if local_path.is_none()
+                            && att.upload_progress.is_none()
+                            && matches!(
+                                att.kind,
+                                ChatMediaKind::Image
+                                    | ChatMediaKind::VoiceNote
+                                    | ChatMediaKind::Video
+                            )
+                        {
+                            needs_download.push((msg.id.clone(), att.original_hash_hex.clone()));
+                        }
+                    }
+                }
+            }
+            changed
+        });
+
+        // Trigger auto-downloads for attachments not found locally.
+        let chat_id_str = chat_id.to_string();
+        const MAX_CONCURRENT_AUTO_DOWNLOADS: usize = 5;
+        let already_pending = self
+            .pending_media_downloads
+            .values()
+            .filter(|p| p.chat_id == chat_id_str)
+            .count();
+        let available_slots = MAX_CONCURRENT_AUTO_DOWNLOADS.saturating_sub(already_pending);
+        let mut auto_download_count = 0;
+        for (message_id, hash) in needs_download {
+            if auto_download_count >= available_slots {
+                break;
+            }
+            if !self.is_media_download_pending(&chat_id_str, &hash) {
+                self.download_chat_media(chat_id_str.clone(), message_id, hash);
+                auto_download_count += 1;
+            }
+        }
+    }
+
+    /// Clean up an optimistic outbox entry, optionally remove the cached media file,
+    /// and refresh UI.
+    fn cleanup_outbox_entry(
+        &mut self,
+        chat_id: &str,
+        temp_rumor_id: &str,
+        local_path: Option<&str>,
+    ) {
+        if let Some(outbox) = self.local_outbox.get_mut(chat_id) {
+            outbox.remove(temp_rumor_id);
+        }
+        if let Some(overrides) = self.delivery_overrides.get_mut(chat_id) {
+            overrides.remove(temp_rumor_id);
+        }
+        if let Some(path) = local_path {
+            let _ = std::fs::remove_file(path);
+        }
+        self.refresh_current_chat_if_open(chat_id);
+        self.refresh_chat_list_from_storage();
     }
 
     pub(super) fn send_chat_media_batch(
@@ -1109,17 +1377,14 @@ impl AppCore {
                 }
             }
 
+            let delivery = MessageDeliveryState::Failed {
+                reason: format!("Upload failed: {e}"),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: format!("Upload failed: {e}"),
-                    },
-                );
-
-            self.refresh_current_chat_if_open(&chat_id);
+                .insert(temp_rumor_id.clone(), delivery.clone());
+            self.fail_delivery_or_refresh(&chat_id, &temp_rumor_id, delivery);
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1189,6 +1454,11 @@ impl AppCore {
             if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
                 tracing::warn!(%e, "failed to persist chat media metadata");
             }
+            // Keep in-memory cache in sync.
+            self.media_cache
+                .entry(pending.chat_id.clone())
+                .or_default()
+                .insert(record.original_hash_hex.clone(), record);
         }
 
         let media = vec![self.attachment_from_reference(
@@ -1233,17 +1503,14 @@ impl AppCore {
                 }
             }
 
+            let delivery = MessageDeliveryState::Failed {
+                reason: format!("Upload failed: {e}"),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: format!("Upload failed: {e}"),
-                    },
-                );
-
-            self.refresh_current_chat_if_open(&chat_id);
+                .insert(temp_rumor_id.clone(), delivery.clone());
+            self.fail_delivery_or_refresh(&chat_id, &temp_rumor_id, delivery);
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1279,16 +1546,14 @@ impl AppCore {
                     }
                 }
             }
+            let delivery = MessageDeliveryState::Failed {
+                reason: "Upload failed: hash mismatch".to_string(),
+            };
             self.delivery_overrides
                 .entry(chat_id.clone())
                 .or_default()
-                .insert(
-                    temp_rumor_id,
-                    MessageDeliveryState::Failed {
-                        reason: "Upload failed: hash mismatch".to_string(),
-                    },
-                );
-            self.refresh_current_chat_if_open(&chat_id);
+                .insert(temp_rumor_id.clone(), delivery.clone());
+            self.fail_delivery_or_refresh(&chat_id, &temp_rumor_id, delivery);
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1339,7 +1604,20 @@ impl AppCore {
                     local_keys,
                 );
             }
-            self.refresh_current_chat_if_open(&chat_id);
+            // In-place: clear progress on the completed item's attachment.
+            let rid = temp_rumor_id.clone();
+            if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                if let Some(msg) = msgs.iter_mut().find(|m| m.id == rid) {
+                    if let Some(att) = msg.media.get_mut(item_idx) {
+                        att.upload_progress = None;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                self.refresh_current_chat_if_open(&chat_id);
+            }
             self.refresh_chat_list_from_storage();
             return;
         }
@@ -1418,6 +1696,11 @@ impl AppCore {
                 if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
                     tracing::warn!(%e, "failed to persist chat media metadata");
                 }
+                // Keep in-memory cache in sync.
+                self.media_cache
+                    .entry(batch.chat_id.clone())
+                    .or_default()
+                    .insert(record.original_hash_hex.clone(), record);
             }
 
             imeta_tags.push(um.imeta_tag.clone());
@@ -1661,7 +1944,10 @@ impl AppCore {
                 &reference.filename,
             );
             if local_path.exists() {
-                self.refresh_current_chat_if_open(&chat_id);
+                let path_str = Some(local_path.to_string_lossy().to_string());
+                if !self.update_media_local_path_in_place(&chat_id, &target_hash, path_str) {
+                    self.refresh_current_chat_if_open(&chat_id);
+                }
                 return;
             }
 
@@ -1796,7 +2082,11 @@ impl AppCore {
             return;
         }
 
-        self.refresh_current_chat_if_open(&pending.chat_id);
+        // Try a lightweight in-place update first; fall back to full refresh if needed.
+        let path_str = Some(local_path.to_string_lossy().to_string());
+        if !self.update_media_local_path_in_place(&pending.chat_id, &original_hash_hex, path_str) {
+            self.refresh_current_chat_if_open(&pending.chat_id);
+        }
     }
 
     pub(super) fn load_media_gallery(&mut self, chat_id: &str) {
@@ -2267,5 +2557,75 @@ mod tests {
         assert!(result.is_some(), "image/jpg should be accepted");
         let (_, _, _, mime) = result.unwrap();
         assert_eq!(mime, "image/jpeg");
+    }
+
+    // --- preprocess_single_media tests ---
+
+    #[test]
+    fn preprocess_single_media_decodes_and_writes_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let jpeg_bytes = make_jpeg(100, 100);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+
+        let result = preprocess_single_media(
+            &data_dir,
+            "account1",
+            "chat1",
+            &b64,
+            "image/jpeg",
+            "photo.jpg",
+        );
+        let pp = result.expect("preprocessing should succeed");
+        assert_eq!(pp.media_mime, "image/jpeg");
+        assert_eq!(pp.local_filename, "photo.jpg");
+        assert!(!pp.pre_hash_hex.is_empty());
+        // File should have been written.
+        assert!(
+            std::path::Path::new(&pp.local_path).exists(),
+            "local file should exist"
+        );
+        // Blurhash should be computed for images.
+        assert!(pp.blurhash.is_some());
+    }
+
+    #[test]
+    fn preprocess_single_media_resizes_large_image() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let jpeg_bytes = make_jpeg(3200, 2400);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+
+        let pp = preprocess_single_media(
+            &data_dir,
+            "account1",
+            "chat1",
+            &b64,
+            "image/jpeg",
+            "big.jpg",
+        )
+        .expect("preprocessing should succeed");
+        assert_eq!(pp.width, Some(1600));
+        assert_eq!(pp.height, Some(1200));
+    }
+
+    #[test]
+    fn preprocess_single_media_rejects_empty_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"");
+
+        let result = preprocess_single_media(&data_dir, "a", "c", &b64, "image/jpeg", "empty.jpg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn preprocess_single_media_rejects_invalid_base64() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().to_string_lossy().to_string();
+
+        let result =
+            preprocess_single_media(&data_dir, "a", "c", "not-base64!!!", "image/jpeg", "x.jpg");
+        assert!(result.is_err());
     }
 }

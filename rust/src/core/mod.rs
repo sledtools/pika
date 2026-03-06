@@ -731,6 +731,15 @@ pub struct AppCore {
     pending_media_batch_sends: HashMap<String, PendingMediaBatchSend>, // batch_id -> pending batch upload
     pending_media_downloads: HashMap<String, PendingMediaDownload>, // request_id -> pending download metadata
 
+    /// In-memory cache of chat media records per chat, keyed by chat_id -> (original_hash_hex -> record).
+    /// Avoids re-querying SQLite on every `refresh_current_chat` call.
+    media_cache: HashMap<String, HashMap<String, chat_media_db::ChatMediaRecord>>,
+
+    /// Cache of resolved local file paths per chat, keyed by chat_id -> (original_hash_hex -> path).
+    /// Populated by background path resolution; used by `chat_media_attachments_fast` to avoid
+    /// flicker when `refresh_current_chat` rebuilds messages.
+    local_path_cache: HashMap<String, HashMap<String, String>>,
+
     /// Per-group lock: tracks groups that have a pending evolution publish
     /// (commit + merge + welcome delivery in flight). A second mutation on the
     /// same group is rejected with a toast while the lock is held.
@@ -849,6 +858,8 @@ impl AppCore {
             pending_media_sends: HashMap::new(),
             pending_media_batch_sends: HashMap::new(),
             pending_media_downloads: HashMap::new(),
+            media_cache: HashMap::new(),
+            local_path_cache: HashMap::new(),
             pending_group_ops: HashSet::new(),
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
@@ -2836,6 +2847,8 @@ impl AppCore {
             self.failed_sends.clear(self.profile_db.as_ref());
             self.pending_media_sends.clear();
             self.pending_media_batch_sends.clear();
+            self.media_cache.clear();
+            self.local_path_cache.clear();
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
             self.profiles.clear();
@@ -3060,6 +3073,38 @@ impl AppCore {
                 encrypted_data,
                 error,
             } => self.handle_chat_media_download_fetched(request_id, encrypted_data, error),
+            InternalEvent::ChatMediaLocalPathsResolved { chat_id, resolved } => {
+                self.handle_media_local_paths_resolved(chat_id, resolved);
+            }
+            InternalEvent::ChatMediaPreprocessed {
+                chat_id,
+                caption,
+                temp_rumor_id,
+                account_pubkey,
+                media_data,
+                media_mime,
+                local_filename,
+                pre_hash_hex,
+                local_path,
+                width,
+                height,
+                blurhash,
+                error,
+            } => self.handle_chat_media_preprocessed(
+                chat_id,
+                caption,
+                temp_rumor_id,
+                account_pubkey,
+                media_data,
+                media_mime,
+                local_filename,
+                pre_hash_hex,
+                local_path,
+                width,
+                height,
+                blurhash,
+                error,
+            ),
             InternalEvent::PeerKeyPackageFetched {
                 peer_pubkey,
                 key_package_event,
@@ -3425,26 +3470,24 @@ impl AppCore {
             %rumor_id,
             "message_publish_result"
         );
-        let per_chat = self.delivery_overrides.entry(chat_id.clone()).or_default();
-        if ok {
-            per_chat.insert(rumor_id.clone(), MessageDeliveryState::Sent);
+        let delivery = if ok {
             self.pending_sends
                 .remove(&chat_id, &rumor_id, self.profile_db.as_ref());
             self.failed_sends
                 .remove(&rumor_id, self.profile_db.as_ref());
+            MessageDeliveryState::Sent
         } else {
             let reason = error.unwrap_or_else(|| "publish failed".into());
-            per_chat.insert(
-                rumor_id.clone(),
-                MessageDeliveryState::Failed {
-                    reason: reason.clone(),
-                },
-            );
             self.failed_sends
                 .insert(&rumor_id, &chat_id, &reason, self.profile_db.as_ref());
-        }
+            MessageDeliveryState::Failed { reason }
+        };
+        self.delivery_overrides
+            .entry(chat_id.clone())
+            .or_default()
+            .insert(rumor_id.clone(), delivery.clone());
         self.refresh_chat_list_from_storage();
-        self.refresh_current_chat_if_open(&chat_id);
+        self.update_delivery_or_refresh(&chat_id, &rumor_id, delivery);
     }
 
     fn handle_peer_key_package_fetched(
@@ -4413,6 +4456,8 @@ impl AppCore {
                 // If we're viewing this chat, navigate back.
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
+                self.media_cache.remove(&chat_id);
+                self.local_path_cache.remove(&chat_id);
                 self.refresh_chat_list_from_storage();
                 self.emit_router();
             }
@@ -4675,6 +4720,8 @@ impl AppCore {
                     let _ = conn.execute("DELETE FROM chat_media", []);
                 }
                 let _ = std::fs::remove_dir_all(chat_media::media_root(&self.data_dir));
+                self.media_cache.clear();
+                self.local_path_cache.clear();
                 self.state.media_gallery = None;
                 self.emit_state();
                 self.toast("Media cache wiped");
@@ -5044,7 +5091,20 @@ impl AppCore {
                             }
                         }
                     }
-                    self.refresh_current_chat_if_open(&chat_id);
+                    let mid = message_id.clone();
+                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                            msg.delivery = MessageDeliveryState::Pending;
+                            if let Some(att) = msg.media.first_mut() {
+                                att.upload_progress = Some(0.0);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        self.refresh_current_chat_if_open(&chat_id);
+                    }
                     self.refresh_chat_list_from_storage();
                     let blossom_servers = self.blossom_servers();
 
@@ -5070,20 +5130,19 @@ impl AppCore {
                     .pending_media_batch_sends
                     .iter()
                     .find(|(_, b)| b.chat_id == chat_id && b.temp_rumor_id == message_id)
-                    .map(|(k, b)| {
-                        // Find the first un-uploaded item.
+                    .and_then(|(k, b)| {
+                        // Find the first un-uploaded item; if all are done, skip this path.
                         let idx = b
                             .items
                             .iter()
-                            .position(|item| item.uploaded_url.is_none())
-                            .unwrap_or(0);
-                        (
+                            .position(|item| item.uploaded_url.is_none())?;
+                        Some((
                             k.clone(),
                             b.items[idx].request_id.clone(),
                             b.items[idx].encrypted_data.clone(),
                             b.items[idx].upload.mime_type.clone(),
                             hex::encode(b.items[idx].upload.encrypted_hash),
-                        )
+                        ))
                     })
                 {
                     if !self.network_enabled() {
@@ -5112,14 +5171,28 @@ impl AppCore {
                     }
                     // Update next_upload_index to restart from the first un-uploaded item.
                     if let Some(batch) = self.pending_media_batch_sends.get_mut(&batch_id) {
-                        let restart_idx = batch
+                        if let Some(restart_idx) = batch
                             .items
                             .iter()
                             .position(|item| item.uploaded_url.is_none())
-                            .unwrap_or(0);
-                        batch.next_upload_index = restart_idx + 1;
+                        {
+                            batch.next_upload_index = restart_idx + 1;
+                        }
                     }
-                    self.refresh_current_chat_if_open(&chat_id);
+                    let mid = message_id.clone();
+                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
+                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                            msg.delivery = MessageDeliveryState::Pending;
+                            for att in &mut msg.media {
+                                att.upload_progress = Some(0.0);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        self.refresh_current_chat_if_open(&chat_id);
+                    }
                     self.refresh_chat_list_from_storage();
                     let blossom_servers = self.blossom_servers();
 
@@ -5168,7 +5241,11 @@ impl AppCore {
                     .entry(chat_id.clone())
                     .or_default()
                     .insert(message_id.clone(), MessageDeliveryState::Pending);
-                self.refresh_current_chat_if_open(&chat_id);
+                self.update_delivery_or_refresh(
+                    &chat_id,
+                    &message_id,
+                    MessageDeliveryState::Pending,
+                );
                 self.refresh_chat_list_from_storage();
 
                 if !network_enabled {
@@ -5495,6 +5572,8 @@ impl AppCore {
                 // Navigate back to chat list.
                 prune_chat_routes(&mut self.state.router.screen_stack, &chat_id);
                 self.state.current_chat = None;
+                self.media_cache.remove(&chat_id);
+                self.local_path_cache.remove(&chat_id);
                 self.refresh_all_from_storage();
                 self.emit_router();
             }
@@ -7619,6 +7698,54 @@ mod tests {
             };
             assert_eq!(item.mime_type, "image/png");
             assert_eq!(item.filename, "photo.png");
+        }
+
+        #[test]
+        fn wipe_media_cache_clears_in_memory_cache() {
+            use super::super::chat_media_db;
+            use crate::AppAction;
+
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let data_dir = tempdir.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir);
+
+            // Populate the in-memory media cache.
+            core.media_cache
+                .entry("chat1".to_string())
+                .or_default()
+                .insert(
+                    "hash1".to_string(),
+                    chat_media_db::ChatMediaRecord {
+                        account_pubkey: "acc".to_string(),
+                        chat_id: "chat1".to_string(),
+                        original_hash_hex: "hash1".to_string(),
+                        encrypted_hash_hex: String::new(),
+                        url: String::new(),
+                        mime_type: "image/jpeg".to_string(),
+                        filename: "photo.jpg".to_string(),
+                        nonce_hex: String::new(),
+                        scheme_version: String::new(),
+                        created_at: 100,
+                    },
+                );
+            assert!(!core.media_cache.is_empty());
+
+            // Populate the local path cache.
+            core.local_path_cache
+                .entry("chat1".to_string())
+                .or_default()
+                .insert("hash1".to_string(), "/tmp/photo.jpg".to_string());
+            assert!(!core.local_path_cache.is_empty());
+
+            core.handle_action(AppAction::WipeMediaCache);
+            assert!(
+                core.media_cache.is_empty(),
+                "WipeMediaCache should clear in-memory media cache"
+            );
+            assert!(
+                core.local_path_cache.is_empty(),
+                "WipeMediaCache should clear local path cache"
+            );
         }
     }
 }

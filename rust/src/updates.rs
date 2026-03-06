@@ -66,6 +66,30 @@ pub enum InternalEvent {
         encrypted_data: Option<Vec<u8>>,
         error: Option<String>,
     },
+    /// Background resolution of local file paths for media attachments.
+    ChatMediaLocalPathsResolved {
+        chat_id: String,
+        /// (original_hash_hex, local_path_if_exists)
+        resolved: Vec<(String, Option<String>)>,
+    },
+    /// Heavy preprocessing (decode, resize, hash, blurhash, file write) finished
+    /// off the main thread.  The main actor can now insert the outbox entry and
+    /// start encryption + upload.
+    ChatMediaPreprocessed {
+        chat_id: String,
+        caption: String,
+        temp_rumor_id: String,
+        account_pubkey: String,
+        media_data: Vec<u8>,
+        media_mime: String,
+        local_filename: String,
+        pre_hash_hex: String,
+        local_path: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        blurhash: Option<String>,
+        error: Option<String>,
+    },
     KeyPackagePublished {
         ok: bool,
         error: Option<String>,

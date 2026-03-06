@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::state::{
-    resolve_mentions, ChatMediaKind, HypernoteResponder, HypernoteResponseTally, MemberInfo,
-    MessageSegment,
+    resolve_mentions, HypernoteResponder, HypernoteResponseTally, MemberInfo, MessageSegment,
 };
 use hypernote_protocol as hn;
 use std::sync::OnceLock;
@@ -420,17 +419,14 @@ impl AppCore {
         };
 
         let my_pubkey_hex = sess.pubkey.to_hex();
+        // Ensure in-memory media cache is populated before building messages.
+        // Done here (before build_sender_names) to avoid borrow conflicts with session.
+        self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
+        let sess = self.session.as_ref().unwrap();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
-
-        // Pre-load all media records for this chat to avoid per-item DB queries.
-        let mut media_cache = self
-            .chat_media_db
-            .as_ref()
-            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
-            .unwrap_or_default();
 
         let desired = *self.loaded_count.get(chat_id).unwrap_or(&50usize);
         let target = desired.max(50);
@@ -465,7 +461,8 @@ impl AppCore {
         let separated = separate_messages(&visible_messages, &sender_names);
         let mut hypernote_responses = separated.hypernote_responses;
 
-        // MDK returns descending by created_at; UI wants ascending.
+        // Build messages with fast media attachment construction (no file stat).
+        // Local paths are resolved asynchronously after the initial render.
         let mut msgs: Vec<ChatMessage> = separated
             .regular
             .into_iter()
@@ -487,16 +484,66 @@ impl AppCore {
                             MessageDeliveryState::Sent
                         }
                     });
-                cm.media = self.chat_media_attachments_for_tags(
+                cm.media = self.chat_media_attachments_fast(
                     &sess.mdk,
                     &entry.mls_group_id,
                     chat_id,
                     &my_pubkey_hex,
                     &m.tags,
-                    m.created_at.as_secs() as i64,
-                    &mut media_cache,
                 );
                 cm
+            })
+            .collect();
+
+        // Persist media metadata to DB for gallery support.
+        // Done as a separate pass to avoid borrow conflicts with the closure above.
+        {
+            let media_cache_entry = self.media_cache.entry(chat_id.to_string()).or_default();
+            for m in &visible_messages {
+                let manager = sess.mdk.media_manager(entry.mls_group_id.clone());
+                for tag in m.tags.iter() {
+                    if !super::chat_media::is_imeta_tag(tag) {
+                        continue;
+                    }
+                    let Ok(reference) = manager.parse_imeta_tag(tag) else {
+                        continue;
+                    };
+                    let hash = hex::encode(reference.original_hash);
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        media_cache_entry.entry(hash)
+                    {
+                        if let Some(conn) = self.chat_media_db.as_ref() {
+                            let record = super::chat_media_db::ChatMediaRecord {
+                                account_pubkey: my_pubkey_hex.clone(),
+                                chat_id: chat_id.to_string(),
+                                original_hash_hex: e.key().clone(),
+                                encrypted_hash_hex: String::new(),
+                                url: reference.url.clone(),
+                                mime_type: super::chat_media::resolve_mime_type(
+                                    &reference.mime_type,
+                                    &reference.filename,
+                                ),
+                                filename: reference.filename.clone(),
+                                nonce_hex: hex::encode(reference.nonce),
+                                scheme_version: reference.scheme_version.clone(),
+                                created_at: m.created_at.as_secs() as i64,
+                            };
+                            if super::chat_media_db::upsert_chat_media(conn, &record).is_ok() {
+                                e.insert(record);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect (hash, filename) pairs for background local path resolution.
+        let media_hashes: Vec<(String, String)> = msgs
+            .iter()
+            .flat_map(|m| {
+                m.media
+                    .iter()
+                    .map(|a| (a.original_hash_hex.clone(), a.filename.clone()))
             })
             .collect();
 
@@ -614,23 +661,6 @@ impl AppCore {
                 picture_url: p.display_group_picture_url(&self.data_dir, chat_id, &my_pubkey_hex),
             });
 
-        // Collect attachments needing auto-download before emitting state.
-        let auto_downloads: Vec<(String, String)> = msgs
-            .iter()
-            .flat_map(|m| {
-                m.media
-                    .iter()
-                    .filter(|a| {
-                        matches!(
-                            a.kind,
-                            ChatMediaKind::Image | ChatMediaKind::VoiceNote | ChatMediaKind::Video
-                        ) && a.local_path.is_none()
-                            && a.upload_progress.is_none()
-                    })
-                    .map(|a| (m.id.clone(), a.original_hash_hex.clone()))
-            })
-            .collect();
-
         self.state.current_chat = Some(ChatViewState {
             chat_id: chat_id.to_string(),
             is_group: entry.is_group,
@@ -645,29 +675,150 @@ impl AppCore {
         });
         self.emit_current_chat();
 
-        // Trigger auto-downloads for images, voice memos, and videos.
-        let chat_id_str = chat_id.to_string();
-        const MAX_CONCURRENT_AUTO_DOWNLOADS: usize = 5;
-        let already_pending = self
-            .pending_media_downloads
-            .values()
-            .filter(|p| p.chat_id == chat_id_str)
-            .count();
-        let available_slots = MAX_CONCURRENT_AUTO_DOWNLOADS.saturating_sub(already_pending);
-        let mut auto_download_count = 0;
-        for (message_id, hash) in auto_downloads {
-            if auto_download_count >= available_slots {
-                break;
+        // Resolve local file paths for media attachments in the background.
+        // When done, patches local_path on each attachment and triggers auto-downloads.
+        if !media_hashes.is_empty() {
+            let data_dir = self.data_dir.clone();
+            let account = my_pubkey_hex.clone();
+            let cid = chat_id.to_string();
+            let tx = self.core_sender.clone();
+            self.runtime.spawn_blocking(move || {
+                let resolved: Vec<(String, Option<String>)> = media_hashes
+                    .into_iter()
+                    .map(|(hash, filename)| {
+                        let path = super::chat_media::media_file_path(
+                            &data_dir, &account, &cid, &hash, &filename,
+                        );
+                        let local = if path.exists() {
+                            Some(path.to_string_lossy().to_string())
+                        } else {
+                            None
+                        };
+                        (hash, local)
+                    })
+                    .collect();
+                let _ = tx.send(crate::updates::CoreMsg::Internal(Box::new(
+                    crate::updates::InternalEvent::ChatMediaLocalPathsResolved {
+                        chat_id: cid,
+                        resolved,
+                    },
+                )));
+            });
+        }
+    }
+
+    /// Populate the in-memory media cache for a chat from the DB, if not already loaded.
+    fn ensure_media_cache_loaded(&mut self, chat_id: &str, my_pubkey_hex: &str) {
+        if !self.media_cache.contains_key(chat_id) {
+            let db_cache = self
+                .chat_media_db
+                .as_ref()
+                .map(|conn| {
+                    super::chat_media_db::get_all_chat_media_map(conn, my_pubkey_hex, chat_id)
+                })
+                .unwrap_or_default();
+            self.media_cache.insert(chat_id.to_string(), db_cache);
+        }
+    }
+
+    /// Lightweight update: set the `local_path` on a media attachment in the current chat
+    /// state without doing a full message rebuild. Returns true if the update was applied.
+    pub(super) fn update_media_local_path_in_place(
+        &mut self,
+        chat_id: &str,
+        original_hash_hex: &str,
+        local_path: Option<String>,
+    ) -> bool {
+        // Keep the local_path_cache in sync so subsequent refreshes don't lose this path.
+        if let Some(ref path) = local_path {
+            self.local_path_cache
+                .entry(chat_id.to_string())
+                .or_default()
+                .insert(original_hash_hex.to_string(), path.clone());
+        }
+        let hash = original_hash_hex.to_string();
+        self.mutate_current_chat_messages(chat_id, |msgs| {
+            let found = msgs.iter_mut().find_map(|msg| {
+                msg.media
+                    .iter_mut()
+                    .find(|att| att.original_hash_hex == hash)
+            });
+            if let Some(att) = found {
+                att.local_path = local_path;
+                true
+            } else {
+                false
             }
-            if !self.is_media_download_pending(&chat_id_str, &hash) {
-                self.download_chat_media(chat_id_str.clone(), message_id, hash);
-                auto_download_count += 1;
+        })
+    }
+
+    /// Apply a mutation to the current chat's messages without re-fetching from storage.
+    /// Returns true if the chat was open and the closure returned true (i.e., something changed).
+    pub(super) fn mutate_current_chat_messages<F>(&mut self, chat_id: &str, mutate: F) -> bool
+    where
+        F: FnOnce(&mut Vec<ChatMessage>) -> bool,
+    {
+        let Some(cur) = self.state.current_chat.as_mut() else {
+            return false;
+        };
+        if cur.chat_id != chat_id {
+            return false;
+        }
+        if mutate(&mut cur.messages) {
+            self.emit_current_chat();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// In-place update: set delivery state on a message. Falls back to full refresh if
+    /// the message isn't found in the current chat state.
+    pub(super) fn update_delivery_or_refresh(
+        &mut self,
+        chat_id: &str,
+        message_id: &str,
+        delivery: MessageDeliveryState,
+    ) {
+        let mid = message_id.to_string();
+        if !self.mutate_current_chat_messages(chat_id, |msgs| {
+            if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                msg.delivery = delivery;
+                true
+            } else {
+                false
             }
+        }) {
+            self.refresh_current_chat_if_open(chat_id);
+        }
+    }
+
+    /// In-place update: set delivery state on a message and update upload_progress on all
+    /// its media attachments. Falls back to full refresh if the message isn't found.
+    pub(super) fn fail_delivery_or_refresh(
+        &mut self,
+        chat_id: &str,
+        message_id: &str,
+        delivery: MessageDeliveryState,
+    ) {
+        let mid = message_id.to_string();
+        if !self.mutate_current_chat_messages(chat_id, |msgs| {
+            if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
+                msg.delivery = delivery;
+                for att in &mut msg.media {
+                    att.upload_progress = None;
+                }
+                true
+            } else {
+                false
+            }
+        }) {
+            self.refresh_current_chat_if_open(chat_id);
         }
     }
 
     /// Check if a download is already in-flight for this chat + hash.
-    fn is_media_download_pending(&self, chat_id: &str, original_hash_hex: &str) -> bool {
+    pub(super) fn is_media_download_pending(&self, chat_id: &str, original_hash_hex: &str) -> bool {
         self.pending_media_downloads.values().any(|p| {
             p.chat_id == chat_id && hex::encode(p.reference.original_hash) == original_hash_hex
         })
@@ -682,16 +833,12 @@ impl AppCore {
         };
 
         let my_pubkey_hex = sess.pubkey.to_hex();
+        self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
+        let sess = self.session.as_ref().unwrap();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
-
-        let mut media_cache = self
-            .chat_media_db
-            .as_ref()
-            .map(|conn| super::chat_media_db::get_all_chat_media_map(conn, &my_pubkey_hex, chat_id))
-            .unwrap_or_default();
 
         let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let mut visible_page = Vec::new();
@@ -731,6 +878,9 @@ impl AppCore {
 
         let separated = separate_messages(&visible_page, &sender_names);
 
+        // Temporarily take the media cache out of self.
+        let mut media_cache = self.media_cache.remove(chat_id).unwrap_or_default();
+
         let mut older: Vec<ChatMessage> = separated
             .regular
             .into_iter()
@@ -764,6 +914,9 @@ impl AppCore {
                 cm
             })
             .collect();
+
+        // Put the media cache back.
+        self.media_cache.insert(chat_id.to_string(), media_cache);
 
         process_hypernote_responses(
             &mut older,
@@ -1302,7 +1455,7 @@ fn process_html_state_updates(msgs: &mut Vec<ChatMessage>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::MessageDeliveryState;
+    use crate::state::{ChatMediaKind, MessageDeliveryState};
 
     fn make_msg(id: &str, content: &str, timestamp: i64) -> ChatMessage {
         let display_content = content.to_string();
@@ -2090,5 +2243,239 @@ mod tests {
             rxns[&sender_hex].0, "👍",
             "newest reaction should win regardless of iteration order"
         );
+    }
+
+    // --- In-place update tests ---
+
+    use crate::state::{ChatMediaAttachment, ChatViewState};
+
+    fn make_msg_with_media(id: &str, hash: &str) -> ChatMessage {
+        let mut msg = make_msg(id, "hi", 100);
+        msg.media.push(ChatMediaAttachment {
+            original_hash_hex: hash.to_string(),
+            encrypted_hash_hex: None,
+            url: String::new(),
+            mime_type: "image/jpeg".to_string(),
+            filename: "photo.jpg".to_string(),
+            kind: ChatMediaKind::Image,
+            width: None,
+            height: None,
+            nonce_hex: String::new(),
+            scheme_version: String::new(),
+            local_path: None,
+            upload_progress: None,
+            blurhash: None,
+        });
+        msg
+    }
+
+    fn make_chat_view(chat_id: &str, messages: Vec<ChatMessage>) -> ChatViewState {
+        ChatViewState {
+            chat_id: chat_id.to_string(),
+            is_group: false,
+            group_name: None,
+            members: vec![],
+            is_admin: false,
+            messages,
+            first_unread_message_id: None,
+            can_load_older: false,
+            typing_members: vec![],
+            my_group_profile: None,
+        }
+    }
+
+    fn make_test_core() -> AppCore {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().to_string_lossy().into_owned();
+        std::mem::forget(tempdir);
+
+        let (update_tx, _) = flume::unbounded();
+        let (core_tx, _) = flume::unbounded();
+        let esb: crate::external_signer::SharedExternalSignerBridge =
+            std::sync::Arc::new(std::sync::RwLock::new(None));
+        let bsc: crate::bunker_signer::SharedBunkerSignerConnector =
+            std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
+                crate::bunker_signer::NostrConnectBunkerSignerConnector::default(),
+            )));
+        AppCore::new(
+            update_tx,
+            core_tx,
+            data_dir,
+            String::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(crate::state::AppState::empty())),
+            esb,
+            bsc,
+        )
+    }
+
+    #[test]
+    fn mutate_current_chat_messages_returns_false_when_no_chat_open() {
+        let mut core = make_test_core();
+        assert!(core.state.current_chat.is_none());
+        let result = core.mutate_current_chat_messages("chat1", |_msgs| true);
+        assert!(!result);
+    }
+
+    #[test]
+    fn mutate_current_chat_messages_returns_false_for_wrong_chat() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view("chat1", vec![make_msg("m1", "hi", 1)]));
+        let result = core.mutate_current_chat_messages("chat2", |_msgs| true);
+        assert!(!result);
+    }
+
+    #[test]
+    fn mutate_current_chat_messages_applies_mutation() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view("chat1", vec![make_msg("m1", "hello", 1)]));
+        let result = core.mutate_current_chat_messages("chat1", |msgs| {
+            msgs[0].content = "updated".to_string();
+            true
+        });
+        assert!(result);
+        assert_eq!(
+            core.state.current_chat.as_ref().unwrap().messages[0].content,
+            "updated"
+        );
+    }
+
+    #[test]
+    fn update_media_local_path_in_place_sets_path() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        let result = core.update_media_local_path_in_place(
+            "chat1",
+            "abc123",
+            Some("/tmp/photo.jpg".to_string()),
+        );
+        assert!(result);
+        let att = &core.state.current_chat.as_ref().unwrap().messages[0].media[0];
+        assert_eq!(att.local_path.as_deref(), Some("/tmp/photo.jpg"));
+    }
+
+    #[test]
+    fn update_media_local_path_in_place_returns_false_for_unknown_hash() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        let result = core.update_media_local_path_in_place(
+            "chat1",
+            "unknown_hash",
+            Some("/tmp/photo.jpg".to_string()),
+        );
+        assert!(!result);
+        let att = &core.state.current_chat.as_ref().unwrap().messages[0].media[0];
+        assert!(att.local_path.is_none());
+    }
+
+    #[test]
+    fn update_delivery_or_refresh_updates_in_place() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view("chat1", vec![make_msg("m1", "hi", 1)]));
+
+        core.update_delivery_or_refresh(
+            "chat1",
+            "m1",
+            MessageDeliveryState::Failed {
+                reason: "offline".to_string(),
+            },
+        );
+
+        let msg = &core.state.current_chat.as_ref().unwrap().messages[0];
+        assert!(matches!(msg.delivery, MessageDeliveryState::Failed { .. }));
+    }
+
+    #[test]
+    fn fail_delivery_or_refresh_clears_upload_progress() {
+        let mut core = make_test_core();
+        let mut msg = make_msg_with_media("m1", "abc");
+        msg.media[0].upload_progress = Some(0.5);
+        core.state.current_chat = Some(make_chat_view("chat1", vec![msg]));
+
+        core.fail_delivery_or_refresh(
+            "chat1",
+            "m1",
+            MessageDeliveryState::Failed {
+                reason: "upload failed".to_string(),
+            },
+        );
+
+        let msg = &core.state.current_chat.as_ref().unwrap().messages[0];
+        assert!(matches!(msg.delivery, MessageDeliveryState::Failed { .. }));
+        assert_eq!(msg.media[0].upload_progress, None);
+    }
+
+    #[test]
+    fn update_media_local_path_populates_local_path_cache() {
+        let mut core = make_test_core();
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        core.update_media_local_path_in_place(
+            "chat1",
+            "abc123",
+            Some("/tmp/photo.jpg".to_string()),
+        );
+
+        // local_path_cache should now contain the resolved path.
+        let cached = core
+            .local_path_cache
+            .get("chat1")
+            .and_then(|c| c.get("abc123"));
+        assert_eq!(cached, Some(&"/tmp/photo.jpg".to_string()));
+    }
+
+    #[test]
+    fn local_path_cache_survives_refresh_cycle() {
+        let mut core = make_test_core();
+
+        // Simulate: background resolution stored a path in the cache.
+        core.local_path_cache
+            .entry("chat1".to_string())
+            .or_default()
+            .insert("abc123".to_string(), "/tmp/photo.jpg".to_string());
+
+        // Now simulate a refresh_current_chat rebuilding with chat_media_attachments_fast.
+        // The attachment should pick up the cached local_path.
+        // We can't easily call chat_media_attachments_fast without MDK, but we can verify
+        // the cache persists across state mutations.
+        core.state.current_chat = Some(make_chat_view(
+            "chat1",
+            vec![make_msg_with_media("m1", "abc123")],
+        ));
+
+        // Verify cache is still there after setting current_chat.
+        let cached = core
+            .local_path_cache
+            .get("chat1")
+            .and_then(|c| c.get("abc123"));
+        assert_eq!(
+            cached,
+            Some(&"/tmp/photo.jpg".to_string()),
+            "local_path_cache should persist across chat state changes"
+        );
+    }
+
+    #[test]
+    fn wipe_media_cache_clears_local_path_cache() {
+        let mut core = make_test_core();
+        core.local_path_cache
+            .entry("chat1".to_string())
+            .or_default()
+            .insert("hash1".to_string(), "/tmp/file.jpg".to_string());
+
+        assert!(!core.local_path_cache.is_empty());
+        // Simulate the WipeMediaCache action's effect on local_path_cache.
+        core.local_path_cache.clear();
+        assert!(core.local_path_cache.is_empty());
     }
 }

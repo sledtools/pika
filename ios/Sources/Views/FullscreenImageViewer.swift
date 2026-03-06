@@ -10,7 +10,7 @@ enum ImageViewerTransition {
 
 struct FullscreenImageViewer: View {
     let attachments: [ChatMediaAttachment]
-    @State var currentId: String
+    @State private var currentId: String
     let onDismiss: () -> Void
     @State private var dragOffset: CGSize = .zero
     @State private var isDismissing = false
@@ -104,15 +104,16 @@ struct FullscreenImageViewer: View {
 
             Spacer()
 
-            ShareLink(
-                item: URL(
-                    fileURLWithPath: currentAttachment?.localPath ?? "")
-            ) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            if let localPath = currentAttachment?.localPath {
+                ShareLink(
+                    item: URL(fileURLWithPath: localPath)
+                ) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -327,7 +328,11 @@ private struct OverFullScreenPresenter<Item: Identifiable, SheetContent: View>:
             hosting.modalPresentationStyle = .overFullScreen
             hosting.view.backgroundColor = .clear
             context.coordinator.hosting = hosting
+            let coordinator = context.coordinator
             DispatchQueue.main.async {
+                // Guard against race: item may have become nil between scheduling
+                // and execution, which would leave an orphaned presented controller.
+                guard coordinator.hosting === hosting else { return }
                 guard controller.presentedViewController == nil else { return }
                 controller.present(hosting, animated: false)
             }

@@ -45,10 +45,11 @@ struct ChatMediaGalleryView: View {
         }
         .navigationTitle("Media")
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $fullscreenAttachment) { attachment in
+        .overFullScreenCover(item: $fullscreenAttachment) { attachment in
             FullscreenImageViewer(
                 attachments: viewableAttachments,
-                selected: attachment
+                selected: attachment,
+                onDismiss: { fullscreenAttachment = nil }
             )
         }
     }

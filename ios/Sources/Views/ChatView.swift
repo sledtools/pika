@@ -281,8 +281,11 @@ struct ChatView: View {
                 .presentationDetents([.medium, .large])
             }
         }
-        .fullScreenCover(item: $fullscreenImageAttachment, onDismiss: nil) { attachment in
-            FullscreenImageViewer(attachment: attachment)
+        .overFullScreenCover(item: $fullscreenImageAttachment) { attachment in
+            FullscreenImageViewer(
+                attachment: attachment,
+                onDismiss: { fullscreenImageAttachment = nil }
+            )
         }
         .sheet(isPresented: $showPollComposer) {
             PollComposerView { question, options in

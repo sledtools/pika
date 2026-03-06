@@ -79,6 +79,7 @@ Use this skill to build, review, or improve SwiftUI features with correct state 
 - Be cautious using `safeAreaInset` for chat composers or other keyboard-attached bottom chrome over `UIScrollView` / `UITableView` / `UICollectionView`. It often breaks the illusion of full-bleed underlap while still failing to make the scroll viewport truly "attached" to the custom chrome.
 - Do not feed measured `safeAreaInset` heights back into a UIKit scroll view unless there is no cleaner ownership boundary. That creates fragile bidirectional layout coupling and often diverges from keyboard/safe-area behavior.
 - For transcript-style UIs that need Instagram/iMessage behavior, prefer UIKit-owned bottom chrome (`inputAccessoryView`, or a child view controller that owns both transcript and composer) over SwiftUI `safeAreaInset`.
+- If a control must stay pinned above a chat composer, put that control in the same UIKit host/accessory coordinate system as the composer. Do not mirror the composer position back into SwiftUI with guessed bottom offsets when the transcript itself is UIKit-owned.
 - Keep accessibility identifiers unique and preserve existing IDs during refactors unless tests and callers are updated together
 - Do not remove working actions or ship placeholder/debug copy during visual changes
 - Validate visual refactors in the simulator one screen at a time; treat simulator review as required, not optional

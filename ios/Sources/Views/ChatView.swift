@@ -47,8 +47,6 @@ struct ChatView: View {
     @State private var voiceRecorder: VoiceRecorder
     @State private var showMicPermissionDenied = false
     @State private var isInputFocused = false
-    @State private var accessoryHeight: CGFloat = 0
-    @State private var baseAccessoryHeight: CGFloat = 0
 
     init(
         chatId: String,
@@ -112,20 +110,7 @@ struct ChatView: View {
                 .ignoresSafeArea()
 
             messageList(chat)
-            .ignoresSafeArea(edges: [.top, .bottom])
-            .overlay(alignment: .bottomTrailing) {
-                let baselineAccessoryHeight = baseAccessoryHeight > 0 ? baseAccessoryHeight : accessoryHeight
-                scrollToBottomButton(
-                    bottomPadding: MessageCollectionLayout.jumpButtonSpacing
-                        + max(0, accessoryHeight - baselineAccessoryHeight)
-                )
-            }
-        }
-        .onChangeCompat(of: accessoryHeight) { newHeight in
-            guard newHeight > 0 else { return }
-            if baseAccessoryHeight == 0 || newHeight < baseAccessoryHeight {
-                baseAccessoryHeight = newHeight
-            }
+                .ignoresSafeArea(edges: [.top, .bottom])
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             topOverlay(chat)
@@ -369,7 +354,6 @@ struct ChatView: View {
                     callback(chatId, oldestId, 30)
                 }
             },
-            accessoryHeight: $accessoryHeight,
             followsBottom: $followsBottom,
             activeReactionMessageId: activeReactionMessageId,
             scrollRequest: scrollRequest
@@ -407,25 +391,6 @@ struct ChatView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-    }
-
-    @ViewBuilder
-    private func scrollToBottomButton(bottomPadding: CGFloat) -> some View {
-        if !followsBottom {
-            Button {
-                requestScrollToBottom(animated: true)
-            } label: {
-                Image(systemName: "arrow.down")
-                    .font(.footnote.weight(.semibold))
-                    .padding(10)
-            }
-            .foregroundStyle(.primary)
-            .background(.ultraThinMaterial, in: Circle())
-            .overlay(Circle().strokeBorder(.quaternary, lineWidth: 0.5))
-            .padding(.trailing, 16)
-            .padding(.bottom, bottomPadding)
-            .accessibilityLabel("Scroll to bottom")
-        }
     }
 
     private func requestScrollToBottom(animated: Bool) {

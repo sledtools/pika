@@ -34,7 +34,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
     var onRetryMessage: ((String) -> Void)?
     var onLoadOlderMessages: (() -> Void)?
 
-    @Binding var accessoryHeight: CGFloat
     @Binding var followsBottom: Bool
     var activeReactionMessageId: String?
     var scrollRequest: MessageCollectionScrollRequest?
@@ -65,6 +64,9 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         }
         viewController.onViewportGeometryChange = { [weak coordinator = context.coordinator] in
             coordinator?.handleViewportGeometryChange()
+        }
+        viewController.onJumpToBottomTap = { [weak coordinator = context.coordinator] in
+            coordinator?.handleJumpButtonTap()
         }
 
         context.coordinator.collectionView = collectionView
@@ -97,6 +99,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         let renderedRows = buildRenderedRows()
         context.coordinator.applyRows(renderedRows, animated: false)
         viewController.updateAccessory(rootView: accessoryContent, keepVisible: !isInputFocused)
+        viewController.setJumpButtonVisible(!followsBottom, animated: false)
         context.coordinator.applyViewportInsetsIfNeeded()
         context.coordinator.scrollToBottom(animated: false)
 
@@ -127,6 +130,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         if accessoryHeightChanged, !wasNearBottom {
             coordinator.pendingViewportAnchor = anchor
         }
+        viewController.setJumpButtonVisible(!followsBottom, animated: true)
 
         let viewportChanged = coordinator.applyViewportInsetsIfNeeded()
 
@@ -257,6 +261,14 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
             }
         }
 
+        func handleJumpButtonTap() {
+            DispatchQueue.main.async {
+                self.parent.followsBottom = true
+            }
+            viewController?.setJumpButtonVisible(false, animated: true)
+            scrollToBottom(animated: true)
+        }
+
         func handleViewportGeometryChange() {
             let wasNearBottom = isNearBottom()
             _ = applyEffectiveInsetsIfNeeded()
@@ -324,6 +336,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             let nearBottom = isNearBottom()
+            viewController?.setJumpButtonVisible(!nearBottom, animated: true)
             if nearBottom != parent.followsBottom {
                 DispatchQueue.main.async {
                     self.parent.followsBottom = nearBottom
@@ -414,7 +427,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         private func applyEffectiveInsetsIfNeeded() -> Bool {
             guard let collectionView, let viewController else { return false }
             collectionView.layoutIfNeeded()
-            syncAccessoryHeight(viewController.accessoryHeight)
 
             let effectiveInset = MessageCollectionLayout.effectiveContentInset(
                 boundsHeight: collectionView.bounds.height,
@@ -426,15 +438,6 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
             collectionView.contentInset = effectiveInset
             collectionView.verticalScrollIndicatorInsets = .zero
             return true
-        }
-
-        private func syncAccessoryHeight(_ height: CGFloat) {
-            guard abs(height - parent.accessoryHeight) > 0.5 else { return }
-            DispatchQueue.main.async {
-                if abs(height - self.parent.accessoryHeight) > 0.5 {
-                    self.parent.accessoryHeight = height
-                }
-            }
         }
 
         private func indexPathSort(_ lhs: IndexPath, _ rhs: IndexPath) -> Bool {
@@ -449,15 +452,16 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
 final class MessageCollectionHostController<AccessoryContent: View>: UIViewController {
     fileprivate let collectionView: BoundsAwareCollectionView
     private let accessoryContainerView: InputAccessoryHostingView<AccessoryContent>
+    private let jumpButtonChromeView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let jumpButton = UIButton(type: .system)
     var onViewportGeometryChange: (() -> Void)?
+    var onJumpToBottomTap: (() -> Void)?
     private var lastReportedBottomViewportInset: CGFloat = 0
+    private var jumpButtonBottomConstraint: NSLayoutConstraint?
+    private var isJumpButtonVisible = false
 
     var bottomViewportInset: CGFloat {
         max(accessoryContainerView.currentHeight, keyboardOverlapHeight)
-    }
-
-    var accessoryHeight: CGFloat {
-        accessoryContainerView.currentHeight
     }
     init(layout: UICollectionViewLayout, accessoryContent: AccessoryContent) {
         self.collectionView = BoundsAwareCollectionView(frame: .zero, collectionViewLayout: layout)
@@ -490,8 +494,10 @@ final class MessageCollectionHostController<AccessoryContent: View>: UIViewContr
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        configureJumpButton()
 
         accessoryContainerView.onHeightChange = { [weak self] in
+            self?.updateJumpButtonBottomConstraint()
             self?.onViewportGeometryChange?()
         }
     }
@@ -517,6 +523,7 @@ final class MessageCollectionHostController<AccessoryContent: View>: UIViewContr
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        updateJumpButtonBottomConstraint()
         let bottomViewportInset = self.bottomViewportInset
         guard abs(bottomViewportInset - lastReportedBottomViewportInset) > 0.5 else { return }
         lastReportedBottomViewportInset = bottomViewportInset
@@ -533,9 +540,85 @@ final class MessageCollectionHostController<AccessoryContent: View>: UIViewContr
         return accessoryHeightChanged
     }
 
+    func setJumpButtonVisible(_ visible: Bool, animated: Bool) {
+        guard visible != isJumpButtonVisible else { return }
+        isJumpButtonVisible = visible
+
+        let updates = {
+            self.jumpButtonChromeView.alpha = visible ? 1 : 0
+            self.jumpButtonChromeView.transform = visible ? .identity : CGAffineTransform(scaleX: 0.9, y: 0.9)
+        }
+
+        jumpButtonChromeView.isHidden = false
+        jumpButtonChromeView.isUserInteractionEnabled = visible
+        jumpButton.accessibilityElementsHidden = !visible
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.18,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut]
+            ) {
+                updates()
+            } completion: { _ in
+                self.jumpButtonChromeView.isHidden = !visible
+            }
+        } else {
+            updates()
+            jumpButtonChromeView.isHidden = !visible
+        }
+    }
+
     private var keyboardOverlapHeight: CGFloat {
         let overlap = view.bounds.maxY - view.keyboardLayoutGuide.layoutFrame.minY - view.safeAreaInsets.bottom
         return max(0, overlap)
+    }
+
+    private func configureJumpButton() {
+        jumpButtonChromeView.translatesAutoresizingMaskIntoConstraints = false
+        jumpButtonChromeView.layer.cornerRadius = 18
+        jumpButtonChromeView.clipsToBounds = true
+        jumpButtonChromeView.layer.borderWidth = 0.5
+        jumpButtonChromeView.layer.borderColor = UIColor.quaternaryLabel.cgColor
+        jumpButtonChromeView.alpha = 0
+        jumpButtonChromeView.isHidden = true
+        jumpButtonChromeView.isUserInteractionEnabled = false
+        view.addSubview(jumpButtonChromeView)
+
+        jumpButton.translatesAutoresizingMaskIntoConstraints = false
+        jumpButton.tintColor = .label
+        jumpButton.setImage(UIImage(systemName: "arrow.down"), for: .normal)
+        jumpButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold),
+            forImageIn: .normal
+        )
+        jumpButton.accessibilityLabel = "Scroll to bottom"
+        jumpButton.addTarget(self, action: #selector(handleJumpButtonTap), for: .touchUpInside)
+        jumpButtonChromeView.contentView.addSubview(jumpButton)
+
+        jumpButtonBottomConstraint = jumpButtonChromeView.bottomAnchor.constraint(
+            equalTo: view.keyboardLayoutGuide.topAnchor
+        )
+
+        NSLayoutConstraint.activate([
+            jumpButtonChromeView.widthAnchor.constraint(equalToConstant: 36),
+            jumpButtonChromeView.heightAnchor.constraint(equalToConstant: 36),
+            jumpButtonChromeView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            jumpButtonBottomConstraint!,
+            jumpButton.centerXAnchor.constraint(equalTo: jumpButtonChromeView.contentView.centerXAnchor),
+            jumpButton.centerYAnchor.constraint(equalTo: jumpButtonChromeView.contentView.centerYAnchor),
+        ])
+
+        updateJumpButtonBottomConstraint()
+    }
+
+    private func updateJumpButtonBottomConstraint() {
+        jumpButtonBottomConstraint?.constant = 0
+    }
+
+    @objc
+    private func handleJumpButtonTap() {
+        onJumpToBottomTap?()
     }
 }
 

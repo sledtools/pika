@@ -684,8 +684,11 @@ impl TimerToken {
         self.0 = self.0.saturating_add(1);
     }
 
-    /// Schedule a new timer. Returns the token to embed in the event.
-    /// Cancels any previously scheduled timer.
+    /// Schedule a new timer, cancelling any previously scheduled one.
+    ///
+    /// Spawns a tokio task on `runtime` that sleeps for `delay`, then sends
+    /// `make_event(token)` via `tx`. The token is passed to `make_event` so
+    /// the handler can verify it is still current via `is_current()`.
     fn schedule(
         &mut self,
         runtime: &tokio::runtime::Runtime,

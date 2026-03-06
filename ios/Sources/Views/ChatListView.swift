@@ -8,7 +8,7 @@ struct ChatListView: View {
     let onArchiveChat: @MainActor (String) -> Void
     let onNewChat: @MainActor () -> Void
     let onNewGroupChat: @MainActor () -> Void
-    let onEnsureDogfoodAgent: @MainActor () -> Void
+    let onEnsureAgent: @MainActor () -> Void
     let onRefreshProfile: @MainActor () -> Void
     let onSaveProfile: @MainActor (_ name: String, _ about: String) -> Void
     let onUploadProfilePhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
@@ -118,15 +118,15 @@ struct ChatListView: View {
                     } label: {
                         Label("New Group", systemImage: "person.3")
                     }
-                    if let dogfood = state.dogfoodAgentButton {
+                    if let agent = state.agentButton {
                         Divider()
                         Button {
-                            onEnsureDogfoodAgent()
+                            onEnsureAgent()
                         } label: {
-                            Label(dogfood.title, systemImage: "desktopcomputer")
+                            Label(agent.title, systemImage: "desktopcomputer")
                         }
-                        .disabled(dogfood.isBusy)
-                        .accessibilityIdentifier(TestIds.chatListDogfoodAgent)
+                        .disabled(agent.isBusy)
+                        .accessibilityIdentifier(TestIds.chatListAgent)
                     }
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -158,14 +158,14 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListEmpty.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListEmpty.myProfile,
-                dogfoodAgentButton: nil
+                agentButton: nil
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureDogfoodAgent: {},
+            onEnsureAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
@@ -186,14 +186,14 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListPopulated.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListPopulated.myProfile,
-                dogfoodAgentButton: nil
+                agentButton: nil
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureDogfoodAgent: {},
+            onEnsureAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
@@ -214,14 +214,14 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListLongNames.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListLongNames.myProfile,
-                dogfoodAgentButton: nil
+                agentButton: nil
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureDogfoodAgent: {},
+            onEnsureAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },

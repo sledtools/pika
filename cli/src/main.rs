@@ -398,12 +398,12 @@ enum AgentCommand {
         http: AgentHttpArgs,
     },
 
-    /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
+    /// Ensure/reuse your agent, send one message, and optionally listen for replies
     Chat {
         #[command(flatten)]
         http: AgentHttpArgs,
 
-        /// Message content to send to your personal agent
+        /// Message content to send to your agent
         message: String,
 
         /// Listen duration (seconds) after sending (0 disables listening)
@@ -1897,10 +1897,7 @@ async fn cmd_agent_chat(
         }
     }
 
-    anyhow::ensure!(
-        !last_agent_npub.is_empty(),
-        "timed out waiting for personal agent"
-    );
+    anyhow::ensure!(!last_agent_npub.is_empty(), "timed out waiting for agent");
     eprintln!(
         "agent did not become ready (state={}); trying best-effort send",
         last_state

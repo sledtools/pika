@@ -108,7 +108,7 @@ enum PreviewAppState {
                 creatingAccount: false,
                 loggingIn: true,
                 creatingChat: false,
-                startingPersonalAgent: false,
+                startingAgent: false,
                 fetchingFollowList: false
             )
         )
@@ -186,7 +186,7 @@ enum PreviewAppState {
                 creatingAccount: false,
                 loggingIn: false,
                 creatingChat: true,
-                startingPersonalAgent: false,
+                startingAgent: false,
                 fetchingFollowList: false
             )
         )
@@ -298,7 +298,7 @@ enum PreviewAppState {
             creatingAccount: false,
             loggingIn: false,
             creatingChat: false,
-            startingPersonalAgent: false,
+            startingAgent: false,
             fetchingFollowList: false
         ),
         chatList: [ChatSummary] = [],

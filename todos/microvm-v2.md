@@ -7,7 +7,7 @@ Decision update (2026-03-04):
 Restic backup setup was deferred from v1 and is non-blocking for current prod validation; treat backup automation/restore drills as v2+ hardening work.
 
 Intent and expected outcome:
-The same 1-click personal agent flow scales from 3 internal users to a managed first-100 cohort with explicit capacity policy, stronger isolation, and operator-grade support controls.
+The same 1-click agent flow scales from 3 internal users to a managed first-100 cohort with explicit capacity policy, stronger isolation, and operator-grade support controls.
 
 Exact build target (what will exist when done):
 1. Managed whitelist operations baseline:

@@ -117,7 +117,7 @@ impl AppCore {
         self.subs_recompute_in_flight = false;
         self.subs_recompute_dirty = false;
         self.subs_force_reconnect = false;
-        self.invalidate_personal_agent_flow();
+        self.invalidate_agent_flow();
         self.group_profiles.clear();
 
         if let Some(sess) = self.session.take() {

@@ -218,8 +218,8 @@ pub enum AppAction {
         pubkey: String,
     },
 
-    // Personal agent (dogfood)
-    EnsurePersonalAgent,
+    // Agent
+    EnsureAgent,
 }
 
 impl AppAction {
@@ -315,7 +315,7 @@ impl AppAction {
             AppAction::RefreshFollowList => "RefreshFollowList",
             AppAction::FollowUser { .. } => "FollowUser",
             AppAction::UnfollowUser { .. } => "UnfollowUser",
-            AppAction::EnsurePersonalAgent => "EnsurePersonalAgent",
+            AppAction::EnsureAgent => "EnsureAgent",
         }
     }
 }

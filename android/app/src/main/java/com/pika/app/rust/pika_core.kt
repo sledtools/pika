@@ -1786,6 +1786,8 @@ data class AppState (
     var `developerMode`: kotlin.Boolean
     , 
     var `voiceRecording`: VoiceRecordingState?
+    , 
+    var `mediaGallery`: MediaGalleryState?
     
 ){
     
@@ -1816,6 +1818,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeVoiceRecordingState.read(buf),
+            FfiConverterOptionalTypeMediaGalleryState.read(buf),
         )
     }
 
@@ -1833,7 +1836,8 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeCallTimelineEvent.allocationSize(value.`callTimeline`) +
             FfiConverterOptionalString.allocationSize(value.`toast`) +
             FfiConverterBoolean.allocationSize(value.`developerMode`) +
-            FfiConverterOptionalTypeVoiceRecordingState.allocationSize(value.`voiceRecording`)
+            FfiConverterOptionalTypeVoiceRecordingState.allocationSize(value.`voiceRecording`) +
+            FfiConverterOptionalTypeMediaGalleryState.allocationSize(value.`mediaGallery`)
     )
 
     override fun write(value: AppState, buf: ByteBuffer) {
@@ -1851,6 +1855,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.write(value.`toast`, buf)
             FfiConverterBoolean.write(value.`developerMode`, buf)
             FfiConverterOptionalTypeVoiceRecordingState.write(value.`voiceRecording`, buf)
+            FfiConverterOptionalTypeMediaGalleryState.write(value.`mediaGallery`, buf)
     }
 }
 
@@ -1870,7 +1875,7 @@ data class BusyState (
     , 
     var `creatingChat`: kotlin.Boolean
     , 
-    var `startingPersonalAgent`: kotlin.Boolean
+    var `startingAgent`: kotlin.Boolean
     , 
     var `fetchingFollowList`: kotlin.Boolean
     
@@ -1901,7 +1906,7 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.allocationSize(value.`creatingAccount`) +
             FfiConverterBoolean.allocationSize(value.`loggingIn`) +
             FfiConverterBoolean.allocationSize(value.`creatingChat`) +
-            FfiConverterBoolean.allocationSize(value.`startingPersonalAgent`) +
+            FfiConverterBoolean.allocationSize(value.`startingAgent`) +
             FfiConverterBoolean.allocationSize(value.`fetchingFollowList`)
     )
 
@@ -1909,7 +1914,7 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.write(value.`creatingAccount`, buf)
             FfiConverterBoolean.write(value.`loggingIn`, buf)
             FfiConverterBoolean.write(value.`creatingChat`, buf)
-            FfiConverterBoolean.write(value.`startingPersonalAgent`, buf)
+            FfiConverterBoolean.write(value.`startingAgent`, buf)
             FfiConverterBoolean.write(value.`fetchingFollowList`, buf)
     }
 }
@@ -2828,6 +2833,82 @@ public object FfiConverterTypeMediaBatchItem: FfiConverterRustBuffer<MediaBatchI
 
 
 
+data class MediaGalleryItem (
+    var `attachment`: ChatMediaAttachment
+    , 
+    var `timestamp`: kotlin.Long
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMediaGalleryItem: FfiConverterRustBuffer<MediaGalleryItem> {
+    override fun read(buf: ByteBuffer): MediaGalleryItem {
+        return MediaGalleryItem(
+            FfiConverterTypeChatMediaAttachment.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MediaGalleryItem) = (
+            FfiConverterTypeChatMediaAttachment.allocationSize(value.`attachment`) +
+            FfiConverterLong.allocationSize(value.`timestamp`)
+    )
+
+    override fun write(value: MediaGalleryItem, buf: ByteBuffer) {
+            FfiConverterTypeChatMediaAttachment.write(value.`attachment`, buf)
+            FfiConverterLong.write(value.`timestamp`, buf)
+    }
+}
+
+
+
+data class MediaGalleryState (
+    var `chatId`: kotlin.String
+    , 
+    var `items`: List<MediaGalleryItem>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMediaGalleryState: FfiConverterRustBuffer<MediaGalleryState> {
+    override fun read(buf: ByteBuffer): MediaGalleryState {
+        return MediaGalleryState(
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeMediaGalleryItem.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MediaGalleryState) = (
+            FfiConverterString.allocationSize(value.`chatId`) +
+            FfiConverterSequenceTypeMediaGalleryItem.allocationSize(value.`items`)
+    )
+
+    override fun write(value: MediaGalleryState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`chatId`, buf)
+            FfiConverterSequenceTypeMediaGalleryItem.write(value.`items`, buf)
+    }
+}
+
+
+
 data class MemberInfo (
     var `pubkey`: kotlin.String
     , 
@@ -3623,6 +3704,21 @@ sealed class AppAction {
     object ReloadConfig : AppAction()
     
     
+    data class LoadMediaGallery(
+        val `chatId`: kotlin.String) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
+    object ClearMediaGallery : AppAction()
+    
+    
+    object WipeMediaCache : AppAction()
+    
+    
     data class OpenPeerProfile(
         val `pubkey`: kotlin.String) : AppAction()
         
@@ -3668,7 +3764,7 @@ sealed class AppAction {
         companion object
     }
     
-    object EnsurePersonalAgent : AppAction()
+    object EnsureAgent : AppAction()
     
     
 
@@ -3851,22 +3947,27 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 FfiConverterString.read(buf),
                 )
             56 -> AppAction.ReloadConfig
-            57 -> AppAction.OpenPeerProfile(
+            57 -> AppAction.LoadMediaGallery(
                 FfiConverterString.read(buf),
                 )
-            58 -> AppAction.ClosePeerProfile
-            59 -> AppAction.SetPushToken(
+            58 -> AppAction.ClearMediaGallery
+            59 -> AppAction.WipeMediaCache
+            60 -> AppAction.OpenPeerProfile(
                 FfiConverterString.read(buf),
                 )
-            60 -> AppAction.ReregisterPush
-            61 -> AppAction.RefreshFollowList
-            62 -> AppAction.FollowUser(
+            61 -> AppAction.ClosePeerProfile
+            62 -> AppAction.SetPushToken(
                 FfiConverterString.read(buf),
                 )
-            63 -> AppAction.UnfollowUser(
+            63 -> AppAction.ReregisterPush
+            64 -> AppAction.RefreshFollowList
+            65 -> AppAction.FollowUser(
                 FfiConverterString.read(buf),
                 )
-            64 -> AppAction.EnsurePersonalAgent
+            66 -> AppAction.UnfollowUser(
+                FfiConverterString.read(buf),
+                )
+            67 -> AppAction.EnsureAgent
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4279,6 +4380,25 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
             )
         }
+        is AppAction.LoadMediaGallery -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
+        is AppAction.ClearMediaGallery -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AppAction.WipeMediaCache -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
         is AppAction.OpenPeerProfile -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -4325,7 +4445,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`pubkey`)
             )
         }
-        is AppAction.EnsurePersonalAgent -> {
+        is AppAction.EnsureAgent -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
@@ -4630,40 +4750,53 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(56)
                 Unit
             }
-            is AppAction.OpenPeerProfile -> {
+            is AppAction.LoadMediaGallery -> {
                 buf.putInt(57)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is AppAction.ClearMediaGallery -> {
+                buf.putInt(58)
+                Unit
+            }
+            is AppAction.WipeMediaCache -> {
+                buf.putInt(59)
+                Unit
+            }
+            is AppAction.OpenPeerProfile -> {
+                buf.putInt(60)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.ClosePeerProfile -> {
-                buf.putInt(58)
+                buf.putInt(61)
                 Unit
             }
             is AppAction.SetPushToken -> {
-                buf.putInt(59)
+                buf.putInt(62)
                 FfiConverterString.write(value.`token`, buf)
                 Unit
             }
             is AppAction.ReregisterPush -> {
-                buf.putInt(60)
+                buf.putInt(63)
                 Unit
             }
             is AppAction.RefreshFollowList -> {
-                buf.putInt(61)
+                buf.putInt(64)
                 Unit
             }
             is AppAction.FollowUser -> {
-                buf.putInt(62)
+                buf.putInt(65)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.UnfollowUser -> {
-                buf.putInt(63)
+                buf.putInt(66)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
-            is AppAction.EnsurePersonalAgent -> {
-                buf.putInt(64)
+            is AppAction.EnsureAgent -> {
+                buf.putInt(67)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -5388,6 +5521,15 @@ sealed class Screen {
         companion object
     }
     
+    data class ChatMedia(
+        val `chatId`: kotlin.String) : Screen()
+        
+    {
+        
+
+        companion object
+    }
+    
 
     
 
@@ -5412,6 +5554,9 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             4 -> Screen.NewChat
             5 -> Screen.NewGroupChat
             6 -> Screen.GroupInfo(
+                FfiConverterString.read(buf),
+                )
+            7 -> Screen.ChatMedia(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -5457,6 +5602,13 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 + FfiConverterString.allocationSize(value.`chatId`)
             )
         }
+        is Screen.ChatMedia -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`chatId`)
+            )
+        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -5484,6 +5636,11 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             }
             is Screen.GroupInfo -> {
                 buf.putInt(6)
+                FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is Screen.ChatMedia -> {
+                buf.putInt(7)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
@@ -6112,6 +6269,38 @@ public object FfiConverterOptionalTypeHypernoteData: FfiConverterRustBuffer<Hype
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeMediaGalleryState: FfiConverterRustBuffer<MediaGalleryState?> {
+    override fun read(buf: ByteBuffer): MediaGalleryState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMediaGalleryState.read(buf)
+    }
+
+    override fun allocationSize(value: MediaGalleryState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMediaGalleryState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MediaGalleryState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMediaGalleryState.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeMyProfileState: FfiConverterRustBuffer<MyProfileState?> {
     override fun read(buf: ByteBuffer): MyProfileState? {
         if (buf.get().toInt() == 0) {
@@ -6520,6 +6709,34 @@ public object FfiConverterSequenceTypeMediaBatchItem: FfiConverterRustBuffer<Lis
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeMediaGalleryItem: FfiConverterRustBuffer<List<MediaGalleryItem>> {
+    override fun read(buf: ByteBuffer): List<MediaGalleryItem> {
+        val len = buf.getInt()
+        return List<MediaGalleryItem>(len) {
+            FfiConverterTypeMediaGalleryItem.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<MediaGalleryItem>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeMediaGalleryItem.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<MediaGalleryItem>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeMediaGalleryItem.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeMemberInfo: FfiConverterRustBuffer<List<MemberInfo>> {
     override fun read(buf: ByteBuffer): List<MemberInfo> {
         val len = buf.getInt()
@@ -6749,3 +6966,5 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     )
     }
     
+
+

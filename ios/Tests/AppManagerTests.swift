@@ -11,7 +11,7 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
             creatingAccount: false,
             loggingIn: false,
             creatingChat: false,
-            startingPersonalAgent: false,
+            startingAgent: false,
             fetchingFollowList: false
         ),
         chatList: [],
@@ -37,7 +37,7 @@ final class AppManagerTests: XCTestCase {
                 creatingAccount: false,
                 loggingIn: false,
                 creatingChat: false,
-                startingPersonalAgent: false,
+                startingAgent: false,
                 fetchingFollowList: false
             ),
             chatList: [],
@@ -119,7 +119,7 @@ final class AppManagerTests: XCTestCase {
         XCTAssertEqual(observedRev, 5)
     }
 
-    func testDogfoodButtonHiddenForBunkerAuthWithoutLocalNsec() async {
+    func testAgentButtonHiddenForBunkerAuthWithoutLocalNsec() async {
         var state = makeState(rev: 1)
         state.auth = .loggedIn(
             npub: "npub1bunkeruser",
@@ -138,13 +138,13 @@ final class AppManagerTests: XCTestCase {
         let manager = await MainActor.run { AppManager(core: core, authStore: store) }
 
         let buttonState = await MainActor.run {
-            manager.dogfoodAgentButtonState(for: "npub1bunkeruser")
+            manager.agentButtonState(for: "npub1bunkeruser")
         }
 
         XCTAssertNil(buttonState)
     }
 
-    func testDogfoodButtonVisibleWhenLocalSigningNsecExists() async {
+    func testAgentButtonVisibleWhenLocalSigningNsecExists() async {
         var state = makeState(rev: 1)
         state.auth = .loggedIn(
             npub: "npub1localuser",
@@ -163,13 +163,13 @@ final class AppManagerTests: XCTestCase {
         let manager = await MainActor.run { AppManager(core: core, authStore: store) }
 
         let buttonState = await MainActor.run {
-            manager.dogfoodAgentButtonState(for: "npub1localuser")
+            manager.agentButtonState(for: "npub1localuser")
         }
 
-        XCTAssertEqual(buttonState, DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false))
+        XCTAssertEqual(buttonState, AgentButtonState(title: "Start Agent", isBusy: false))
     }
 
-    func testDogfoodButtonBusyUsesPersonalAgentFlagOnly() async {
+    func testAgentButtonBusyUsesAgentFlagOnly() async {
         var state = makeState(rev: 1)
         state.auth = .loggedIn(
             npub: "npub1localuser",
@@ -180,31 +180,31 @@ final class AppManagerTests: XCTestCase {
             creatingAccount: false,
             loggingIn: false,
             creatingChat: true,
-            startingPersonalAgent: false,
+            startingAgent: false,
             fetchingFollowList: false
         )
         let core = MockCore(state: state)
         let manager = await MainActor.run { AppManager(core: core, authStore: MockAuthStore()) }
 
         let notBusy = await MainActor.run {
-            manager.dogfoodAgentButtonState(for: "npub1localuser")
+            manager.agentButtonState(for: "npub1localuser")
         }
-        XCTAssertEqual(notBusy, DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false))
+        XCTAssertEqual(notBusy, AgentButtonState(title: "Start Agent", isBusy: false))
 
         var stateBusy = state
         stateBusy.busy = BusyState(
             creatingAccount: false,
             loggingIn: false,
             creatingChat: false,
-            startingPersonalAgent: true,
+            startingAgent: true,
             fetchingFollowList: false
         )
         let busyCore = MockCore(state: stateBusy)
         let busyManager = await MainActor.run { AppManager(core: busyCore, authStore: MockAuthStore()) }
         let busy = await MainActor.run {
-            busyManager.dogfoodAgentButtonState(for: "npub1localuser")
+            busyManager.agentButtonState(for: "npub1localuser")
         }
-        XCTAssertEqual(busy, DogfoodAgentButtonState(title: "Starting Personal Agent...", isBusy: true))
+        XCTAssertEqual(busy, AgentButtonState(title: "Starting Agent...", isBusy: true))
     }
 }
 

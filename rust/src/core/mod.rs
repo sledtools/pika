@@ -744,8 +744,8 @@ pub struct AppCore {
     voice_recording_tick_token: u64,
     pending_nostr_connect_login: Option<PendingNostrConnectLogin>,
     next_nostr_connect_attempt_id: u64,
-    personal_agent_flow_token: u64,
-    personal_agent_flow_task: Option<tokio::task::JoinHandle<()>>,
+    agent_flow_token: u64,
+    agent_flow_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AppCore {
@@ -858,8 +858,8 @@ impl AppCore {
             voice_recording_tick_token: 0,
             pending_nostr_connect_login: None,
             next_nostr_connect_attempt_id: 1,
-            personal_agent_flow_token: 0,
-            personal_agent_flow_task: None,
+            agent_flow_token: 0,
+            agent_flow_task: None,
         };
         this.state.developer_mode = developer_mode;
 
@@ -4778,8 +4778,8 @@ impl AppCore {
             }
 
             // Chat
-            AppAction::EnsurePersonalAgent => {
-                self.ensure_personal_agent();
+            AppAction::EnsureAgent => {
+                self.ensure_agent();
             }
             AppAction::CreateChat { peer_npub } => {
                 if !self.is_logged_in() {

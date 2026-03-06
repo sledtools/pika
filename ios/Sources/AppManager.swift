@@ -373,16 +373,16 @@ final class AppManager: AppReconciler {
         authStore.getNsec()
     }
 
-    func dogfoodAgentButtonState(for npub: String?) -> DogfoodAgentButtonState? {
-        guard isDogfoodAgentEligible(npub: npub, auth: state.auth) else {
+    func agentButtonState(for npub: String?) -> AgentButtonState? {
+        guard isAgentEligible(npub: npub, auth: state.auth) else {
             return nil
         }
-        return makeDogfoodAgentButtonState(isBusy: state.busy.startingPersonalAgent)
+        return makeAgentButtonState(isBusy: state.busy.startingAgent)
     }
 
-    func ensureDogfoodAgent() {
-        guard isDogfoodAgentEligible(npub: currentNpub(), auth: state.auth) else { return }
-        dispatch(.ensurePersonalAgent)
+    func ensureAgent() {
+        guard isAgentEligible(npub: currentNpub(), auth: state.auth) else { return }
+        dispatch(.ensureAgent)
     }
 
     /// Moves existing data from the old app-private Application Support directory

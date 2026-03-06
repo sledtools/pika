@@ -870,7 +870,7 @@ agent-microvm *ARGS="":
     fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
-# Ensure/reuse personal agent, send one message, then optionally listen for reply.
+# Ensure/reuse agent, send one message, then optionally listen for reply.
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
     ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
 

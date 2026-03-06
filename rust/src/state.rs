@@ -184,7 +184,7 @@ pub struct BusyState {
     pub creating_account: bool,
     pub logging_in: bool,
     pub creating_chat: bool,
-    pub starting_personal_agent: bool,
+    pub starting_agent: bool,
     pub fetching_follow_list: bool,
 }
 
@@ -194,7 +194,7 @@ impl BusyState {
             creating_account: false,
             logging_in: false,
             creating_chat: false,
-            starting_personal_agent: false,
+            starting_agent: false,
             fetching_follow_list: false,
         }
     }

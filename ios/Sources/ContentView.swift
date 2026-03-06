@@ -210,7 +210,7 @@ private func screenView(
             onArchiveChat: { manager.dispatch(.archiveChat(chatId: $0)) },
             onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
             onNewGroupChat: { manager.dispatch(.pushScreen(screen: .newGroupChat)) },
-            onEnsureDogfoodAgent: { manager.ensureDogfoodAgent() },
+            onEnsureAgent: { manager.ensureAgent() },
             onRefreshProfile: { manager.refreshMyProfile() },
             onSaveProfile: { name, about in
                 manager.saveMyProfile(name: name, about: about)
@@ -425,7 +425,7 @@ private func chatListState(from state: AppState, manager: AppManager) -> ChatLis
         chats: state.chatList,
         myNpub: myNpub,
         myProfile: state.myProfile,
-        dogfoodAgentButton: manager.dogfoodAgentButtonState(for: myNpub)
+        agentButton: manager.agentButtonState(for: myNpub)
     )
 }
 

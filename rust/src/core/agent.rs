@@ -46,22 +46,16 @@ enum AgentFlowError {
 impl AgentFlowError {
     fn to_user_message(&self) -> String {
         match self {
-            Self::Unauthorized => "Personal agent auth failed. Please sign in again.".to_string(),
-            Self::NotWhitelisted => {
-                "This account is not allowlisted for personal agents.".to_string()
-            }
-            Self::AgentNotFound => {
-                "Personal agent was not found after creation. Try again.".to_string()
-            }
-            Self::AgentErrorState => {
-                "Personal agent entered an error state. Try again.".to_string()
-            }
-            Self::Timeout => "Personal agent is still starting. Try again in a moment.".to_string(),
-            Self::InvalidResponse => "Personal agent API returned an invalid response.".to_string(),
-            Self::SigningFailed => "Personal agent requires local key signer.".to_string(),
-            Self::Remote(message) => format!("Personal agent request failed: {message}"),
+            Self::Unauthorized => "Agent auth failed. Please sign in again.".to_string(),
+            Self::NotWhitelisted => "This account is not allowlisted for agents.".to_string(),
+            Self::AgentNotFound => "Agent was not found after creation. Try again.".to_string(),
+            Self::AgentErrorState => "Agent entered an error state. Try again.".to_string(),
+            Self::Timeout => "Agent is still starting. Try again in a moment.".to_string(),
+            Self::InvalidResponse => "Agent API returned an invalid response.".to_string(),
+            Self::SigningFailed => "Agent requires local key signer.".to_string(),
+            Self::Remote(message) => format!("Agent request failed: {message}"),
             Self::Transport(message) => {
-                format!("Network error while starting personal agent: {message}")
+                format!("Network error while starting agent: {message}")
             }
         }
     }
@@ -253,12 +247,12 @@ async fn run_agent_flow(
 }
 
 impl AppCore {
-    pub(super) fn invalidate_personal_agent_flow(&mut self) {
-        self.personal_agent_flow_token = self.personal_agent_flow_token.wrapping_add(1);
-        if let Some(handle) = self.personal_agent_flow_task.take() {
+    pub(super) fn invalidate_agent_flow(&mut self) {
+        self.agent_flow_token = self.agent_flow_token.wrapping_add(1);
+        if let Some(handle) = self.agent_flow_task.take() {
             handle.abort();
         }
-        self.set_busy(|b| b.starting_personal_agent = false);
+        self.set_busy(|b| b.starting_agent = false);
     }
 
     fn agent_api_url(&self) -> String {
@@ -269,12 +263,12 @@ impl AppCore {
         )
     }
 
-    pub(super) fn ensure_personal_agent(&mut self) {
+    pub(super) fn ensure_agent(&mut self) {
         if !self.is_logged_in() {
             self.toast("Please log in first");
             return;
         }
-        if self.state.busy.starting_personal_agent {
+        if self.state.busy.starting_agent {
             return;
         }
         if !self.network_enabled() {
@@ -283,9 +277,9 @@ impl AppCore {
         }
 
         // Drop stale completed handles before starting a new flow.
-        if let Some(handle) = self.personal_agent_flow_task.take() {
+        if let Some(handle) = self.agent_flow_task.take() {
             if !handle.is_finished() {
-                self.personal_agent_flow_task = Some(handle);
+                self.agent_flow_task = Some(handle);
                 return;
             }
         }
@@ -296,7 +290,7 @@ impl AppCore {
                 return;
             };
             let Some(local_keys) = sess.local_keys.clone() else {
-                self.toast("Personal agent requires local key signer");
+                self.toast("Agent requires local key signer");
                 return;
             };
             (
@@ -307,9 +301,9 @@ impl AppCore {
             )
         };
 
-        self.personal_agent_flow_token = self.personal_agent_flow_token.wrapping_add(1);
-        let flow_token = self.personal_agent_flow_token;
-        self.set_busy(|b| b.starting_personal_agent = true);
+        self.agent_flow_token = self.agent_flow_token.wrapping_add(1);
+        let flow_token = self.agent_flow_token;
+        self.set_busy(|b| b.starting_agent = true);
 
         let handle = self.runtime.spawn(async move {
             let event = match run_agent_flow(client, keys, base_url).await {
@@ -326,7 +320,7 @@ impl AppCore {
             };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
         });
-        self.personal_agent_flow_task = Some(handle);
+        self.agent_flow_task = Some(handle);
     }
 
     pub(super) fn handle_agent_flow_completed(
@@ -335,29 +329,29 @@ impl AppCore {
         agent_id: Option<String>,
         error: Option<String>,
     ) {
-        if flow_token != self.personal_agent_flow_token {
+        if flow_token != self.agent_flow_token {
             return;
         }
-        self.personal_agent_flow_task = None;
+        self.agent_flow_task = None;
 
         if !self.is_logged_in() {
-            self.set_busy(|b| b.starting_personal_agent = false);
+            self.set_busy(|b| b.starting_agent = false);
             return;
         }
 
         if let Some(agent_id) = agent_id {
             if let Err(message) = self.open_or_create_direct_chat_for_agent(&agent_id) {
-                self.set_busy(|b| b.starting_personal_agent = false);
+                self.set_busy(|b| b.starting_agent = false);
                 self.toast(message);
             }
             return;
         }
 
-        self.set_busy(|b| b.starting_personal_agent = false);
+        self.set_busy(|b| b.starting_agent = false);
         if let Some(message) = error {
             self.toast(message);
         } else {
-            self.toast("Personal agent flow failed");
+            self.toast("Agent flow failed");
         }
     }
 
@@ -366,7 +360,7 @@ impl AppCore {
             .trim()
             .to_ascii_lowercase();
         if normalized.is_empty() || !crate::is_valid_peer_key(&normalized) {
-            return Err("Personal agent returned an invalid identity".to_string());
+            return Err("Agent returned an invalid identity".to_string());
         }
 
         if let Some(chat_id) = self.existing_direct_chat_for_peer(&normalized) {
@@ -375,11 +369,11 @@ impl AppCore {
             self.unread_counts.insert(chat_id.clone(), 0);
             self.refresh_chat_list_from_storage();
             self.emit_router();
-            self.set_busy(|b| b.starting_personal_agent = false);
+            self.set_busy(|b| b.starting_agent = false);
             return Ok(());
         }
 
-        self.set_busy(|b| b.starting_personal_agent = false);
+        self.set_busy(|b| b.starting_agent = false);
         self.handle_action(AppAction::CreateChat {
             peer_npub: normalized,
         });

@@ -1,13 +1,13 @@
 ## Spec
 
 Why this is being done:
-We need a fast internal checkpoint for the 1-click personal agent flow before opening to external users.
+We need a fast internal checkpoint for the 1-click agent flow before opening to external users.
 
 Decision update (2026-03-04):
 Restic backup setup is explicitly deferred and is non-blocking for current dogfood/prod validation.
 
 Intent and expected outcome:
-Justin, Ben, and Paul can each create exactly one long-lived personal agent VM from the app, chat with it over Marmot, and keep state across restart/recovery.
+Justin, Ben, and Paul can each create exactly one long-lived agent VM from the app, chat with it over Marmot, and keep state across restart/recovery.
 
 Exact build target (what will exist when done):
 1. App-facing control endpoints:

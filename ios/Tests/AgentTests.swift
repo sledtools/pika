@@ -1,19 +1,19 @@
 import XCTest
 @testable import Pika
 
-final class AgentDogfoodTests: XCTestCase {
-    func testDogfoodEligibilityRequiresLocalNsecLogin() {
+final class AgentTests: XCTestCase {
+    func testAgentEligibilityRequiresLocalNsecLogin() {
         let npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq6jv4kk"
 
         XCTAssertTrue(
-            isDogfoodAgentEligible(
+            isAgentEligible(
                 npub: npub,
                 auth: .loggedIn(npub: npub, pubkey: String(repeating: "a", count: 64), mode: .localNsec)
             )
         )
 
         XCTAssertFalse(
-            isDogfoodAgentEligible(
+            isAgentEligible(
                 npub: npub,
                 auth: .loggedIn(
                     npub: npub,
@@ -24,7 +24,7 @@ final class AgentDogfoodTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            isDogfoodAgentEligible(
+            isAgentEligible(
                 npub: npub,
                 auth: .loggedIn(
                     npub: npub,
@@ -34,18 +34,18 @@ final class AgentDogfoodTests: XCTestCase {
             )
         )
 
-        XCTAssertFalse(isDogfoodAgentEligible(npub: nil, auth: .loggedOut))
-        XCTAssertFalse(isDogfoodAgentEligible(npub: "   ", auth: .loggedOut))
+        XCTAssertFalse(isAgentEligible(npub: nil, auth: .loggedOut))
+        XCTAssertFalse(isAgentEligible(npub: "   ", auth: .loggedOut))
     }
 
-    func testDogfoodButtonStateReflectsBusyFlag() {
+    func testAgentButtonStateReflectsBusyFlag() {
         XCTAssertEqual(
-            makeDogfoodAgentButtonState(isBusy: false),
-            DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false)
+            makeAgentButtonState(isBusy: false),
+            AgentButtonState(title: "Start Agent", isBusy: false)
         )
         XCTAssertEqual(
-            makeDogfoodAgentButtonState(isBusy: true),
-            DogfoodAgentButtonState(title: "Starting Personal Agent...", isBusy: true)
+            makeAgentButtonState(isBusy: true),
+            AgentButtonState(title: "Starting Agent...", isBusy: true)
         )
     }
 }

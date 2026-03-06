@@ -7,7 +7,7 @@ read_when:
 
 # MicroVM v1 App API Contract
 
-This document freezes the dogfood v1 app-facing contract for personal agents.
+This document freezes the dogfood v1 app-facing contract for agents.
 
 ## Endpoints
 

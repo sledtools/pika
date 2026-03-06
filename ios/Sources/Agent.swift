@@ -1,6 +1,6 @@
 import Foundation
 
-func isDogfoodAgentEligible(npub: String?, auth: AuthState) -> Bool {
+func isAgentEligible(npub: String?, auth: AuthState) -> Bool {
     guard let normalized = npub?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
           !normalized.isEmpty else {
         return false
@@ -17,9 +17,9 @@ func isDogfoodAgentEligible(npub: String?, auth: AuthState) -> Bool {
     }
 }
 
-func makeDogfoodAgentButtonState(isBusy: Bool) -> DogfoodAgentButtonState {
+func makeAgentButtonState(isBusy: Bool) -> AgentButtonState {
     if isBusy {
-        return DogfoodAgentButtonState(title: "Starting Personal Agent...", isBusy: true)
+        return AgentButtonState(title: "Starting Agent...", isBusy: true)
     }
-    return DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false)
+    return AgentButtonState(title: "Start Agent", isBusy: false)
 }

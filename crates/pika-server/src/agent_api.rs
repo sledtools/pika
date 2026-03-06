@@ -427,7 +427,6 @@ pub async fn ensure_agent(
         vm_id = %provisioned_vm.id,
         vm_status = %provisioned_vm.status,
         phase = %next_phase,
-        phase_timings_ms = ?provisioned_vm.phase_timings_ms,
         owner_npub = %requester.owner_npub,
         "provisioned agent microvm"
     );
@@ -561,7 +560,6 @@ pub async fn recover_my_agent(
         vm_id = %recovered.id,
         vm_status = %recovered.status,
         phase = %next_phase,
-        phase_timings_ms = ?recovered.phase_timings_ms,
         owner_npub = %requester.owner_npub,
         "recovered agent microvm"
     );

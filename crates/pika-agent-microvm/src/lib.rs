@@ -8,12 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub const DEFAULT_SPAWNER_URL: &str = "http://127.0.0.1:8080";
-pub const DEFAULT_FLAKE_REF: &str = "github:sledtools/pika";
-pub const DEFAULT_DEV_SHELL: &str = "default";
-pub const DEFAULT_CPU: u32 = 1;
-pub const DEFAULT_MEMORY_MB: u32 = 1024;
-pub const DEFAULT_TTL_SECONDS: u64 = 7200;
-pub const DEFAULT_SPAWN_VARIANT: &str = "prebuilt-cow";
 
 pub const AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
 pub const AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
@@ -29,23 +23,11 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
     pub spawner_url: String,
-    pub spawn_variant: String,
-    pub flake_ref: String,
-    pub dev_shell: String,
-    pub cpu: u32,
-    pub memory_mb: u32,
-    pub ttl_seconds: u64,
     pub keep: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CreateVmRequest {
-    pub flake_ref: Option<String>,
-    pub dev_shell: Option<String>,
-    pub cpu: Option<u32>,
-    pub memory_mb: Option<u32>,
-    pub ttl_seconds: Option<u64>,
-    pub spawn_variant: Option<String>,
     pub guest_autostart: Option<GuestAutostartRequest>,
 }
 
@@ -59,10 +41,7 @@ pub struct GuestAutostartRequest {
 #[derive(Debug, Deserialize)]
 pub struct VmResponse {
     pub id: String,
-    pub ip: String,
     pub status: String,
-    #[serde(default)]
-    pub phase_timings_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,12 +261,6 @@ fn upstream_error_message(
 
 pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
     params.spawner_url.is_some()
-        || params.spawn_variant.is_some()
-        || params.flake_ref.is_some()
-        || params.dev_shell.is_some()
-        || params.cpu.is_some()
-        || params.memory_mb.is_some()
-        || params.ttl_seconds.is_some()
 }
 
 pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMicrovmParams {
@@ -299,36 +272,12 @@ pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMi
             .filter(|s| !s.is_empty())
             .unwrap_or(DEFAULT_SPAWNER_URL)
             .to_string(),
-        spawn_variant: params
-            .spawn_variant
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_SPAWN_VARIANT)
-            .to_string(),
-        flake_ref: params
-            .flake_ref
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_FLAKE_REF)
-            .to_string(),
-        dev_shell: params
-            .dev_shell
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_DEV_SHELL)
-            .to_string(),
-        cpu: params.cpu.unwrap_or(DEFAULT_CPU),
-        memory_mb: params.memory_mb.unwrap_or(DEFAULT_MEMORY_MB),
-        ttl_seconds: params.ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS),
         keep,
     }
 }
 
 pub fn build_create_vm_request(
-    resolved: &ResolvedMicrovmParams,
+    _resolved: &ResolvedMicrovmParams,
     owner_pubkey: &PublicKey,
     relay_urls: &[String],
     bot_secret_hex: &str,
@@ -362,12 +311,6 @@ pub fn build_create_vm_request(
     );
 
     CreateVmRequest {
-        flake_ref: Some(resolved.flake_ref.clone()),
-        dev_shell: Some(resolved.dev_shell.clone()),
-        cpu: Some(resolved.cpu),
-        memory_mb: Some(resolved.memory_mb),
-        ttl_seconds: Some(resolved.ttl_seconds),
-        spawn_variant: Some(resolved.spawn_variant.clone()),
         guest_autostart: Some(GuestAutostartRequest {
             command: AUTOSTART_COMMAND.to_string(),
             env,
@@ -832,33 +775,15 @@ mod tests {
     fn resolve_params_applies_defaults_and_overrides() {
         let defaults = resolve_params(&MicrovmProvisionParams::default(), false);
         assert_eq!(defaults.spawner_url, DEFAULT_SPAWNER_URL);
-        assert_eq!(defaults.spawn_variant, DEFAULT_SPAWN_VARIANT);
-        assert_eq!(defaults.flake_ref, DEFAULT_FLAKE_REF);
-        assert_eq!(defaults.dev_shell, DEFAULT_DEV_SHELL);
-        assert_eq!(defaults.cpu, DEFAULT_CPU);
-        assert_eq!(defaults.memory_mb, DEFAULT_MEMORY_MB);
-        assert_eq!(defaults.ttl_seconds, DEFAULT_TTL_SECONDS);
         assert!(!defaults.keep);
 
         let overridden = resolve_params(
             &MicrovmProvisionParams {
                 spawner_url: Some("http://10.0.0.5:8080".to_string()),
-                spawn_variant: Some("prebuilt".to_string()),
-                flake_ref: Some(".#nixpi".to_string()),
-                dev_shell: Some("dev".to_string()),
-                cpu: Some(2),
-                memory_mb: Some(2048),
-                ttl_seconds: Some(600),
             },
             true,
         );
         assert_eq!(overridden.spawner_url, "http://10.0.0.5:8080");
-        assert_eq!(overridden.spawn_variant, "prebuilt");
-        assert_eq!(overridden.flake_ref, ".#nixpi");
-        assert_eq!(overridden.dev_shell, "dev");
-        assert_eq!(overridden.cpu, 2);
-        assert_eq!(overridden.memory_mb, 2048);
-        assert_eq!(overridden.ttl_seconds, 600);
         assert!(overridden.keep);
     }
 
@@ -879,7 +804,6 @@ mod tests {
         );
         let value = serde_json::to_value(req).expect("serialize create vm request");
 
-        assert_eq!(value["spawn_variant"], "prebuilt-cow");
         assert_eq!(value["guest_autostart"]["command"], AUTOSTART_COMMAND);
         assert_eq!(
             value["guest_autostart"]["env"]["PIKA_OWNER_PUBKEY"],
@@ -931,25 +855,17 @@ mod tests {
     fn microvm_params_provided_detects_presence() {
         assert!(!microvm_params_provided(&MicrovmProvisionParams::default()));
         assert!(microvm_params_provided(&MicrovmProvisionParams {
-            ttl_seconds: Some(123),
+            spawner_url: Some("http://127.0.0.1:8081".to_string()),
             ..MicrovmProvisionParams::default()
         }));
     }
 
     #[tokio::test]
     async fn create_vm_contract_request_shape() {
-        let (base_url, rx) = spawn_one_shot_server(
-            "200 OK",
-            r#"{"id":"vm-123","ip":"192.168.0.10","status":"starting","phase_timings_ms":{"service_start_ms":17}}"#,
-        );
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-123","status":"starting"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
-            flake_ref: Some(".#nixpi".to_string()),
-            dev_shell: Some("default".to_string()),
-            cpu: Some(2),
-            memory_mb: Some(1024),
-            ttl_seconds: Some(600),
-            spawn_variant: Some("prebuilt-cow".to_string()),
             guest_autostart: Some(GuestAutostartRequest {
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "pubkey123".to_string())]),
@@ -962,9 +878,7 @@ mod tests {
             .await
             .expect("create vm succeeds");
         assert_eq!(vm.id, "vm-123");
-        assert_eq!(vm.ip, "192.168.0.10");
         assert_eq!(vm.status, "starting");
-        assert_eq!(vm.phase_timings_ms.get("service_start_ms"), Some(&17));
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -978,12 +892,6 @@ mod tests {
 
         let json: serde_json::Value =
             serde_json::from_str(&captured.body).expect("parse json body");
-        assert_eq!(json["flake_ref"], ".#nixpi");
-        assert_eq!(json["dev_shell"], "default");
-        assert_eq!(json["cpu"], 2);
-        assert_eq!(json["memory_mb"], 1024);
-        assert_eq!(json["ttl_seconds"], 600);
-        assert_eq!(json["spawn_variant"], "prebuilt-cow");
         assert_eq!(
             json["guest_autostart"]["command"],
             "/workspace/pika-agent/start-agent.sh"
@@ -1039,10 +947,8 @@ mod tests {
 
     #[tokio::test]
     async fn recover_vm_contract_request_shape() {
-        let (base_url, rx) = spawn_one_shot_server(
-            "200 OK",
-            r#"{"id":"vm-recover-1","ip":"192.168.0.11","status":"running","phase_timings_ms":{"recover_total_ms":23}}"#,
-        );
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","status":"running"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
 
         let recovered = client
@@ -1050,12 +956,7 @@ mod tests {
             .await
             .expect("recover vm succeeds");
         assert_eq!(recovered.id, "vm-recover-1");
-        assert_eq!(recovered.ip, "192.168.0.11");
         assert_eq!(recovered.status, "running");
-        assert_eq!(
-            recovered.phase_timings_ms.get("recover_total_ms"),
-            Some(&23)
-        );
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -1075,12 +976,6 @@ mod tests {
             spawn_one_shot_server("503 Service Unavailable", "spawner down\nwith extra detail");
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
-            flake_ref: None,
-            dev_shell: None,
-            cpu: None,
-            memory_mb: None,
-            ttl_seconds: None,
-            spawn_variant: None,
             guest_autostart: None,
         };
 
@@ -1141,17 +1036,9 @@ mod tests {
     fn resolve_params_trims_whitespace_and_ignores_empty() {
         let params = MicrovmProvisionParams {
             spawner_url: Some("  ".to_string()),
-            spawn_variant: Some("  prebuilt  ".to_string()),
-            flake_ref: Some("".to_string()),
-            dev_shell: None,
-            cpu: None,
-            memory_mb: None,
-            ttl_seconds: None,
         };
         let resolved = resolve_params(&params, false);
         assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);
-        assert_eq!(resolved.spawn_variant, "prebuilt");
-        assert_eq!(resolved.flake_ref, DEFAULT_FLAKE_REF);
     }
 
     #[test]

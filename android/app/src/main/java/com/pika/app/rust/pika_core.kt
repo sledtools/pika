@@ -738,6 +738,8 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_pika_core_checksum_func_build_nip98_authorization_header(
+    ): Short
     external fun uniffi_pika_core_checksum_func_is_valid_peer_key(
     ): Short
     external fun uniffi_pika_core_checksum_func_normalize_peer_key(
@@ -819,6 +821,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_pika_core_fn_init_callback_vtable_externalsignerbridge(`vtable`: UniffiVTableCallbackInterfaceExternalSignerBridge,
     ): Unit
+    external fun uniffi_pika_core_fn_func_build_nip98_authorization_header(`nsec`: RustBuffer.ByValue,`method`: RustBuffer.ByValue,`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_pika_core_fn_func_is_valid_peer_key(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     external fun uniffi_pika_core_fn_func_normalize_peer_key(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -942,6 +946,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_pika_core_checksum_func_build_nip98_authorization_header() != 13108.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_pika_core_checksum_func_is_valid_peer_key() != 5026.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1863,6 +1870,8 @@ data class BusyState (
     , 
     var `creatingChat`: kotlin.Boolean
     , 
+    var `startingPersonalAgent`: kotlin.Boolean
+    , 
     var `fetchingFollowList`: kotlin.Boolean
     
 ){
@@ -1884,6 +1893,7 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -1891,6 +1901,7 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.allocationSize(value.`creatingAccount`) +
             FfiConverterBoolean.allocationSize(value.`loggingIn`) +
             FfiConverterBoolean.allocationSize(value.`creatingChat`) +
+            FfiConverterBoolean.allocationSize(value.`startingPersonalAgent`) +
             FfiConverterBoolean.allocationSize(value.`fetchingFollowList`)
     )
 
@@ -1898,6 +1909,7 @@ public object FfiConverterTypeBusyState: FfiConverterRustBuffer<BusyState> {
             FfiConverterBoolean.write(value.`creatingAccount`, buf)
             FfiConverterBoolean.write(value.`loggingIn`, buf)
             FfiConverterBoolean.write(value.`creatingChat`, buf)
+            FfiConverterBoolean.write(value.`startingPersonalAgent`, buf)
             FfiConverterBoolean.write(value.`fetchingFollowList`, buf)
     }
 }
@@ -3656,6 +3668,9 @@ sealed class AppAction {
         companion object
     }
     
+    object EnsurePersonalAgent : AppAction()
+    
+    
 
     
 
@@ -3851,6 +3866,7 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             63 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
                 )
+            64 -> AppAction.EnsurePersonalAgent
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4309,6 +4325,12 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 + FfiConverterString.allocationSize(value.`pubkey`)
             )
         }
+        is AppAction.EnsurePersonalAgent -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: AppAction, buf: ByteBuffer) {
@@ -4638,6 +4660,10 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             is AppAction.UnfollowUser -> {
                 buf.putInt(63)
                 FfiConverterString.write(value.`pubkey`, buf)
+                Unit
+            }
+            is AppAction.EnsurePersonalAgent -> {
+                buf.putInt(64)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6693,7 +6719,17 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
             FfiConverterString.write(v, buf)
         }
     }
-} fun `isValidPeerKey`(`input`: kotlin.String): kotlin.Boolean {
+} fun `buildNip98AuthorizationHeader`(`nsec`: kotlin.String, `method`: kotlin.String, `url`: kotlin.String): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_pika_core_fn_func_build_nip98_authorization_header(
+    
+        FfiConverterString.lower(`nsec`),FfiConverterString.lower(`method`),FfiConverterString.lower(`url`),_status)
+}
+    )
+    }
+    
+ fun `isValidPeerKey`(`input`: kotlin.String): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_pika_core_fn_func_is_valid_peer_key(
@@ -6713,5 +6749,3 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     )
     }
     
-
-

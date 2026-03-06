@@ -47,18 +47,13 @@ info:
     @echo "Agent demos"
     @echo "  Local backend (postgres + relay + server):"
     @echo "    just pikahut-up"
-    @echo "  Fly demo (against local backend):"
-    @echo "    just agent-fly-local"
-    @echo "  Fly demo (against deployed backend):"
-    @echo "    just agent-fly"
-    @echo "  MicroVM demo:"
+    @echo "  Agent HTTP demo:"
     @echo "    just agent-microvm"
-    @echo "  MicroVM tunnel (required unless local spawner is running):"
-    @echo "    just agent-microvm-tunnel"
-    @echo "  Unified pikachat wrapper (for provider/control env defaults):"
+    @echo "  Agent chat demo (ensure/reuse + send + listen):"
+    @echo "    just agent-microvm-chat \"hello\""
+    @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
-    @echo "    just cli agent new --provider fly"
-    @echo "    just cli agent new --provider microvm"
+    @echo "    just cli agent new --nsec <nsec>"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -269,13 +264,15 @@ pre-merge-pikachat:
     just openclaw-pikachat-deterministic
     @echo "pre-merge-pikachat complete"
 
-# Deterministic provider control-plane contracts (mocked Fly + mocked MicroVM spawner).
+# Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
 pre-merge-agent-contracts:
-    cargo test -p pikachat fly_machines::tests
     cargo test -p pika-agent-microvm
-    cargo test -p pika-agent-control-plane
-    cargo test -p pika-agent-protocol
-    cargo test -p pika-server -- agent_control::tests agent_clients::
+    cargo test -p pika-server -- agent_api::tests
+    cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
+    cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
     @echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.
@@ -833,20 +830,6 @@ pikahut-up:
 pikahut:
     mprocs
 
-# Run agent-fly against local backend (requires `just pikahut-up` in another terminal).
-agent-fly-local *ARGS="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    eval "$(cargo run -q -p pikahut -- env)"
-    if [ ! -f .env ]; then
-      echo "error: missing .env in repo root"
-      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"
-      exit 1
-    fi
-    set -a; source .env; set +a
-    export PIKA_AGENT_CONTROL_SERVER_PUBKEY RELAY_EU RELAY_US
-    just agent-fly {{ ARGS }}
-
 # ── pikachat (Pika messaging CLI) ───────────────────────────────────────────
 
 # Build pikachat (debug).
@@ -857,7 +840,7 @@ cli-build:
 cli-release:
     cargo build -p pikachat --release
 
-# Run pikachat with shared provider/control-plane defaults; forwards args verbatim.
+# Run pikachat with shared local-env defaults; forwards args verbatim.
 cli *ARGS="":
     ./scripts/pikachat-cli.sh {{ ARGS }}
 
@@ -877,24 +860,7 @@ cli-smoke:
 cli-smoke-media:
     cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 
-# Run `pikachat agent new --provider fly` with interactive chat (loads .env).
-# Pass --json for non-interactive, --keep to skip teardown.
-
-# Override relays: RELAY_EU=... RELAY_US=... just agent-fly
-agent-fly *ARGS="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -f .env ]; then
-      echo "error: missing .env in repo root"
-      echo "hint: add FLY_API_TOKEN and ANTHROPIC_API_KEY to .env"
-      exit 1
-    fi
-    set -a; source .env; set +a
-    RELAY_EU="${RELAY_EU:-wss://eu.nostr.pikachat.org}"
-    RELAY_US="${RELAY_US:-wss://us-east.nostr.pikachat.org}"
-    just cli --relay "$RELAY_EU" --relay "$RELAY_US" agent new {{ ARGS }}
-
-# Run the MicroVM provider demo (`pikachat agent new --provider microvm`).
+# Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
 agent-microvm *ARGS="":
     set -euo pipefail; \
     if [ -f .env ]; then \
@@ -904,29 +870,13 @@ agent-microvm *ARGS="":
     fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
+# Ensure/reuse personal agent, send one message, then optionally listen for reply.
+agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
+    ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
+
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel
-
-# Deploy the pika-bot Docker image to Fly.
-deploy-bot:
-    fly deploy -c fly.pika-bot.toml
-
-# Deterministic PTY replay smoke test over Fly + MoQ (non-interactive).
-
-# Override relays: RELAY_EU=... RELAY_US=... just agent-replay-test
-agent-replay-test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p .tmp
-    export PI_BRIDGE_REPLAY_FILE="/app/fixtures/pty/replay-ui-smoke.json"
-    export PIKA_AGENT_TEST_MODE=1
-    export PIKA_AGENT_TEST_TIMEOUT_SEC=45
-    export PIKA_AGENT_MAX_PREFIX_DROP_BYTES=0
-    export PIKA_AGENT_MAX_SUFFIX_DROP_BYTES=0
-    export PIKA_AGENT_CAPTURE_STDOUT_PATH="$PWD/.tmp/agent-replay-capture.bin"
-    export PIKA_AGENT_EXPECT_REPLAY_FILE="$PWD/tools/agent-pty/fixtures/replay-ui-smoke.json"
-    just agent-fly
 
 # Run pika-news with auto-rebuild on source changes.
 news MAX_PRS="2":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local PTY client for pika-cli agent mode.
 
-Spawns a local marmotd daemon, invites the remote bot into a data call over MoQ,
+Spawns a local pikachat daemon, invites the remote bot into a data call over MoQ,
 then forwards local terminal input/output over encrypted call data frames.
 """
 
@@ -62,12 +62,10 @@ def env_float(name: str, default: float) -> float:
     return default
 
 
-MARMOTD_BIN = required_env("PIKA_AGENT_MARMOTD_BIN")
+PIKACHAT_BIN = required_env("PIKA_AGENT_PIKACHAT_BIN")
 STATE_DIR = required_env("PIKA_AGENT_STATE_DIR")
 GROUP_ID = required_env("PIKA_AGENT_GROUP_ID")
 BOT_PUBKEY = required_env("PIKA_AGENT_BOT_PUBKEY").lower()
-MACHINE_ID = os.environ.get("PIKA_AGENT_MACHINE_ID", "").strip()
-FLY_APP = os.environ.get("PIKA_AGENT_FLY_APP_NAME", "").strip()
 RELAYS = parse_json_list("PIKA_AGENT_RELAYS_JSON")
 MOQ_URLS = parse_json_list("PIKA_AGENT_MOQ_URLS_JSON")
 
@@ -175,7 +173,7 @@ def daemon_stderr_reader(proc: subprocess.Popen[str]) -> None:
 def spawn_daemon() -> subprocess.Popen[str]:
     env = os.environ.copy()
     env.setdefault("RUST_LOG", "error")
-    cmd = [MARMOTD_BIN, "daemon", "--state-dir", STATE_DIR, "--allow-pubkey", BOT_PUBKEY]
+    cmd = [PIKACHAT_BIN, "daemon", "--state-dir", STATE_DIR, "--allow-pubkey", BOT_PUBKEY]
     for relay in RELAYS:
         cmd.extend(["--relay", relay])
     proc = subprocess.Popen(
@@ -295,7 +293,7 @@ def wait_for_ready(timeout_sec: float = 15.0) -> None:
         msg_type = str(msg.get("type", ""))
         if msg_type == "ready":
             return
-    raise RuntimeError("timed out waiting for marmotd ready")
+    raise RuntimeError("timed out waiting for pikachat daemon ready")
 
 
 def next_event(timeout: float = 0.0) -> dict[str, Any] | None:
@@ -553,25 +551,14 @@ def shutdown() -> None:
 
 
 def maybe_stop_test_machine() -> None:
-    if not TEST_MODE:
-        return
-    if not MACHINE_ID or not FLY_APP:
-        return
-    tty_print(f"[agent] stopping machine {MACHINE_ID} in app {FLY_APP}...\n")
-    subprocess.run(
-        ["fly", "machine", "stop", MACHINE_ID, "-a", FLY_APP],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # Provider-specific machine lifecycle hooks were removed; keep a no-op for compatibility.
+    return
 
 
 def main() -> int:
     global daemon, daemon_stderr_thread
     tty_print("\n")
     tty_print("Launching PTY agent session...\n")
-    if MACHINE_ID and FLY_APP:
-        tty_print(f"machine: {MACHINE_ID}  app: {FLY_APP}\n")
     tty_print("MoQ candidates:\n")
     for url in MOQ_URLS:
         tty_print(f"  - {url}\n")

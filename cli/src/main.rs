@@ -9,28 +9,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use base64::Engine;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
-use pika_agent_control_plane::{
-    AgentControlCmdEnvelope, AgentControlCommand, AgentControlErrorEnvelope,
-    AgentControlResultEnvelope, AgentControlStatusEnvelope, AuthContext, CONTROL_CMD_KIND,
-    CONTROL_ERROR_KIND, CONTROL_RESULT_KIND, CONTROL_STATUS_KIND, GetRuntimeCommand,
-    ListRuntimesCommand, MicrovmProvisionParams, ProtocolKind, ProviderKind, ProvisionCommand,
-    RuntimeLifecyclePhase, TeardownCommand,
-};
-use pika_agent_microvm::microvm_params_provided;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-
-use crate::agent::harness::AgentProtocol;
 
 const CHANNELS_MANIFEST_JSON: &str = include_str!("../../config/channels.json");
 
@@ -380,7 +371,7 @@ If --output is omitted, the original filename from the sender is used.")]
         exec: Option<String>,
     },
 
-    /// Manage AI agents (`fly` or `microvm`)
+    /// Manage AI agents (HTTP control plane)
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
@@ -389,104 +380,64 @@ If --output is omitted, the original filename from the sender is used.")]
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Create a new ACP agent runtime
+    /// Ensure an agent exists for the configured Nostr signer
     New {
-        /// Agent name (default: agent-<random>)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Runtime provider (`fly` keeps existing behavior)
-        #[arg(long, value_enum, default_value_t = AgentProvider::Fly, env = "PIKA_AGENT_PROVIDER")]
-        provider: AgentProvider,
-
-        /// Target runtime class advertised by the server (optional routing hint)
-        #[arg(long, env = "PIKA_AGENT_RUNTIME_CLASS")]
-        runtime_class: Option<String>,
-
-        /// Deprecated: provisioning is ACP-only; `--brain` no longer changes behavior.
-        #[arg(long, hide = true)]
-        brain: Option<String>,
-
-        /// Print provision result as JSON and exit (no interactive chat)
-        #[arg(long)]
-        json: bool,
-
-        /// Keep runtime alive after CLI exit (skip auto-teardown)
-        #[arg(long)]
-        keep: bool,
-
         #[command(flatten)]
-        control: AgentControlArgs,
-
-        #[command(flatten)]
-        microvm: AgentNewMicrovmArgs,
+        http: AgentHttpArgs,
     },
 
-    /// List runtimes known to the control-plane server (filterable)
-    ListRuntimes {
-        /// Filter by provider
-        #[arg(long, value_enum)]
-        provider: Option<AgentProvider>,
-
-        /// Filter by protocol compatibility
-        #[arg(long, value_enum)]
-        protocol: Option<AgentProtocol>,
-
-        /// Filter by runtime lifecycle phase
-        #[arg(long, value_enum)]
-        phase: Option<AgentRuntimePhase>,
-
-        /// Filter by runtime class
-        #[arg(long)]
-        runtime_class: Option<String>,
-
-        /// Maximum number of runtimes to return
-        #[arg(long)]
-        limit: Option<usize>,
-
+    /// Fetch the current agent state for the configured Nostr signer
+    Me {
         #[command(flatten)]
-        control: AgentControlArgs,
+        http: AgentHttpArgs,
     },
 
-    /// Fetch one runtime descriptor by id
-    GetRuntime {
-        /// Runtime id from provision/list results
-        #[arg(long)]
-        runtime_id: String,
-
+    /// Ask the server to recover the current agent VM for the configured signer
+    Recover {
         #[command(flatten)]
-        control: AgentControlArgs,
+        http: AgentHttpArgs,
     },
 
-    /// Tear down a runtime by id
-    Teardown {
-        /// Runtime id to tear down
-        #[arg(long)]
-        runtime_id: String,
-
+    /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
+    Chat {
         #[command(flatten)]
-        control: AgentControlArgs,
+        http: AgentHttpArgs,
+
+        /// Message content to send to your personal agent
+        message: String,
+
+        /// Listen duration (seconds) after sending (0 disables listening)
+        #[arg(long, default_value_t = 120)]
+        listen_timeout: u64,
+
+        /// Max status poll attempts while waiting for ready
+        #[arg(long, default_value_t = 45)]
+        poll_attempts: u32,
+
+        /// Delay between status polls (seconds)
+        #[arg(long, default_value_t = 2)]
+        poll_delay_sec: u64,
+
+        /// Trigger recover after this many creating-state polls (0 disables)
+        #[arg(long, default_value_t = 20)]
+        recover_after_attempt: u32,
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentProvider {
-    Fly,
-    Microvm,
-}
+const DEFAULT_AGENT_API_BASE_URL: &str = "http://127.0.0.1:8080";
+const AGENT_API_ENSURE_PATH: &str = "/v1/agents/ensure";
+const AGENT_API_ME_PATH: &str = "/v1/agents/me";
+const AGENT_API_RECOVER_PATH: &str = "/v1/agents/me/recover";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentRuntimePhase {
-    Queued,
-    Provisioning,
-    Ready,
-    Failed,
-    Teardown,
-}
+#[derive(Clone, Debug, Args)]
+struct AgentHttpArgs {
+    /// Base URL for pika-server HTTP control plane
+    #[arg(long, env = "PIKA_AGENT_API_BASE_URL", default_value = DEFAULT_AGENT_API_BASE_URL)]
+    api_base_url: String,
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentControlMode {
-    Remote,
+    /// Nostr secret key (nsec1... or hex) used for NIP-98 request signing
+    #[arg(long, env = "PIKA_AGENT_API_NSEC")]
+    nsec: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -515,97 +466,6 @@ struct ChannelManifest {
 struct ChannelConfig {
     id: String,
     url_scheme: String,
-}
-
-#[derive(Clone, Debug, Args)]
-struct AgentControlArgs {
-    /// Provider control-plane mode (`remote` only; local provisioning is removed)
-    #[arg(long, value_enum, default_value_t = AgentControlMode::Remote, env = "PIKA_AGENT_CONTROL_MODE")]
-    control_mode: AgentControlMode,
-
-    /// Nostr pubkey (hex or npub) for the `pika-server` control-plane identity
-    #[arg(long, env = "PIKA_AGENT_CONTROL_SERVER_PUBKEY")]
-    control_server_pubkey: Option<String>,
-}
-
-#[derive(Clone, Debug, Args, Default)]
-struct AgentNewMicrovmArgs {
-    /// MicroVM spawner base URL
-    #[arg(long, env = "PIKA_MICROVM_SPAWNER_URL")]
-    spawner_url: Option<String>,
-
-    /// Spawn variant for vm-spawner
-    #[arg(long, value_enum)]
-    spawn_variant: Option<MicrovmSpawnVariant>,
-
-    /// Nix flake reference used by vm-spawner when building/running guest commands
-    #[arg(long)]
-    flake_ref: Option<String>,
-
-    /// Nix dev shell name used for guest command execution
-    #[arg(long)]
-    dev_shell: Option<String>,
-
-    /// vCPU count for the VM
-    #[arg(long)]
-    cpu: Option<u32>,
-
-    /// VM memory in MB
-    #[arg(long)]
-    memory_mb: Option<u32>,
-
-    /// VM time-to-live in seconds
-    #[arg(long)]
-    ttl_seconds: Option<u64>,
-}
-
-impl AgentNewMicrovmArgs {
-    fn provided_flag_names(&self) -> Vec<&'static str> {
-        let mut out = Vec::new();
-        if self.spawner_url.is_some() {
-            out.push("--spawner-url");
-        }
-        if self.spawn_variant.is_some() {
-            out.push("--spawn-variant");
-        }
-        if self.flake_ref.is_some() {
-            out.push("--flake-ref");
-        }
-        if self.dev_shell.is_some() {
-            out.push("--dev-shell");
-        }
-        if self.cpu.is_some() {
-            out.push("--cpu");
-        }
-        if self.memory_mb.is_some() {
-            out.push("--memory-mb");
-        }
-        if self.ttl_seconds.is_some() {
-            out.push("--ttl-seconds");
-        }
-        out
-    }
-
-    fn ensure_provider_compatible(&self, provider: AgentProvider) -> anyhow::Result<()> {
-        if provider == AgentProvider::Microvm {
-            return Ok(());
-        }
-        let flags = self.provided_flag_names();
-        if flags.is_empty() {
-            return Ok(());
-        }
-        anyhow::bail!(
-            "microvm options {} require --provider microvm",
-            flags.join(", ")
-        );
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum MicrovmSpawnVariant {
-    Prebuilt,
-    #[value(name = "prebuilt-cow")]
-    PrebuiltCow,
 }
 
 async fn handle_remote(cli: &Cli) -> anyhow::Result<()> {
@@ -835,54 +695,28 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Agent { cmd } => match cmd {
-            AgentCommand::New {
-                name,
-                provider,
-                runtime_class,
-                brain,
-                json,
-                keep,
-                control,
-                microvm,
+            AgentCommand::New { http } => cmd_agent_new(http).await,
+            AgentCommand::Me { http } => cmd_agent_me(http).await,
+            AgentCommand::Recover { http } => cmd_agent_recover(http).await,
+            AgentCommand::Chat {
+                http,
+                message,
+                listen_timeout,
+                poll_attempts,
+                poll_delay_sec,
+                recover_after_attempt,
             } => {
-                let request = AgentNewRequest {
-                    name: name.as_deref(),
-                    provider: *provider,
-                    runtime_class: runtime_class.as_deref(),
-                    brain: brain.as_deref(),
-                    json: *json,
-                    keep: *keep,
-                    microvm,
-                };
-                cmd_agent_new(&cli, control, request).await
-            }
-            AgentCommand::ListRuntimes {
-                provider,
-                protocol,
-                phase,
-                runtime_class,
-                limit,
-                control,
-            } => {
-                cmd_agent_list_runtimes(
+                cmd_agent_chat(
                     &cli,
-                    *provider,
-                    *protocol,
-                    *phase,
-                    runtime_class.as_deref(),
-                    *limit,
-                    control,
+                    http,
+                    message,
+                    *listen_timeout,
+                    *poll_attempts,
+                    *poll_delay_sec,
+                    *recover_after_attempt,
                 )
                 .await
             }
-            AgentCommand::GetRuntime {
-                runtime_id,
-                control,
-            } => cmd_agent_get_runtime(&cli, runtime_id, control).await,
-            AgentCommand::Teardown {
-                runtime_id,
-                control,
-            } => cmd_agent_teardown(&cli, runtime_id, control).await,
         },
     }
 }
@@ -1488,15 +1322,37 @@ async fn cmd_send(
                 // Auto-create a DM group.
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-
-                let peer_kp = relay_util::fetch_latest_key_package(
+                let peer_kp = match relay_util::fetch_latest_key_package(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
                     Duration::from_secs(10),
                 )
                 .await
-                .context("fetch peer key package — has the peer run `pikachat init`?")?;
+                {
+                    Ok(kp) => kp,
+                    Err(primary_err) => {
+                        // If kp relays are defaults, retry on active message relays.
+                        if cli.kp_relay.is_empty() && kp_relays != relays {
+                            relay_util::fetch_latest_key_package(
+                                &c,
+                                &peer_pubkey,
+                                &relays,
+                                Duration::from_secs(10),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "fetch peer key package failed on default kp relays and message relays; has the peer run `pikachat init`? primary={primary_err}"
+                                )
+                            })?
+                        } else {
+                            return Err(primary_err).context(
+                                "fetch peer key package — has the peer run `pikachat init`?",
+                            );
+                        }
+                    }
+                };
 
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
@@ -1668,14 +1524,36 @@ async fn cmd_send_hypernote(
             } else {
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-                let peer_kp = relay_util::fetch_latest_key_package(
+                let peer_kp = match relay_util::fetch_latest_key_package(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
                     Duration::from_secs(10),
                 )
                 .await
-                .context("fetch peer key package — has the peer run `pikachat init`?")?;
+                {
+                    Ok(kp) => kp,
+                    Err(primary_err) => {
+                        if cli.kp_relay.is_empty() && kp_relays != relays {
+                            relay_util::fetch_latest_key_package(
+                                &c,
+                                &peer_pubkey,
+                                &relays,
+                                Duration::from_secs(10),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "fetch peer key package failed on default kp relays and message relays; has the peer run `pikachat init`? primary={primary_err}"
+                                )
+                            })?
+                        } else {
+                            return Err(primary_err).context(
+                                "fetch peer key package — has the peer run `pikachat init`?",
+                            );
+                        }
+                    }
+                };
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),
@@ -1821,590 +1699,354 @@ async fn cmd_download_media(
     Ok(())
 }
 
-async fn cmd_agent_new(
-    cli: &Cli,
-    control: &AgentControlArgs,
-    request: AgentNewRequest<'_>,
-) -> anyhow::Result<()> {
-    validate_agent_new_request(request.provider, request.brain, request.microvm)?;
-    if control.control_mode != AgentControlMode::Remote {
-        anyhow::bail!("--control-mode remote is required; local provisioning has been removed");
-    }
-    cmd_agent_new_remote(cli, control, &request).await
-}
-
-struct AgentNewRequest<'a> {
-    name: Option<&'a str>,
-    provider: AgentProvider,
-    runtime_class: Option<&'a str>,
-    brain: Option<&'a str>,
-    json: bool,
-    keep: bool,
-    microvm: &'a AgentNewMicrovmArgs,
-}
-
-fn validate_agent_new_request(
-    provider: AgentProvider,
-    brain: Option<&str>,
-    microvm: &AgentNewMicrovmArgs,
-) -> anyhow::Result<()> {
-    if let Some(value) = brain.map(str::trim).filter(|v| !v.is_empty()) {
-        anyhow::bail!(
-            "--brain is no longer supported: provisioning is ACP-only. Remove --brain (received: {value})"
-        );
-    }
-    microvm.ensure_provider_compatible(provider)?;
+async fn cmd_agent_new(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let ensured = ensure_agent_idempotent(http).await?;
+    print(json!({
+        "operation": "ensure",
+        "created": ensured.created,
+        "agent": ensured.agent,
+    }));
     Ok(())
 }
 
-struct RemoteControlClient {
-    client: Client,
-    keys: Keys,
-    relays: Vec<RelayUrl>,
-    server_pubkey: PublicKey,
+async fn cmd_agent_me(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let agent = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+    print(json!({
+        "operation": "me",
+        "agent": agent,
+    }));
+    Ok(())
 }
 
-impl RemoteControlClient {
-    async fn connect(
-        keys: &Keys,
-        relay_urls: &[String],
-        server_pubkey: PublicKey,
-    ) -> anyhow::Result<Self> {
-        let relays = relay_util::parse_relay_urls(relay_urls)?;
-        let client = relay_util::connect_client(keys, relay_urls).await?;
-        Ok(Self {
-            client,
-            keys: keys.clone(),
-            relays,
-            server_pubkey,
-        })
-    }
-
-    async fn send_command(
-        &self,
-        command: AgentControlCommand,
-    ) -> anyhow::Result<AgentControlResultEnvelope> {
-        let request_id = new_control_request_id("agent-ctl");
-        let idempotency_key = new_control_request_id("idem");
-        let envelope = AgentControlCmdEnvelope::v1(
-            request_id.clone(),
-            idempotency_key,
-            command,
-            AuthContext {
-                acting_as_pubkey: Some(self.keys.public_key().to_hex()),
-            },
-        );
-
-        let status_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_STATUS_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-        let result_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_RESULT_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-        let error_sub = self
-            .client
-            .subscribe(
-                Filter::new()
-                    .author(self.server_pubkey)
-                    .kind(Kind::Custom(CONTROL_ERROR_KIND))
-                    .custom_tag(
-                        SingleLetterTag::lowercase(Alphabet::P),
-                        self.keys.public_key().to_hex(),
-                    )
-                    .since(Timestamp::now()),
-                None,
-            )
-            .await?;
-
-        let content = serde_json::to_string(&envelope).context("encode control command")?;
-        let encrypted = nostr_sdk::nostr::nips::nip44::encrypt(
-            self.keys.secret_key(),
-            &self.server_pubkey,
-            content,
-            nostr_sdk::nostr::nips::nip44::Version::V2,
-        )
-        .context("encrypt control command payload")?;
-        let cmd_event = EventBuilder::new(Kind::Custom(CONTROL_CMD_KIND), encrypted)
-            .tags([Tag::public_key(self.server_pubkey)])
-            .sign_with_keys(&self.keys)
-            .context("sign control command")?;
-        let mut publish_error = None;
-        for attempt in 1..=12 {
-            match relay_util::publish_and_confirm(
-                &self.client,
-                &self.relays,
-                &cmd_event,
-                "agent control cmd",
-            )
-            .await
-            {
-                Ok(()) => {
-                    publish_error = None;
-                    break;
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    if attempt < 12
-                        && (message.contains("relay not connected")
-                            || message.contains("timeout")
-                            || message.contains("Connection refused")
-                            || message.contains("no one was listening"))
-                    {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        continue;
-                    }
-                    publish_error = Some(err);
-                    break;
-                }
-            }
-        }
-        if let Some(err) = publish_error {
-            return Err(err);
-        }
-
-        let mut rx = self.client.notifications();
-        let timeout = Duration::from_secs(180);
-        let started = tokio::time::Instant::now();
-        let mut seen = HashSet::<EventId>::new();
-        loop {
-            if started.elapsed() > timeout {
-                self.client.unsubscribe_all().await;
-                anyhow::bail!("timed out waiting for remote control reply ({request_id})");
-            }
-
-            let notification = match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
-                Ok(Ok(notification)) => notification,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(_)) => {
-                    self.client.unsubscribe_all().await;
-                    anyhow::bail!("remote control notification channel closed");
-                }
-                Err(_) => continue,
-            };
-
-            let RelayPoolNotification::Event {
-                subscription_id,
-                event,
-                ..
-            } = notification
-            else {
-                continue;
-            };
-            if subscription_id != status_sub.val
-                && subscription_id != result_sub.val
-                && subscription_id != error_sub.val
-            {
-                continue;
-            }
-
-            let event = *event;
-            if !seen.insert(event.id) {
-                continue;
-            }
-            let decrypted = match nostr_sdk::nostr::nips::nip44::decrypt(
-                self.keys.secret_key(),
-                &self.server_pubkey,
-                event.content.as_str(),
-            ) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
-
-            if event.kind == Kind::Custom(CONTROL_STATUS_KIND) {
-                if let Ok(status) = serde_json::from_str::<AgentControlStatusEnvelope>(&decrypted)
-                    && status.request_id == request_id
-                {
-                    render_control_status(&status);
-                }
-                continue;
-            }
-
-            if event.kind == Kind::Custom(CONTROL_RESULT_KIND) {
-                if let Ok(result) = serde_json::from_str::<AgentControlResultEnvelope>(&decrypted)
-                    && result.request_id == request_id
-                {
-                    self.client.unsubscribe_all().await;
-                    return Ok(result);
-                }
-                continue;
-            }
-
-            if event.kind == Kind::Custom(CONTROL_ERROR_KIND)
-                && let Ok(err) = serde_json::from_str::<AgentControlErrorEnvelope>(&decrypted)
-                && err.request_id == request_id
-            {
-                self.client.unsubscribe_all().await;
-                let hint = err.hint.unwrap_or_default();
-                let detail = err.detail.unwrap_or_default();
-                anyhow::bail!("remote control error {}: {} {}", err.code, hint, detail);
-            }
-        }
-    }
+async fn cmd_agent_recover(http: &AgentHttpArgs) -> anyhow::Result<()> {
+    let agent = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await?;
+    print(json!({
+        "operation": "recover",
+        "agent": agent,
+    }));
+    Ok(())
 }
 
-fn render_control_status(status: &AgentControlStatusEnvelope) {
-    let phase = match status.phase {
-        RuntimeLifecyclePhase::Queued => "queued",
-        RuntimeLifecyclePhase::Provisioning => "provisioning",
-        RuntimeLifecyclePhase::Ready => "ready",
-        RuntimeLifecyclePhase::Failed => "failed",
-        RuntimeLifecyclePhase::Teardown => "teardown",
-    };
-    if let Some(msg) = &status.message {
-        eprintln!("[control] {phase}: {msg}");
-    } else {
-        eprintln!("[control] {phase}");
-    }
+#[derive(Debug)]
+struct EnsureAgentResult {
+    agent: serde_json::Value,
+    created: bool,
 }
 
-fn resolve_control_server_pubkey(control: &AgentControlArgs) -> anyhow::Result<PublicKey> {
-    let raw = control
-        .control_server_pubkey
-        .as_deref()
+async fn ensure_agent_idempotent(http: &AgentHttpArgs) -> anyhow::Result<EnsureAgentResult> {
+    let method = reqwest::Method::POST;
+    let (status, body) = call_agent_api_raw(http, method.clone(), AGENT_API_ENSURE_PATH).await?;
+    if status.is_success() {
+        return Ok(EnsureAgentResult {
+            agent: parse_agent_api_response_json(&body, AGENT_API_ENSURE_PATH)?,
+            created: true,
+        });
+    }
+
+    if status == reqwest::StatusCode::CONFLICT
+        && agent_api_error_code(&body).as_deref() == Some("agent_exists")
+    {
+        return Ok(EnsureAgentResult {
+            agent: call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?,
+            created: false,
+        });
+    }
+
+    Err(agent_api_http_error(
+        &method,
+        AGENT_API_ENSURE_PATH,
+        status,
+        &body,
+    ))
+}
+
+fn parse_agent_fields(agent: &serde_json::Value) -> anyhow::Result<(String, String)> {
+    let agent_id = agent
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
         .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            anyhow!(
-                "missing control server pubkey (use --control-server-pubkey or PIKA_AGENT_CONTROL_SERVER_PUBKEY)"
-            )
-        })?;
-    PublicKey::parse(raw).context("parse control server pubkey")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("agent response missing agent_id"))?
+        .to_string();
+    let state = agent
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("agent response missing state"))?
+        .to_string();
+    Ok((agent_id, state))
 }
 
-fn map_provider_kind(provider: AgentProvider) -> ProviderKind {
-    match provider {
-        AgentProvider::Fly => ProviderKind::Fly,
-        AgentProvider::Microvm => ProviderKind::Microvm,
-    }
-}
-
-fn map_protocol_kind(_protocol: AgentProtocol) -> ProtocolKind {
-    ProtocolKind::Acp
-}
-
-fn map_microvm_control_params(microvm: &AgentNewMicrovmArgs) -> Option<MicrovmProvisionParams> {
-    let spawn_variant = microvm.spawn_variant.map(|variant| match variant {
-        MicrovmSpawnVariant::Prebuilt => "prebuilt".to_string(),
-        MicrovmSpawnVariant::PrebuiltCow => "prebuilt-cow".to_string(),
-    });
-    let params = MicrovmProvisionParams {
-        spawner_url: microvm.spawner_url.clone(),
-        spawn_variant,
-        flake_ref: microvm.flake_ref.clone(),
-        dev_shell: microvm.dev_shell.clone(),
-        cpu: microvm.cpu,
-        memory_mb: microvm.memory_mb,
-        ttl_seconds: microvm.ttl_seconds,
-    };
-    if microvm_params_provided(&params) {
-        Some(params)
-    } else {
-        None
-    }
-}
-
-fn new_control_request_id(prefix: &str) -> String {
-    format!(
-        "{prefix}-{:08x}{:08x}",
-        rand::random::<u32>(),
-        rand::random::<u32>()
-    )
-}
-
-async fn cmd_agent_new_remote(
-    cli: &Cli,
-    control: &AgentControlArgs,
-    request: &AgentNewRequest<'_>,
+async fn send_to_agent_and_optionally_listen(
+    chat_cli: &Cli,
+    agent_npub: &str,
+    message: &str,
+    listen_timeout: u64,
 ) -> anyhow::Result<()> {
-    let name = request.name;
-    let provider = request.provider;
-    let runtime_class = request.runtime_class;
-    let json_mode = request.json;
-    let keep = request.keep;
-    let microvm = request.microvm;
+    cmd_send(
+        chat_cli,
+        None,
+        Some(agent_npub),
+        message,
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await?;
+    if listen_timeout > 0 {
+        cmd_listen(chat_cli, listen_timeout, 86400).await?;
+    }
+    Ok(())
+}
 
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let kp_relay_urls = resolve_kp_relays(cli);
-    let (keys, mdk) = open(cli)?;
-    eprintln!("Your pubkey: {}", keys.public_key().to_hex());
+fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Result<()> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("create state dir {}", state_dir.display()))?;
+    let identity_path = state_dir.join("identity.json");
+    let identity = mdk_util::IdentityFile {
+        secret_key_hex: keys.secret_key().to_secret_hex(),
+        public_key_hex: keys.public_key().to_hex(),
+    };
+    std::fs::write(
+        &identity_path,
+        format!("{}\n", serde_json::to_string_pretty(&identity)?),
+    )
+    .with_context(|| format!("write {}", identity_path.display()))?;
+    let _ = mdk_util::open_mdk(state_dir)?;
+    Ok(())
+}
 
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let provision_result = control_client
-        .send_command(AgentControlCommand::Provision(ProvisionCommand {
-            provider: map_provider_kind(provider),
-            protocol: map_protocol_kind(AgentProtocol::Acp),
-            name: name.map(str::to_string),
-            runtime_class: runtime_class
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
-            relay_urls: relay_urls.clone(),
-            keep,
-            bot_secret_key_hex: None,
-            microvm: if provider == AgentProvider::Microvm {
-                map_microvm_control_params(microvm)
-            } else {
-                None
-            },
-        }))
-        .await?;
-    let runtime = provision_result.runtime;
-    let runtime_id = runtime.runtime_id.clone();
+async fn cmd_agent_chat(
+    cli: &Cli,
+    http: &AgentHttpArgs,
+    message: &str,
+    listen_timeout: u64,
+    poll_attempts: u32,
+    poll_delay_sec: u64,
+    recover_after_attempt: u32,
+) -> anyhow::Result<()> {
+    let message = message.trim();
+    anyhow::ensure!(!message.is_empty(), "message cannot be empty");
+    anyhow::ensure!(poll_attempts > 0, "--poll-attempts must be > 0");
+    let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
+    let owner_keys = Keys::parse(&nsec).context("parse agent api nsec")?;
+    let owner_chat_state_dir = cli
+        .state_dir
+        .join("agent-chat")
+        .join(owner_keys.public_key().to_hex());
+    ensure_identity_for_state_dir(&owner_chat_state_dir, &owner_keys)?;
+    let chat_cli = Cli {
+        state_dir: owner_chat_state_dir,
+        relay: cli.relay.clone(),
+        kp_relay: cli.kp_relay.clone(),
+        remote: false,
+        cmd: Command::Identity,
+    };
 
-    // --json mode: print provision result and exit (no interactive chat, no teardown)
-    if json_mode {
-        control_client.client.unsubscribe_all().await;
-        control_client.client.shutdown().await;
-        print(json!({
-            "provider": match provider {
-                AgentProvider::Fly => "fly",
-                AgentProvider::Microvm => "microvm",
-            },
-            "protocol": "acp",
-            "runtime_id": runtime.runtime_id,
-            "runtime_class": runtime.runtime_class,
-            "runtime": runtime,
-            "payload": provision_result.payload,
-        }));
+    let ensured = ensure_agent_idempotent(http).await?;
+    let mut tried_optimistic_send = false;
+    let mut recovered_stalled_creating = false;
+    let poll_delay = Duration::from_secs(poll_delay_sec);
+    let mut last_state = String::new();
+    let mut last_agent_npub = String::new();
+
+    for attempt in 1..=poll_attempts {
+        let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+        let (agent_npub, state) = parse_agent_fields(&me)?;
+        last_state = state.clone();
+        last_agent_npub = agent_npub.clone();
+
+        if state == "ready" {
+            return send_to_agent_and_optionally_listen(
+                &chat_cli,
+                &agent_npub,
+                message,
+                listen_timeout,
+            )
+            .await;
+        }
+
+        if state == "creating" && !ensured.created && !tried_optimistic_send {
+            if send_to_agent_and_optionally_listen(&chat_cli, &agent_npub, message, listen_timeout)
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            tried_optimistic_send = true;
+            eprintln!("optimistic send failed; continuing with recover/poll");
+        }
+
+        if state == "error" {
+            eprintln!("agent in error state; requesting recover");
+            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+        } else if state == "creating"
+            && !recovered_stalled_creating
+            && recover_after_attempt > 0
+            && attempt >= recover_after_attempt
+        {
+            eprintln!("agent still creating after {attempt} checks; requesting recover");
+            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+            recovered_stalled_creating = true;
+        }
+
+        if attempt < poll_attempts {
+            tokio::time::sleep(poll_delay).await;
+        }
+    }
+
+    anyhow::ensure!(
+        !last_agent_npub.is_empty(),
+        "timed out waiting for personal agent"
+    );
+    eprintln!(
+        "agent did not become ready (state={}); trying best-effort send",
+        last_state
+    );
+    if send_to_agent_and_optionally_listen(&chat_cli, &last_agent_npub, message, listen_timeout)
+        .await
+        .is_ok()
+    {
         return Ok(());
     }
-
-    // Interactive mode: setup chat, run loop, teardown on exit or setup failure.
-    // All fallible steps after provisioning are wrapped so teardown always runs.
-    let session_result = run_interactive_session(
-        &keys,
-        &mdk,
-        &control_client,
-        &relay_urls,
-        &kp_relay_urls,
-        &runtime,
-    )
-    .await;
-
-    // Best-effort teardown unless --keep (runs on success, chat exit, AND setup failures)
-    if keep {
-        eprintln!("\n--keep: runtime {runtime_id} left alive.");
-    } else {
-        eprintln!("\nTearing down runtime {runtime_id}...");
-        match control_client
-            .send_command(AgentControlCommand::Teardown(TeardownCommand {
-                runtime_id: runtime_id.clone(),
-            }))
-            .await
-        {
-            Ok(_) => eprintln!("Runtime {runtime_id} torn down."),
-            Err(err) => {
-                eprintln!("Teardown failed: {err:#}");
-                eprintln!("Manual cleanup: pikachat agent teardown --runtime-id {runtime_id}");
-            }
-        }
-    }
-
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-
-    session_result
-}
-
-async fn run_interactive_session(
-    keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
-    control_client: &RemoteControlClient,
-    relay_urls: &[String],
-    kp_relay_urls: &[String],
-    runtime: &pika_agent_control_plane::RuntimeDescriptor,
-) -> anyhow::Result<()> {
-    let bot_pubkey_hex = runtime
-        .bot_pubkey
-        .as_deref()
-        .ok_or_else(|| anyhow!("runtime did not return a bot_pubkey; cannot open chat"))?;
-    let bot_pubkey =
-        PublicKey::parse(bot_pubkey_hex).context("parse bot pubkey from provision result")?;
-
-    eprintln!(
-        "Runtime {} provisioned. Connecting to chat...",
-        runtime.runtime_id
+    anyhow::bail!(
+        "agent chat failed: state remained {} and send failed; try `pikachat agent recover --api-base-url {} --nsec <nsec>`",
+        if last_state.is_empty() {
+            "unknown"
+        } else {
+            &last_state
+        },
+        http.api_base_url
     );
-
-    let relays = relay_util::parse_relay_urls(relay_urls)?;
-    let kp_relays = relay_util::parse_relay_urls(kp_relay_urls)?;
-
-    let kp_plan = agent::provider::KeyPackageWaitPlan {
-        progress_message: "Waiting for bot key package...",
-        timeout: Duration::from_secs(120),
-        fetch_timeout: Duration::from_secs(5),
-        retry_delay: Duration::from_secs(2),
-    };
-    let bot_kp = tokio::select! {
-        result = agent::session::wait_for_latest_key_package(
-            &control_client.client,
-            bot_pubkey,
-            &kp_relays,
-            kp_plan,
-        ) => result?,
-        _ = tokio::signal::ctrl_c() => {
-            anyhow::bail!("interrupted during key package wait");
-        }
-    };
-
-    let group_plan = agent::provider::GroupCreatePlan {
-        progress_message: "Creating MLS group...",
-        create_group_context: "create MLS group for agent chat",
-        build_welcome_context: "build welcome message",
-        welcome_publish_label: "agent welcome",
-    };
-    let group = tokio::select! {
-        result = agent::session::create_group_and_publish_welcomes(
-            keys,
-            mdk,
-            &control_client.client,
-            &relays,
-            bot_kp,
-            bot_pubkey,
-            group_plan,
-        ) => result?,
-        _ = tokio::signal::ctrl_c() => {
-            anyhow::bail!("interrupted during group creation");
-        }
-    };
-
-    eprintln!("Chat ready. Type a message and press Enter. Ctrl-C to exit.");
-
-    let chat_plan = agent::provider::ChatLoopPlan {
-        outbound_publish_label: "agent chat msg",
-        wait_for_pending_replies_on_eof: false,
-        eof_reply_timeout: Duration::from_secs(30),
-        projection_mode: pika_agent_protocol::projection::ProjectionMode::Chat,
-    };
-    agent::session::run_interactive_chat_loop(agent::session::ChatLoopContext {
-        keys,
-        mdk,
-        send_client: &control_client.client,
-        listen_client: &control_client.client,
-        relays: &relays,
-        bot_pubkey,
-        mls_group_id: &group.mls_group_id,
-        nostr_group_id_hex: &group.nostr_group_id_hex,
-        plan: chat_plan,
-        seen_mls_event_ids: None,
-    })
-    .await
 }
 
-fn map_agent_runtime_phase(phase: AgentRuntimePhase) -> RuntimeLifecyclePhase {
-    match phase {
-        AgentRuntimePhase::Queued => RuntimeLifecyclePhase::Queued,
-        AgentRuntimePhase::Provisioning => RuntimeLifecyclePhase::Provisioning,
-        AgentRuntimePhase::Ready => RuntimeLifecyclePhase::Ready,
-        AgentRuntimePhase::Failed => RuntimeLifecyclePhase::Failed,
-        AgentRuntimePhase::Teardown => RuntimeLifecyclePhase::Teardown,
+fn normalized_agent_api_base_url(raw: &str) -> anyhow::Result<String> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "agent api base url cannot be empty");
+    let parsed = reqwest::Url::parse(trimmed).context("parse agent api base url")?;
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
+fn agent_api_nsec_value(raw: Option<&str>) -> anyhow::Result<String> {
+    let candidate = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("PIKA_TEST_NSEC")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .ok_or_else(|| {
+            anyhow!("agent api nsec is required (--nsec, PIKA_AGENT_API_NSEC, or PIKA_TEST_NSEC)")
+        })?;
+    Keys::parse(&candidate).context("parse agent api nsec")?;
+    Ok(candidate)
+}
+
+fn build_nip98_authorization_header(
+    nsec: &str,
+    method: &reqwest::Method,
+    url: &str,
+) -> anyhow::Result<String> {
+    let keys = Keys::parse(nsec).context("parse Nostr signing key")?;
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags([
+            Tag::custom(TagKind::custom("u"), [url]),
+            Tag::custom(
+                TagKind::custom("method"),
+                [method.as_str().to_ascii_uppercase()],
+            ),
+        ])
+        .sign_with_keys(&keys)
+        .context("sign NIP-98 event")?;
+    let payload = serde_json::to_vec(&event).context("serialize NIP-98 event")?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+    Ok(format!("Nostr {encoded}"))
+}
+
+async fn call_agent_api(
+    http: &AgentHttpArgs,
+    method: reqwest::Method,
+    path: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let (status, body) = call_agent_api_raw(http, method.clone(), path).await?;
+    if !status.is_success() {
+        return Err(agent_api_http_error(&method, path, status, &body));
     }
+    parse_agent_api_response_json(&body, path)
 }
 
-async fn cmd_agent_list_runtimes(
-    cli: &Cli,
-    provider: Option<AgentProvider>,
-    protocol: Option<AgentProtocol>,
-    phase: Option<AgentRuntimePhase>,
-    runtime_class: Option<&str>,
-    limit: Option<usize>,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::ListRuntimes(ListRuntimesCommand {
-            provider: provider.map(map_provider_kind),
-            protocol: protocol.map(map_protocol_kind),
-            lifecycle_phase: phase.map(map_agent_runtime_phase),
-            runtime_class: runtime_class
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
-            limit,
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "list_runtimes",
-        "count": result.payload.get("count").cloned().unwrap_or_else(|| json!(0)),
-        "runtimes": result.payload.get("runtimes").cloned().unwrap_or_else(|| json!([])),
-    }));
-    Ok(())
+async fn call_agent_api_raw(
+    http: &AgentHttpArgs,
+    method: reqwest::Method,
+    path: &str,
+) -> anyhow::Result<(reqwest::StatusCode, String)> {
+    let base_url = normalized_agent_api_base_url(&http.api_base_url)?;
+    let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
+    let url = format!("{base_url}{path}");
+    let auth = build_nip98_authorization_header(&nsec, &method, &url)?;
+
+    let mut request = reqwest::Client::new()
+        .request(method.clone(), &url)
+        .header("Authorization", auth)
+        .header("Accept", "application/json");
+    if method == reqwest::Method::POST {
+        request = request
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({}));
+    }
+
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("send {} {}", method, url))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Ok((status, body))
 }
 
-async fn cmd_agent_get_runtime(
-    cli: &Cli,
-    runtime_id: &str,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::GetRuntime(GetRuntimeCommand {
-            runtime_id: runtime_id.to_string(),
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "get_runtime",
-        "runtime": result.runtime,
-        "payload": result.payload,
-    }));
-    Ok(())
+fn parse_agent_api_response_json(body: &str, path: &str) -> anyhow::Result<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .with_context(|| format!("decode agent api response for {path}"))
 }
 
-async fn cmd_agent_teardown(
-    cli: &Cli,
-    runtime_id: &str,
-    control: &AgentControlArgs,
-) -> anyhow::Result<()> {
-    let server_pubkey = resolve_control_server_pubkey(control)?;
-    let relay_urls = resolve_relays(cli);
-    let (keys, _mdk) = open(cli)?;
-    let control_client = RemoteControlClient::connect(&keys, &relay_urls, server_pubkey).await?;
-    let result = control_client
-        .send_command(AgentControlCommand::Teardown(TeardownCommand {
-            runtime_id: runtime_id.to_string(),
-        }))
-        .await?;
-    control_client.client.unsubscribe_all().await;
-    control_client.client.shutdown().await;
-    print(json!({
-        "operation": "teardown",
-        "runtime": result.runtime,
-        "payload": result.payload,
-    }));
-    Ok(())
+fn agent_api_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|raw| raw.as_str())
+                .map(str::to_string)
+        })
+}
+
+fn agent_api_http_error(
+    method: &reqwest::Method,
+    path: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> anyhow::Error {
+    if let Some(code) = agent_api_error_code(body) {
+        anyhow!(
+            "agent api {} {} failed: HTTP {} ({code})",
+            method,
+            path,
+            status
+        )
+    } else {
+        anyhow!(
+            "agent api {} {} failed: HTTP {} body={}",
+            method,
+            path,
+            status,
+            body
+        )
+    }
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {
@@ -2747,273 +2389,156 @@ async fn cmd_daemon(
 mod tests {
     use super::*;
 
-    struct AgentListRuntimesParse {
-        provider: Option<AgentProvider>,
-        protocol: Option<AgentProtocol>,
-        phase: Option<AgentRuntimePhase>,
-        runtime_class: Option<String>,
-        limit: Option<usize>,
+    struct AgentHttpParse {
+        api_base_url: String,
+        nsec: Option<String>,
     }
 
-    struct AgentNewParse {
-        provider: AgentProvider,
-        runtime_class: Option<String>,
-        json: bool,
-        keep: bool,
-        microvm: AgentNewMicrovmArgs,
-    }
-
-    fn parse_agent_new(args: &[&str]) -> AgentNewParse {
+    fn parse_agent_new(args: &[&str]) -> AgentHttpParse {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd:
-                    AgentCommand::New {
-                        provider,
-                        runtime_class,
-                        json,
-                        keep,
-                        microvm,
-                        ..
-                    },
-            } => AgentNewParse {
-                provider,
-                runtime_class,
-                json,
-                keep,
-                microvm,
+                cmd: AgentCommand::New { http },
+            } => AgentHttpParse {
+                api_base_url: http.api_base_url,
+                nsec: http.nsec,
             },
             _ => panic!("expected agent new command"),
         }
     }
 
-    fn validate_agent_new_args(args: &[&str]) -> anyhow::Result<()> {
+    fn parse_agent_me(args: &[&str]) -> AgentHttpParse {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd:
-                    AgentCommand::New {
-                        provider,
-                        brain,
-                        microvm,
-                        ..
-                    },
-            } => validate_agent_new_request(provider, brain.as_deref(), &microvm),
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    fn parse_agent_new_control_mode(args: &[&str]) -> AgentControlMode {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { control, .. },
-            } => control.control_mode,
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    fn parse_agent_list_runtimes(args: &[&str]) -> AgentListRuntimesParse {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd:
-                    AgentCommand::ListRuntimes {
-                        provider,
-                        protocol,
-                        phase,
-                        runtime_class,
-                        limit,
-                        ..
-                    },
-            } => AgentListRuntimesParse {
-                provider,
-                protocol,
-                phase,
-                runtime_class,
-                limit,
+                cmd: AgentCommand::Me { http },
+            } => AgentHttpParse {
+                api_base_url: http.api_base_url,
+                nsec: http.nsec,
             },
-            _ => panic!("expected agent list-runtimes command"),
-        }
-    }
-
-    fn parse_agent_get_runtime(args: &[&str]) -> String {
-        let cli = Cli::try_parse_from(args).expect("parse args");
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::GetRuntime { runtime_id, .. },
-            } => runtime_id,
-            _ => panic!("expected agent get-runtime command"),
+            _ => panic!("expected agent me command"),
         }
     }
 
     #[test]
-    fn agent_new_microvm_flags_parse() {
-        let parsed = parse_agent_new(&[
-            "pikachat",
-            "agent",
-            "new",
-            "--provider",
-            "microvm",
-            "--spawner-url",
-            "http://127.0.0.1:8080",
-            "--spawn-variant",
-            "prebuilt-cow",
-            "--flake-ref",
-            ".#nixpi",
-            "--dev-shell",
-            "default",
-            "--cpu",
-            "1",
-            "--memory-mb",
-            "1024",
-            "--ttl-seconds",
-            "600",
-            "--keep",
-        ]);
-        assert_eq!(parsed.provider, AgentProvider::Microvm);
-        assert_eq!(parsed.runtime_class, None);
-        assert!(parsed.keep);
-        assert!(!parsed.json);
-        assert_eq!(
-            parsed.microvm.spawner_url.as_deref(),
-            Some("http://127.0.0.1:8080")
-        );
-        assert_eq!(
-            parsed.microvm.spawn_variant,
-            Some(MicrovmSpawnVariant::PrebuiltCow)
-        );
-        assert_eq!(parsed.microvm.flake_ref.as_deref(), Some(".#nixpi"));
-        assert_eq!(parsed.microvm.dev_shell.as_deref(), Some("default"));
-        assert_eq!(parsed.microvm.cpu, Some(1));
-        assert_eq!(parsed.microvm.memory_mb, Some(1024));
-        assert_eq!(parsed.microvm.ttl_seconds, Some(600));
-    }
-
-    #[test]
-    fn agent_new_existing_fly_parse_unchanged() {
-        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly"]);
-        assert_eq!(parsed.provider, AgentProvider::Fly);
-        assert_eq!(parsed.runtime_class, None);
-        assert!(!parsed.keep);
-        assert!(!parsed.json);
-        assert!(parsed.microvm.provided_flag_names().is_empty());
-    }
-
-    #[test]
-    fn agent_new_json_flag_parse() {
-        let parsed = parse_agent_new(&["pikachat", "agent", "new", "--provider", "fly", "--json"]);
-        assert!(parsed.json);
-        assert!(!parsed.keep);
-    }
-
-    #[test]
-    fn microvm_flags_rejected_for_non_microvm_provider() {
-        let parsed = parse_agent_new(&[
-            "pikachat",
-            "agent",
-            "new",
-            "--provider",
-            "fly",
-            "--spawner-url",
-            "http://127.0.0.1:8080",
-        ]);
-        let err = validate_agent_new_request(parsed.provider, None, &parsed.microvm)
-            .expect_err("should fail");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("--spawner-url"));
-        assert!(msg.contains("--provider microvm"));
-    }
-
-    #[test]
-    fn agent_new_brain_flag_is_explicitly_rejected() {
-        for value in ["pi", "acp"] {
-            let err = validate_agent_new_args(&["pikachat", "agent", "new", "--brain", value])
-                .expect_err("brain flag should be rejected");
-            let msg = format!("{err:#}");
-            assert!(msg.contains("--brain"));
-            assert!(msg.contains("ACP-only"));
-        }
-    }
-
-    #[test]
-    fn agent_new_control_mode_is_strict_remote_only() {
-        let mode = parse_agent_new_control_mode(&["pikachat", "agent", "new"]);
-        assert_eq!(mode, AgentControlMode::Remote);
-
-        for invalid in ["auto", "local"] {
-            let err = Cli::try_parse_from(["pikachat", "agent", "new", "--control-mode", invalid])
-                .expect_err("legacy control mode should fail");
-            let msg = err.to_string();
-            assert!(msg.contains("invalid value"));
-        }
-    }
-
-    #[test]
-    fn agent_new_runtime_class_parse() {
-        let parsed = parse_agent_new(&[
-            "pikachat",
-            "agent",
-            "new",
-            "--provider",
-            "fly",
-            "--runtime-class",
-            "fly-us-east",
-        ]);
-        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
-    }
-
-    #[test]
-    fn agent_list_runtimes_parse() {
-        let parsed = parse_agent_list_runtimes(&[
-            "pikachat",
-            "agent",
-            "list-runtimes",
-            "--provider",
-            "fly",
-            "--protocol",
-            "acp",
-            "--phase",
-            "ready",
-            "--runtime-class",
-            "fly-us-east",
-            "--limit",
-            "5",
-        ]);
-        assert_eq!(parsed.provider, Some(AgentProvider::Fly));
-        assert_eq!(parsed.protocol, Some(AgentProtocol::Acp));
-        assert_eq!(parsed.phase, Some(AgentRuntimePhase::Ready));
-        assert_eq!(parsed.runtime_class.as_deref(), Some("fly-us-east"));
-        assert_eq!(parsed.limit, Some(5));
-    }
-
-    #[test]
-    fn agent_get_runtime_parse() {
-        let runtime_id = parse_agent_get_runtime(&[
-            "pikachat",
-            "agent",
-            "get-runtime",
-            "--runtime-id",
-            "runtime-123",
-        ]);
-        assert_eq!(runtime_id, "runtime-123");
-    }
-
-    #[test]
-    fn agent_teardown_parse() {
+    fn agent_chat_http_parse() {
         let cli = Cli::try_parse_from([
             "pikachat",
             "agent",
-            "teardown",
-            "--runtime-id",
-            "fly-abc123",
+            "chat",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--listen-timeout",
+            "9",
+            "--poll-attempts",
+            "7",
+            "--poll-delay-sec",
+            "3",
+            "--recover-after-attempt",
+            "4",
+            "hello",
         ])
         .expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd: AgentCommand::Teardown { runtime_id, .. },
-            } => assert_eq!(runtime_id, "fly-abc123"),
-            _ => panic!("expected agent teardown command"),
+                cmd:
+                    AgentCommand::Chat {
+                        http,
+                        message,
+                        listen_timeout,
+                        poll_attempts,
+                        poll_delay_sec,
+                        recover_after_attempt,
+                    },
+            } => {
+                assert_eq!(http.api_base_url, "http://127.0.0.1:18080");
+                assert_eq!(
+                    http.nsec.as_deref(),
+                    Some("nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v")
+                );
+                assert_eq!(message, "hello");
+                assert_eq!(listen_timeout, 9);
+                assert_eq!(poll_attempts, 7);
+                assert_eq!(poll_delay_sec, 3);
+                assert_eq!(recover_after_attempt, 4);
+            }
+            _ => panic!("expected agent chat command"),
         }
+    }
+
+    #[test]
+    fn agent_new_http_parse() {
+        let parsed = parse_agent_new(&[
+            "pikachat",
+            "agent",
+            "new",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+        ]);
+        assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
+        assert!(parsed.nsec.is_some());
+    }
+
+    #[test]
+    fn agent_new_defaults_base_url() {
+        let parsed = parse_agent_new(&[
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+        ]);
+        assert_eq!(parsed.api_base_url, DEFAULT_AGENT_API_BASE_URL);
+        assert!(parsed.nsec.is_some());
+    }
+
+    #[test]
+    fn agent_me_http_parse() {
+        let parsed = parse_agent_me(&[
+            "pikachat",
+            "agent",
+            "me",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+        ]);
+        assert_eq!(parsed.api_base_url, "http://127.0.0.1:18080");
+        assert!(parsed.nsec.is_some());
+    }
+
+    #[test]
+    fn legacy_agent_runtime_subcommands_are_removed() {
+        for legacy in ["list-runtimes", "get-runtime", "teardown"] {
+            let err = Cli::try_parse_from(["pikachat", "agent", legacy])
+                .expect_err("legacy runtime command should fail");
+            assert!(err.to_string().contains("unrecognized subcommand"));
+        }
+    }
+
+    #[test]
+    fn agent_api_error_code_extracts_json_error() {
+        let body = r#"{"error":"agent_exists"}"#;
+        assert_eq!(agent_api_error_code(body).as_deref(), Some("agent_exists"));
+    }
+
+    #[test]
+    fn agent_api_error_code_handles_non_json_payload() {
+        assert!(agent_api_error_code("not-json").is_none());
+    }
+
+    #[test]
+    fn parse_agent_fields_extracts_required_keys() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating"
+        });
+        let (agent_id, state) = parse_agent_fields(&payload).expect("extract fields");
+        assert_eq!(agent_id, "npub1test");
+        assert_eq!(state, "creating");
     }
 }

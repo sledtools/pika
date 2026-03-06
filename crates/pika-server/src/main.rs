@@ -1,9 +1,21 @@
-mod agent_clients;
-mod agent_control;
+mod admin;
+mod agent_api;
+mod agent_api_v1_contract;
 mod listener;
 mod models;
+mod nostr_auth;
 mod routes;
 
+use crate::admin::{
+    challenge as admin_challenge, dashboard as admin_dashboard, dev_login as admin_dev_login,
+    login_page as admin_login_page, logout as admin_logout,
+    toggle_allowlist as admin_toggle_allowlist, upsert_allowlist as admin_upsert_allowlist,
+    verify as admin_verify,
+};
+use crate::agent_api::{ensure_agent, get_my_agent, recover_my_agent};
+use crate::agent_api_v1_contract::{
+    V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH, V1_AGENTS_RECOVER_PATH,
+};
 use crate::models::group_subscription::{GroupFilterInfo, GroupSubscription};
 use crate::models::MIGRATIONS;
 use crate::routes::{broadcast, health_check, register, subscribe_groups, unsubscribe_groups};
@@ -26,6 +38,7 @@ pub struct State {
     pub fcm_client: Option<Arc<FcmClient>>,
     pub apns_topic: String,
     pub channel: Arc<Mutex<watch::Sender<GroupFilterInfo>>>,
+    pub admin_config: Arc<admin::AdminConfig>,
 }
 
 #[tokio::main]
@@ -38,7 +51,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    agent_control::control_schema_healthcheck()?;
+    agent_api_v1_contract::contract_healthcheck()?;
+    agent_api::agent_api_healthcheck()?;
+    admin::admin_healthcheck()?;
 
     // APNs configuration (optional — logs only when not configured)
     let apns_topic = std::env::var("APNS_TOPIC").unwrap_or_default();
@@ -154,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         fcm_client: fcm_client.clone(),
         apns_topic: apns_topic.clone(),
         channel,
+        admin_config: Arc::new(admin::AdminConfig::from_env()?),
     };
 
     let addr: std::net::SocketAddr = format!("0.0.0.0:{port}")
@@ -166,6 +182,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/subscribe-groups", post(subscribe_groups))
         .route("/unsubscribe-groups", post(unsubscribe_groups))
         .route("/broadcast", post(broadcast))
+        .route(V1_AGENTS_ENSURE_PATH, post(ensure_agent))
+        .route(V1_AGENTS_ME_PATH, get(get_my_agent))
+        .route(V1_AGENTS_RECOVER_PATH, post(recover_my_agent))
+        .route("/admin/login", get(admin_login_page))
+        .route("/admin", get(admin_dashboard))
+        .route("/admin/challenge", post(admin_challenge))
+        .route("/admin/verify", post(admin_verify))
+        .route("/admin/allowlist", post(admin_upsert_allowlist))
+        .route(
+            "/admin/allowlist/:npub/toggle",
+            post(admin_toggle_allowlist),
+        )
+        .route("/admin/logout", post(admin_logout))
+        .route("/admin/dev-login", post(admin_dev_login))
         .fallback(fallback)
         .layer(Extension(state));
 
@@ -196,16 +226,6 @@ async fn main() -> anyhow::Result<()> {
             .await
             .expect("failed to create Ctrl+C shutdown signal");
     });
-
-    if let Some(control_runtime) = agent_control::AgentControlRuntime::from_env().await? {
-        tokio::spawn(async move {
-            if let Err(err) = control_runtime.run().await {
-                error!(error = %err, "agent control runtime exited");
-            }
-        });
-    } else {
-        info!("Agent control plane disabled (set PIKA_AGENT_CONTROL_ENABLED=1 to force enable)");
-    }
 
     if let Err(e) = graceful.await {
         error!("Shutdown error: {e}");

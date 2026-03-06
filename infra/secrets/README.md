@@ -10,6 +10,9 @@ Required keys:
 - `apns_team_id` -- Apple Developer Team ID
 - `fcm_credentials` -- Contents of the Firebase service account JSON
 
+`PIKA_ADMIN_SESSION_SECRET` is derived at runtime from the APNS private key hash, so no
+separate admin session secret key is required in `pika-server.yaml`.
+
 ## Setup
 
 1. After first deploy, SSH into the server and generate an age key:
@@ -53,5 +56,10 @@ sops updatekeys infra/secrets/builder-cache-key.yaml
 ## microVM host notes
 
 The `pika-build` microVM host stack (`vm-spawner` + `microvm.nix`) does not currently
-require an additional sops secret for agent LLM keys. The `pika-cli agent new --provider microvm`
-flow forwards provider keys directly from the local environment to the guest process.
+require an additional sops secret for agent LLM keys. The `pikachat agent new --nsec ...`
+HTTP flow provisions through `pika-server`, which reads provider credentials from server env.
+
+MicroVM home backups use `restic` with a host-local env file instead of sops:
+
+- `/etc/microvm-backup.env`
+- Example template is installed at `/etc/microvm-backup.env.example`

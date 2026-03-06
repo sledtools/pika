@@ -206,12 +206,13 @@ env_json_for_device() {
   local relays kp_relays
   relays="$(effective_relays)"
   kp_relays="$(effective_kp_relays)"
-  local call_moq_url call_broadcast_prefix moq_probe_on_start notification_url
+  local call_moq_url call_broadcast_prefix moq_probe_on_start notification_url agent_api_url
   # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
   call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
   moq_probe_on_start="${PIKA_MOQ_PROBE_ON_START:-0}"
   notification_url="${PIKA_NOTIFICATION_URL:-}"
+  agent_api_url="${PIKA_AGENT_API_URL:-${PIKA_SERVER_URL:-}}"
   python3 - <<PY
 import json
 d = {
@@ -224,6 +225,9 @@ d = {
 nu = "${notification_url}"
 if nu:
     d["PIKA_NOTIFICATION_URL"] = nu
+au = "${agent_api_url}"
+if au:
+    d["PIKA_AGENT_API_URL"] = au
 print(json.dumps(d))
 PY
 }
@@ -424,12 +428,13 @@ maybe_write_config() {
   local relays kp_relays
   relays="$(effective_relays)"
   kp_relays="$(effective_kp_relays)"
-  local call_moq_url call_broadcast_prefix moq_probe_on_start notification_url
+  local call_moq_url call_broadcast_prefix moq_probe_on_start notification_url agent_api_url
   # Default to the deployed anonymous MOQ relay; override with PIKA_CALL_MOQ_URL for local setups.
   call_moq_url="${PIKA_CALL_MOQ_URL:-https://us-east.moq.logos.surf/anon}"
   call_broadcast_prefix="${PIKA_CALL_BROADCAST_PREFIX:-pika/calls}"
   moq_probe_on_start="${PIKA_MOQ_PROBE_ON_START:-0}"
   notification_url="${PIKA_NOTIFICATION_URL:-}"
+  agent_api_url="${PIKA_AGENT_API_URL:-${PIKA_SERVER_URL:-}}"
 
   local json
   json="$(
@@ -446,6 +451,9 @@ d = {
 nu = "${notification_url}"
 if nu:
     d["notification_url"] = nu
+au = "${agent_api_url}"
+if au:
+    d["agent_api_url"] = au
 print(json.dumps(d))
 PY
   )"

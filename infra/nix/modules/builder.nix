@@ -3,6 +3,7 @@
 let
   cachePort = 5000;
   newsPort = 8788;
+  microvmBackupEnvFile = "/etc/microvm-backup.env";
 in
 {
   imports = [
@@ -105,6 +106,59 @@ in
     secretKeyFile = config.sops.secrets."cache_signing_key".path;
   };
 
+  systemd.services.microvm-home-backup = {
+    description = "Backup microVM homes to Cloudflare R2 with restic";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+
+    serviceConfig = {
+      Type = "oneshot";
+      EnvironmentFile = [ "-${microvmBackupEnvFile}" ];
+    };
+
+    path = with pkgs; [ bash coreutils findutils hostname restic ];
+    script = ''
+      set -euo pipefail
+
+      for key in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET RESTIC_PASSWORD; do
+        if [ -z "''${!key:-}" ]; then
+          echo "microvm backup env missing $key; skipping run"
+          exit 0
+        fi
+      done
+
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY RESTIC_PASSWORD
+      export RESTIC_REPOSITORY="s3:https://''${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/''${R2_BUCKET}"
+
+      homes=()
+      while IFS= read -r home; do
+        homes+=("$home")
+      done < <(find /var/lib/microvms -mindepth 2 -maxdepth 2 -type d -name home | sort)
+
+      if [ "''${#homes[@]}" -eq 0 ]; then
+        echo "no microvm homes found under /var/lib/microvms; skipping backup"
+        exit 0
+      fi
+
+      if ! restic snapshots --json >/dev/null 2>&1; then
+        restic init
+      fi
+
+      restic backup "''${homes[@]}" --tag microvm-home --host "$(hostname)"
+    '';
+  };
+
+  systemd.timers.microvm-home-backup = {
+    description = "Run microVM home restic backup every 10 minutes";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      Unit = "microvm-home-backup.service";
+      OnBootSec = "5m";
+      OnUnitActiveSec = "10m";
+      Persistent = true;
+    };
+  };
+
   # ── Caddy: reverse proxy for pika-news ─────────────────────────────────
   services.caddy = {
     enable = true;
@@ -154,8 +208,7 @@ in
 
   security.sudo.wheelNeedsPassword = false;
 
-  # ── No Tailscale on this host ──────────────────────────────────────────
-  services.tailscale.enable = lib.mkForce false;
+  # ── Keep Tailnet enabled for private service-to-service control plane traffic ──
 
   # ── GC: less aggressive (this is the cache) ───────────────────────────
   nix.gc = lib.mkForce {
@@ -163,6 +216,56 @@ in
     dates = "weekly";
     options = "--delete-older-than 60d";
   };
+
+  environment.systemPackages = with pkgs; [
+    restic
+    (writeShellScriptBin "microvm-home-restore" ''
+      set -euo pipefail
+
+      if [ "$#" -lt 1 ]; then
+        echo "usage: microvm-home-restore <vm-id> [snapshot]" >&2
+        exit 2
+      fi
+
+      VM_ID="$1"
+      SNAPSHOT="''${2:-latest}"
+      ENV_FILE="${microvmBackupEnvFile}"
+
+      if [ ! -f "$ENV_FILE" ]; then
+        echo "missing backup env file: $ENV_FILE" >&2
+        exit 1
+      fi
+
+      set -a
+      . "$ENV_FILE"
+      set +a
+
+      : "''${AWS_ACCESS_KEY_ID:?missing AWS_ACCESS_KEY_ID in backup env}"
+      : "''${AWS_SECRET_ACCESS_KEY:?missing AWS_SECRET_ACCESS_KEY in backup env}"
+      : "''${R2_ACCOUNT_ID:?missing R2_ACCOUNT_ID in backup env}"
+      : "''${R2_BUCKET:?missing R2_BUCKET in backup env}"
+      : "''${RESTIC_PASSWORD:?missing RESTIC_PASSWORD in backup env}"
+
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY RESTIC_PASSWORD
+      export RESTIC_REPOSITORY="s3:https://''${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/''${R2_BUCKET}"
+
+      TARGET="/tmp/microvm-restore-$VM_ID-$(date +%Y%m%d%H%M%S)"
+      INCLUDE_PATH="/var/lib/microvms/$VM_ID/home"
+      mkdir -p "$TARGET"
+      restic restore "$SNAPSHOT" --target "$TARGET" --include "$INCLUDE_PATH"
+      echo "restored $INCLUDE_PATH to $TARGET"
+    '')
+  ];
+
+  environment.etc."microvm-backup.env.example".text = ''
+    # Copy to ${microvmBackupEnvFile} on pika-build and set secure permissions:
+    #   install -m 0400 -o root -g root /etc/microvm-backup.env.example ${microvmBackupEnvFile}
+    AWS_ACCESS_KEY_ID=changeme
+    AWS_SECRET_ACCESS_KEY=changeme
+    R2_ACCOUNT_ID=changeme
+    R2_BUCKET=changeme
+    RESTIC_PASSWORD=changeme
+  '';
 
   # ── tmpfiles ───────────────────────────────────────────────────────────
   systemd.tmpfiles.rules = [

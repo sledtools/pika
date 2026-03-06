@@ -116,7 +116,10 @@ final class AppManager: AppReconciler {
     private var lastSharedChatCache: [ShareableChatSummary]
     private var lastShareLoggedInFlag: Bool?
 
-    init(core: AppCore, authStore: AuthStore) {
+    init(
+        core: AppCore,
+        authStore: AuthStore
+    ) {
         self.core = core
         self.authStore = authStore
 
@@ -187,6 +190,7 @@ final class AppManager: AppReconciler {
         let callBroadcastPrefix = (env["PIKA_CALL_BROADCAST_PREFIX"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let moqProbeOnStart = (env["PIKA_MOQ_PROBE_ON_START"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let notificationUrl = (env["PIKA_NOTIFICATION_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentApiUrl = (env["PIKA_AGENT_API_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         ensureDefaultConfig(
             dataDirUrl: dataDirUrl,
             uiTestReset: uiTestReset,
@@ -195,7 +199,8 @@ final class AppManager: AppReconciler {
             callMoqUrl: callMoqUrl,
             callBroadcastPrefix: callBroadcastPrefix,
             moqProbeOnStart: moqProbeOnStart,
-            notificationUrl: notificationUrl
+            notificationUrl: notificationUrl,
+            agentApiUrl: agentApiUrl
         )
 
         let core = FfiApp(dataDir: dataDir, keychainGroup: keychainGroup)
@@ -366,6 +371,18 @@ final class AppManager: AppReconciler {
 
     func getNsec() -> String? {
         authStore.getNsec()
+    }
+
+    func dogfoodAgentButtonState(for npub: String?) -> DogfoodAgentButtonState? {
+        guard isDogfoodAgentEligible(npub: npub, auth: state.auth) else {
+            return nil
+        }
+        return makeDogfoodAgentButtonState(isBusy: state.busy.startingPersonalAgent)
+    }
+
+    func ensureDogfoodAgent() {
+        guard isDogfoodAgentEligible(npub: currentNpub(), auth: state.auth) else { return }
+        dispatch(.ensurePersonalAgent)
     }
 
     /// Moves existing data from the old app-private Application Support directory
@@ -577,6 +594,15 @@ final class AppManager: AppReconciler {
         }
     }
 
+    private func currentNpub() -> String? {
+        switch state.auth {
+        case .loggedIn(let npub, _, _):
+            return npub
+        default:
+            return nil
+        }
+    }
+
     private func isExpectedNostrConnectCallback(_ url: URL) -> Bool {
         guard url.host?.lowercased() == "nostrconnect-return" else { return false }
         guard let scheme = url.scheme?.lowercased() else { return false }
@@ -603,7 +629,8 @@ private func ensureDefaultConfig(
     callMoqUrl: String,
     callBroadcastPrefix: String,
     moqProbeOnStart: String,
-    notificationUrl: String
+    notificationUrl: String,
+    agentApiUrl: String
 ) {
     // Ensure call config exists even when no env overrides are set (call runtime requires `call_moq_url`).
     // If the file already exists, only fill missing keys to avoid clobbering user/tooling overrides.
@@ -620,6 +647,7 @@ private func ensureDefaultConfig(
         || !callBroadcastPrefix.isEmpty
         || moqProbeOnStart == "1"
         || !notificationUrl.isEmpty
+        || !agentApiUrl.isEmpty
 
     let path = dataDirUrl.appendingPathComponent("pika_config.json")
     var obj: [String: Any] = [:]
@@ -636,6 +664,11 @@ private func ensureDefaultConfig(
     }
 
     var changed = false
+
+    // Remove deprecated bearer-token material from legacy configs.
+    if obj.removeValue(forKey: "agent_owner_token") != nil {
+        changed = true
+    }
 
     let resolvedCallMoqUrl = callMoqUrl.isEmpty ? defaultMoqUrl : callMoqUrl
     if isMissingOrBlank("call_moq_url") {
@@ -682,6 +715,10 @@ private func ensureDefaultConfig(
 
         if !notificationUrl.isEmpty {
             obj["notification_url"] = notificationUrl
+            changed = true
+        }
+        if !agentApiUrl.isEmpty {
+            obj["agent_api_url"] = agentApiUrl
             changed = true
         }
     }

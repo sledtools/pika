@@ -150,17 +150,17 @@ impl ResolvedConfig {
             0
         };
 
-        // moq-relay uses QUIC/UDP but we still give it a deterministic default.
+        // moq-relay uses QUIC/UDP, so resolve against UDP availability.
         let moq_port = moq_port_cli
             .or(overlay.moq.as_ref().and_then(|m| m.port))
             .unwrap_or(DEFAULT_MOQ_PORT);
-        let moq_port = resolve_port(moq_port)?;
+        let moq_port = resolve_udp_port(moq_port)?;
 
         // pika-server doesn't support port 0 natively, so resolve to a concrete port.
         let server_port = server_port_cli
             .or(overlay.server.as_ref().and_then(|s| s.port))
             .unwrap_or(DEFAULT_SERVER_PORT);
-        let server_port = resolve_port(server_port)?;
+        let server_port = resolve_tcp_port(server_port)?;
 
         let open_provisioning = overlay
             .server
@@ -226,7 +226,7 @@ impl ResolvedConfig {
 
 /// Try to bind the preferred port; if it's taken, fall back to an OS-assigned random port.
 /// Port 0 always goes straight to random.
-fn resolve_port(preferred: u16) -> Result<u16> {
+fn resolve_tcp_port(preferred: u16) -> Result<u16> {
     if preferred != 0 {
         if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", preferred)) {
             drop(listener);
@@ -236,6 +236,20 @@ fn resolve_port(preferred: u16) -> Result<u16> {
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
+}
+
+/// Try to bind the preferred UDP port; if it's taken, fall back to an OS-assigned random port.
+/// Port 0 always goes straight to random.
+fn resolve_udp_port(preferred: u16) -> Result<u16> {
+    if preferred != 0 {
+        if let Ok(socket) = std::net::UdpSocket::bind(("127.0.0.1", preferred)) {
+            drop(socket);
+            return Ok(preferred);
+        }
+        tracing::warn!("udp port {preferred} is busy, picking a random free port instead");
+    }
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    Ok(socket.local_addr()?.port())
 }
 
 /// Walk up from CWD looking for the workspace Cargo.toml (contains [workspace]).
@@ -369,5 +383,22 @@ timeout_secs = 120
         assert_eq!(server.port, Some(9090));
         assert_eq!(server.open_provisioning, Some(false));
         assert_eq!(cfg.bot.unwrap().timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn resolve_udp_port_falls_back_when_preferred_is_busy() {
+        let busy = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind busy udp socket");
+        let busy_port = busy.local_addr().expect("busy udp local addr").port();
+        let chosen = resolve_udp_port(busy_port).expect("resolve udp port");
+        assert_ne!(chosen, busy_port, "should not reuse busy UDP port");
+    }
+
+    #[test]
+    fn resolve_udp_port_uses_preferred_when_available() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe udp socket");
+        let preferred = probe.local_addr().expect("probe udp local addr").port();
+        drop(probe);
+        let chosen = resolve_udp_port(preferred).expect("resolve udp preferred port");
+        assert_eq!(chosen, preferred);
     }
 }

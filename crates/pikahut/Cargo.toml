@@ -25,6 +25,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
 bech32 = "0.11"
 rand = "0.8"
 nostr-blossom = "0.44.0"

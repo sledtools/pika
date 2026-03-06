@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(health))
         .route("/vms", post(create_vm).get(list_vms))
         .route("/vms/:id", get(get_vm).delete(delete_vm))
+        .route("/vms/:id/recover", post(recover_vm))
         .route("/vms/:id/exec", post(exec_vm))
         .route("/capacity", get(capacity))
         .with_state(manager.clone());
@@ -115,6 +116,14 @@ async fn delete_vm(
 ) -> Result<StatusCode, ApiError> {
     manager.destroy(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn recover_vm(
+    State(manager): State<Arc<VmManager>>,
+    Path(id): Path<String>,
+) -> Result<Json<VmResponse>, ApiError> {
+    let vm = manager.recover(&id).await?;
+    Ok(Json(vm))
 }
 
 #[derive(serde::Serialize)]

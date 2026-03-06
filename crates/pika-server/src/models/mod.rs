@@ -1,5 +1,7 @@
 use diesel_migrations::{embed_migrations, EmbeddedMigrations};
 
+pub mod agent_allowlist;
+pub mod agent_instance;
 pub mod group_subscription;
 mod schema;
 pub mod subscription_info;
@@ -9,6 +11,10 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::models::agent_allowlist::AgentAllowlistEntry;
+    use crate::models::agent_instance::{
+        AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
+    };
     use crate::models::group_subscription::GroupSubscription;
     use crate::models::subscription_info::SubscriptionInfo;
     use diesel::prelude::*;
@@ -48,6 +54,9 @@ mod test {
         let conn = &mut db_pool.get().unwrap();
 
         conn.transaction::<_, anyhow::Error, _>(|conn| {
+            diesel::delete(schema::agent_instances::table).execute(conn)?;
+            diesel::delete(schema::agent_allowlist_audit::table).execute(conn)?;
+            diesel::delete(schema::agent_allowlist::table).execute(conn)?;
             diesel::delete(schema::group_subscriptions::table).execute(conn)?;
             diesel::delete(schema::subscription_info::table).execute(conn)?;
             Ok(())
@@ -131,6 +140,103 @@ mod test {
 
         let filter_info = GroupSubscription::get_filter_info(&mut conn).unwrap();
         assert_eq!(filter_info.group_ids.len(), 3);
+
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_agent_instance_active_owner_constraint() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let owner_npub = "npub1ownerconstrainttest";
+
+        let created = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-1",
+            Some("vm-1"),
+            AGENT_PHASE_CREATING,
+        )
+        .expect("insert initial creating row");
+        assert_eq!(created.owner_npub, owner_npub);
+
+        let duplicate_active = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-2",
+            Some("vm-2"),
+            AGENT_PHASE_READY,
+        )
+        .expect_err("second active row should violate unique partial index");
+        assert!(
+            duplicate_active
+                .to_string()
+                .contains("agent_instances_owner_active_idx"),
+            "unexpected error: {duplicate_active:?}"
+        );
+
+        let errored = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-3",
+            Some("vm-3"),
+            AGENT_PHASE_ERROR,
+        )
+        .expect("error-phase rows are not active and should be allowed");
+        assert_eq!(errored.phase, AGENT_PHASE_ERROR);
+
+        let active = AgentInstance::find_active_by_owner(&mut conn, owner_npub)
+            .expect("query active row")
+            .expect("active row should exist");
+        assert_eq!(active.agent_id, "agent-1");
+
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_agent_allowlist_upsert_and_active_lookup() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+
+        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("dogfood"), npub)
+            .expect("upsert allowlist");
+        assert_eq!(row.npub, npub);
+        assert!(row.active);
+
+        let active = AgentAllowlistEntry::is_active(&mut conn, npub).expect("active check");
+        assert!(active);
+
+        let row = AgentAllowlistEntry::set_active(&mut conn, npub, false, npub)
+            .expect("deactivate allowlist");
+        assert!(!row.active);
+        let active = AgentAllowlistEntry::is_active(&mut conn, npub).expect("active check");
+        assert!(!active);
+
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_agent_allowlist_transaction_rolls_back_when_audit_insert_fails() {
+        let _guard = test_guard();
+        let db_pool = init_db_pool();
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let npub = "npub1rollbacktestuser";
+
+        let result = conn.transaction::<_, anyhow::Error, _>(|conn| {
+            AgentAllowlistEntry::upsert(conn, npub, true, Some("dogfood"), npub)?;
+            AgentAllowlistEntry::record_audit(conn, npub, npub, "enabled\0invalid", None)?;
+            Ok(())
+        });
+
+        assert!(result.is_err(), "expected audit insert to fail");
+        let rows = AgentAllowlistEntry::list(&mut conn).expect("list allowlist rows");
+        assert!(rows.is_empty(), "allowlist row must be rolled back");
 
         clear_database(&db_pool);
     }

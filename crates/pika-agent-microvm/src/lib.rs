@@ -23,6 +23,7 @@ pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.j
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
+const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
@@ -117,6 +118,23 @@ impl MicrovmSpawnerClient {
             anyhow::bail!("failed to delete vm {vm_id}: {status} {text}");
         }
         Ok(())
+    }
+
+    pub async fn recover_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        let url = format!("{}/vms/{vm_id}/recover", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .timeout(RECOVER_VM_TIMEOUT)
+            .send()
+            .await
+            .context("send recover vm request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("failed to recover vm {vm_id}: {status} {text}");
+        }
+        resp.json().await.context("decode recover vm response")
     }
 }
 
@@ -238,7 +256,8 @@ pub fn microvm_autostart_script() -> &'static str {
     r#"#!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="/workspace/pika-agent/state"
+# Keep Marmot/MLS state under /root so VM restart/recovery preserves context.
+STATE_DIR="/root/pika-agent/state"
 mkdir -p "$STATE_DIR"
 
 if [[ -z "${PIKA_OWNER_PUBKEY:-}" ]]; then
@@ -265,15 +284,13 @@ if [[ ${#relay_args[@]} -eq 0 ]]; then
 fi
 
 bin=""
-if command -v pikachat >/dev/null 2>&1; then
+if [[ -n "${PIKA_PIKACHAT_BIN:-}" && -x "${PIKA_PIKACHAT_BIN}" ]]; then
+  bin="${PIKA_PIKACHAT_BIN}"
+elif command -v pikachat >/dev/null 2>&1; then
   bin="pikachat"
-elif [[ -n "${PIKA_MARMOTD_BIN:-}" ]]; then
-  bin="${PIKA_MARMOTD_BIN}"
-elif command -v marmotd >/dev/null 2>&1; then
-  bin="marmotd"
 fi
 if [[ -z "$bin" ]]; then
-  echo "[microvm-agent] could not find pikachat or marmotd binary" >&2
+  echo "[microvm-agent] could not find pikachat binary" >&2
   exit 1
 fi
 
@@ -302,7 +319,11 @@ from urllib import request as urlrequest
 owner = os.environ.get("PIKA_OWNER_PUBKEY", "").strip().lower()
 relay_env = os.environ.get("PIKA_RELAY_URLS", "")
 relays = [relay.strip() for relay in relay_env.split(",") if relay.strip()]
-pi_cmd = os.environ.get("PIKA_PI_CMD", "pi -p").strip()
+runtime_artifacts_guest = os.environ.get("PIKA_RUNTIME_ARTIFACTS_GUEST", "/opt/runtime-artifacts").strip()
+if not runtime_artifacts_guest:
+    runtime_artifacts_guest = "/opt/runtime-artifacts"
+default_pi_cmd = f"{runtime_artifacts_guest}/pi/bin/pi -p"
+pi_cmd = os.environ.get("PIKA_PI_CMD", "").strip() or default_pi_cmd
 pi_timeout_ms = int(os.environ.get("PIKA_PI_TIMEOUT_MS", "120000"))
 pi_history_turns = int(os.environ.get("PIKA_PI_HISTORY_TURNS", "8"))
 pi_adapter_base_url = os.environ.get("PI_ADAPTER_BASE_URL", "").strip().rstrip("/")
@@ -735,6 +756,8 @@ mod tests {
             .expect("bridge script");
         assert!(bridge_script.contains("publish_keypackage"));
         assert!(bridge_script.contains("run_pi"));
+        assert!(bridge_script.contains("PIKA_RUNTIME_ARTIFACTS_GUEST"));
+        assert!(bridge_script.contains("/pi/bin/pi -p"));
         assert!(!bridge_script.contains("microvm> {content}"));
         let identity_text = value["guest_autostart"]["files"][AUTOSTART_IDENTITY_PATH]
             .as_str()
@@ -744,6 +767,21 @@ mod tests {
         assert_eq!(
             identity_json["public_key_hex"],
             serde_json::Value::String(bot_keys.public_key().to_hex())
+        );
+    }
+
+    #[test]
+    fn autostart_script_uses_root_backed_state_dir() {
+        let script = microvm_autostart_script();
+        assert!(
+            script.contains("STATE_DIR=\"/root/pika-agent/state\""),
+            "autostart script must keep state under /root for restart durability"
+        );
+        assert!(script.contains("--state-dir \"$STATE_DIR\""));
+        assert!(script.contains("PIKA_PIKACHAT_BIN"));
+        assert!(
+            !script.contains("marmotd"),
+            "autostart script must only resolve pikachat daemon binary"
         );
     }
 
@@ -822,6 +860,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recover_vm_contract_request_shape() {
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","ip":"192.168.0.11"}"#);
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let recovered = client
+            .recover_vm("vm-recover-1")
+            .await
+            .expect("recover vm succeeds");
+        assert_eq!(recovered.id, "vm-recover-1");
+        assert_eq!(recovered.ip, "192.168.0.11");
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/vms/vm-recover-1/recover");
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn create_vm_surfaces_error_body() {
         let (base_url, _rx) = spawn_one_shot_server("503 Service Unavailable", "spawner down");
         let client = MicrovmSpawnerClient::new(base_url);
@@ -859,6 +918,21 @@ mod tests {
         assert!(msg.contains("failed to delete vm vm-stuck"));
         assert!(msg.contains("500 Internal Server Error"));
         assert!(msg.contains("vm stuck in cleanup"));
+    }
+
+    #[tokio::test]
+    async fn recover_vm_surfaces_error_body() {
+        let (base_url, _rx) = spawn_one_shot_server("503 Service Unavailable", "vm reboot failed");
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let err = client
+            .recover_vm("vm-bad")
+            .await
+            .expect_err("expected recover_vm failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to recover vm vm-bad"));
+        assert!(msg.contains("503 Service Unavailable"));
+        assert!(msg.contains("vm reboot failed"));
     }
 
     #[test]

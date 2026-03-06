@@ -1183,7 +1183,7 @@ async fn send_call_invite_with_retry(
                     return Err(err);
                 }
                 warn!(
-                    "[marmotd] call invite publish attempt {attempt}/{attempts} failed call_id={call_id}: {err:#}; retrying"
+                    "[pikachat] call invite publish attempt {attempt}/{attempts} failed call_id={call_id}: {err:#}; retrying"
                 );
                 tokio::time::sleep(Duration::from_millis(750)).await;
             }
@@ -1981,7 +1981,7 @@ fn start_data_worker(
                         Ok(v) => v,
                         Err(err) => {
                             warn!(
-                                "[marmotd] call data decrypt failed call_id={} track={} err={err}",
+                                "[pikachat] call data decrypt failed call_id={} track={} err={err}",
                                 call_id, track_name
                             );
                             continue;
@@ -2277,7 +2277,7 @@ pub async fn daemon_main(
         .first()
         .map(|s| s.as_str())
         .unwrap_or("ws://127.0.0.1:18080");
-    let skip_ready_check = std::env::var("MARMOTD_SKIP_RELAY_READY_CHECK")
+    let skip_ready_check = std::env::var("PIKACHAT_SKIP_RELAY_READY_CHECK")
         .ok()
         .map(|v| {
             matches!(
@@ -2674,10 +2674,35 @@ pub async fn daemon_main(
                             }
                         };
                         match mdk.get_pending_welcomes(None) {
-                            Ok(list) => {
-                                let found = list.into_iter().find(|w| w.wrapper_event_id == wrapper);
+                            Ok(mut list) => {
+                                let mut found = list
+                                    .iter()
+                                    .position(|w| w.wrapper_event_id == wrapper)
+                                    .map(|idx| list.swap_remove(idx));
+                                if found.is_none() {
+                                    found = list
+                                        .iter()
+                                        .position(|w| w.id == wrapper)
+                                        .map(|idx| list.swap_remove(idx));
+                                }
+                                if found.is_none() && list.len() == 1 {
+                                    let fallback = list.swap_remove(0);
+                                    warn!(
+                                        "[pikachat] accept_welcome wrapper_id={} not found; falling back to sole pending welcome wrapper_id={} welcome_event_id={}",
+                                        wrapper_event_id,
+                                        fallback.wrapper_event_id.to_hex(),
+                                        fallback.id.to_hex()
+                                    );
+                                    found = Some(fallback);
+                                }
                                 let Some(w) = found else {
-                                    reply_tx.send(out_error(request_id, "not_found", "pending welcome not found")).ok();
+                                    reply_tx
+                                        .send(out_error(
+                                            request_id,
+                                            "not_found",
+                                            "pending welcome not found",
+                                        ))
+                                        .ok();
                                     continue;
                                 };
                                 let nostr_group_id_hex = hex::encode(w.nostr_group_id);
@@ -4211,7 +4236,7 @@ pub async fn daemon_main(
                                         }
                                         if sender_hex != pending.peer_pubkey {
                                             warn!(
-                                                "[marmotd] call.accept sender mismatch call_id={} expected={} got={}",
+                                                "[pikachat] call.accept sender mismatch call_id={} expected={} got={}",
                                                 call_id, pending.peer_pubkey, sender_hex
                                             );
                                             continue;
@@ -4224,7 +4249,7 @@ pub async fn daemon_main(
                                             &pubkey_hex,
                                             &sender_hex,
                                         ) {
-                                            warn!("[marmotd] call.accept auth failed call_id={} err={err:#}", call_id);
+                                            warn!("[pikachat] call.accept auth failed call_id={} err={err:#}", call_id);
                                             continue;
                                         }
                                         let media_crypto = match derive_mls_media_crypto_context(
@@ -4238,7 +4263,7 @@ pub async fn daemon_main(
                                             Ok(v) => v,
                                             Err(err) => {
                                                 warn!(
-                                                    "[marmotd] call.accept derive media context failed call_id={} err={err:#}",
+                                                    "[pikachat] call.accept derive media context failed call_id={} err={err:#}",
                                                     call_id
                                                 );
                                                 continue;
@@ -4257,7 +4282,7 @@ pub async fn daemon_main(
                                                         Ok(v) => v,
                                                         Err(err) => {
                                                             warn!(
-                                                                "[marmotd] start echo worker failed call_id={} err={err:#}",
+                                                                "[pikachat] start echo worker failed call_id={} err={err:#}",
                                                                 call_id
                                                             );
                                                             continue;
@@ -4274,7 +4299,7 @@ pub async fn daemon_main(
                                                         Ok(v) => v,
                                                         Err(err) => {
                                                             warn!(
-                                                                "[marmotd] start stt worker failed call_id={} err={err:#}",
+                                                                "[pikachat] start stt worker failed call_id={} err={err:#}",
                                                                 call_id
                                                             );
                                                             continue;
@@ -4291,7 +4316,7 @@ pub async fn daemon_main(
                                                 Ok(v) => v,
                                                 Err(err) => {
                                                     warn!(
-                                                        "[marmotd] start data worker failed call_id={} err={err:#}",
+                                                        "[pikachat] start data worker failed call_id={} err={err:#}",
                                                         call_id
                                                     );
                                                     continue;

@@ -75,6 +75,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 creatingAccount = false,
                 loggingIn = false,
                 creatingChat = false,
+                startingPersonalAgent = false,
                 fetchingFollowList = false,
             ),
             chatList = emptyList(),

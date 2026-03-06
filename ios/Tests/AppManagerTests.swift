@@ -7,7 +7,13 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
         router: Router(defaultScreen: .chatList, screenStack: []),
         auth: .loggedOut,
         myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
-        busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
+        busy: BusyState(
+            creatingAccount: false,
+            loggingIn: false,
+            creatingChat: false,
+            startingPersonalAgent: false,
+            fetchingFollowList: false
+        ),
         chatList: [],
         currentChat: nil,
         followList: [],
@@ -27,7 +33,13 @@ final class AppManagerTests: XCTestCase {
             router: Router(defaultScreen: .chatList, screenStack: []),
             auth: .loggedOut,
             myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
-            busy: BusyState(creatingAccount: false, loggingIn: false, creatingChat: false, fetchingFollowList: false),
+            busy: BusyState(
+                creatingAccount: false,
+                loggingIn: false,
+                creatingChat: false,
+                startingPersonalAgent: false,
+                fetchingFollowList: false
+            ),
             chatList: [],
             currentChat: nil,
             followList: [],
@@ -105,6 +117,94 @@ final class AppManagerTests: XCTestCase {
         XCTAssertEqual(store.stored?.nsec, "nsec1stale")
         let observedRev = await MainActor.run { manager.state.rev }
         XCTAssertEqual(observedRev, 5)
+    }
+
+    func testDogfoodButtonHiddenForBunkerAuthWithoutLocalNsec() async {
+        var state = makeState(rev: 1)
+        state.auth = .loggedIn(
+            npub: "npub1bunkeruser",
+            pubkey: "pubkey1bunkeruser",
+            mode: .bunkerSigner(bunkerUri: "bunker://signer.example")
+        )
+        let core = MockCore(state: state)
+        let store = MockAuthStore(
+            stored: StoredAuth(
+                mode: .bunker,
+                nsec: nil,
+                bunkerUri: "bunker://signer.example",
+                bunkerClientNsec: "nsec1client"
+            )
+        )
+        let manager = await MainActor.run { AppManager(core: core, authStore: store) }
+
+        let buttonState = await MainActor.run {
+            manager.dogfoodAgentButtonState(for: "npub1bunkeruser")
+        }
+
+        XCTAssertNil(buttonState)
+    }
+
+    func testDogfoodButtonVisibleWhenLocalSigningNsecExists() async {
+        var state = makeState(rev: 1)
+        state.auth = .loggedIn(
+            npub: "npub1localuser",
+            pubkey: "pubkey1localuser",
+            mode: .localNsec
+        )
+        let core = MockCore(state: state)
+        let store = MockAuthStore(
+            stored: StoredAuth(
+                mode: .localNsec,
+                nsec: "nsec1localuser",
+                bunkerUri: nil,
+                bunkerClientNsec: nil
+            )
+        )
+        let manager = await MainActor.run { AppManager(core: core, authStore: store) }
+
+        let buttonState = await MainActor.run {
+            manager.dogfoodAgentButtonState(for: "npub1localuser")
+        }
+
+        XCTAssertEqual(buttonState, DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false))
+    }
+
+    func testDogfoodButtonBusyUsesPersonalAgentFlagOnly() async {
+        var state = makeState(rev: 1)
+        state.auth = .loggedIn(
+            npub: "npub1localuser",
+            pubkey: "pubkey1localuser",
+            mode: .localNsec
+        )
+        state.busy = BusyState(
+            creatingAccount: false,
+            loggingIn: false,
+            creatingChat: true,
+            startingPersonalAgent: false,
+            fetchingFollowList: false
+        )
+        let core = MockCore(state: state)
+        let manager = await MainActor.run { AppManager(core: core, authStore: MockAuthStore()) }
+
+        let notBusy = await MainActor.run {
+            manager.dogfoodAgentButtonState(for: "npub1localuser")
+        }
+        XCTAssertEqual(notBusy, DogfoodAgentButtonState(title: "Start Personal Agent", isBusy: false))
+
+        var stateBusy = state
+        stateBusy.busy = BusyState(
+            creatingAccount: false,
+            loggingIn: false,
+            creatingChat: false,
+            startingPersonalAgent: true,
+            fetchingFollowList: false
+        )
+        let busyCore = MockCore(state: stateBusy)
+        let busyManager = await MainActor.run { AppManager(core: busyCore, authStore: MockAuthStore()) }
+        let busy = await MainActor.run {
+            busyManager.dogfoodAgentButtonState(for: "npub1localuser")
+        }
+        XCTAssertEqual(busy, DogfoodAgentButtonState(title: "Starting Personal Agent...", isBusy: true))
     }
 }
 

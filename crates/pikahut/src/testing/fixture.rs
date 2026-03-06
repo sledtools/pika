@@ -252,7 +252,6 @@ mod tests {
             server_url: Some("http://127.0.0.1:18080".to_string()),
             server_pid: None,
             server_start_time: None,
-            server_pubkey_hex: None,
             database_url: None,
             postgres_pid: None,
             bot_npub: Some("npub1test".to_string()),

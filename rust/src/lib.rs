@@ -25,6 +25,7 @@ use crate::external_signer::{
     ExternalSignerBridge as ExternalSignerBridgeTrait,
     SharedExternalSignerBridge as SharedExternalSignerBridgeType,
 };
+use base64::Engine;
 use flume::{Receiver, Sender};
 
 pub use actions::AppAction;
@@ -83,6 +84,34 @@ pub fn is_valid_peer_key(input: &str) -> bool {
         return false;
     }
     nostr_sdk::prelude::PublicKey::parse(&normalized).is_ok()
+}
+
+#[uniffi::export]
+pub fn build_nip98_authorization_header(nsec: &str, method: &str, url: &str) -> Option<String> {
+    use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
+
+    let trimmed_nsec = nsec.trim();
+    let trimmed_method = method.trim();
+    let trimmed_url = url.trim();
+    if trimmed_nsec.is_empty() || trimmed_method.is_empty() || trimmed_url.is_empty() {
+        return None;
+    }
+
+    let keys = Keys::parse(trimmed_nsec).ok()?;
+    let event = EventBuilder::new(Kind::Custom(27235), "")
+        .tags([
+            Tag::custom(TagKind::custom("u"), [trimmed_url]),
+            Tag::custom(
+                TagKind::custom("method"),
+                [trimmed_method.to_ascii_uppercase()],
+            ),
+        ])
+        .sign_with_keys(&keys)
+        .ok()?;
+
+    let payload = serde_json::to_vec(&event).ok()?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+    Some(format!("Nostr {encoded}"))
 }
 
 #[cfg(test)]
@@ -150,6 +179,16 @@ mod tests {
     fn is_valid_peer_key_rejects_garbage() {
         assert!(!is_valid_peer_key("garbage"));
         assert!(!is_valid_peer_key("pika://chat/garbage"));
+    }
+
+    #[test]
+    fn build_nip98_authorization_header_returns_nostr_scheme() {
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let nsec = keys.secret_key().to_secret_hex();
+        let header =
+            build_nip98_authorization_header(&nsec, "get", "https://example.com/v1/agents/me")
+                .expect("authorization header");
+        assert!(header.starts_with("Nostr "));
     }
 }
 

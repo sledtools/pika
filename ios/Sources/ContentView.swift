@@ -204,12 +204,13 @@ private func screenView(
         )
     case .chatList:
         ChatListView(
-            state: chatListState(from: state),
+            state: chatListState(from: state, manager: manager),
             onLogout: { manager.logout() },
             onOpenChat: { manager.dispatch(.openChat(chatId: $0)) },
             onArchiveChat: { manager.dispatch(.archiveChat(chatId: $0)) },
             onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
             onNewGroupChat: { manager.dispatch(.pushScreen(screen: .newGroupChat)) },
+            onEnsureDogfoodAgent: { manager.ensureDogfoodAgent() },
             onRefreshProfile: { manager.refreshMyProfile() },
             onSaveProfile: { name, about in
                 manager.saveMyProfile(name: name, about: about)
@@ -418,11 +419,13 @@ private func loginState(from state: AppState) -> LoginViewState {
 }
 
 @MainActor
-private func chatListState(from state: AppState) -> ChatListViewState {
-    ChatListViewState(
+private func chatListState(from state: AppState, manager: AppManager) -> ChatListViewState {
+    let myNpub = myNpub(from: state)
+    return ChatListViewState(
         chats: state.chatList,
-        myNpub: myNpub(from: state),
-        myProfile: state.myProfile
+        myNpub: myNpub,
+        myProfile: state.myProfile,
+        dogfoodAgentButton: manager.dogfoodAgentButtonState(for: myNpub)
     )
 }
 

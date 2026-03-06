@@ -343,8 +343,14 @@ impl VmManager {
                     timings.insert("runner_resolve_ms".into(), to_ms(phase_start.elapsed()));
                     phase_start = Instant::now();
 
-                    let marmotd_bin = packaged_marmotd_path()?;
-                    timings.insert("marmotd_resolve_ms".into(), to_ms(phase_start.elapsed()));
+                    let daemon_bin = resolve_agent_daemon_bin();
+                    if daemon_bin.is_none() {
+                        warn!(
+                            vm_id = %id,
+                            "no packaged pikachat binary found; relying on guest PATH"
+                        );
+                    }
+                    timings.insert("daemon_resolve_ms".into(), to_ms(phase_start.elapsed()));
                     phase_start = Instant::now();
 
                     write_runtime_metadata(
@@ -362,7 +368,7 @@ impl VmManager {
                         &self.cfg.runtime_artifacts_guest_mount,
                         variant.workspace_mode(),
                         &self.cfg.workspace_template_path,
-                        Some(&marmotd_bin),
+                        daemon_bin.as_deref(),
                         guest_autostart.as_ref(),
                     )?;
                     timings.insert("metadata_write_ms".into(), to_ms(phase_start.elapsed()));
@@ -454,6 +460,82 @@ impl VmManager {
         Ok(())
     }
 
+    pub async fn recover(&self, id: &str) -> anyhow::Result<VmResponse> {
+        let vm = {
+            let guard = self.inner.lock().await;
+            guard
+                .vms
+                .get(id)
+                .cloned()
+                .ok_or_else(|| anyhow!("vm not found: {id}"))?
+        };
+        let variant = SpawnVariant::parse(&vm.spawn_variant)
+            .with_context(|| format!("parse spawn variant for recover: {}", vm.spawn_variant))?;
+
+        let total_started = Instant::now();
+        let mut timings = BTreeMap::<String, u64>::new();
+        let mut phase_start = Instant::now();
+
+        let reboot_result = self.try_reboot_vm(&vm).await;
+        timings.insert("reboot_attempt_ms".into(), to_ms(phase_start.elapsed()));
+        phase_start = Instant::now();
+
+        let runtime_status = match reboot_result {
+            Ok(()) => "running",
+            Err(reboot_err) => match variant {
+                SpawnVariant::Prebuilt | SpawnVariant::PrebuiltCow => {
+                    warn!(
+                        vm_id = %id,
+                        error = %reboot_err,
+                        "reboot failed; attempting recreate with existing persistent home"
+                    );
+                    self.recreate_prebuilt_vm_with_existing_home(&vm).await?;
+                    timings.insert("recreate_fallback_ms".into(), to_ms(phase_start.elapsed()));
+                    if wait_for_unit_active_or_fail_fast(
+                        &self.cfg.systemctl_cmd,
+                        &format!("microvm@{id}.service"),
+                        Duration::from_secs(2),
+                    )
+                    .await?
+                    {
+                        "running"
+                    } else {
+                        "starting"
+                    }
+                }
+                SpawnVariant::Legacy => {
+                    return Err(reboot_err)
+                        .context("legacy variant recover does not support recreate fallback");
+                }
+            },
+        };
+
+        timings.insert("recover_total_ms".into(), to_ms(total_started.elapsed()));
+
+        let mut guard = self.inner.lock().await;
+        let vm_snapshot = {
+            let vm_mut = guard
+                .vms
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("vm disappeared during recover: {id}"))?;
+            vm_mut.status = runtime_status.to_string();
+            self.persist_vm(vm_mut)?;
+            vm_mut.clone()
+        };
+        self.persist_sessions_locked(&guard.vms)?;
+        drop(guard);
+
+        let private_key =
+            fs::read_to_string(&vm_snapshot.ssh_private_key_path).with_context(|| {
+                format!(
+                    "read private key {}",
+                    vm_snapshot.ssh_private_key_path.display()
+                )
+            })?;
+
+        Ok(vm_snapshot.to_response(private_key, &self.cfg.llm_base_url, timings))
+    }
+
     pub async fn reap_expired(&self) -> anyhow::Result<Vec<String>> {
         let now = Utc::now();
         let expired_ids = {
@@ -493,7 +575,6 @@ impl VmManager {
             &flake_dir,
             cpu,
             memory_mb,
-            self.cfg.workspace_size_mb,
             &self.cfg.runtime_artifacts_host_dir,
             &self.cfg.runtime_artifacts_guest_mount,
         )?;
@@ -675,6 +756,12 @@ impl VmManager {
     ) -> anyhow::Result<()> {
         fs::create_dir_all(vm_state_dir)
             .with_context(|| format!("create vm state dir {}", vm_state_dir.display()))?;
+        fs::create_dir_all(vm_state_dir.join("home")).with_context(|| {
+            format!(
+                "create persistent home dir {}",
+                vm_state_dir.join("home").display()
+            )
+        })?;
 
         symlink_force(runner_path, &vm_state_dir.join("current"))?;
 
@@ -704,6 +791,63 @@ impl VmManager {
             &PathBuf::from(format!("/nix/var/nix/gcroots/microvm/booted-{id}")),
         )?;
 
+        Ok(())
+    }
+
+    async fn try_reboot_vm(&self, vm: &PersistedVm) -> anyhow::Result<()> {
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("restart")
+                .arg(format!("microvm@{}.service", vm.id)),
+            "restart microvm service",
+        )
+        .await?;
+
+        if !wait_for_unit_active_or_fail_fast(
+            &self.cfg.systemctl_cmd,
+            &format!("microvm@{}.service", vm.id),
+            Duration::from_secs(3),
+        )
+        .await?
+        {
+            anyhow::bail!("microvm service did not become active after reboot");
+        }
+
+        ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
+        Ok(())
+    }
+
+    async fn recreate_prebuilt_vm_with_existing_home(
+        &self,
+        vm: &PersistedVm,
+    ) -> anyhow::Result<()> {
+        let unit_name = format!("microvm@{}.service", vm.id);
+        let _ = Command::new(&self.cfg.systemctl_cmd)
+            .arg("stop")
+            .arg(&unit_name)
+            .status()
+            .await;
+        let _ = Command::new(&self.cfg.ip_cmd)
+            .arg("link")
+            .arg("del")
+            .arg(&vm.tap_name)
+            .status()
+            .await;
+
+        self.ensure_runtime_artifacts().await?;
+        let runner_path = self.ensure_prebuilt_runner(vm.cpu, vm.memory_mb).await?;
+        self.install_prebuilt_vm_state(&vm.id, &vm.microvm_state_dir, &runner_path)
+            .await?;
+        create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
+        ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("start")
+                .arg("--no-block")
+                .arg(&unit_name),
+            "start microvm service",
+        )
+        .await?;
         Ok(())
     }
 
@@ -905,31 +1049,49 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn packaged_marmotd_path() -> anyhow::Result<PathBuf> {
-    if let Ok(override_path) = std::env::var("VM_MARMOTD_BIN") {
-        let path = PathBuf::from(override_path);
-        if path.exists() {
-            return Ok(path);
+fn env_existing_path(name: &str) -> Option<PathBuf> {
+    let value = std::env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    let value = std::env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn resolve_agent_daemon_bin() -> Option<PathBuf> {
+    if let Some(path) = env_existing_path("VM_PIKACHAT_BIN") {
+        return Some(path);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            let pikachat = bin_dir.join("pikachat");
+            if pikachat.exists() {
+                return Some(pikachat);
+            }
         }
     }
 
-    let exe = std::env::current_exe().context("resolve vm-spawner binary path")?;
-    let bin_dir = exe
-        .parent()
-        .ok_or_else(|| anyhow!("vm-spawner binary has no parent directory"))?;
-    let marmotd = bin_dir.join("marmotd");
-    if marmotd.exists() {
-        return Ok(marmotd);
+    if let Some(path) = find_in_path("pikachat") {
+        return Some(path);
     }
 
-    if let Some(path) = find_in_path("marmotd") {
-        return Ok(path);
-    }
-
-    anyhow::bail!(
-        "packaged marmotd binary missing at {} (set VM_MARMOTD_BIN or ensure marmotd is on PATH)",
-        marmotd.display()
-    );
+    None
 }
 
 fn find_in_path(bin_name: &str) -> Option<PathBuf> {
@@ -959,7 +1121,7 @@ fn write_runtime_metadata(
     runtime_artifacts_guest_mount: &Path,
     workspace_mode: &str,
     workspace_template_path: &Path,
-    marmotd_bin: Option<&Path>,
+    daemon_bin: Option<&Path>,
     guest_autostart: Option<&GuestAutostartRequest>,
 ) -> anyhow::Result<()> {
     let metadata_dir = vm_state_dir.join("metadata");
@@ -989,11 +1151,24 @@ fn write_runtime_metadata(
         "PIKA_RUNTIME_ARTIFACTS_GUEST={}\n",
         shell_quote(&runtime_artifacts_guest_mount.display().to_string()),
     ));
-    if let Some(path) = marmotd_bin {
+    let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
+    env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
+    if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
-            "PIKA_MARMOTD_BIN={}\n",
+            "PIKA_PIKACHAT_BIN={}\n",
             shell_quote(&path.display().to_string())
         ));
+    }
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "PI_MODEL",
+        "PI_ADAPTER_BASE_URL",
+        "PI_ADAPTER_TOKEN",
+    ] {
+        if let Some(value) = env_non_empty(key) {
+            env_file.push_str(&format!("{key}={}\n", shell_quote(&value)));
+        }
     }
     fs::write(metadata_dir.join("env"), env_file)
         .with_context(|| format!("write {}", metadata_dir.join("env").display()))?;
@@ -1155,7 +1330,6 @@ fn write_prebuilt_base_flake(
     flake_dir: &Path,
     cpu: u32,
     memory_mb: u32,
-    workspace_size_mb: u32,
     runtime_artifacts_host_dir: &Path,
     runtime_artifacts_guest_mount: &Path,
 ) -> anyhow::Result<()> {
@@ -1256,6 +1430,12 @@ fn write_prebuilt_base_flake(
                 cp /run/agent-meta/env /etc/agent-env
                 chmod 0644 /etc/agent-env
               fi
+
+              # v1 durability contract:
+              # - /root is backed by host persistent storage (virtiofs share)
+              # - /workspace resolves to /root
+              rm -rf /workspace
+              ln -sfn /root /workspace
             '';
           }};
 
@@ -1343,12 +1523,6 @@ fn write_prebuilt_base_flake(
             '';
           }};
 
-          fileSystems."/workspace" = {{
-            device = "tmpfs";
-            fsType = "tmpfs";
-            options = [ "size={workspace_size_mb}M" "mode=0755" ];
-          }};
-
           microvm = {{
             hypervisor = "cloud-hypervisor";
             vcpu = {cpu};
@@ -1376,6 +1550,13 @@ fn write_prebuilt_base_flake(
                 source = "{runtime_artifacts_host_dir}";
                 mountPoint = "{runtime_artifacts_guest_mount}";
                 readOnly = true;
+              }}
+              {{
+                proto = "virtiofs";
+                tag = "agent-home";
+                source = "./home";
+                mountPoint = "/root";
+                readOnly = false;
               }}
             ];
 

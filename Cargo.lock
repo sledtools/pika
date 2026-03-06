@@ -6177,6 +6177,7 @@ version = "0.1.0"
 dependencies = [
  "a2",
  "anyhow",
+ "askama 0.12.1",
  "async-trait",
  "axum 0.6.20",
  "base64 0.22.1",
@@ -6187,6 +6188,7 @@ dependencies = [
  "fcm-rs",
  "futures",
  "hex",
+ "hmac",
  "nostr",
  "nostr-sdk",
  "pika-agent-control-plane",
@@ -6197,6 +6199,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6291,8 +6294,6 @@ dependencies = [
  "mdk-storage-traits",
  "nostr-blossom",
  "nostr-sdk",
- "pika-agent-control-plane",
- "pika-agent-microvm",
  "pika-agent-protocol",
  "pika-marmot-runtime",
  "pika-relay-profiles",
@@ -6339,6 +6340,7 @@ name = "pikahut"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bech32",
  "chrono",
  "clap",

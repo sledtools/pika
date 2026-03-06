@@ -210,7 +210,6 @@ fn build_manifest(config: &ResolvedConfig, fixture: &RunningFixture) -> Manifest
         server_url: fixture.server.as_ref().map(|s| s.url.clone()),
         server_pid,
         server_start_time: server_pid.and_then(get_process_fingerprint),
-        server_pubkey_hex: fixture.server.as_ref().map(|s| s.pubkey_hex.clone()),
         database_url: fixture.postgres.as_ref().map(|pg| pg.database_url.clone()),
         postgres_pid: fixture.postgres.as_ref().and_then(|pg| pg.pid()),
         bot_npub: fixture.bot.as_ref().map(|b| b.npub.clone()),
@@ -237,9 +236,6 @@ fn print_summary(config: &ResolvedConfig, manifest: &Manifest) {
     }
     if let Some(ref url) = manifest.database_url {
         eprintln!("  Postgres:  {url}");
-    }
-    if let Some(ref pk) = manifest.server_pubkey_hex {
-        eprintln!("  Pubkey:    {pk}");
     }
     if let Some(ref npub) = manifest.bot_npub {
         eprintln!("  Bot:       {npub}");

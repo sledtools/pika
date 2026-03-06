@@ -344,7 +344,6 @@ impl MoqRelay {
 pub struct Server {
     pub child: Child,
     pub url: String,
-    pub pubkey_hex: String,
 }
 
 impl Server {
@@ -354,18 +353,9 @@ impl Server {
         database_url: &str,
         relay_url: &str,
     ) -> Result<Self> {
-        let identity_path = config.identity_json();
-        let keys = pika_marmot_runtime::load_or_create_keys(&identity_path)?;
-        let pubkey_hex = keys.public_key().to_hex();
-        let secret_hex = keys.secret_key().to_secret_hex();
-
-        info!("[server] Server pubkey: {pubkey_hex}");
-
         let port = config.server_port;
         let url = config.server_url();
         let log_path = state_dir.join("server.log");
-
-        let open_prov = if config.open_provisioning { "1" } else { "0" };
 
         info!("[server] Starting pika-server on port {port}...");
         let log_file = std::fs::File::create(&log_path)?;
@@ -376,10 +366,6 @@ impl Server {
             .env("RELAYS", relay_url)
             .env("DATABASE_URL", database_url)
             .env("NOTIFICATION_PORT", port.to_string())
-            .env("PIKA_AGENT_CONTROL_ENABLED", "1")
-            .env("PIKA_AGENT_CONTROL_NOSTR_SECRET", &secret_hex)
-            .env("PIKA_AGENT_CONTROL_RELAYS", relay_url)
-            .env("PIKA_AGENT_CONTROL_ALLOW_OPEN_PROVISIONING", open_prov)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
@@ -395,11 +381,7 @@ impl Server {
         health::wait_for_http(&health_url, Duration::from_secs(60)).await?;
 
         info!("[server] Ready ({url})");
-        Ok(Self {
-            child,
-            url,
-            pubkey_hex,
-        })
+        Ok(Self { child, url })
     }
 
     pub fn pid(&self) -> Option<u32> {

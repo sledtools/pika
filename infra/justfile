@@ -102,16 +102,12 @@ relay-deploy name:
 
     echo "  [1/4] Syncing config to Hetzner builder..."
     cd "{{FLAKE_ROOT}}"
-    rsync -a --delete \
+    rsync -a --delete --delete-excluded \
+        --filter=':- .gitignore' \
         --exclude='.git/' \
         --exclude='.git' \
-        --exclude='result/' \
-        --exclude='target/' \
-        --exclude='.pgdata/' \
-        --exclude='crates/pika-server/.pgdata/' \
         -e "ssh $BUILDER_SSH" \
         ./ "$BUILDER:$REMOTE_DIR"
-    ssh $BUILDER_SSH "$BUILDER" "rm -rf $REMOTE_DIR/.git $REMOTE_DIR/.pgdata $REMOTE_DIR/crates/pika-server/.pgdata"
 
     echo "  [2/4] Building on Hetzner (native x86_64-linux)..."
     SYSTEM=$(ssh $BUILDER_SSH "$BUILDER" \
@@ -260,16 +256,12 @@ server-deploy:
 
     echo "  [1/4] Syncing config to Hetzner builder..."
     cd "{{FLAKE_ROOT}}"
-    rsync -a --delete \
+    rsync -a --delete --delete-excluded \
+        --filter=':- .gitignore' \
         --exclude='.git/' \
         --exclude='.git' \
-        --exclude='result/' \
-        --exclude='target/' \
-        --exclude='.pgdata/' \
-        --exclude='crates/pika-server/.pgdata/' \
         -e "ssh $BUILDER_SSH" \
         ./ "$BUILDER:$REMOTE_DIR"
-    ssh $BUILDER_SSH "$BUILDER" "rm -rf $REMOTE_DIR/.git $REMOTE_DIR/.pgdata $REMOTE_DIR/crates/pika-server/.pgdata"
 
     echo "  [2/4] Building on Hetzner (native x86_64-linux)..."
     SYSTEM=$(ssh $BUILDER_SSH "$BUILDER" \
@@ -431,16 +423,12 @@ pika-relay-deploy name:
     cd "{{FLAKE_ROOT}}"
     if [[ "$TARGET_SYSTEM" == "x86_64-linux" ]]; then
       echo "  [1/4] Syncing config to Hetzner builder..."
-      rsync -a --delete \
+      rsync -a --delete --delete-excluded \
+          --filter=':- .gitignore' \
           --exclude='.git/' \
           --exclude='.git' \
-          --exclude='result/' \
-          --exclude='target/' \
-          --exclude='.pgdata/' \
-          --exclude='crates/pika-server/.pgdata/' \
           -e "ssh $BUILDER_SSH" \
           ./ "$BUILDER:$REMOTE_DIR"
-      ssh $BUILDER_SSH "$BUILDER" "rm -rf $REMOTE_DIR/.git $REMOTE_DIR/.pgdata $REMOTE_DIR/crates/pika-server/.pgdata"
 
       echo "  [2/4] Building on Hetzner (native x86_64-linux)..."
       SYSTEM=$(ssh $BUILDER_SSH "$BUILDER" \
@@ -462,17 +450,12 @@ pika-relay-deploy name:
           "nix-env -p /nix/var/nix/profiles/system --set '$SYSTEM' && '$SYSTEM'/bin/switch-to-configuration switch"
     else
       echo "  [1/2] Syncing config to $NAME for native $TARGET_SYSTEM build..."
-      rsync -a --delete \
+      rsync -a --delete --delete-excluded \
+          --filter=':- .gitignore' \
           --exclude='.git/' \
           --exclude='.git' \
-          --exclude='result/' \
-          --exclude='target/' \
-          --exclude='.pgdata/' \
-          --exclude='crates/pika-server/.pgdata/' \
           -e "ssh -o StrictHostKeyChecking=accept-new" \
           ./ "root@$IP:$TARGET_REMOTE_DIR"
-      ssh -o StrictHostKeyChecking=accept-new "root@$IP" \
-          "rm -rf $TARGET_REMOTE_DIR/.git $TARGET_REMOTE_DIR/.pgdata $TARGET_REMOTE_DIR/crates/pika-server/.pgdata"
 
       echo "  [2/2] Building + activating on $NAME (native $TARGET_SYSTEM)..."
       ssh -o StrictHostKeyChecking=accept-new "root@$IP" \
@@ -586,16 +569,12 @@ build-deploy:
 
     echo "  [1/3] Syncing config to pika-build..."
     cd "{{FLAKE_ROOT}}"
-    rsync -a --delete \
+    rsync -a --delete --delete-excluded \
+        --filter=':- .gitignore' \
         --exclude='.git/' \
         --exclude='.git' \
-        --exclude='result/' \
-        --exclude='target/' \
-        --exclude='.pgdata/' \
-        --exclude='crates/pika-server/.pgdata/' \
         -e "ssh -i $SSH_KEY" \
         ./ "root@$IP:$REMOTE_DIR"
-    ssh -i "$SSH_KEY" "root@$IP" "rm -rf $REMOTE_DIR/.git $REMOTE_DIR/.pgdata $REMOTE_DIR/crates/pika-server/.pgdata"
 
     echo "  [2/3] Building on pika-build (native x86_64-linux)..."
     ssh -i "$SSH_KEY" "root@$IP" \

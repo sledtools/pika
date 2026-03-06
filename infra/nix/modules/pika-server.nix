@@ -8,6 +8,11 @@ let
   serviceUser = dbName;
   serviceGroup = dbName;
   serviceStateDir = "/var/lib/pika-server";
+  startPikaServer = pkgs.writeShellScript "start-pika-server" ''
+    set -euo pipefail
+    export PIKA_ADMIN_SESSION_SECRET="$(${pkgs.coreutils}/bin/sha256sum ${serviceStateDir}/apns-key.p8 | ${pkgs.gawk}/bin/awk '{print $1}')"
+    exec ${pikaServerPkg}/bin/pika-server
+  '';
 in
 {
   imports = [
@@ -97,6 +102,11 @@ in
       APNS_TEAM_ID=${config.sops.placeholder."apns_team_id"}
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
+      # vm-spawner is reached over private WireGuard/Tailscale network.
+      # Use the builder's stable tailnet IPv4 directly because MagicDNS
+      # names may not resolve on this host.
+      PIKA_AGENT_MICROVM_SPAWNER_URL=http://100.81.250.67:8080
+      PIKA_ADMIN_BOOTSTRAP_NPUBS=npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y,npub1rtrxx9eyvag0ap3v73c4dvsqq5d2yxwe5d72qxrfpwe5svr96wuqed4p38,npub1p4kg8zxukpym3h20erfa3samj00rm2gt4q5wfuyu3tg0x3jg3gesvncxf8
       RUST_LOG=info
     '';
   };
@@ -127,7 +137,7 @@ in
       Group = serviceGroup;
       WorkingDirectory = serviceStateDir;
       EnvironmentFile = [ config.sops.templates."pika-server-env".path ];
-      ExecStart = "${pikaServerPkg}/bin/pika-server";
+      ExecStart = "${startPikaServer}";
       Restart = "always";
       RestartSec = "2s";
       NoNewPrivileges = true;

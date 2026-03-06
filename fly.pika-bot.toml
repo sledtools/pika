@@ -1,9 +1,0 @@
-app = "pika-bot"
-primary_region = "ewr"
-
-[build]
-  dockerfile = "crates/pika-bot/Dockerfile"
-  ignorefile = "crates/pika-bot/Dockerfile.dockerignore"
-
-[env]
-  RUST_LOG = "info"

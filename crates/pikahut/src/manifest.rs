@@ -27,8 +27,6 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_start_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub server_pubkey_hex: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub database_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres_pid: Option<u32>,
@@ -107,9 +105,7 @@ impl Manifest {
         }
         if let Some(ref url) = self.server_url {
             env.push(("PIKA_SERVER_URL".into(), url.clone()));
-        }
-        if let Some(ref pk) = self.server_pubkey_hex {
-            env.push(("PIKA_AGENT_CONTROL_SERVER_PUBKEY".into(), pk.clone()));
+            env.push(("PIKA_AGENT_API_BASE_URL".into(), url.clone()));
         }
         if let Some(ref url) = self.database_url {
             env.push(("DATABASE_URL".into(), url.clone()));
@@ -160,7 +156,6 @@ mod tests {
             server_url: Some("http://localhost:8080".into()),
             server_pid: Some(1235),
             server_start_time: Some("Mon Feb 26 00:00:01 2026".into()),
-            server_pubkey_hex: Some("abc123".into()),
             database_url: Some("postgresql:///pika_server?host=/tmp/pgdata".into()),
             postgres_pid: Some(1236),
             bot_npub: None,
@@ -216,7 +211,7 @@ mod tests {
         assert!(keys.contains(&"RELAY_EU"));
         assert!(keys.contains(&"RELAY_US"));
         assert!(keys.contains(&"PIKA_SERVER_URL"));
-        assert!(keys.contains(&"PIKA_AGENT_CONTROL_SERVER_PUBKEY"));
+        assert!(keys.contains(&"PIKA_AGENT_API_BASE_URL"));
         assert!(keys.contains(&"DATABASE_URL"));
     }
 

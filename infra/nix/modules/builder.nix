@@ -219,6 +219,18 @@ in
 
   environment.systemPackages = with pkgs; [
     restic
+    (writeShellScriptBin "pika-build-status" ''
+      host-version
+      echo ""
+      echo "=== vm-spawner ==="
+      systemctl status vm-spawner --no-pager -n 20
+      echo ""
+      echo "=== pika-news ==="
+      systemctl status pika-news --no-pager -n 20
+      echo ""
+      echo "=== nix-serve ==="
+      systemctl status nix-serve --no-pager -n 20
+    '')
     (writeShellScriptBin "microvm-home-restore" ''
       set -euo pipefail
 

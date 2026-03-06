@@ -1,6 +1,14 @@
-{ config, lib, pkgs, ... }:
+{ config, pkgs, self, ... }:
 
+let
+  fullRev =
+    if self ? dirtyRev then self.dirtyRev
+    else if self ? rev then self.rev
+    else null;
+in
 {
+  system.configurationRevision = fullRev;
+
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ];
     substituters = [
@@ -25,6 +33,45 @@
     wget
     tmux
     jq
+    (writeShellScriptBin "host-version" ''
+      set -euo pipefail
+
+      version_json="$(nixos-version --json)"
+      current_system="$(${coreutils}/bin/readlink -f /run/current-system)"
+
+      case "''${1:-}" in
+        --json)
+          exec ${jq}/bin/jq -cn \
+            --argjson version "$version_json" \
+            --arg host "${config.networking.hostName}" \
+            --arg system "${pkgs.stdenv.hostPlatform.system}" \
+            --arg currentSystem "$current_system" \
+            '$version + {
+              hostName: $host,
+              system: $system,
+              currentSystem: $currentSystem
+            }'
+          ;;
+        "")
+          exec ${jq}/bin/jq -nr \
+            --argjson version "$version_json" \
+            --arg host "${config.networking.hostName}" \
+            --arg system "${pkgs.stdenv.hostPlatform.system}" \
+            --arg currentSystem "$current_system" \
+            '[
+              $host,
+              "rev=" + ($version.configurationRevision // "unknown"),
+              "nixos=" + ($version.nixosVersion // "unknown"),
+              "system=" + $system,
+              "current-system=" + $currentSystem
+            ] | join(" ")'
+          ;;
+        *)
+          echo "usage: host-version [--json]" >&2
+          exit 2
+          ;;
+      esac
+    '')
   ];
 
   services.openssh = {

@@ -200,6 +200,8 @@ in
 
   environment.systemPackages = with pkgs; [
     (writeShellScriptBin "pika-server-status" ''
+      host-version
+      echo ""
       echo "=== pika-server status ==="
       systemctl status pika-server --no-pager
       echo ""

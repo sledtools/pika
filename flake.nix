@@ -34,7 +34,7 @@
     let
       mkRelay = hostFile: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs = { inherit moq; };
+        specialArgs = { inherit moq self; };
         modules = [
           disko.nixosModules.disko
           moq.nixosModules.moq-relay
@@ -545,19 +545,23 @@ EOF
         devShells.infra = pkgs.mkShell {
           packages = with pkgs; [
             hcloud
+            git
             jq
             just
+            rsync
             age
             age-plugin-yubikey
             sops
             openssh
           ];
           shellHook = ''
-            echo ""
-            echo "Pika Infra environment"
-            echo "  hcloud: $(hcloud version 2>/dev/null | head -1)"
-            echo "  Commands: cd infra && just --list"
-            echo ""
+            if [ "''${PIKA_INFRA_QUIET:-0}" != "1" ]; then
+              echo ""
+              echo "Pika Infra environment"
+              echo "  hcloud: $(hcloud version 2>/dev/null | head -1)"
+              echo "  Commands: cd infra && just --list"
+              echo ""
+            fi
           '';
         };
       }
@@ -576,7 +580,7 @@ EOF
 
         pika-server = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit pikaServerPkg sops-nix; };
+          specialArgs = { inherit self pikaServerPkg sops-nix; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops
@@ -586,7 +590,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikachatPkg; };
+          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikachatPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops
@@ -597,7 +601,7 @@ EOF
 
         relay-us-east = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit pikaRelayPkg; };
+          specialArgs = { inherit self pikaRelayPkg; };
           modules = [
             disko.nixosModules.disko
             (import ./infra/nix/hosts/relay-us-east.nix)
@@ -606,7 +610,7 @@ EOF
 
         relay-eu = nixpkgs.lib.nixosSystem {
           system = "aarch64-linux";
-          specialArgs = { pikaRelayPkg = pikaRelayPkgArm; };
+          specialArgs = { inherit self; pikaRelayPkg = pikaRelayPkgArm; };
           modules = [
             disko.nixosModules.disko
             (import ./infra/nix/hosts/relay-eu.nix)

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FLAKE_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+
+export PIKA_INFRA_QUIET=1
+
+exec nix --extra-experimental-features 'nix-command flakes' develop "$FLAKE_ROOT#infra" -c hcloud "$@"

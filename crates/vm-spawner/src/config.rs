@@ -14,35 +14,22 @@ pub struct Config {
     pub bind: SocketAddr,
     pub bridge_name: String,
     pub state_dir: PathBuf,
-    pub definition_dir: PathBuf,
     pub run_dir: PathBuf,
-    pub sessions_file: PathBuf,
-    pub dhcp_hosts_dir: PathBuf,
     pub runner_cache_dir: PathBuf,
     pub runner_flake_dir: PathBuf,
-    pub workspace_template_path: PathBuf,
     pub runtime_artifacts_host_dir: PathBuf,
     pub runtime_artifacts_guest_mount: PathBuf,
     pub runtime_artifacts: Vec<RuntimeArtifactSpec>,
-    pub default_spawn_variant: String,
     pub ip_start: Ipv4Addr,
     pub ip_end: Ipv4Addr,
     pub gateway_ip: Ipv4Addr,
     pub dns_ip: Ipv4Addr,
-    pub llm_base_url: String,
     pub default_cpu: u32,
     pub default_memory_mb: u32,
-    pub default_ttl_seconds: u64,
-    pub max_cpu: u32,
-    pub max_memory_mb: u32,
     pub prewarm_enabled: bool,
-    pub prewarm_flake_ref: String,
-    pub prewarm_dev_shell: String,
-    pub microvm_cmd: String,
     pub systemctl_cmd: String,
     pub ip_cmd: String,
     pub nix_cmd: String,
-    pub ssh_keygen_cmd: String,
     pub chown_cmd: String,
     pub chmod_cmd: String,
 }
@@ -58,20 +45,8 @@ impl Config {
         let state_dir = PathBuf::from(
             std::env::var("VM_STATE_DIR").unwrap_or_else(|_| "/var/lib/microvms".into()),
         );
-        let definition_dir = PathBuf::from(
-            std::env::var("VM_DEFINITION_DIR")
-                .unwrap_or_else(|_| "/data/microvm-definitions".into()),
-        );
         let run_dir = PathBuf::from(
             std::env::var("VM_RUN_DIR").unwrap_or_else(|_| "/run/microvm-agent".into()),
-        );
-        let sessions_file = PathBuf::from(
-            std::env::var("VM_SESSIONS_FILE")
-                .unwrap_or_else(|_| run_dir.join("sessions.json").display().to_string()),
-        );
-        let dhcp_hosts_dir = PathBuf::from(
-            std::env::var("VM_DHCP_HOSTS_DIR")
-                .unwrap_or_else(|_| run_dir.join("dhcp-hosts.d").display().to_string()),
         );
         let runner_cache_dir = PathBuf::from(
             std::env::var("VM_RUNNER_CACHE_DIR")
@@ -80,10 +55,6 @@ impl Config {
         let runner_flake_dir = PathBuf::from(
             std::env::var("VM_RUNNER_FLAKE_DIR")
                 .unwrap_or_else(|_| run_dir.join("runner-flakes").display().to_string()),
-        );
-        let workspace_template_path = PathBuf::from(
-            std::env::var("VM_WORKSPACE_TEMPLATE_PATH")
-                .unwrap_or_else(|_| "/data/microvm-workspace/template.img".into()),
         );
         let runtime_artifacts_host_dir = PathBuf::from(
             std::env::var("VM_RUNTIME_ARTIFACTS_HOST_DIR")
@@ -95,39 +66,22 @@ impl Config {
         );
         let runtime_artifacts = parse_runtime_artifacts_env("VM_RUNTIME_ARTIFACTS")
             .context("parse VM_RUNTIME_ARTIFACTS")?;
-        let default_spawn_variant =
-            std::env::var("VM_SPAWN_VARIANT_DEFAULT").unwrap_or_else(|_| "prebuilt-cow".into());
 
         let ip_start = parse_ipv4_env("VM_IP_POOL_START", "192.168.83.10")?;
         let ip_end = parse_ipv4_env("VM_IP_POOL_END", "192.168.83.254")?;
         let gateway_ip = parse_ipv4_env("VM_GATEWAY_IP", "192.168.83.1")?;
         let dns_ip = parse_ipv4_env("VM_DNS_IP", "192.168.83.1")?;
 
-        let llm_base_url = std::env::var("VM_LLM_BASE_URL")
-            .unwrap_or_else(|_| "http://192.168.83.1:8090/v1".into());
-
         let default_cpu = parse_u32_env("VM_DEFAULT_CPU", 2);
         let default_memory_mb = parse_u32_env("VM_DEFAULT_MEMORY_MB", 4096);
-        let default_ttl_seconds = parse_u64_env("VM_DEFAULT_TTL_SECONDS", 3600);
-
-        let max_cpu = parse_u32_env("VM_MAX_CPU", 16);
-        let max_memory_mb = parse_u32_env("VM_MAX_MEMORY_MB", 65536);
         let prewarm_enabled = parse_bool_env("VM_PREWARM_ENABLED", true);
-        let prewarm_flake_ref = std::env::var("VM_PREWARM_FLAKE_REF")
-            .unwrap_or_else(|_| "github:sledtools/pika".into());
-        let prewarm_dev_shell =
-            std::env::var("VM_PREWARM_DEV_SHELL").unwrap_or_else(|_| "default".into());
 
-        let microvm_cmd = std::env::var("VM_MICROVM_CMD")
-            .unwrap_or_else(|_| "/run/current-system/sw/bin/microvm".into());
         let systemctl_cmd = std::env::var("VM_SYSTEMCTL_CMD")
             .unwrap_or_else(|_| "/run/current-system/sw/bin/systemctl".into());
         let ip_cmd =
             std::env::var("VM_IP_CMD").unwrap_or_else(|_| "/run/current-system/sw/bin/ip".into());
         let nix_cmd =
             std::env::var("VM_NIX_CMD").unwrap_or_else(|_| "/run/current-system/sw/bin/nix".into());
-        let ssh_keygen_cmd = std::env::var("VM_SSH_KEYGEN_CMD")
-            .unwrap_or_else(|_| "/run/current-system/sw/bin/ssh-keygen".into());
         let chown_cmd = std::env::var("VM_CHOWN_CMD")
             .unwrap_or_else(|_| "/run/current-system/sw/bin/chown".into());
         let chmod_cmd = std::env::var("VM_CHMOD_CMD")
@@ -141,42 +95,25 @@ impl Config {
             bind,
             bridge_name,
             state_dir,
-            definition_dir,
             run_dir,
-            sessions_file,
-            dhcp_hosts_dir,
             runner_cache_dir,
             runner_flake_dir,
-            workspace_template_path,
             runtime_artifacts_host_dir,
             runtime_artifacts_guest_mount,
             runtime_artifacts,
-            default_spawn_variant,
             ip_start,
             ip_end,
             gateway_ip,
             dns_ip,
-            llm_base_url,
             default_cpu,
             default_memory_mb,
-            default_ttl_seconds,
-            max_cpu,
-            max_memory_mb,
             prewarm_enabled,
-            prewarm_flake_ref,
-            prewarm_dev_shell,
-            microvm_cmd,
             systemctl_cmd,
             ip_cmd,
             nix_cmd,
-            ssh_keygen_cmd,
             chown_cmd,
             chmod_cmd,
         })
-    }
-
-    pub fn max_vms(&self) -> usize {
-        (to_u32(self.ip_end) - to_u32(self.ip_start) + 1) as usize
     }
 }
 
@@ -195,13 +132,6 @@ fn parse_u32_env(name: &str, default: u32) -> u32 {
     std::env::var(name)
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(default)
-}
-
-fn parse_u64_env(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default)
 }
 

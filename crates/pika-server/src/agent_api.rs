@@ -237,7 +237,6 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
     let spawner_url = required_microvm_spawner_url_from_env()?;
     let params = MicrovmProvisionParams {
         spawner_url: Some(spawner_url),
-        ..MicrovmProvisionParams::default()
     };
     let resolved = resolve_params(&params, true);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)

@@ -43,18 +43,6 @@ pub struct AuthContext {
 pub struct MicrovmProvisionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawner_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spawn_variant: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake_ref: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dev_shell: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpu: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_mb: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -302,12 +290,6 @@ mod tests {
                 bot_secret_key_hex: Some("deadbeef".to_string()),
                 microvm: Some(MicrovmProvisionParams {
                     spawner_url: Some("http://127.0.0.1:8080".to_string()),
-                    spawn_variant: Some("prebuilt".to_string()),
-                    flake_ref: None,
-                    dev_shell: None,
-                    cpu: Some(2),
-                    memory_mb: Some(512),
-                    ttl_seconds: Some(3600),
                 }),
             }),
             AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {

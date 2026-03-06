@@ -18,6 +18,7 @@ const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
@@ -69,19 +70,33 @@ impl MicrovmSpawnerClient {
     }
 
     pub async fn create_vm(&self, req: &CreateVmRequest) -> anyhow::Result<VmResponse> {
+        self.create_vm_with_request_id(req, None).await
+    }
+
+    pub async fn create_vm_with_request_id(
+        &self,
+        req: &CreateVmRequest,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
         let url = format!("{}/vms", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .json(req)
-            .timeout(self.create_vm_timeout)
-            .send()
-            .await
-            .context("send create vm request")?;
+        let resp = with_request_id(
+            self.client
+                .post(&url)
+                .json(req)
+                .timeout(self.create_vm_timeout),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send create vm request")?;
         let status = resp.status();
         if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("failed to create vm: {status} {text}");
+            anyhow::bail!(
+                "failed to create vm: {status}{} {text}",
+                format_request_id_suffix(upstream_request_id.as_deref()),
+            );
         }
         resp.json().await.context("decode create vm response")
     }
@@ -104,21 +119,60 @@ impl MicrovmSpawnerClient {
     }
 
     pub async fn recover_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        self.recover_vm_with_request_id(vm_id, None).await
+    }
+
+    pub async fn recover_vm_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
         let url = format!("{}/vms/{vm_id}/recover", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .timeout(RECOVER_VM_TIMEOUT)
-            .send()
-            .await
-            .context("send recover vm request")?;
+        let resp = with_request_id(
+            self.client.post(&url).timeout(RECOVER_VM_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send recover vm request")?;
         let status = resp.status();
         if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("failed to recover vm {vm_id}: {status} {text}");
+            anyhow::bail!(
+                "failed to recover vm {vm_id}: {status}{} {text}",
+                format_request_id_suffix(upstream_request_id.as_deref()),
+            );
         }
         resp.json().await.context("decode recover vm response")
     }
+}
+
+fn with_request_id(
+    request: reqwest::RequestBuilder,
+    request_id: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match request_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(request_id) => request.header(REQUEST_ID_HEADER, request_id),
+        None => request,
+    }
+}
+
+fn response_request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn format_request_id_suffix(request_id: Option<&str>) -> String {
+    request_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|request_id| format!(" (request_id={request_id})"))
+        .unwrap_or_default()
 }
 
 pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
@@ -734,7 +788,10 @@ mod tests {
             }),
         };
 
-        let vm = client.create_vm(&req).await.expect("create vm succeeds");
+        let vm = client
+            .create_vm_with_request_id(&req, Some("req-create-123"))
+            .await
+            .expect("create vm succeeds");
         assert_eq!(vm.id, "vm-123");
         assert_eq!(vm.status.as_deref(), Some("running"));
 
@@ -743,6 +800,10 @@ mod tests {
             .expect("captured request");
         assert_eq!(captured.method, "POST");
         assert_eq!(captured.path, "/vms");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-create-123")
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&captured.body).expect("parse json body");
@@ -781,7 +842,7 @@ mod tests {
         let client = MicrovmSpawnerClient::new(base_url);
 
         let recovered = client
-            .recover_vm("vm-recover-1")
+            .recover_vm_with_request_id("vm-recover-1", Some("req-recover-456"))
             .await
             .expect("recover vm succeeds");
         assert_eq!(recovered.id, "vm-recover-1");
@@ -792,6 +853,10 @@ mod tests {
             .expect("captured request");
         assert_eq!(captured.method, "POST");
         assert_eq!(captured.path, "/vms/vm-recover-1/recover");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-recover-456")
+        );
         assert!(captured.body.is_empty());
     }
 

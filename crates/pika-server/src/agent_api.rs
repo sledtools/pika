@@ -9,7 +9,6 @@ use diesel::PgConnection;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use serde::Serialize;
-use tracing::error;
 
 use crate::agent_api_v1_contract::{
     AgentApiErrorCode, AgentAppState, V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH,
@@ -22,11 +21,11 @@ use crate::models::agent_instance::{
 use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
-use crate::State;
+use crate::{RequestContext, State};
 use pika_agent_control_plane::MicrovmProvisionParams;
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
-    ResolvedMicrovmParams,
+    ResolvedMicrovmParams, VmResponse, VmStatusResponse,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -37,6 +36,7 @@ const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
 pub struct AgentApiError {
     status: StatusCode,
     code: AgentApiErrorCode,
+    request_id: Option<String>,
 }
 
 impl AgentApiError {
@@ -44,14 +44,39 @@ impl AgentApiError {
         Self {
             status: code.status_code(),
             code,
+            request_id: None,
         }
+    }
+
+    fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
+        self
     }
 }
 
 impl IntoResponse for AgentApiError {
     fn into_response(self) -> axum::response::Response {
+        if let Some(request_id) = self.request_id.as_deref() {
+            let code = self.code.as_str();
+            if self.status.is_server_error() {
+                tracing::error!(
+                    request_id,
+                    status = self.status.as_u16(),
+                    error_code = code,
+                    "agent api request failed"
+                );
+            } else {
+                tracing::warn!(
+                    request_id,
+                    status = self.status.as_u16(),
+                    error_code = code,
+                    "agent api request failed"
+                );
+            }
+        }
         let body = Json(serde_json::json!({
             "error": self.code.as_str(),
+            "request_id": self.request_id,
         }));
         (self.status, body).into_response()
     }
@@ -186,6 +211,21 @@ fn phase_to_state(phase: &str) -> Option<AgentAppState> {
     }
 }
 
+fn phase_from_spawner_status(status: &str) -> &'static str {
+    match status {
+        "running" => AGENT_PHASE_READY,
+        _ => AGENT_PHASE_CREATING,
+    }
+}
+
+fn next_phase_from_verified_status(
+    current_phase: &str,
+    verified_status: Option<&str>,
+) -> Option<&'static str> {
+    let next_phase = phase_from_spawner_status(verified_status?);
+    (current_phase != next_phase).then_some(next_phase)
+}
+
 fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentApiError> {
     let Some(state) = phase_to_state(&row.phase) else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
@@ -259,8 +299,9 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
     let spawner_url = required_microvm_spawner_url_from_env()?;
     let params = MicrovmProvisionParams {
         spawner_url: Some(spawner_url),
+        ..MicrovmProvisionParams::default()
     };
-    let resolved = resolve_params(&params, true);
+    let resolved = resolve_params(&params, false);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
     Ok(resolved)
@@ -269,7 +310,8 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
 async fn provision_vm_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
-) -> anyhow::Result<String> {
+    request_id: &str,
+) -> anyhow::Result<VmResponse> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     let resolved = resolved_spawner_params()?;
     let create_vm = build_create_vm_request(
@@ -280,166 +322,252 @@ async fn provision_vm_for_owner(
         &bot_identity.pubkey_hex,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    let vm = spawner
-        .create_vm(&create_vm)
+    spawner
+        .create_vm_with_request_id(&create_vm, Some(request_id))
         .await
-        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))?;
-    Ok(vm.id)
+        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))
+}
+
+async fn fetch_vm_status(vm_id: &str, request_id: &str) -> anyhow::Result<VmStatusResponse> {
+    let resolved = resolved_spawner_params()?;
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    spawner
+        .get_vm_with_request_id(vm_id, Some(request_id))
+        .await
 }
 
 pub async fn ensure_agent(
     Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
-    let requester = {
-        let mut conn = state
-            .db_pool
-            .get()
-            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-        let requester = require_whitelisted_requester(
-            &mut conn,
-            &headers,
-            "POST",
-            V1_AGENTS_ENSURE_PATH,
-            state.trust_forwarded_host,
-        )?;
-        if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
-            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-            .is_some()
-        {
-            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists));
-        }
-        requester
-    };
-    let bot_identity = generate_provisioning_bot_identity()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
+    })?;
+    let requester = require_whitelisted_requester(
+        &mut conn,
+        &headers,
+        "POST",
+        V1_AGENTS_ENSURE_PATH,
+        state.trust_forwarded_host,
+    )
+    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
+    })?;
 
-    let created = {
-        let mut conn = state
-            .db_pool
-            .get()
-            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-        AgentInstance::create(
-            &mut conn,
-            &requester.owner_npub,
-            &bot_identity.pubkey_npub,
-            None,
-            AGENT_PHASE_CREATING,
-        )
-        .map_err(|err| {
-            if is_owner_active_unique_violation(&err) {
-                AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-            } else {
-                AgentApiError::from_code(AgentApiErrorCode::Internal)
-            }
+    if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+        .map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
         })?
-    };
+        .is_some()
+    {
+        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+            .with_request_id(request_context.request_id.clone()));
+    }
 
-    let vm_id = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
-        Ok(vm_id) => vm_id,
+    let created = AgentInstance::create(
+        &mut conn,
+        &requester.owner_npub,
+        &bot_identity.pubkey_npub,
+        None,
+        AGENT_PHASE_CREATING,
+    )
+    .map_err(|err| {
+        if is_owner_active_unique_violation(&err) {
+            AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+                .with_request_id(request_context.request_id.clone())
+        } else {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        }
+    })?;
+
+    let provisioned_vm = match provision_vm_for_owner(
+        &requester.owner_npub,
+        &bot_identity,
+        &request_context.request_id,
+    )
+    .await
+    {
+        Ok(vm) => vm,
         Err(err) => {
-            error!(owner_npub = %requester.owner_npub, error = %err, "failed to provision microvm for agent");
-            if let Ok(mut conn) = state.db_pool.get() {
-                let _ = AgentInstance::update_phase(
-                    &mut conn,
-                    &created.agent_id,
-                    AGENT_PHASE_ERROR,
-                    None,
-                );
-            }
-            return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
+            let _ =
+                AgentInstance::update_phase(&mut conn, &created.agent_id, AGENT_PHASE_ERROR, None);
+            tracing::error!(
+                request_id = %request_context.request_id,
+                agent_id = %created.agent_id,
+                owner_npub = %requester.owner_npub,
+                error = %err,
+                "failed to provision agent microvm"
+            );
+            return Err(AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone()));
         }
     };
+    let next_phase = phase_from_spawner_status(&provisioned_vm.status);
 
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        AGENT_PHASE_READY,
-        Some(&vm_id),
+        next_phase,
+        Some(&provisioned_vm.id),
     )
-    .map_err(|err| {
-        error!(agent_id = %created.agent_id, error = %err, "failed to update agent phase after provision");
+    .map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
     })?;
 
-    Ok((StatusCode::ACCEPTED, Json(map_row_to_response(updated)?)))
+    tracing::info!(
+        request_id = %request_context.request_id,
+        agent_id = %updated.agent_id,
+        vm_id = %provisioned_vm.id,
+        vm_status = %provisioned_vm.status,
+        phase = %next_phase,
+        phase_timings_ms = ?provisioned_vm.phase_timings_ms,
+        owner_npub = %requester.owner_npub,
+        "provisioned agent microvm"
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(
+            map_row_to_response(updated)
+                .map_err(|err| err.with_request_id(request_context.request_id.clone()))?,
+        ),
+    ))
 }
 
 pub async fn get_my_agent(
     Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
+    })?;
     let requester = require_whitelisted_requester(
         &mut conn,
         &headers,
         "GET",
         V1_AGENTS_ME_PATH,
         state.trust_forwarded_host,
-    )?;
-    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)? else {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
+    )
+    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
+    else {
+        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
+            .with_request_id(request_context.request_id.clone()));
     };
-    let normalized = if active.phase == AGENT_PHASE_CREATING && active.vm_id.is_some() {
-        AgentInstance::update_phase(
-            &mut conn,
-            &active.agent_id,
-            AGENT_PHASE_READY,
-            active.vm_id.as_deref(),
-        )
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
-    } else {
-        active
+    let normalized = match active.vm_id.as_deref() {
+        Some(vm_id) => {
+            let verified_status = match fetch_vm_status(vm_id, &request_context.request_id).await {
+                Ok(vm) => Some(vm.status),
+                Err(err) => {
+                    tracing::warn!(
+                        request_id = %request_context.request_id,
+                        agent_id = %active.agent_id,
+                        vm_id,
+                        error = %err,
+                        phase = %active.phase,
+                        "failed to verify agent readiness with vm-spawner; preserving stored agent phase"
+                    );
+                    None
+                }
+            };
+            if let Some(next_phase) =
+                next_phase_from_verified_status(&active.phase, verified_status.as_deref())
+            {
+                AgentInstance::update_phase(&mut conn, &active.agent_id, next_phase, Some(vm_id))
+                    .map_err(|_| {
+                        AgentApiError::from_code(AgentApiErrorCode::Internal)
+                            .with_request_id(request_context.request_id.clone())
+                    })?
+            } else {
+                active
+            }
+        }
+        None => active,
     };
-    Ok(Json(map_row_to_response(normalized)?))
+    Ok(Json(map_row_to_response(normalized).map_err(|err| {
+        err.with_request_id(request_context.request_id.clone())
+    })?))
 }
 
 pub async fn recover_my_agent(
     Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
+    })?;
     let requester = require_whitelisted_requester(
         &mut conn,
         &headers,
         "POST",
         V1_AGENTS_RECOVER_PATH,
         state.trust_forwarded_host,
-    )?;
-    let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)? else {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
+    )
+    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
+    else {
+        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
+            .with_request_id(request_context.request_id.clone()));
     };
-    let vm_id = active
-        .vm_id
-        .clone()
-        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+    let vm_id = active.vm_id.clone().ok_or_else(|| {
+        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+            .with_request_id(request_context.request_id.clone())
+    })?;
 
-    let resolved = resolved_spawner_params()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+    let resolved = resolved_spawner_params().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+            .with_request_id(request_context.request_id.clone())
+    })?;
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
     let recovered = spawner
-        .recover_vm(&vm_id)
+        .recover_vm_with_request_id(&vm_id, Some(&request_context.request_id))
         .await
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
+        .map_err(|err| {
+            tracing::error!(
+                request_id = %request_context.request_id,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                owner_npub = %requester.owner_npub,
+                error = %err,
+                "failed to recover agent microvm"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+    let next_phase = phase_from_spawner_status(&recovered.status);
 
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &active.agent_id,
-        AGENT_PHASE_READY,
-        Some(&recovered.id),
-    )
-    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    Ok(Json(map_row_to_response(updated)?))
+    let updated =
+        AgentInstance::update_phase(&mut conn, &active.agent_id, next_phase, Some(&recovered.id))
+            .map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+    tracing::info!(
+        request_id = %request_context.request_id,
+        agent_id = %updated.agent_id,
+        vm_id = %recovered.id,
+        vm_status = %recovered.status,
+        phase = %next_phase,
+        phase_timings_ms = ?recovered.phase_timings_ms,
+        owner_npub = %requester.owner_npub,
+        "recovered agent microvm"
+    );
+    Ok(Json(map_row_to_response(updated).map_err(|err| {
+        err.with_request_id(request_context.request_id.clone())
+    })?))
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {
@@ -452,25 +580,7 @@ mod tests {
     use super::*;
     use axum::http::header;
     use base64::Engine;
-    use chrono::NaiveDate;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
-
-    fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
-        AgentInstance {
-            agent_id: agent_id.to_string(),
-            owner_npub: "npub1testowner".to_string(),
-            vm_id: vm_id.map(str::to_string),
-            phase: phase.to_string(),
-            created_at: NaiveDate::from_ymd_opt(2026, 3, 6)
-                .expect("valid date")
-                .and_hms_opt(0, 0, 0)
-                .expect("valid timestamp"),
-            updated_at: NaiveDate::from_ymd_opt(2026, 3, 6)
-                .expect("valid date")
-                .and_hms_opt(0, 0, 0)
-                .expect("valid timestamp"),
-        }
-    }
 
     #[test]
     fn authenticated_requester_npub_requires_nostr_authorization_header() {
@@ -539,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_requester_npub_prefers_x_forwarded_host_when_trusted() {
+    fn authenticated_requester_npub_prefers_x_forwarded_host_over_host() {
         let keys = Keys::generate();
         let event = EventBuilder::new(Kind::Custom(27235), "")
             .tags([
@@ -580,42 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_requester_npub_rejects_untrusted_forwarded_host_override() {
-        let keys = Keys::generate();
-        let event = EventBuilder::new(Kind::Custom(27235), "")
-            .tags([
-                Tag::custom(
-                    TagKind::custom("u"),
-                    ["https://public.example.com/v1/agents/me"],
-                ),
-                Tag::custom(TagKind::custom("method"), ["GET"]),
-            ])
-            .sign_with_keys(&keys)
-            .expect("sign nip98 event");
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_vec(&event).expect("serialize event"));
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Nostr {encoded}").parse().expect("auth value"),
-        );
-        headers.insert(
-            header::HOST,
-            "127.0.0.1:8080".parse().expect("internal host value"),
-        );
-        headers.insert(
-            "x-forwarded-host",
-            "public.example.com".parse().expect("forwarded host value"),
-        );
-
-        let err = authenticated_requester_npub(&headers, "GET", V1_AGENTS_ME_PATH, false)
-            .expect_err("untrusted forwarded host must fail");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.code, AgentApiErrorCode::Unauthorized);
-    }
-
-    #[test]
     fn generated_bot_identity_round_trips_npub_and_hex() {
         let identity = generate_provisioning_bot_identity().expect("generate identity");
         let parsed = PublicKey::parse(&identity.pubkey_npub).expect("parse npub");
@@ -644,6 +718,41 @@ mod tests {
     }
 
     #[test]
+    fn phase_from_spawner_status_only_marks_running_ready() {
+        assert_eq!(phase_from_spawner_status("running"), AGENT_PHASE_READY);
+        assert_eq!(phase_from_spawner_status("starting"), AGENT_PHASE_CREATING);
+        assert_eq!(phase_from_spawner_status("stopped"), AGENT_PHASE_CREATING);
+    }
+
+    #[test]
+    fn next_phase_from_verified_status_preserves_existing_phase_without_verification() {
+        assert_eq!(
+            next_phase_from_verified_status(AGENT_PHASE_READY, None),
+            None
+        );
+        assert_eq!(
+            next_phase_from_verified_status(AGENT_PHASE_CREATING, None),
+            None
+        );
+    }
+
+    #[test]
+    fn next_phase_from_verified_status_only_returns_real_transitions() {
+        assert_eq!(
+            next_phase_from_verified_status(AGENT_PHASE_READY, Some("running")),
+            None
+        );
+        assert_eq!(
+            next_phase_from_verified_status(AGENT_PHASE_CREATING, Some("running")),
+            Some(AGENT_PHASE_READY)
+        );
+        assert_eq!(
+            next_phase_from_verified_status(AGENT_PHASE_READY, Some("starting")),
+            Some(AGENT_PHASE_CREATING)
+        );
+    }
+
+    #[test]
     fn private_spawner_url_validation_accepts_localhost() {
         ensure_private_microvm_spawner_url("http://127.0.0.1:8080").expect("localhost url");
     }
@@ -653,40 +762,5 @@ mod tests {
         let err = ensure_private_microvm_spawner_url("https://example.com")
             .expect_err("public host must be rejected");
         assert!(err.to_string().contains("private DNS"));
-    }
-
-    #[test]
-    fn select_visible_agent_row_prefers_active_row_over_newer_error_row() {
-        let active = test_agent_instance("agent-active", AGENT_PHASE_READY, Some("vm-active"));
-        let latest_error = test_agent_instance("agent-error", AGENT_PHASE_ERROR, None);
-
-        let selected = select_visible_agent_row(Some(active.clone()), Some(latest_error))
-            .expect("active row should win");
-
-        assert_eq!(selected.agent_id, active.agent_id);
-        assert_eq!(selected.phase, AGENT_PHASE_READY);
-    }
-
-    #[test]
-    fn select_visible_agent_row_falls_back_to_latest_error_row() {
-        let latest_error = test_agent_instance("agent-error", AGENT_PHASE_ERROR, None);
-
-        let selected = select_visible_agent_row(None, Some(latest_error.clone()))
-            .expect("error row should be visible when no active row exists");
-
-        assert_eq!(selected.agent_id, latest_error.agent_id);
-        assert_eq!(selected.phase, AGENT_PHASE_ERROR);
-    }
-
-    #[test]
-    fn select_visible_agent_row_ignores_non_error_latest_without_active_row() {
-        let latest_ready = test_agent_instance("agent-ready", AGENT_PHASE_READY, Some("vm-ready"));
-
-        let selected = select_visible_agent_row(None, Some(latest_ready));
-
-        assert!(
-            selected.is_none(),
-            "non-error latest row must not replace active lookup"
-        );
     }
 }

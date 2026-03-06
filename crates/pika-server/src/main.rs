@@ -22,16 +22,22 @@ use crate::routes::{
     broadcast, health_check, min_version, register, subscribe_groups, unsubscribe_groups,
 };
 use a2::Client as ApnsClient;
-use axum::http::{StatusCode, Uri};
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode, Uri};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::PgConnection;
 use diesel_migrations::MigrationHarness;
 use fcm_rs::client::FcmClient;
+use rand::RngCore;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info, warn};
+
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Clone)]
 pub struct State {
@@ -50,6 +56,59 @@ fn env_truthy(name: &str) -> bool {
         .ok()
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+#[derive(Clone, Debug)]
+pub struct RequestContext {
+    pub request_id: String,
+}
+
+fn request_id_from_headers<B>(request: &Request<B>) -> Option<String> {
+    request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn generate_request_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let request_id = request_id_from_headers(&request).unwrap_or_else(generate_request_id);
+    let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
+    let request_id_value =
+        HeaderValue::from_str(&request_id).expect("generated request id must be a valid header");
+    request
+        .headers_mut()
+        .insert(request_id_header.clone(), request_id_value.clone());
+    request.extensions_mut().insert(RequestContext {
+        request_id: request_id.clone(),
+    });
+
+    let started_at = Instant::now();
+    let mut response = next.run(request).await;
+    let latency_ms = started_at.elapsed().as_millis() as u64;
+    let status = response.status();
+    response
+        .headers_mut()
+        .insert(request_id_header, request_id_value);
+    info!(
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        status = status.as_u16(),
+        latency_ms,
+        "http request"
+    );
+    response
 }
 
 #[tokio::main]
@@ -214,6 +273,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/logout", post(admin_logout))
         .route("/admin/dev-login", post(admin_dev_login))
         .fallback(fallback)
+        .layer(middleware::from_fn(trace_http_request))
         .layer(Extension(state));
 
     let server = axum::Server::bind(&addr).serve(server_router.into_make_service());

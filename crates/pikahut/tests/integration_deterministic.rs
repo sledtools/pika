@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -102,22 +103,51 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-fn spawn_mock_vm_spawner(
-    expected_requests: usize,
-) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
+struct MockVmSpawner {
+    url: String,
+    start_tx: Option<mpsc::Sender<()>>,
+    handle: Option<thread::JoinHandle<Result<Vec<String>>>>,
+}
+
+impl MockVmSpawner {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn start(&mut self) -> Result<()> {
+        let Some(start_tx) = self.start_tx.take() else {
+            bail!("mock vm-spawner already started");
+        };
+        start_tx.send(()).context("start mock vm-spawner")?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<String>> {
+        let Some(handle) = self.handle.take() else {
+            bail!("mock vm-spawner already finished");
+        };
+        handle
+            .join()
+            .map_err(|_| anyhow!("mock vm-spawner thread panicked"))?
+    }
+}
+
+fn spawn_mock_vm_spawner(expected_requests: usize) -> Result<MockVmSpawner> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
     listener
         .set_nonblocking(true)
         .context("set mock vm-spawner nonblocking")?;
     let addr = listener.local_addr().context("read mock vm-spawner addr")?;
     let url = format!("http://{}", addr);
+    let (start_tx, start_rx) = mpsc::channel();
 
     let handle = thread::spawn(move || -> Result<Vec<String>> {
+        start_rx
+            .recv()
+            .context("wait for mock vm-spawner start signal")?;
         let mut request_lines = Vec::with_capacity(expected_requests);
         for _ in 0..expected_requests {
-            // Cold CI workers can spend tens of seconds building and starting the
-            // fixture before the first request reaches the mock spawner.
-            let deadline = Instant::now() + Duration::from_secs(120);
+            let deadline = Instant::now() + Duration::from_secs(15);
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(pair) => break pair,
@@ -197,7 +227,26 @@ fn spawn_mock_vm_spawner(
         Ok(request_lines)
     });
 
-    Ok((url, handle))
+    Ok(MockVmSpawner {
+        url,
+        start_tx: Some(start_tx),
+        handle: Some(handle),
+    })
+}
+
+fn build_pikachat_binary(runner: &CommandRunner<'_>) -> Result<PathBuf> {
+    runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args(["build", "-q", "-p", "pikachat"])
+            .capture_name("build-pikachat"),
+    )?;
+
+    let binary = workspace_root().join("target/debug/pikachat");
+    if !binary.exists() {
+        bail!("pikachat binary missing after build: {}", binary.display());
+    }
+    Ok(binary)
 }
 
 fn build_nip98_authorization_header(keys: &Keys, method: Method, url: &str) -> Result<String> {
@@ -477,14 +526,14 @@ async fn agent_http_ensure_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
+    let mut spawner = spawn_mock_vm_spawner(1)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
         .to_bech32()
         .context("encode owner npub")?;
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -515,6 +564,7 @@ async fn agent_http_ensure_local() -> Result<()> {
     let client = reqwest::Client::new();
     let ensure_url = format!("{server_url}/v1/agents/ensure");
     let ensure_auth = build_nip98_authorization_header(&owner_keys, Method::POST, &ensure_url)?;
+    spawner.start()?;
     let ensure_resp = client
         .post(&ensure_url)
         .header("Authorization", ensure_auth)
@@ -573,9 +623,7 @@ async fn agent_http_ensure_local() -> Result<()> {
         bail!("agent_id mismatch between ensure and /me");
     }
 
-    let spawner_request_lines = spawner_thread
-        .join()
-        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_lines = spawner.finish()?;
     let spawner_request_line = spawner_request_lines
         .first()
         .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
@@ -598,7 +646,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
+    let mut spawner = spawn_mock_vm_spawner(1)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -606,7 +654,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -635,15 +683,12 @@ async fn agent_http_cli_new_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
+    let pikachat_bin = build_pikachat_binary(&runner)?;
+    spawner.start()?;
     let output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -680,9 +725,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         bail!("expected 200 from /v1/agents/me after CLI ensure, got body: {body}");
     }
 
-    let spawner_request_lines = spawner_thread
-        .join()
-        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_lines = spawner.finish()?;
     let spawner_request_line = spawner_request_lines
         .first()
         .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
@@ -703,7 +746,7 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
+    let mut spawner = spawn_mock_vm_spawner(1)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -711,7 +754,7 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -740,16 +783,13 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
+    let pikachat_bin = build_pikachat_binary(&runner)?;
+    spawner.start()?;
 
     let first_new_output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -776,14 +816,9 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .ok_or_else(|| anyhow!("first CLI new missing agent.agent_id"))?;
 
     let second_new_output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -812,9 +847,7 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         bail!("expected same agent_id across idempotent new calls");
     }
 
-    let spawner_request_lines = spawner_thread
-        .join()
-        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_lines = spawner.finish()?;
     if spawner_request_lines.len() != 1 {
         bail!("expected exactly one vm-spawner request, got: {spawner_request_lines:?}");
     }
@@ -838,7 +871,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
+    let mut spawner = spawn_mock_vm_spawner(2)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -846,7 +879,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -875,15 +908,12 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
+    let pikachat_bin = build_pikachat_binary(&runner)?;
+    spawner.start()?;
     let new_output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -900,14 +930,9 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     }
 
     let me_output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "me",
                 "--api-base-url",
@@ -924,14 +949,9 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     }
 
     let recover_output = runner.run(
-        &CommandSpec::cargo()
+        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
             .cwd(workspace_root())
             .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
                 "agent",
                 "recover",
                 "--api-base-url",
@@ -957,9 +977,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         bail!("expected CLI recover state=ready, got: {recover_state}");
     }
 
-    let spawner_request_lines = spawner_thread
-        .join()
-        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let spawner_request_lines = spawner.finish()?;
     if !spawner_request_lines
         .iter()
         .any(|line| line.starts_with("POST /vms "))

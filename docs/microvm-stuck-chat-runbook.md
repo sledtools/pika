@@ -87,8 +87,8 @@ If `agent chat` exits `no_reply_within_timeout`:
 ```text
 Check `just agent-microvm-guest-logs <vm-id>`.
 If the guest log never shows the inbound prompt, check `just agent-microvm-server-logs` for the request ID and confirm the send path completed.
-If the guest log shows the prompt but no model output, check required env in `/etc/microvm-agent.env` on `pika-build` and restart `vm-spawner` if those secrets were just changed.
-If the guest log shows a reply was produced, check relay connectivity and then re-run `just cli agent chat "..." --nsec <owner-nsec>`.
+If the guest log shows the prompt but no model output, check required env in `/etc/microvm-agent.env` on `pika-build`, then restart `vm-spawner` with `ssh justin@65.108.234.158 'sudo systemctl restart vm-spawner && sudo systemctl status --no-pager vm-spawner'` if those secrets were just changed.
+If the guest log shows a reply was produced, check relay connectivity with `cd infra && just pika-relay-status`, tail the relevant relay with `cd infra && just pika-relay-logs relay-us-east` (or `relay-eu`), and confirm guest reachability with `ssh justin@65.108.234.158 'curl -I https://us-east.nostr.pikachat.org'` before re-running `just cli agent chat "..." --nsec <owner-nsec>`.
 ```
 
 If `vm-spawner` looks healthy but the guest log path is missing:

@@ -2,9 +2,6 @@ mod config;
 mod manager;
 mod models;
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use axum::extract::{Path, State};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
@@ -12,12 +9,13 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::Utc;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use config::Config;
-use manager::VmManager;
-use models::{CapacityResponse, CreateVmRequest, PersistedVm, VmResponse};
+use manager::{InvalidVmIdError, VmManager, VmNotFoundError};
+use models::{CreateVmRequest, VmResponse};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -87,34 +85,11 @@ async fn main() -> anyhow::Result<()> {
         error!(error = %err, "vm-spawner prewarm failed");
     }
 
-    let reaper_manager = manager.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            if let Err(err) = reaper_manager.reap_expired().await {
-                error!(error = %err, "ttl reaper failed");
-            }
-        }
-    });
-
-    let health_manager = manager.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            let count = health_manager.list().await.len();
-            info!(vm_count = count, "vm-spawner health tick");
-        }
-    });
-
     let app = Router::new()
         .route("/healthz", get(health))
-        .route("/vms", post(create_vm).get(list_vms))
+        .route("/vms", post(create_vm))
         .route("/vms/:id", get(get_vm).delete(delete_vm))
         .route("/vms/:id/recover", post(recover_vm))
-        .route("/vms/:id/exec", post(exec_vm))
-        .route("/capacity", get(capacity))
         .layer(middleware::from_fn(trace_http_request))
         .with_state(manager.clone());
 
@@ -131,15 +106,12 @@ async fn main() -> anyhow::Result<()> {
 struct HealthResponse {
     ok: bool,
     now: chrono::DateTime<Utc>,
-    vm_count: usize,
 }
 
-async fn health(State(manager): State<Arc<VmManager>>) -> Result<Json<HealthResponse>, ApiError> {
-    let vms = manager.list().await;
+async fn health(State(_manager): State<Arc<VmManager>>) -> Result<Json<HealthResponse>, ApiError> {
     Ok(Json(HealthResponse {
         ok: true,
         now: Utc::now(),
-        vm_count: vms.len(),
     }))
 }
 
@@ -151,29 +123,20 @@ async fn create_vm(
     let vm = manager
         .create(payload)
         .await
-        .map_err(|err| ApiError::internal(&request_context, err))?;
+        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
     Ok(Json(vm))
-}
-
-async fn list_vms(
-    State(manager): State<Arc<VmManager>>,
-    Extension(_request_context): Extension<RequestContext>,
-) -> Result<Json<Vec<PersistedVm>>, ApiError> {
-    Ok(Json(manager.list().await))
 }
 
 async fn get_vm(
     State(manager): State<Arc<VmManager>>,
     Extension(request_context): Extension<RequestContext>,
     Path(id): Path<String>,
-) -> Result<Json<PersistedVm>, ApiError> {
-    match manager.get(&id).await {
-        Some(vm) => Ok(Json(vm)),
-        None => Err(ApiError::not_found(
-            &request_context,
-            format!("vm not found: {id}"),
-        )),
-    }
+) -> Result<Json<VmResponse>, ApiError> {
+    let vm = manager
+        .get(&id)
+        .await
+        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
+    Ok(Json(vm))
 }
 
 async fn delete_vm(
@@ -184,7 +147,7 @@ async fn delete_vm(
     manager
         .destroy(&id)
         .await
-        .map_err(|err| ApiError::internal(&request_context, err))?;
+        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -196,35 +159,8 @@ async fn recover_vm(
     let vm = manager
         .recover(&id)
         .await
-        .map_err(|err| ApiError::internal(&request_context, err))?;
+        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
     Ok(Json(vm))
-}
-
-#[derive(serde::Serialize)]
-struct ExecResponse {
-    error: &'static str,
-}
-
-async fn exec_vm(
-    State(_manager): State<Arc<VmManager>>,
-    Extension(_request_context): Extension<RequestContext>,
-    Path(_id): Path<String>,
-) -> Result<(StatusCode, Json<ExecResponse>), ApiError> {
-    Ok((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ExecResponse {
-            error: "use SSH for v1; /exec websocket not implemented",
-        }),
-    ))
-}
-
-async fn capacity(
-    State(manager): State<Arc<VmManager>>,
-    Extension(request_context): Extension<RequestContext>,
-) -> Result<Json<CapacityResponse>, ApiError> {
-    Ok(Json(manager.capacity().await.map_err(|err| {
-        ApiError::internal(&request_context, err)
-    })?))
 }
 
 #[derive(Debug)]
@@ -243,20 +179,15 @@ impl ApiError {
         }
     }
 
-    fn not_found(request_context: &RequestContext, message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::NOT_FOUND,
-            request_context.request_id.clone(),
-            message,
-        )
-    }
-
-    fn internal(request_context: &RequestContext, err: anyhow::Error) -> Self {
-        Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            request_context.request_id.clone(),
-            err.to_string(),
-        )
+    fn from_anyhow(request_context: &RequestContext, err: anyhow::Error) -> Self {
+        let status = if err.downcast_ref::<InvalidVmIdError>().is_some() {
+            StatusCode::BAD_REQUEST
+        } else if err.downcast_ref::<VmNotFoundError>().is_some() {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        Self::new(status, request_context.request_id.clone(), err.to_string())
     }
 }
 

@@ -24,6 +24,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const CHANNELS_MANIFEST_JSON: &str = include_str!("../../config/channels.json");
+const AGENT_API_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const AGENT_API_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn default_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
@@ -1790,7 +1792,20 @@ enum ChatSendOutcome {
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 struct ListenSummary {
-    saw_message: bool,
+    saw_matching_message: bool,
+}
+
+fn find_direct_group_with_peer(
+    mdk: &mdk_util::PikaMdk,
+    my_pubkey: &PublicKey,
+    peer_pubkey: &PublicKey,
+) -> anyhow::Result<Option<mdk_storage_traits::groups::types::Group>> {
+    let groups = mdk.get_groups().context("get groups")?;
+    Ok(groups.into_iter().find(|g| {
+        let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
+        let others: Vec<_> = members.iter().filter(|p| *p != my_pubkey).collect();
+        others.len() == 1 && *others[0] == *peer_pubkey
+    }))
 }
 
 async fn send_to_agent_and_optionally_listen(
@@ -1799,6 +1814,7 @@ async fn send_to_agent_and_optionally_listen(
     message: &str,
     listen_timeout: u64,
 ) -> anyhow::Result<ChatSendOutcome> {
+    let send_started_at = Timestamp::now().as_secs();
     cmd_send(
         chat_cli,
         None,
@@ -1811,8 +1827,21 @@ async fn send_to_agent_and_optionally_listen(
     )
     .await?;
     if listen_timeout > 0 {
-        let summary = listen_for_incoming(chat_cli, listen_timeout, 86400).await?;
-        return Ok(if summary.saw_message {
+        let (keys, mdk) = open(chat_cli)?;
+        let agent_pubkey = PublicKey::parse(agent_npub).context("parse agent npub")?;
+        let expected_group_id =
+            find_direct_group_with_peer(&mdk, &keys.public_key(), &agent_pubkey)?
+                .map(|group| hex::encode(group.nostr_group_id));
+        let summary = listen_for_incoming(
+            chat_cli,
+            listen_timeout,
+            listen_timeout.max(5),
+            Some(agent_pubkey),
+            expected_group_id.as_deref(),
+            Some(send_started_at),
+        )
+        .await?;
+        return Ok(if summary.saw_matching_message {
             ChatSendOutcome::ReplyReceived
         } else {
             ChatSendOutcome::NoReplyWithinTimeout
@@ -2027,7 +2056,12 @@ async fn call_agent_api_raw(
     let url = format!("{base_url}{path}");
     let auth = build_nip98_authorization_header(&nsec, &method, &url)?;
 
-    let mut request = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(AGENT_API_CONNECT_TIMEOUT)
+        .timeout(AGENT_API_TIMEOUT)
+        .build()
+        .context("build agent api client")?;
+    let mut request = client
         .request(method.clone(), &url)
         .header("Authorization", auth)
         .header("Accept", "application/json");
@@ -2278,6 +2312,9 @@ async fn listen_for_incoming(
     cli: &Cli,
     timeout_sec: u64,
     lookback_sec: u64,
+    expected_sender: Option<PublicKey>,
+    expected_group_id_hex: Option<&str>,
+    min_created_at: Option<u64>,
 ) -> anyhow::Result<ListenSummary> {
     let (keys, mdk) = open(cli)?;
     let client = client(cli, &keys).await?;
@@ -2399,7 +2436,11 @@ async fn listen_for_incoming(
                 "media": message_media_refs(&mdk, &mls_group_id, &msg.tags),
             });
             println!("{}", serde_json::to_string(&line).unwrap());
-            summary.saw_message |= is_incoming;
+            let sender_matches = expected_sender.is_none_or(|sender| msg.pubkey == sender);
+            let group_matches = expected_group_id_hex.is_none_or(|group_id| ngid == group_id);
+            let is_fresh = min_created_at.is_none_or(|min| msg.created_at.as_secs() >= min);
+            summary.saw_matching_message |=
+                is_incoming && sender_matches && group_matches && is_fresh;
         }
     }
 
@@ -2410,7 +2451,7 @@ async fn listen_for_incoming(
 
 /// This is the one subcommand that *does* stay running — it's an event tail.
 async fn cmd_listen(cli: &Cli, timeout_sec: u64, lookback_sec: u64) -> anyhow::Result<()> {
-    let _ = listen_for_incoming(cli, timeout_sec, lookback_sec).await?;
+    let _ = listen_for_incoming(cli, timeout_sec, lookback_sec, None, None, None).await?;
     Ok(())
 }
 

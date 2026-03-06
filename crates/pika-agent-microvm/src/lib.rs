@@ -17,6 +17,7 @@ pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.j
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
+const GET_VM_TIMEOUT: Duration = Duration::from_secs(15);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -142,7 +143,7 @@ impl MicrovmSpawnerClient {
         request_id: Option<&str>,
     ) -> anyhow::Result<VmStatusResponse> {
         let url = format!("{}/vms/{vm_id}", self.base_url);
-        let resp = with_request_id(self.client.get(&url), request_id)
+        let resp = with_request_id(self.client.get(&url).timeout(GET_VM_TIMEOUT), request_id)
             .send()
             .await
             .context("send get vm request")?;
@@ -237,7 +238,11 @@ fn sanitize_upstream_body(body: &str) -> Option<String> {
     if collapsed.len() <= MAX_LEN {
         return Some(collapsed.to_string());
     }
-    let mut truncated = collapsed[..MAX_LEN].to_string();
+    let mut truncated = collapsed
+        .char_indices()
+        .take_while(|(byte_idx, _)| *byte_idx < MAX_LEN)
+        .map(|(_, ch)| ch)
+        .collect::<String>();
     truncated.push_str("...");
     Some(truncated)
 }
@@ -856,7 +861,6 @@ mod tests {
         assert!(!microvm_params_provided(&MicrovmProvisionParams::default()));
         assert!(microvm_params_provided(&MicrovmProvisionParams {
             spawner_url: Some("http://127.0.0.1:8081".to_string()),
-            ..MicrovmProvisionParams::default()
         }));
     }
 
@@ -1030,6 +1034,14 @@ mod tests {
         let sanitized = sanitize_upstream_body(&long).expect("sanitized body");
         assert_eq!(sanitized.len(), 243);
         assert!(sanitized.ends_with("..."));
+    }
+
+    #[test]
+    fn sanitize_upstream_body_truncates_on_utf8_boundaries() {
+        let body = "é".repeat(200);
+        let sanitized = sanitize_upstream_body(&body).expect("sanitized body");
+        assert!(sanitized.ends_with("..."));
+        assert!(std::str::from_utf8(sanitized.as_bytes()).is_ok());
     }
 
     #[test]

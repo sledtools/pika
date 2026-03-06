@@ -235,6 +235,28 @@ impl VmManager {
         })
     }
 
+    pub async fn get(&self, id: &str) -> anyhow::Result<VmResponse> {
+        let layout = self.resolved_layout_for_vm_id(id)?;
+        if !layout.state_dir.exists() {
+            return Err(VmNotFoundError(format!("vm not found: {id}")).into());
+        }
+
+        let active_state = unit_active_state(&self.cfg.systemctl_cmd, &layout.unit_name).await;
+        let status = match active_state.as_deref() {
+            Some("active") => "running",
+            Some("activating") | Some("reloading") => "starting",
+            Some("inactive") | Some("deactivating") => "stopped",
+            Some("failed") => "failed",
+            Some(other) if !other.is_empty() => other,
+            _ => "unknown",
+        };
+
+        Ok(VmResponse {
+            id: layout.id,
+            status: status.to_string(),
+        })
+    }
+
     async fn allocate_layout(&self) -> anyhow::Result<VmHostLayout> {
         let mut guard = self.inner.lock().await;
         for _ in 0..VM_ID_ATTEMPTS {

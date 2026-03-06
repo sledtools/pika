@@ -299,7 +299,6 @@ fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
     let spawner_url = required_microvm_spawner_url_from_env()?;
     let params = MicrovmProvisionParams {
         spawner_url: Some(spawner_url),
-        ..MicrovmProvisionParams::default()
     };
     let resolved = resolve_params(&params, false);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
@@ -341,50 +340,53 @@ pub async fn ensure_agent(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
-    let mut conn = state.db_pool.get().map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-            .with_request_id(request_context.request_id.clone())
-    })?;
-    let requester = require_whitelisted_requester(
-        &mut conn,
-        &headers,
-        "POST",
-        V1_AGENTS_ENSURE_PATH,
-        state.trust_forwarded_host,
-    )
-    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal)
             .with_request_id(request_context.request_id.clone())
     })?;
-
-    if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
-        .map_err(|_| {
+    let (requester, created) = {
+        let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal)
                 .with_request_id(request_context.request_id.clone())
-        })?
-        .is_some()
-    {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-            .with_request_id(request_context.request_id.clone()));
-    }
+        })?;
+        let requester = require_whitelisted_requester(
+            &mut conn,
+            &headers,
+            "POST",
+            V1_AGENTS_ENSURE_PATH,
+            state.trust_forwarded_host,
+        )
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
 
-    let created = AgentInstance::create(
-        &mut conn,
-        &requester.owner_npub,
-        &bot_identity.pubkey_npub,
-        None,
-        AGENT_PHASE_CREATING,
-    )
-    .map_err(|err| {
-        if is_owner_active_unique_violation(&err) {
-            AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-                .with_request_id(request_context.request_id.clone())
-        } else {
-            AgentApiError::from_code(AgentApiErrorCode::Internal)
-                .with_request_id(request_context.request_id.clone())
+        if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
+            .map_err(|_| {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_context.request_id.clone())
+            })?
+            .is_some()
+        {
+            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+                .with_request_id(request_context.request_id.clone()));
         }
-    })?;
+
+        let created = AgentInstance::create(
+            &mut conn,
+            &requester.owner_npub,
+            &bot_identity.pubkey_npub,
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .map_err(|err| {
+            if is_owner_active_unique_violation(&err) {
+                AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+                    .with_request_id(request_context.request_id.clone())
+            } else {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_context.request_id.clone())
+            }
+        })?;
+        (requester, created)
+    };
 
     let provisioned_vm = match provision_vm_for_owner(
         &requester.owner_npub,
@@ -395,8 +397,14 @@ pub async fn ensure_agent(
     {
         Ok(vm) => vm,
         Err(err) => {
-            let _ =
-                AgentInstance::update_phase(&mut conn, &created.agent_id, AGENT_PHASE_ERROR, None);
+            if let Ok(mut conn) = state.db_pool.get() {
+                let _ = AgentInstance::update_phase(
+                    &mut conn,
+                    &created.agent_id,
+                    AGENT_PHASE_ERROR,
+                    None,
+                );
+            }
             tracing::error!(
                 request_id = %request_context.request_id,
                 agent_id = %created.agent_id,
@@ -410,16 +418,22 @@ pub async fn ensure_agent(
     };
     let next_phase = phase_from_spawner_status(&provisioned_vm.status);
 
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &created.agent_id,
-        next_phase,
-        Some(&provisioned_vm.id),
-    )
-    .map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-            .with_request_id(request_context.request_id.clone())
-    })?;
+    let updated = {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+        AgentInstance::update_phase(
+            &mut conn,
+            &created.agent_id,
+            next_phase,
+            Some(&provisioned_vm.id),
+        )
+        .map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        })?
+    };
 
     tracing::info!(
         request_id = %request_context.request_id,
@@ -445,21 +459,23 @@ pub async fn get_my_agent(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let mut conn = state.db_pool.get().map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-            .with_request_id(request_context.request_id.clone())
-    })?;
-    let requester = require_whitelisted_requester(
-        &mut conn,
-        &headers,
-        "GET",
-        V1_AGENTS_ME_PATH,
-        state.trust_forwarded_host,
-    )
-    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)
-        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
-    else {
+    let active = {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+        let requester = require_whitelisted_requester(
+            &mut conn,
+            &headers,
+            "GET",
+            V1_AGENTS_ME_PATH,
+            state.trust_forwarded_host,
+        )
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+        load_visible_agent_row(&mut conn, &requester.owner_npub)
+            .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
+    };
+    let Some(active) = active else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
             .with_request_id(request_context.request_id.clone()));
     };
@@ -482,6 +498,10 @@ pub async fn get_my_agent(
             if let Some(next_phase) =
                 next_phase_from_verified_status(&active.phase, verified_status.as_deref())
             {
+                let mut conn = state.db_pool.get().map_err(|_| {
+                    AgentApiError::from_code(AgentApiErrorCode::Internal)
+                        .with_request_id(request_context.request_id.clone())
+                })?;
                 AgentInstance::update_phase(&mut conn, &active.agent_id, next_phase, Some(vm_id))
                     .map_err(|_| {
                         AgentApiError::from_code(AgentApiErrorCode::Internal)
@@ -503,28 +523,31 @@ pub async fn recover_my_agent(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let mut conn = state.db_pool.get().map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-            .with_request_id(request_context.request_id.clone())
-    })?;
-    let requester = require_whitelisted_requester(
-        &mut conn,
-        &headers,
-        "POST",
-        V1_AGENTS_RECOVER_PATH,
-        state.trust_forwarded_host,
-    )
-    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-    let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)
-        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
-    else {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
-            .with_request_id(request_context.request_id.clone()));
+    let (requester, active, vm_id) = {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+        let requester = require_whitelisted_requester(
+            &mut conn,
+            &headers,
+            "POST",
+            V1_AGENTS_RECOVER_PATH,
+            state.trust_forwarded_host,
+        )
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+        let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)
+            .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
+        else {
+            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
+                .with_request_id(request_context.request_id.clone()));
+        };
+        let vm_id = active.vm_id.clone().ok_or_else(|| {
+            AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                .with_request_id(request_context.request_id.clone())
+        })?;
+        (requester, active, vm_id)
     };
-    let vm_id = active.vm_id.clone().ok_or_else(|| {
-        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-            .with_request_id(request_context.request_id.clone())
-    })?;
 
     let resolved = resolved_spawner_params().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
@@ -548,12 +571,17 @@ pub async fn recover_my_agent(
         })?;
     let next_phase = phase_from_spawner_status(&recovered.status);
 
-    let updated =
-        AgentInstance::update_phase(&mut conn, &active.agent_id, next_phase, Some(&recovered.id))
-            .map_err(|_| {
+    let updated = {
+        let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal)
                 .with_request_id(request_context.request_id.clone())
         })?;
+        AgentInstance::update_phase(&mut conn, &active.agent_id, next_phase, Some(&recovered.id))
+            .map_err(|_| {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_context.request_id.clone())
+            })?
+    };
     tracing::info!(
         request_id = %request_context.request_id,
         agent_id = %updated.agent_id,

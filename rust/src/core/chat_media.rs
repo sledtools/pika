@@ -881,10 +881,13 @@ impl AppCore {
         resolved: Vec<(String, Option<String>)>,
     ) {
         // Persist resolved paths so subsequent refresh_current_chat calls don't flicker.
+        // Remove entries for files that no longer exist to avoid stale paths.
         let path_entry = self.local_path_cache.entry(chat_id.clone()).or_default();
         for (hash, path) in &resolved {
             if let Some(p) = path {
                 path_entry.insert(hash.clone(), p.clone());
+            } else {
+                path_entry.remove(hash);
             }
         }
 

@@ -1,9 +1,8 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::{Context, anyhow, bail};
@@ -103,63 +102,17 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-struct MockVmSpawner {
-    url: String,
-    start_tx: Option<mpsc::Sender<()>>,
-    handle: Option<thread::JoinHandle<Result<Vec<String>>>>,
-}
-
-impl MockVmSpawner {
-    fn url(&self) -> &str {
-        &self.url
-    }
-
-    fn start(&mut self) -> Result<()> {
-        let Some(start_tx) = self.start_tx.take() else {
-            bail!("mock vm-spawner already started");
-        };
-        start_tx.send(()).context("start mock vm-spawner")?;
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<Vec<String>> {
-        let Some(handle) = self.handle.take() else {
-            bail!("mock vm-spawner already finished");
-        };
-        handle
-            .join()
-            .map_err(|_| anyhow!("mock vm-spawner thread panicked"))?
-    }
-}
-
-fn spawn_mock_vm_spawner(expected_requests: usize) -> Result<MockVmSpawner> {
+fn spawn_mock_vm_spawner(
+    expected_requests: usize,
+) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
-    listener
-        .set_nonblocking(true)
-        .context("set mock vm-spawner nonblocking")?;
     let addr = listener.local_addr().context("read mock vm-spawner addr")?;
     let url = format!("http://{}", addr);
-    let (start_tx, start_rx) = mpsc::channel();
 
     let handle = thread::spawn(move || -> Result<Vec<String>> {
-        start_rx
-            .recv()
-            .context("wait for mock vm-spawner start signal")?;
         let mut request_lines = Vec::with_capacity(expected_requests);
         for _ in 0..expected_requests {
-            let deadline = Instant::now() + Duration::from_secs(15);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok(pair) => break pair,
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        if Instant::now() >= deadline {
-                            bail!("timeout waiting for mock vm-spawner request");
-                        }
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(err) => return Err(err).context("accept spawner request"),
-                }
-            };
+            let (mut stream, _) = listener.accept().context("accept spawner request")?;
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .context("set spawner read timeout")?;
@@ -201,9 +154,14 @@ fn spawn_mock_vm_spawner(expected_requests: usize) -> Result<MockVmSpawner> {
                 buf.extend_from_slice(&remaining);
             }
 
-            let is_create_or_recover = request_line.starts_with("POST /vms ")
-                || request_line.starts_with("POST /vms/vm-test-1/recover ");
-            let (status, body) = if is_create_or_recover {
+            let (status, body) = if request_line.starts_with("POST /vms ") {
+                (
+                    "200 OK",
+                    r#"{"id":"vm-test-1","ip":"10.0.0.2","status":"starting"}"#,
+                )
+            } else if request_line.starts_with("GET /vms/vm-test-1 ") {
+                ("200 OK", r#"{"id":"vm-test-1","status":"running"}"#)
+            } else if request_line.starts_with("POST /vms/vm-test-1/recover ") {
                 (
                     "200 OK",
                     r#"{"id":"vm-test-1","ip":"10.0.0.2","status":"running"}"#,
@@ -227,26 +185,7 @@ fn spawn_mock_vm_spawner(expected_requests: usize) -> Result<MockVmSpawner> {
         Ok(request_lines)
     });
 
-    Ok(MockVmSpawner {
-        url,
-        start_tx: Some(start_tx),
-        handle: Some(handle),
-    })
-}
-
-fn build_pikachat_binary(runner: &CommandRunner<'_>) -> Result<PathBuf> {
-    runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args(["build", "-q", "-p", "pikachat"])
-            .capture_name("build-pikachat"),
-    )?;
-
-    let binary = workspace_root().join("target/debug/pikachat");
-    if !binary.exists() {
-        bail!("pikachat binary missing after build: {}", binary.display());
-    }
-    Ok(binary)
+    Ok((url, handle))
 }
 
 fn build_nip98_authorization_header(keys: &Keys, method: Method, url: &str) -> Result<String> {
@@ -284,6 +223,55 @@ fn insert_agent_allowlist_row(database_url: &str, npub: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn update_agent_instance_agent_id(
+    database_url: &str,
+    owner_npub: &str,
+    agent_npub: &str,
+) -> Result<()> {
+    let escaped_owner = owner_npub.replace('\'', "''");
+    let escaped_agent = agent_npub.replace('\'', "''");
+    let sql = format!(
+        "UPDATE agent_instances \
+         SET agent_id = '{escaped_agent}', updated_at = now() \
+         WHERE owner_npub = '{escaped_owner}' AND phase IN ('creating', 'ready');"
+    );
+    let output = std::process::Command::new("psql")
+        .args(["-v", "ON_ERROR_STOP=1", "-d", database_url, "-c", &sql])
+        .output()
+        .context("run psql to update agent_instance agent_id")?;
+    if !output.status.success() {
+        bail!(
+            "psql failed updating agent_instances.agent_id: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn run_pikachat(
+    runner: &CommandRunner,
+    args: &[String],
+    capture_name: &str,
+) -> Result<pikahut::testing::CommandOutput> {
+    runner.run(
+        &CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args(["run", "-q", "-p", "pikachat", "--"])
+            .args(args.iter().cloned())
+            .timeout(Duration::from_secs(30))
+            .capture_name(capture_name),
+    )
+}
+
+fn run_pikachat_json(runner: &CommandRunner, args: &[String], capture_name: &str) -> Result<Value> {
+    let output = run_pikachat(runner, args, capture_name)?;
+    serde_json::from_slice(&output.stdout).context("decode pikachat json output")
+}
+
+fn read_text(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
 
 #[tokio::test]
@@ -526,14 +514,14 @@ async fn agent_http_ensure_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let mut spawner = spawn_mock_vm_spawner(1)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
         .to_bech32()
         .context("encode owner npub")?;
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -564,7 +552,6 @@ async fn agent_http_ensure_local() -> Result<()> {
     let client = reqwest::Client::new();
     let ensure_url = format!("{server_url}/v1/agents/ensure");
     let ensure_auth = build_nip98_authorization_header(&owner_keys, Method::POST, &ensure_url)?;
-    spawner.start()?;
     let ensure_resp = client
         .post(&ensure_url)
         .header("Authorization", ensure_auth)
@@ -583,8 +570,8 @@ async fn agent_http_ensure_local() -> Result<()> {
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "ready" {
-        bail!("expected state=ready after ensure, got: {state}");
+    if state != "creating" {
+        bail!("expected state=creating after ensure, got: {state}");
     }
     let agent_id = ensure_json
         .get("agent_id")
@@ -622,8 +609,14 @@ async fn agent_http_ensure_local() -> Result<()> {
     if me_agent_id != agent_id {
         bail!("agent_id mismatch between ensure and /me");
     }
+    let me_state = me_json.get("state").and_then(Value::as_str).unwrap_or("");
+    if me_state != "ready" {
+        bail!("expected state=ready from /v1/agents/me, got: {me_state}");
+    }
 
-    let spawner_request_lines = spawner.finish()?;
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
     let spawner_request_line = spawner_request_lines
         .first()
         .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
@@ -646,7 +639,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let mut spawner = spawn_mock_vm_spawner(1)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -654,7 +647,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -683,12 +676,15 @@ async fn agent_http_cli_new_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
-    let pikachat_bin = build_pikachat_binary(&runner)?;
-    spawner.start()?;
     let output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -708,8 +704,8 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .and_then(|value| value.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "ready" {
-        bail!("expected CLI ensure state=ready, got: {state}");
+    if state != "creating" {
+        bail!("expected CLI ensure state=creating, got: {state}");
     }
 
     let me_url = format!("{server_url}/v1/agents/me");
@@ -724,13 +720,29 @@ async fn agent_http_cli_new_local() -> Result<()> {
         let body = me_resp.text().await.unwrap_or_default();
         bail!("expected 200 from /v1/agents/me after CLI ensure, got body: {body}");
     }
+    let me_json: Value = me_resp.json().await.context("decode /v1/agents/me json")?;
+    let me_state = me_json.get("state").and_then(Value::as_str).unwrap_or("");
+    if me_state != "ready" {
+        bail!("expected /v1/agents/me state=ready after CLI ensure, got: {me_state}");
+    }
 
-    let spawner_request_lines = spawner.finish()?;
-    let spawner_request_line = spawner_request_lines
-        .first()
-        .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
-    if !spawner_request_line.starts_with("POST /vms ") {
-        bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 2 {
+        bail!("expected two vm-spawner requests, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines[0].starts_with("POST /vms ") {
+        bail!(
+            "expected vm-spawner POST /vms, got: {}",
+            spawner_request_lines[0]
+        );
+    }
+    if !spawner_request_lines[1].starts_with("GET /vms/vm-test-1 ") {
+        bail!(
+            "expected vm-spawner GET /vms/vm-test-1, got: {}",
+            spawner_request_lines[1]
+        );
     }
 
     context.mark_success();
@@ -746,7 +758,7 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let mut spawner = spawn_mock_vm_spawner(1)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -754,7 +766,7 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -783,13 +795,16 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
-    let pikachat_bin = build_pikachat_binary(&runner)?;
-    spawner.start()?;
 
     let first_new_output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -814,11 +829,24 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .and_then(|value| value.get("agent_id"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("first CLI new missing agent.agent_id"))?;
+    let first_state = first_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if first_state != "creating" {
+        bail!("expected first CLI new state=creating, got: {first_state}");
+    }
 
     let second_new_output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -846,15 +874,31 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
     if second_agent_id != first_agent_id {
         bail!("expected same agent_id across idempotent new calls");
     }
+    let second_state = second_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if second_state != "ready" {
+        bail!("expected second CLI new state=ready after /me lookup, got: {second_state}");
+    }
 
-    let spawner_request_lines = spawner.finish()?;
-    if spawner_request_lines.len() != 1 {
-        bail!("expected exactly one vm-spawner request, got: {spawner_request_lines:?}");
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 2 {
+        bail!("expected exactly two vm-spawner requests, got: {spawner_request_lines:?}");
     }
     if !spawner_request_lines[0].starts_with("POST /vms ") {
         bail!(
             "expected vm-spawner POST /vms on first ensure, got: {}",
             spawner_request_lines[0]
+        );
+    }
+    if !spawner_request_lines[1].starts_with("GET /vms/vm-test-1 ") {
+        bail!(
+            "expected vm-spawner GET /vms/vm-test-1 on idempotent ensure, got: {}",
+            spawner_request_lines[1]
         );
     }
 
@@ -871,7 +915,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let mut spawner = spawn_mock_vm_spawner(2)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(3)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -879,7 +923,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .context("encode owner npub")?;
     let owner_nsec = owner_keys.secret_key().to_secret_hex();
 
-    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner.url());
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
     let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
     let _admin_secret_env = ScopedEnvVar::set(
         "PIKA_ADMIN_SESSION_SECRET",
@@ -908,12 +952,15 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
-    let pikachat_bin = build_pikachat_binary(&runner)?;
-    spawner.start()?;
     let new_output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "new",
                 "--api-base-url",
@@ -928,11 +975,24 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     if new_json.get("operation").and_then(Value::as_str) != Some("ensure") {
         bail!("unexpected CLI new payload: {new_json}");
     }
+    let new_state = new_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if new_state != "creating" {
+        bail!("expected CLI new state=creating, got: {new_state}");
+    }
 
     let me_output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "me",
                 "--api-base-url",
@@ -947,11 +1007,24 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     if me_json.get("operation").and_then(Value::as_str) != Some("me") {
         bail!("unexpected CLI me payload: {me_json}");
     }
+    let me_state = me_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if me_state != "ready" {
+        bail!("expected CLI me state=ready, got: {me_state}");
+    }
 
     let recover_output = runner.run(
-        &CommandSpec::new(pikachat_bin.to_string_lossy().to_string())
+        &CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
+                "run",
+                "-q",
+                "-p",
+                "pikachat",
+                "--",
                 "agent",
                 "recover",
                 "--api-base-url",
@@ -977,7 +1050,9 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         bail!("expected CLI recover state=ready, got: {recover_state}");
     }
 
-    let spawner_request_lines = spawner.finish()?;
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
     if !spawner_request_lines
         .iter()
         .any(|line| line.starts_with("POST /vms "))
@@ -990,6 +1065,388 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     {
         bail!(
             "expected vm-spawner POST /vms/vm-test-1/recover request, got: {spawner_request_lines:?}"
+        );
+    }
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("GET /vms/vm-test-1 "))
+    {
+        bail!("expected vm-spawner GET /vms/vm-test-1 request, got: {spawner_request_lines:?}");
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_cli_chat_reply_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-http-cli-chat-reply-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(3)?;
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
+    let owner_nsec = owner_keys.secret_key().to_secret_hex();
+    let fake_agent_keys = Keys::generate();
+    let fake_agent_npub = fake_agent_keys
+        .public_key()
+        .to_bech32()
+        .context("encode fake agent npub")?;
+    let fake_agent_nsec = fake_agent_keys.secret_key().to_secret_hex();
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+    let relay_url = fixture
+        .relay_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?
+        .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
+
+    let runner = CommandRunner::new(&context);
+    let owner_state = context.state_dir().join("agent-chat-owner");
+    let fake_agent_state = context.state_dir().join("agent-chat-fake-agent");
+
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "init".to_string(),
+            "--nsec".to_string(),
+            fake_agent_nsec.clone(),
+        ],
+        "agent-http-cli-chat-reply-fake-init",
+    )?;
+
+    let new_json = run_pikachat_json(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            owner_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "agent".to_string(),
+            "new".to_string(),
+            "--api-base-url".to_string(),
+            server_url.clone(),
+            "--nsec".to_string(),
+            owner_nsec.clone(),
+        ],
+        "agent-http-cli-chat-reply-new",
+    )?;
+    let new_state = new_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if new_state != "creating" {
+        bail!("expected CLI new state=creating before chat, got: {new_state}");
+    }
+
+    update_agent_instance_agent_id(&database_url, &owner_npub, &fake_agent_npub)?;
+
+    let chat_spec = CommandSpec::cargo()
+        .cwd(workspace_root())
+        .args(["run", "-q", "-p", "pikachat", "--"])
+        .args([
+            "--state-dir".to_string(),
+            owner_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "agent".to_string(),
+            "chat".to_string(),
+            "--api-base-url".to_string(),
+            server_url.clone(),
+            "--nsec".to_string(),
+            owner_nsec.clone(),
+            "--listen-timeout".to_string(),
+            "10".to_string(),
+            "--poll-attempts".to_string(),
+            "4".to_string(),
+            "--poll-delay-sec".to_string(),
+            "1".to_string(),
+            "hello from owner".to_string(),
+        ])
+        .capture_name("agent-http-cli-chat-reply");
+    let mut chat_handle = runner.spawn(&chat_spec)?;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "listen".to_string(),
+            "--timeout".to_string(),
+            "3".to_string(),
+            "--lookback".to_string(),
+            "300".to_string(),
+        ],
+        "agent-http-cli-chat-reply-fake-listen",
+    )?;
+    let welcomes_json = run_pikachat_json(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "welcomes".to_string(),
+        ],
+        "agent-http-cli-chat-reply-fake-welcomes",
+    )?;
+    let wrapper_event_id = welcomes_json
+        .get("welcomes")
+        .and_then(Value::as_array)
+        .and_then(|welcomes| welcomes.first())
+        .and_then(|welcome| welcome.get("wrapper_event_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("fake agent welcomes missing wrapper_event_id"))?
+        .to_string();
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "accept-welcome".to_string(),
+            "--wrapper-event-id".to_string(),
+            wrapper_event_id,
+        ],
+        "agent-http-cli-chat-reply-fake-accept",
+    )?;
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "send".to_string(),
+            "--to".to_string(),
+            owner_npub.clone(),
+            "--content".to_string(),
+            "reply from fake agent".to_string(),
+        ],
+        "agent-http-cli-chat-reply-fake-send",
+    )?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let chat_status = loop {
+        if let Some(status) = chat_handle.try_wait()? {
+            break status;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            chat_handle.kill()?;
+            bail!("timed out waiting for agent chat reply command to finish");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    if !chat_status.success() {
+        let stderr = read_text(&chat_handle.stderr_path)?;
+        bail!("expected successful agent chat reply command, stderr: {stderr}");
+    }
+    let chat_stdout = read_text(&chat_handle.stdout_path)?;
+    if !chat_stdout.contains("reply from fake agent") {
+        bail!("expected agent chat stdout to include reply content, got: {chat_stdout}");
+    }
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("POST /vms "))
+    {
+        bail!("expected vm-spawner POST /vms request, got: {spawner_request_lines:?}");
+    }
+    let get_count = spawner_request_lines
+        .iter()
+        .filter(|line| line.starts_with("GET /vms/vm-test-1 "))
+        .count();
+    if get_count < 2 {
+        bail!(
+            "expected repeated vm-spawner GET /vms/vm-test-1 readiness checks, got: {spawner_request_lines:?}"
+        );
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "integration scenario; run in deterministic lane"]
+async fn agent_http_cli_chat_no_reply_timeout_local() -> Result<()> {
+    let _env_lock = ENV_LOCK.lock().await;
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-http-cli-chat-no-reply-timeout-local")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(3)?;
+    let owner_keys = Keys::generate();
+    let owner_npub = owner_keys
+        .public_key()
+        .to_bech32()
+        .context("encode owner npub")?;
+    let owner_nsec = owner_keys.secret_key().to_secret_hex();
+    let fake_agent_keys = Keys::generate();
+    let fake_agent_npub = fake_agent_keys
+        .public_key()
+        .to_bech32()
+        .context("encode fake agent npub")?;
+    let fake_agent_nsec = fake_agent_keys.secret_key().to_secret_hex();
+
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    let _admin_bootstrap_env = ScopedEnvVar::set("PIKA_ADMIN_BOOTSTRAP_NPUBS", &owner_npub);
+    let _admin_secret_env = ScopedEnvVar::set(
+        "PIKA_ADMIN_SESSION_SECRET",
+        "pikahut-deterministic-admin-secret",
+    );
+
+    let fixture = start_fixture(
+        &context,
+        &FixtureSpec::builder(ProfileName::Backend).build(),
+    )
+    .await?;
+    let server_url = fixture
+        .server_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?
+        .to_string();
+    let relay_url = fixture
+        .relay_url()
+        .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?
+        .to_string();
+    let database_url = fixture
+        .manifest()
+        .database_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?
+        .to_string();
+
+    insert_agent_allowlist_row(&database_url, &owner_npub)?;
+
+    let runner = CommandRunner::new(&context);
+    let owner_state = context.state_dir().join("agent-chat-timeout-owner");
+    let fake_agent_state = context.state_dir().join("agent-chat-timeout-fake-agent");
+
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            fake_agent_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "init".to_string(),
+            "--nsec".to_string(),
+            fake_agent_nsec,
+        ],
+        "agent-http-cli-chat-timeout-fake-init",
+    )?;
+    run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            owner_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "agent".to_string(),
+            "new".to_string(),
+            "--api-base-url".to_string(),
+            server_url.clone(),
+            "--nsec".to_string(),
+            owner_nsec.clone(),
+        ],
+        "agent-http-cli-chat-timeout-new",
+    )?;
+    update_agent_instance_agent_id(&database_url, &owner_npub, &fake_agent_npub)?;
+
+    let err = run_pikachat(
+        &runner,
+        &[
+            "--state-dir".to_string(),
+            owner_state.display().to_string(),
+            "--relay".to_string(),
+            relay_url.clone(),
+            "--kp-relay".to_string(),
+            relay_url.clone(),
+            "agent".to_string(),
+            "chat".to_string(),
+            "--api-base-url".to_string(),
+            server_url.clone(),
+            "--nsec".to_string(),
+            owner_nsec,
+            "--listen-timeout".to_string(),
+            "2".to_string(),
+            "--poll-attempts".to_string(),
+            "4".to_string(),
+            "--poll-delay-sec".to_string(),
+            "1".to_string(),
+            "hello with no reply".to_string(),
+        ],
+        "agent-http-cli-chat-timeout",
+    )
+    .expect_err("agent chat without reply must fail");
+    if !err.to_string().contains("no_reply_within_timeout") {
+        bail!("expected no_reply_within_timeout error, got: {err:#}");
+    }
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    let get_count = spawner_request_lines
+        .iter()
+        .filter(|line| line.starts_with("GET /vms/vm-test-1 "))
+        .count();
+    if get_count < 2 {
+        bail!(
+            "expected repeated vm-spawner GET /vms/vm-test-1 readiness checks, got: {spawner_request_lines:?}"
         );
     }
 

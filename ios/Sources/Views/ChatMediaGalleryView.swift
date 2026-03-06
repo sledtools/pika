@@ -58,12 +58,17 @@ struct ChatMediaGalleryView: View {
     private func mediaThumbnail(_ item: MediaGalleryItem) -> some View {
         let attachment = item.attachment
         if let localPath = attachment.localPath {
-            Button {
-                fullscreenAttachment = attachment
-            } label: {
-                ThumbnailImage(url: URL(fileURLWithPath: localPath))
-            }
-            .buttonStyle(.plain)
+            ThumbnailImage(url: URL(fileURLWithPath: localPath))
+                .overlay(
+                    GeometryReader { geo in
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                ImageViewerTransition.sourceFrame = geo.frame(in: .global)
+                                fullscreenAttachment = attachment
+                            }
+                    }
+                )
         } else {
             Rectangle()
                 .fill(Color(.systemGray5))

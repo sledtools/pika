@@ -4,6 +4,10 @@ extension ChatMediaAttachment: Identifiable {
     public var id: String { originalHashHex }
 }
 
+enum ImageViewerTransition {
+    @MainActor static var sourceFrame: CGRect = .zero
+}
+
 struct FullscreenImageViewer: View {
     let attachments: [ChatMediaAttachment]
     @State var currentId: String
@@ -11,7 +15,9 @@ struct FullscreenImageViewer: View {
     @State private var dragOffset: CGSize = .zero
     @State private var isDismissing = false
     @State private var backgroundOpacity: Double = 0.0
+    @State private var dismissScale: CGFloat = 1.0
     @State private var zoomScales: [String: CGFloat] = [:]
+    private let sourceFrame = ImageViewerTransition.sourceFrame
 
     private var isZoomed: Bool {
         (zoomScales[currentId] ?? 1.0) > 1.01
@@ -53,11 +59,13 @@ struct FullscreenImageViewer: View {
                     .page(
                         indexDisplayMode: attachments.count > 1
                             ? .automatic : .never))
+                .mask(dismissClipMask(geo: geo))
+                .scaleEffect(dismissScale)
                 .offset(x: dragOffset.width, y: dragOffset.height)
-                .simultaneousGesture(dismissGesture)
+                .simultaneousGesture(makeDismissGesture(geo: geo))
             }
             .overlay(alignment: .top) {
-                controlsBar(topInset: geo.safeAreaInsets.top)
+                controlsBar(topInset: geo.safeAreaInsets.top, geo: geo)
                     .opacity(isDismissing ? 0 : backgroundOpacity)
             }
         }
@@ -72,9 +80,9 @@ struct FullscreenImageViewer: View {
 
     // MARK: - Controls
 
-    private func controlsBar(topInset: CGFloat) -> some View {
+    private func controlsBar(topInset: CGFloat, geo: GeometryProxy) -> some View {
         HStack {
-            Button { performDismiss() } label: {
+            Button { performDismiss(geo: geo) } label: {
                 Image(systemName: "xmark")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.white)
@@ -114,19 +122,71 @@ struct FullscreenImageViewer: View {
         )
     }
 
-    private func performDismiss() {
-        withAnimation(.easeOut(duration: 0.2)) {
-            backgroundOpacity = 0
+    private func performDismiss(geo: GeometryProxy) {
+        animateDismissToSource(geo: geo)
+    }
+
+    private func animateDismissToSource(geo: GeometryProxy) {
+        let screenCenter = CGPoint(
+            x: geo.size.width / 2, y: geo.size.height / 2)
+
+        if sourceFrame != .zero {
+            let targetScale = sourceFrame.width / geo.size.width
+            let targetOffset = CGSize(
+                width: sourceFrame.midX - screenCenter.x,
+                height: sourceFrame.midY - screenCenter.y)
+            withAnimation(.easeInOut(duration: 0.25)) {
+                dragOffset = targetOffset
+                dismissScale = targetScale
+                backgroundOpacity = 0
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) {
+                backgroundOpacity = 0
+            }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             onDismiss()
         }
     }
 
+    // MARK: - Dismiss clip mask
+
+    private func dismissClipMask(geo: GeometryProxy) -> some View {
+        let hasSource = sourceFrame != .zero
+        let targetScale = hasSource
+            ? max(sourceFrame.width / geo.size.width, 0.05) : 1.0
+        let progress: CGFloat =
+            (hasSource && targetScale < 0.99)
+            ? min(max((1.0 - dismissScale) / (1.0 - targetScale), 0), 1.0)
+            : 0.0
+
+        let screenW = geo.size.width
+        let screenH = geo.size.height
+        let sourceAspect = sourceFrame.width / max(sourceFrame.height, 1)
+        let screenAspect = screenW / screenH
+
+        let targetClipW = sourceAspect > screenAspect ? screenW : screenH * sourceAspect
+        let targetClipH = sourceAspect > screenAspect ? screenW / sourceAspect : screenH
+
+        let clipW = screenW + progress * (targetClipW - screenW)
+        let clipH = screenH + progress * (targetClipH - screenH)
+        let cornerRadius = progress * 12
+
+        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .frame(width: clipW, height: clipH)
+    }
+
     // MARK: - Dismiss gesture
 
-    private var dismissGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
+    private func makeDismissGesture(geo: GeometryProxy) -> some Gesture {
+        let screenCenter = CGPoint(
+            x: geo.size.width / 2, y: geo.size.height / 2)
+        let hasSource = sourceFrame != .zero
+        let targetScale = hasSource
+            ? max(sourceFrame.width / geo.size.width, 0.05) : 0.8
+
+        return DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard !isZoomed else { return }
 
@@ -137,10 +197,13 @@ struct FullscreenImageViewer: View {
                     isDismissing = true
                 }
 
-                dragOffset = value.translation
                 let distance = hypot(
                     value.translation.width, value.translation.height)
-                backgroundOpacity = max(0, 1.0 - distance / 300)
+                let t = min(distance / 300, 1.0)
+
+                dragOffset = value.translation
+                backgroundOpacity = max(0, 1.0 - t)
+                dismissScale = 1.0 - t * (1.0 - targetScale)
             }
             .onEnded { value in
                 guard isDismissing else { return }
@@ -152,11 +215,22 @@ struct FullscreenImageViewer: View {
                     predicted.width, predicted.height)
 
                 if distance > 100 || predictedDistance > 300 {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        dragOffset = predicted
-                        backgroundOpacity = 0
+                    if hasSource {
+                        let targetOffset = CGSize(
+                            width: sourceFrame.midX - screenCenter.x,
+                            height: sourceFrame.midY - screenCenter.y)
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            dragOffset = targetOffset
+                            dismissScale = targetScale
+                            backgroundOpacity = 0
+                        }
+                    } else {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            dragOffset = predicted
+                            backgroundOpacity = 0
+                        }
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                         onDismiss()
                     }
                 } else {
@@ -164,6 +238,7 @@ struct FullscreenImageViewer: View {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.8))
                     {
                         dragOffset = .zero
+                        dismissScale = 1.0
                         backgroundOpacity = 1.0
                     }
                 }

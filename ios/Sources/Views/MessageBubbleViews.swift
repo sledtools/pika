@@ -311,7 +311,16 @@ struct MediaAttachmentView: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { onTapImage?() }
+            .overlay(
+                GeometryReader { geo in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            ImageViewerTransition.sourceFrame = geo.frame(in: .global)
+                            onTapImage?()
+                        }
+                }
+            )
             .allowsHitTesting(attachment.uploadProgress == nil && onTapImage != nil)
         } else if isAutoDownloadKind {
             // Auto-downloading: show placeholder with spinner

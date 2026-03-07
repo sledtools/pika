@@ -128,6 +128,10 @@ For Android specifically, this likely means:
   On this repo state, `packages.aarch64-linux` only exposes `default`, `pikaci`, and
   `rustToolchain`, so the guest cannot currently reuse the same Android SDK/JDK/Gradle/cargo-ndk
   bundle that the normal dev shell provides on supported hosts.
+- `android-nixpkgs` itself currently exposes SDK builders for `aarch64-darwin`,
+  `x86_64-darwin`, and `x86_64-linux`, but not `aarch64-linux`. That means the current
+  Apple-Silicon vfkit guest is the wrong target for Android instrumentation unless the Android
+  toolchain story changes upstream or we build a separate x86_64 Linux runner.
 - This lines up with the broader vendor support gap around Android tooling on Linux ARM. The
   likely CI answer is either a supported macOS/Tart runner for Android UI or a separate x86_64
   Linux runner path, not trying to force the current Apple-Silicon vfkit guest into an unsupported
@@ -147,21 +151,28 @@ For Android specifically, this likely means:
 
 - `pikaci` now has a real runner abstraction with `vfkit_local` and `tart_local`, and the Tart
   path can boot a macOS guest, persist logs/artifacts, and run a simulator provisioning probe.
-- The current proven Tart target is `tart-env-probe`.
-  It boots a guest, wires in Apple tooling, and proves that `xcodebuild -version` plus simulator
-  creation/boot succeed under `pikaci`.
-- The first real iOS beachhead target, `tart-beachhead`, is not green yet.
-  The current runner can get to `xcodebuild test`, but with host-Xcode grafting onto
-  `sequoia-base`, `xcodebuild` still rejects the created simulator destination as if the iOS
-  platform were not installed, even after `simctl` reports the runtime and device as available.
-- The strongest current signal is that mounting host Xcode + `/Library/Developer` into
-  `sequoia-base` is good enough for `simctl`, but not good enough for `xcodebuild`'s destination
-  validation. This looks like an Apple-toolchain/platform-install boundary, not a `pikaci`
-  orchestration bug.
-- The next Tart experiment in flight is a real Xcode-enabled Cirrus base image
-  (`ghcr.io/cirruslabs/macos-sequoia-xcode:16.4`) so the guest has a native Xcode installation
-  instead of a host-mounted one. If that works, the runner should prefer "base VM already has
-  Xcode" over the host-mount fallback for iOS/macOS lanes.
+- Proven Tart targets now include:
+  - `tart-env-probe`
+  - `tart-beachhead`
+  - `tart-ios-unit-tests`
+  - `tart-ios-ui-note-to-self`
+- The Tart runner now prefers a native-Xcode Cirrus base image
+  (`ghcr.io/cirruslabs/macos-sequoia-xcode:16.4`, cloned locally as `pikaci-xcode16-base`)
+  over the earlier host-Xcode grafting fallback. That resolved the earlier destination validation
+  failures from `sequoia-base`.
+- The deterministic Tart UI lane is now meaningfully split from public-relay/media E2E coverage.
+  The `testCreateAccount_noteToSelf_sendMessage_and_logout`,
+  `testSessionPersistsAcrossRelaunch`,
+  `testChatDeepLink_opensChat`,
+  `testChatLayout_reopenAndFocusComposer_keepsLatestMessageVisible`, and
+  `testLongPressMessage_showsActionsAndDismisses` cases now pass under Tart after:
+  - switching the deterministic UI flow to a fixed local `nsec`/`npub` identity instead of
+    scraping the profile sheet
+  - bypassing flaky simulator AX behavior on the "New Chat" toolbar menu with a raw window tap
+- `testE2E_hypernoteDetailsAndCodeBlock` and `testE2E_multiImageGrid` do not belong in the
+  deterministic `ios-ui-test` bundle as currently written. They require a bot/media-style E2E
+  environment, unlike the local/offline UI smoke tests, so `pikaci` now treats them as a separate
+  future Tart lane rather than part of the deterministic bundle.
 - The current Tart probe remains green after the runner abstraction refactor.
   `tart-env-probe` still proves: boot guest, see Xcode, accept the license, and create/boot an
   iOS simulator under `pikaci`.

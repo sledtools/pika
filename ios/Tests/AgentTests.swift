@@ -12,7 +12,7 @@ final class AgentTests: XCTestCase {
             )
         )
         XCTAssertFalse(
-            isDogfoodAgentEligible(
+            isAgentEligible(
                 npub: npub,
                 auth: .loggedIn(
                     npub: "npub1differentaccountqqqqqqqqqqqqqqqqqqqqqqqqqqqqj6y0r7",

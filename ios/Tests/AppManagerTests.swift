@@ -22,7 +22,9 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
         callTimeline: [],
         toast: toast,
         developerMode: false,
-        voiceRecording: nil
+        updateRequired: false,
+        voiceRecording: nil,
+        mediaGallery: nil
     )
 }
 
@@ -48,7 +50,9 @@ final class AppManagerTests: XCTestCase {
             callTimeline: [],
             toast: toast,
             developerMode: false,
-            voiceRecording: nil
+            updateRequired: false,
+            voiceRecording: nil,
+            mediaGallery: nil
         )
     }
 

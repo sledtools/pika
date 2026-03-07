@@ -282,6 +282,42 @@ pub fn list_runs(state_root: &Path) -> anyhow::Result<Vec<RunRecord>> {
     Ok(runs)
 }
 
+pub fn gc_runs(state_root: &Path, keep_runs: usize) -> anyhow::Result<Vec<String>> {
+    let runs_root = state_root.join("runs");
+    if !runs_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut run_dirs = Vec::new();
+    for entry in
+        fs::read_dir(&runs_root).with_context(|| format!("read {}", runs_root.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            run_dirs.push(entry.path());
+        }
+    }
+    run_dirs.sort_by(|left, right| {
+        right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .cmp(&left.file_name().and_then(|name| name.to_str()))
+    });
+
+    let mut removed = Vec::new();
+    for run_dir in run_dirs.into_iter().skip(keep_runs) {
+        let run_id = run_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow!("invalid run directory name: {}", run_dir.display()))?
+            .to_string();
+        fs::remove_dir_all(&run_dir).with_context(|| format!("remove {}", run_dir.display()))?;
+        removed.push(run_id);
+    }
+
+    Ok(removed)
+}
+
 pub fn load_logs(
     state_root: &Path,
     run_id: &str,
@@ -442,4 +478,40 @@ fn run_host_setup_commands(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::gc_runs;
+
+    #[test]
+    fn gc_runs_keeps_latest_run_directories() {
+        let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));
+        let runs_root = root.join("runs");
+        fs::create_dir_all(&runs_root).expect("create runs root");
+        for run_id in [
+            "20260307T000001Z-aaaa0001",
+            "20260307T000002Z-bbbb0002",
+            "20260307T000003Z-cccc0003",
+        ] {
+            fs::create_dir_all(runs_root.join(run_id)).expect("create run dir");
+        }
+
+        let removed = gc_runs(&root, 1).expect("gc runs");
+
+        assert_eq!(
+            removed,
+            vec![
+                "20260307T000002Z-bbbb0002".to_string(),
+                "20260307T000001Z-aaaa0001".to_string()
+            ]
+        );
+        assert!(runs_root.join("20260307T000003Z-cccc0003").exists());
+        assert!(!runs_root.join("20260307T000002Z-bbbb0002").exists());
+        assert!(!runs_root.join("20260307T000001Z-aaaa0001").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -2891,12 +2891,21 @@ impl AppCore {
     fn open_chat_screen(&mut self, chat_id: &str) {
         // UX: creating a chat from "NewChat", "NewGroupChat", or "AgentProvisioning" should
         // land you in the chat, with back returning to the chat list.
+        let had_provisioning = self
+            .state
+            .router
+            .screen_stack
+            .iter()
+            .any(|s| matches!(s, Screen::AgentProvisioning));
         self.state.router.screen_stack.retain(|s| {
             !matches!(
                 s,
                 Screen::NewChat | Screen::NewGroupChat | Screen::AgentProvisioning
             )
         });
+        if had_provisioning {
+            self.state.agent_provisioning = None;
+        }
 
         // Prevent stacking multiple chat screens (and their child GroupInfo screens).
         self.state.router.screen_stack.retain(|s| {
@@ -2944,6 +2953,9 @@ impl AppCore {
 
     fn clear_pending_direct_chat_creation(&mut self, clear_busy: bool) {
         self.pending_direct_chat_creation = None;
+        // If the agent provisioning screen was still showing while waiting for
+        // chat creation, clear it now since the flow is being abandoned.
+        self.state.agent_provisioning = None;
         if clear_busy {
             self.set_busy(|b| b.creating_chat = false);
         }
@@ -3703,6 +3715,12 @@ impl AppCore {
         self.local_key_package_published = ok;
         if ok {
             if let Some(pending) = self.pending_direct_chat_creation.take() {
+                // Advance provisioning phase if the agent flow is still showing.
+                if let Some(ref mut prov) = self.state.agent_provisioning {
+                    prov.phase = crate::state::AgentProvisioningPhase::CreatingChat;
+                    prov.status_message = "Creating encrypted chat...".to_string();
+                    self.emit_state();
+                }
                 self.begin_direct_chat_creation(pending.peer_pubkey);
             }
             return;
@@ -5106,6 +5124,10 @@ impl AppCore {
                 if had_provisioning && !has_provisioning {
                     self.invalidate_agent_flow();
                     self.state.agent_provisioning = None;
+                    // Also cancel any pending direct-chat creation that was
+                    // kicked off after agent provisioning completed (CreateChat
+                    // may be waiting for key-package publish).
+                    self.clear_pending_direct_chat_creation(true);
                 }
 
                 self.state.router.screen_stack = stack;
@@ -5205,12 +5227,24 @@ impl AppCore {
                 }
 
                 if !self.local_key_package_published {
+                    // Update the agent provisioning screen if it is still visible.
+                    if let Some(ref mut prov) = self.state.agent_provisioning {
+                        prov.phase = crate::state::AgentProvisioningPhase::PublishingKeyPackage;
+                        prov.status_message = "Publishing key package...".to_string();
+                    }
                     self.pending_direct_chat_creation =
                         Some(PendingDirectChatCreation { peer_pubkey });
                     self.ensure_key_package_published_best_effort();
+                    self.emit_state();
                     return;
                 }
 
+                // Update the agent provisioning screen if it is still visible.
+                if let Some(ref mut prov) = self.state.agent_provisioning {
+                    prov.phase = crate::state::AgentProvisioningPhase::CreatingChat;
+                    prov.status_message = "Creating encrypted chat...".to_string();
+                    self.emit_state();
+                }
                 self.begin_direct_chat_creation(peer_pubkey);
             }
             AppAction::OpenChat { chat_id } => {

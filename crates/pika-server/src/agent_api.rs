@@ -320,10 +320,14 @@ async fn provision_vm_for_owner(
         .map_err(|err| spawner_create_error(&resolved.spawner_url, err))
 }
 
+/// Provision a new agent for the given owner. When `max_active` is `Some`, the
+/// insert is performed atomically with a count guard so concurrent requests
+/// cannot exceed the limit. When `None` (unlimited), a plain insert is used.
 async fn provision_agent_for_owner(
     state: &State,
     owner_npub: &str,
     request_id: &str,
+    max_active: Option<i64>,
 ) -> Result<AgentInstance, AgentApiError> {
     let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
@@ -333,22 +337,45 @@ async fn provision_agent_for_owner(
         let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
         })?;
-        AgentInstance::create(
-            &mut conn,
-            owner_npub,
-            &bot_identity.pubkey_npub,
-            None,
-            AGENT_PHASE_CREATING,
-        )
-        .map_err(|err| {
-            tracing::error!(
-                request_id,
-                owner_npub = %owner_npub,
-                error = %err,
-                "failed to create agent instance row"
-            );
-            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-        })?
+        if let Some(limit) = max_active {
+            AgentInstance::create_if_under_limit(
+                &mut conn,
+                owner_npub,
+                &bot_identity.pubkey_npub,
+                None,
+                AGENT_PHASE_CREATING,
+                limit,
+            )
+            .map_err(|err| {
+                tracing::error!(
+                    request_id,
+                    owner_npub = %owner_npub,
+                    error = %err,
+                    "failed to create agent instance row (limit-guarded)"
+                );
+                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+            })?
+            .ok_or_else(|| {
+                AgentApiError::from_code(AgentApiErrorCode::AgentExists).with_request_id(request_id)
+            })?
+        } else {
+            AgentInstance::create(
+                &mut conn,
+                owner_npub,
+                &bot_identity.pubkey_npub,
+                None,
+                AGENT_PHASE_CREATING,
+            )
+            .map_err(|err| {
+                tracing::error!(
+                    request_id,
+                    owner_npub = %owner_npub,
+                    error = %err,
+                    "failed to create agent instance row"
+                );
+                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+            })?
+        }
     };
 
     let vm = match provision_vm_for_owner(owner_npub, &bot_identity, request_id).await {
@@ -403,7 +430,7 @@ pub async fn ensure_agent(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
-    let requester = {
+    let (requester, max_active) = {
         let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal)
                 .with_request_id(request_context.request_id.clone())
@@ -417,7 +444,9 @@ pub async fn ensure_agent(
         )
         .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
 
-        // Check per-user agent limit from allowlist (default 1, NULL = unlimited).
+        // Resolve per-user agent limit (default 1, NULL = unlimited).
+        // The actual enforcement happens atomically inside provision_agent_for_owner
+        // via INSERT … SELECT WHERE count < limit.
         let max_agents = AgentAllowlistEntry::get(&mut conn, &requester.owner_npub)
             .map_err(|_| {
                 AgentApiError::from_code(AgentApiErrorCode::Internal)
@@ -425,25 +454,17 @@ pub async fn ensure_agent(
             })?
             .and_then(|entry| entry.max_agents);
 
-        if let Some(limit) = max_agents {
-            let active_count =
-                AgentInstance::count_active_by_owner(&mut conn, &requester.owner_npub).map_err(
-                    |_| {
-                        AgentApiError::from_code(AgentApiErrorCode::Internal)
-                            .with_request_id(request_context.request_id.clone())
-                    },
-                )?;
-            if active_count >= limit as i64 {
-                return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-                    .with_request_id(request_context.request_id.clone()));
-            }
-        }
-        requester
+        let max_active = max_agents.map(|limit| limit as i64);
+        (requester, max_active)
     };
 
-    let updated =
-        provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
-            .await?;
+    let updated = provision_agent_for_owner(
+        &state,
+        &requester.owner_npub,
+        &request_context.request_id,
+        max_active,
+    )
+    .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -517,16 +538,20 @@ pub async fn recover_my_agent(
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
         drop(conn);
-        let reprovisioned =
-            provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
-                .await
-                .map_err(|err| match err.code {
-                    AgentApiErrorCode::AgentExists => {
-                        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                            .with_request_id(request_context.request_id.clone())
-                    }
-                    _ => err,
-                })?;
+        let reprovisioned = provision_agent_for_owner(
+            &state,
+            &requester.owner_npub,
+            &request_context.request_id,
+            None,
+        )
+        .await
+        .map_err(|err| match err.code {
+            AgentApiErrorCode::AgentExists => {
+                AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                    .with_request_id(request_context.request_id.clone())
+            }
+            _ => err,
+        })?;
         return Ok(Json(map_row_to_response(reprovisioned).map_err(|err| {
             err.with_request_id(request_context.request_id.clone())
         })?));
@@ -562,6 +587,7 @@ pub async fn recover_my_agent(
                 &state,
                 &requester.owner_npub,
                 &request_context.request_id,
+                None,
             )
             .await
             .map_err(|err| match err.code {

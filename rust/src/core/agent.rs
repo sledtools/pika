@@ -503,7 +503,16 @@ impl AppCore {
             poll_attempt: None,
             poll_max: None,
         });
-        self.push_screen(crate::state::Screen::AgentProvisioning);
+        // Only push the screen if it isn't already on the stack (e.g. retry from error state).
+        let already_on_stack = self
+            .state
+            .router
+            .screen_stack
+            .iter()
+            .any(|s| matches!(s, crate::state::Screen::AgentProvisioning));
+        if !already_on_stack {
+            self.push_screen(crate::state::Screen::AgentProvisioning);
+        }
         self.emit_state();
 
         let progress_tx = tx.clone();
@@ -639,7 +648,10 @@ impl AppCore {
             return Ok(());
         }
 
-        self.state.agent_provisioning = None;
+        // Keep agent_provisioning alive so the UI continues to show the
+        // CreatingChat phase during key-package publish and chat creation.
+        // It gets cleared when the chat screen opens (open_chat_screen retains
+        // filter removes AgentProvisioning) or on error.
         self.set_busy(|b| b.starting_agent = false);
         self.handle_action(AppAction::CreateChat {
             peer_npub: normalized,

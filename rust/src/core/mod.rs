@@ -621,6 +621,7 @@ enum AgentAllowlistState {
 
 #[derive(Debug, Clone)]
 struct PendingDirectChatCreation {
+    token: u64,
     peer_pubkey: PublicKey,
 }
 
@@ -819,6 +820,7 @@ pub struct AppCore {
     agent_allowlist_probe_token: u64,
     local_key_package_published: bool,
     key_package_publish_token: u64,
+    direct_chat_creation_token: u64,
     pending_direct_chat_creation: Option<PendingDirectChatCreation>,
     agent_flow_token: u64,
     agent_flow_task: Option<tokio::task::JoinHandle<()>>,
@@ -946,6 +948,7 @@ impl AppCore {
             agent_allowlist_probe_token: 0,
             local_key_package_published: false,
             key_package_publish_token: 0,
+            direct_chat_creation_token: 0,
             pending_direct_chat_creation: None,
             agent_flow_token: 0,
             agent_flow_task: None,
@@ -2951,7 +2954,17 @@ impl AppCore {
         self.local_key_package_published = false;
     }
 
+    fn invalidate_direct_chat_creation(&mut self) {
+        self.direct_chat_creation_token = self.direct_chat_creation_token.wrapping_add(1);
+    }
+
+    fn next_direct_chat_creation_token(&mut self) -> u64 {
+        self.invalidate_direct_chat_creation();
+        self.direct_chat_creation_token
+    }
+
     fn clear_pending_direct_chat_creation(&mut self, clear_busy: bool) {
+        self.invalidate_direct_chat_creation();
         self.pending_direct_chat_creation = None;
         // If the agent provisioning screen was still showing while waiting for
         // chat creation, clear it now since the flow is being abandoned.
@@ -2961,10 +2974,24 @@ impl AppCore {
         }
     }
 
-    fn begin_direct_chat_creation(&mut self, peer_pubkey: PublicKey) {
+    fn fail_direct_chat_creation(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.invalidate_direct_chat_creation();
+        self.pending_direct_chat_creation = None;
+        self.set_busy(|b| b.creating_chat = false);
+        if let Some(ref mut prov) = self.state.agent_provisioning {
+            prov.phase = crate::state::AgentProvisioningPhase::Error;
+            prov.status_message = message;
+            self.emit_state();
+        } else {
+            self.toast(message);
+        }
+    }
+
+    fn begin_direct_chat_creation(&mut self, peer_pubkey: PublicKey, token: u64) {
         let (client, tx) = {
             let Some(sess) = self.session.as_ref() else {
-                self.clear_pending_direct_chat_creation(true);
+                self.fail_direct_chat_creation("Please log in first");
                 return;
             };
             (sess.client.clone(), self.core_sender.clone())
@@ -2984,6 +3011,7 @@ impl AppCore {
                         .max_by_key(|e| e.created_at);
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::PeerKeyPackageFetched {
+                            token,
                             peer_pubkey,
                             key_package_event: best,
                             error: None,
@@ -2993,6 +3021,7 @@ impl AppCore {
                 Err(e) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::PeerKeyPackageFetched {
+                            token,
                             peer_pubkey,
                             key_package_event: None,
                             error: Some(format!("Fetch peer key package failed: {e}")),
@@ -3012,6 +3041,7 @@ impl AppCore {
             self.agent_allowlist_state = AgentAllowlistState::Unknown;
             self.invalidate_agent_allowlist_probe();
             self.invalidate_key_package_publish();
+            self.invalidate_direct_chat_creation();
             self.pending_direct_chat_creation = None;
             self.state.router.default_screen = Screen::ChatList;
             self.state.router.screen_stack.clear();
@@ -3028,6 +3058,7 @@ impl AppCore {
             self.agent_allowlist_state = AgentAllowlistState::Unknown;
             self.invalidate_agent_allowlist_probe();
             self.invalidate_key_package_publish();
+            self.invalidate_direct_chat_creation();
             self.pending_direct_chat_creation = None;
             self.state.router.default_screen = Screen::Login;
             self.state.router.screen_stack.clear();
@@ -3320,10 +3351,11 @@ impl AppCore {
                 error,
             ),
             InternalEvent::PeerKeyPackageFetched {
+                token,
                 peer_pubkey,
                 key_package_event,
                 error,
-            } => self.handle_peer_key_package_fetched(peer_pubkey, key_package_event, error),
+            } => self.handle_peer_key_package_fetched(token, peer_pubkey, key_package_event, error),
             InternalEvent::GiftWrapReceived { wrapper, rumor } => {
                 self.handle_gift_wrap_received(wrapper, rumor)
             }
@@ -3721,13 +3753,9 @@ impl AppCore {
                     prov.status_message = "Creating encrypted chat...".to_string();
                     self.emit_state();
                 }
-                self.begin_direct_chat_creation(pending.peer_pubkey);
+                self.begin_direct_chat_creation(pending.peer_pubkey, pending.token);
             }
             return;
-        }
-
-        if self.pending_direct_chat_creation.take().is_some() {
-            self.set_busy(|b| b.creating_chat = false);
         }
 
         if !ok {
@@ -3736,9 +3764,11 @@ impl AppCore {
                 || msg.contains("not ready")
                 || msg.contains("not connected")
             {
-                self.toast("Key package publish delayed: relay connection is not ready");
+                self.fail_direct_chat_creation(
+                    "Key package publish delayed: relay connection is not ready",
+                );
             } else {
-                self.toast(format!("Key package publish failed: {msg}"));
+                self.fail_direct_chat_creation(format!("Key package publish failed: {msg}"));
             }
         }
     }
@@ -3779,10 +3809,14 @@ impl AppCore {
 
     fn handle_peer_key_package_fetched(
         &mut self,
+        token: u64,
         peer_pubkey: PublicKey,
         key_package_event: Option<Event>,
         error: Option<String>,
     ) {
+        if token != self.direct_chat_creation_token {
+            return;
+        }
         let network_enabled = self.network_enabled();
         tracing::info!(
             peer = %peer_pubkey.to_hex(),
@@ -3791,13 +3825,11 @@ impl AppCore {
             "peer_key_package_fetched"
         );
         if let Some(err) = error {
-            self.set_busy(|b| b.creating_chat = false);
-            self.toast(err);
+            self.fail_direct_chat_creation(err);
             return;
         }
         let Some(kp_event) = key_package_event else {
-            self.set_busy(|b| b.creating_chat = false);
-            self.toast("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
+            self.fail_direct_chat_creation("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
             return;
         };
         let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
@@ -3812,14 +3844,13 @@ impl AppCore {
         }
         let group_result = {
             let Some(sess) = self.session.as_mut() else {
-                self.set_busy(|b| b.creating_chat = false);
+                self.fail_direct_chat_creation("Please log in first");
                 return;
             };
 
             // Validate peer key package before use (spec-v2).
             if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
-                self.set_busy(|b| b.creating_chat = false);
-                self.toast(format!(
+                self.fail_direct_chat_creation(format!(
                     "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
                 ));
                 return;
@@ -3844,8 +3875,7 @@ impl AppCore {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        self.set_busy(|b| b.creating_chat = false);
-                        self.toast(format!("Create group failed: {e}"));
+                        self.fail_direct_chat_creation(format!("Create group failed: {e}"));
                         return;
                     }
                 };
@@ -5123,7 +5153,7 @@ impl AppCore {
 
                 if had_provisioning && !has_provisioning {
                     self.invalidate_agent_flow();
-                    self.state.agent_provisioning = None;
+                    self.invalidate_key_package_publish();
                     // Also cancel any pending direct-chat creation that was
                     // kicked off after agent provisioning completed (CreateChat
                     // may be waiting for key-package publish).
@@ -5221,8 +5251,14 @@ impl AppCore {
                 }
 
                 if !network_enabled {
-                    self.set_busy(|b| b.creating_chat = false);
-                    self.toast("Network disabled (set PIKA_DISABLE_NETWORK=0)");
+                    if self.state.agent_provisioning.is_some() {
+                        self.fail_direct_chat_creation(
+                            "Network disabled (set PIKA_DISABLE_NETWORK=0)",
+                        );
+                    } else {
+                        self.set_busy(|b| b.creating_chat = false);
+                        self.toast("Network disabled (set PIKA_DISABLE_NETWORK=0)");
+                    }
                     return;
                 }
 
@@ -5232,8 +5268,9 @@ impl AppCore {
                         prov.phase = crate::state::AgentProvisioningPhase::PublishingKeyPackage;
                         prov.status_message = "Publishing key package...".to_string();
                     }
+                    let token = self.next_direct_chat_creation_token();
                     self.pending_direct_chat_creation =
-                        Some(PendingDirectChatCreation { peer_pubkey });
+                        Some(PendingDirectChatCreation { token, peer_pubkey });
                     self.ensure_key_package_published_best_effort();
                     self.emit_state();
                     return;
@@ -5245,7 +5282,8 @@ impl AppCore {
                     prov.status_message = "Creating encrypted chat...".to_string();
                     self.emit_state();
                 }
-                self.begin_direct_chat_creation(peer_pubkey);
+                let token = self.next_direct_chat_creation_token();
+                self.begin_direct_chat_creation(peer_pubkey, token);
             }
             AppAction::OpenChat { chat_id } => {
                 if !self.is_logged_in() {
@@ -7694,11 +7732,21 @@ mod tests {
         fn key_package_publish_failure_clears_pending_direct_chat() {
             let (mut core, _tmp) = make_logged_in_core();
             let peer_keys = Keys::generate();
+            core.direct_chat_creation_token = 3;
             core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                token: 3,
                 peer_pubkey: peer_keys.public_key(),
             });
             core.state.busy.creating_chat = true;
             core.key_package_publish_token = 7;
+            core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                phase: crate::state::AgentProvisioningPhase::PublishingKeyPackage,
+                agent_npub: Some("npub1agent".into()),
+                status_message: "Publishing key package...".into(),
+                elapsed_secs: 0,
+                poll_attempt: None,
+                poll_max: None,
+            });
 
             core.handle_internal(InternalEvent::KeyPackagePublished {
                 token: 7,
@@ -7708,17 +7756,23 @@ mod tests {
 
             assert!(core.pending_direct_chat_creation.is_none());
             assert!(!core.state.busy.creating_chat);
-            assert_eq!(
-                core.state.toast.as_deref(),
-                Some("Key package publish failed: boom")
-            );
+            let prov = core
+                .state
+                .agent_provisioning
+                .as_ref()
+                .expect("provisioning should remain visible");
+            assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
+            assert_eq!(prov.status_message, "Key package publish failed: boom");
+            assert!(core.state.toast.is_none());
         }
 
         #[test]
         fn stale_key_package_publish_failure_is_ignored() {
             let (mut core, _tmp) = make_logged_in_core();
             let peer_keys = Keys::generate();
+            core.direct_chat_creation_token = 4;
             core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                token: 4,
                 peer_pubkey: peer_keys.public_key(),
             });
             core.state.busy.creating_chat = true;
@@ -7732,6 +7786,75 @@ mod tests {
 
             assert!(core.pending_direct_chat_creation.is_some());
             assert!(core.state.busy.creating_chat);
+            assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn peer_key_package_failure_sets_provisioning_error() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.direct_chat_creation_token = 5;
+            core.state.busy.creating_chat = true;
+            core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                phase: crate::state::AgentProvisioningPhase::CreatingChat,
+                agent_npub: Some("npub1agent".into()),
+                status_message: "Creating encrypted chat...".into(),
+                elapsed_secs: 0,
+                poll_attempt: None,
+                poll_max: None,
+            });
+
+            core.handle_internal(InternalEvent::PeerKeyPackageFetched {
+                token: 5,
+                peer_pubkey: peer_keys.public_key(),
+                key_package_event: None,
+                error: Some("Fetch peer key package failed: boom".into()),
+            });
+
+            assert!(!core.state.busy.creating_chat);
+            let prov = core
+                .state
+                .agent_provisioning
+                .as_ref()
+                .expect("provisioning should remain visible");
+            assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
+            assert_eq!(prov.status_message, "Fetch peer key package failed: boom");
+            assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn stale_peer_key_package_failure_is_ignored() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.direct_chat_creation_token = 8;
+            core.state.busy.creating_chat = true;
+            core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                phase: crate::state::AgentProvisioningPhase::CreatingChat,
+                agent_npub: Some("npub1agent".into()),
+                status_message: "Creating encrypted chat...".into(),
+                elapsed_secs: 0,
+                poll_attempt: None,
+                poll_max: None,
+            });
+
+            core.handle_internal(InternalEvent::PeerKeyPackageFetched {
+                token: 7,
+                peer_pubkey: peer_keys.public_key(),
+                key_package_event: None,
+                error: Some("stale".into()),
+            });
+
+            assert!(core.state.busy.creating_chat);
+            let prov = core
+                .state
+                .agent_provisioning
+                .as_ref()
+                .expect("provisioning should be unchanged");
+            assert_eq!(
+                prov.phase,
+                crate::state::AgentProvisioningPhase::CreatingChat
+            );
+            assert_eq!(prov.status_message, "Creating encrypted chat...");
             assert!(core.state.toast.is_none());
         }
 

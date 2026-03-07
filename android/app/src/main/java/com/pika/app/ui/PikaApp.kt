@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,13 +18,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Scaffold
 import com.pika.app.AppManager
 import com.pika.app.rust.AppAction
+import com.pika.app.rust.AgentProvisioningPhase
 import com.pika.app.rust.Screen
 import com.pika.app.ui.screens.CallSurface
 import com.pika.app.ui.screens.ChatListScreen
@@ -152,21 +158,14 @@ fun PikaApp(manager: AppManager) {
                             )
                         is Screen.GroupInfo -> GroupInfoScreen(manager = manager, chatId = screen.chatId, padding = padding)
                         is Screen.Login -> LoginScreen(manager = manager, padding = padding)
-                        is Screen.AgentProvisioning -> {
-                            // Minimal placeholder — full Android implementation deferred.
-                            Column(
-                                modifier = Modifier.fillMaxSize().padding(padding),
-                                verticalArrangement = Arrangement.Center,
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                CircularProgressIndicator()
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = state.agentProvisioning?.statusMessage ?: "Starting agent...",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                            }
-                        }
+                        is Screen.AgentProvisioning ->
+                            AgentProvisioningScreen(
+                                manager = manager,
+                                padding = padding,
+                                onBack = {
+                                    manager.dispatch(AppAction.UpdateScreenStack(router.screenStack.dropLast(1)))
+                                },
+                            )
                     }
                 }
             }
@@ -195,5 +194,89 @@ fun PikaApp(manager: AppManager) {
             profile = profile,
             onDismiss = {},
         )
+    }
+}
+
+@Composable
+private fun AgentProvisioningScreen(
+    manager: AppManager,
+    padding: PaddingValues,
+    onBack: () -> Unit,
+) {
+    val provisioning = manager.state.agentProvisioning
+    val isError = provisioning?.phase == AgentProvisioningPhase.ERROR
+
+    Column(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (isError) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(44.dp),
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        } else {
+            CircularProgressIndicator()
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        Text(
+            text = provisioning?.statusMessage ?: "Starting agent...",
+            style = MaterialTheme.typography.titleMedium,
+            color =
+                if (isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurface,
+        )
+
+        provisioning?.pollAttempt?.let { attempt ->
+            val max = provisioning.pollMax ?: 0u
+            if (!isError && max > 0u) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "$attempt / $max",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (!isError && (provisioning?.elapsedSecs ?: 0u) > 0u) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "${provisioning?.elapsedSecs}s elapsed",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        provisioning?.agentNpub?.let { npub ->
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = npub.take(20) + "...",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (isError) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Row {
+                Button(onClick = { manager.dispatch(AppAction.EnsureAgent) }) {
+                    Text("Try Again")
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                OutlinedButton(onClick = onBack) {
+                    Text("Back")
+                }
+            }
+        }
     }
 }

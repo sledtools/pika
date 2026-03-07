@@ -31,6 +31,7 @@ const TEST_NSEC_ENV: &str = "PIKA_TEST_NSEC";
 const ADMIN_SESSION_COOKIE: &str = "pika_admin_session";
 const ADMIN_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const ADMIN_CHALLENGE_TTL_SECS: i64 = 120;
+const MAX_SUPPORTED_AGENTS: i32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct AdminConfig {
@@ -432,10 +433,7 @@ pub async fn dashboard(
                 npub: row.npub,
                 active: row.active,
                 note: row.note.unwrap_or_default(),
-                max_agents: row
-                    .max_agents
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "unlimited".to_string()),
+                max_agents: row.max_agents.unwrap_or(MAX_SUPPORTED_AGENTS).to_string(),
                 updated_by: row.updated_by,
                 updated_at: row.updated_at.to_string(),
                 next_active,
@@ -466,7 +464,7 @@ pub async fn upsert_allowlist(
         .note
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let max_agents: Option<i32> = form
+    let max_agents = form
         .max_agents
         .as_deref()
         .map(str::trim)
@@ -478,7 +476,16 @@ pub async fn upsert_allowlist(
                 StatusCode::BAD_REQUEST,
                 format!("invalid max_agents: {err}"),
             )
-        })?;
+        })?
+        .unwrap_or(MAX_SUPPORTED_AGENTS);
+    if max_agents != MAX_SUPPORTED_AGENTS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "max_agents > {MAX_SUPPORTED_AGENTS} is not supported until the API/client add multi-agent selection"
+            ),
+        ));
+    }
 
     let mut conn = state
         .db_pool
@@ -492,7 +499,7 @@ pub async fn upsert_allowlist(
             active,
             note.as_deref(),
             &admin_npub,
-            max_agents,
+            Some(max_agents),
         )?;
         AgentAllowlistEntry::record_audit(
             conn,

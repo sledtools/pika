@@ -125,6 +125,7 @@ pub enum InternalEvent {
 
     // Async CreateChat fetch result (1:1)
     PeerKeyPackageFetched {
+        token: u64,
         peer_pubkey: nostr_sdk::prelude::PublicKey,
         key_package_event: Option<nostr_sdk::prelude::Event>,
         error: Option<String>,

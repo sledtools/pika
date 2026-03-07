@@ -145,7 +145,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_agent_instance_multiple_active_and_count() {
+    async fn test_agent_instance_active_owner_constraint() {
         let _guard = test_guard();
         let db_pool = init_db_pool();
         clear_database(&db_pool);
@@ -162,19 +162,20 @@ mod test {
         .expect("insert initial creating row");
         assert_eq!(created.owner_npub, owner_npub);
 
-        // Second active agent is now allowed (no unique index).
-        AgentInstance::create(
+        let duplicate_active = AgentInstance::create(
             &mut conn,
             owner_npub,
             "agent-2",
             Some("vm-2"),
             AGENT_PHASE_READY,
         )
-        .expect("second active row should succeed");
-
-        let count = AgentInstance::count_active_by_owner(&mut conn, owner_npub)
-            .expect("count active agents");
-        assert_eq!(count, 2);
+        .expect_err("second active row should violate unique partial index");
+        assert!(
+            duplicate_active
+                .to_string()
+                .contains("agent_instances_owner_active_idx"),
+            "unexpected error: {duplicate_active:?}"
+        );
 
         let errored = AgentInstance::create(
             &mut conn,
@@ -186,16 +187,10 @@ mod test {
         .expect("error-phase rows are not active and should be allowed");
         assert_eq!(errored.phase, AGENT_PHASE_ERROR);
 
-        // Error-phase agents are not counted.
-        let count = AgentInstance::count_active_by_owner(&mut conn, owner_npub)
-            .expect("count active agents");
-        assert_eq!(count, 2);
-
-        // find_active_by_owner returns the latest active one.
         let active = AgentInstance::find_active_by_owner(&mut conn, owner_npub)
             .expect("query active row")
             .expect("active row should exist");
-        assert_eq!(active.agent_id, "agent-2");
+        assert_eq!(active.agent_id, "agent-1");
 
         let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
             .expect("query latest row")

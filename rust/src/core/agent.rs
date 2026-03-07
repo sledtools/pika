@@ -612,8 +612,7 @@ impl AppCore {
             );
             if let Err(message) = self.open_or_create_direct_chat_for_agent(&agent_id) {
                 self.set_busy(|b| b.starting_agent = false);
-                self.state.agent_provisioning = None;
-                self.toast(message);
+                self.fail_direct_chat_creation(message);
             }
             return;
         }

@@ -120,6 +120,7 @@ impl AppCore {
         self.subs_force_reconnect = false;
         self.invalidate_agent_flow();
         self.invalidate_key_package_publish();
+        self.invalidate_direct_chat_creation();
         self.pending_direct_chat_creation = None;
         self.agent_allowlist_state = AgentAllowlistState::Unknown;
         self.invalidate_agent_allowlist_probe();
@@ -230,8 +231,7 @@ impl AppCore {
         {
             Ok(v) => v,
             Err(e) => {
-                self.clear_pending_direct_chat_creation(true);
-                self.toast(format!("Key package create failed: {e}"));
+                self.fail_direct_chat_creation(format!("Key package create failed: {e}"));
                 return;
             }
         };

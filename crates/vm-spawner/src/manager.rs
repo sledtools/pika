@@ -758,9 +758,14 @@ impl VmManager {
         require_env_assignment(&runtime_env, "MICROVM_MAC", &expected_mac)?;
         require_ipv4_env_assignment(&guest_env, "PIKA_VM_IP", expected_ip)?;
         let cpu =
-            require_u32_env_assignment(&runtime_env, "PIKA_VM_CPU")?.clamp(1, self.cfg.max_cpu);
-        let memory_mb = require_u32_env_assignment(&runtime_env, "PIKA_VM_MEMORY_MB")?
-            .clamp(512, self.cfg.max_memory_mb);
+            require_u32_env_assignment_in_range(&runtime_env, "PIKA_VM_CPU", 1, self.cfg.max_cpu)?;
+        let memory_mb = require_u32_env_assignment_in_range(
+            &runtime_env,
+            "PIKA_VM_MEMORY_MB",
+            512,
+            self.cfg.max_memory_mb,
+        )?;
+        require_non_empty_file(&paths.microvm_state_dir.join("metadata/autostart.command"))?;
 
         Ok(CurrentVmMetadata { cpu, memory_mb })
     }
@@ -891,6 +896,22 @@ fn require_u32_env_assignment(path: &Path, key: &str) -> anyhow::Result<u32> {
     })
 }
 
+fn require_u32_env_assignment_in_range(
+    path: &Path,
+    key: &str,
+    min: u32,
+    max: u32,
+) -> anyhow::Result<u32> {
+    let value = require_u32_env_assignment(path, key)?;
+    if (min..=max).contains(&value) {
+        return Ok(value);
+    }
+    Err(anyhow!(
+        "current-format metadata out of range for {key} in {}: expected {min}..={max}, found `{value}`",
+        path.display()
+    ))
+}
+
 fn require_ipv4_env_assignment(path: &Path, key: &str, expected: Ipv4Addr) -> anyhow::Result<()> {
     let value = read_env_assignment(path, key)?.ok_or_else(|| {
         anyhow!(
@@ -911,6 +932,18 @@ fn require_ipv4_env_assignment(path: &Path, key: &str, expected: Ipv4Addr) -> an
         "current-format metadata mismatch for {key} in {}: expected `{expected}`, found `{parsed}`",
         path.display()
     ))
+}
+
+fn require_non_empty_file(path: &Path) -> anyhow::Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read required current-format boot input {}", path.display()))?;
+    if text.trim().is_empty() {
+        return Err(anyhow!(
+            "current-format boot input is empty in {}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn shell_unquote(value: &str) -> String {
@@ -1596,6 +1629,14 @@ mod tests {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);
         let vm_state_dir = cfg.state_dir.join(vm_id);
+        let autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+        };
         write_runtime_metadata(
             &vm_state_dir,
             vm_id,
@@ -1607,7 +1648,7 @@ mod tests {
             memory_mb,
             &cfg.runtime_artifacts_guest_mount,
             None,
-            None,
+            Some(&autostart),
         )
         .unwrap();
     }
@@ -1703,6 +1744,40 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("current-format metadata missing"));
         assert!(message.contains("MICROVM_TAP"));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_rejects_out_of_range_resource_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::write(
+            vm_state_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='vm-00000001'\nMICROVM_MAC='02:00:c0:a8:53:0b'\nPIKA_VM_CPU='0'\nPIKA_VM_MEMORY_MB='1'\n",
+        )
+        .unwrap();
+
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata out of range"));
+        assert!(message.contains("PIKA_VM_CPU"));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_command() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_file(vm_state_dir.join("metadata/autostart.command")).unwrap();
+
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("required current-format boot input"));
+        assert!(message.contains("autostart.command"));
     }
 
     #[tokio::test]

@@ -482,7 +482,7 @@ pub async fn upsert_allowlist(
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
-                "max_agents > {MAX_SUPPORTED_AGENTS} is not supported until the API/client add multi-agent selection"
+                "max_agents must be exactly {MAX_SUPPORTED_AGENTS} until the API/client add multi-agent selection"
             ),
         ));
     }

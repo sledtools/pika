@@ -10,7 +10,7 @@ WHERE phase IN ('creating', 'ready')
     SELECT DISTINCT ON (owner_npub) ctid
     FROM agent_instances
     WHERE phase IN ('creating', 'ready')
-    ORDER BY owner_npub, created_at DESC
+    ORDER BY owner_npub, created_at DESC, (phase = 'ready') DESC, updated_at DESC, agent_id DESC
   );
 
 CREATE UNIQUE INDEX IF NOT EXISTS agent_instances_owner_active_idx

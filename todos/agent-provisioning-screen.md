@@ -15,7 +15,7 @@ Immediately navigate into a loading/provisioning screen when the user taps "New 
 
 The provisioning state exposes a phase enum to the UI:
 
-```
+```text
 Ensuring        → "Requesting agent..."
 Provisioning    → "Starting microVM... (attempt 3/45)"
 Recovering      → "Recovering agent..."

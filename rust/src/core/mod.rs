@@ -2907,7 +2907,11 @@ impl AppCore {
             )
         });
         if had_provisioning {
-            self.state.agent_provisioning = None;
+            self.invalidate_agent_flow();
+            self.invalidate_key_package_publish();
+            self.invalidate_direct_chat_creation();
+            self.pending_direct_chat_creation = None;
+            let _ = self.state.agent_provisioning.take();
         }
 
         // Prevent stacking multiple chat screens (and their child GroupInfo screens).
@@ -8414,6 +8418,24 @@ mod tests {
             #[test]
             fn open_chat_screen_pops_agent_provisioning() {
                 let (mut core, _tmp) = make_logged_in_core();
+                let peer_keys = nostr_sdk::Keys::generate();
+                core.agent_flow_token = 4;
+                core.key_package_publish_token = 7;
+                core.direct_chat_creation_token = 9;
+                core.local_key_package_published = true;
+                core.pending_direct_chat_creation = Some(crate::core::PendingDirectChatCreation {
+                    token: 9,
+                    peer_pubkey: peer_keys.public_key(),
+                });
+                core.state.busy.starting_agent = true;
+                core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    phase: crate::state::AgentProvisioningPhase::CreatingChat,
+                    agent_npub: Some("npub1agent".into()),
+                    status_message: "Creating encrypted chat...".into(),
+                    elapsed_secs: 0,
+                    poll_attempt: None,
+                    poll_max: None,
+                });
                 core.state.router.screen_stack = vec![Screen::AgentProvisioning];
 
                 core.open_chat_screen("chat_123");
@@ -8430,6 +8452,13 @@ mod tests {
                     .screen_stack
                     .iter()
                     .any(|s| matches!(s, Screen::Chat { .. })));
+                assert!(core.state.agent_provisioning.is_none());
+                assert!(core.pending_direct_chat_creation.is_none());
+                assert_eq!(core.agent_flow_token, 5);
+                assert_eq!(core.key_package_publish_token, 8);
+                assert_eq!(core.direct_chat_creation_token, 10);
+                assert!(!core.local_key_package_published);
+                assert!(!core.state.busy.starting_agent);
             }
         }
     }

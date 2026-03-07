@@ -305,7 +305,7 @@ async fn run_agent_flow(
         flow_token,
         crate::state::AgentProvisioningPhase::Provisioning,
         None,
-        Some(0),
+        None,
     );
 
     let mut recovered_stalled_creating = false;
@@ -834,6 +834,14 @@ mod tests {
     fn agent_flow_error_maps_to_human_messages() {
         let msg = AgentFlowError::NotWhitelisted.to_user_message();
         assert!(msg.contains("allowlisted"));
+    }
+
+    #[test]
+    fn provisioning_status_message_omits_attempt_counter_before_first_poll() {
+        assert_eq!(
+            provisioning_status_message(&crate::state::AgentProvisioningPhase::Provisioning, None),
+            "Starting microVM..."
+        );
     }
 
     #[tokio::test]

@@ -260,6 +260,20 @@ fn load_visible_agent_row(
     Ok(select_visible_agent_row(active, latest))
 }
 
+fn visible_agent_response(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+    request_id: &str,
+    missing_code: AgentApiErrorCode,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let Some(active) = load_visible_agent_row(conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?
+    else {
+        return Err(AgentApiError::from_code(missing_code).with_request_id(request_id.to_string()));
+    };
+    json_response(active, request_id)
+}
+
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
     let message = err.to_string().to_ascii_lowercase();
     (message.contains("vm not found") || (message.contains("404") && message.contains("not found")))
@@ -430,16 +444,22 @@ async fn reprovision_agent_response(
     owner_npub: &str,
     request_id: &str,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    let reprovisioned = provision_agent_for_owner(state, owner_npub, request_id)
-        .await
-        .map_err(|err| match err.code {
-            AgentApiErrorCode::AgentExists => {
-                AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+    match provision_agent_for_owner(state, owner_npub, request_id).await {
+        Ok(reprovisioned) => json_response(reprovisioned, request_id),
+        Err(err) if err.code == AgentApiErrorCode::AgentExists => {
+            let mut conn = state.db_pool.get().map_err(|_| {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
                     .with_request_id(request_id.to_string())
-            }
-            _ => err,
-        })?;
-    json_response(reprovisioned, request_id)
+            })?;
+            visible_agent_response(
+                &mut conn,
+                owner_npub,
+                request_id,
+                AgentApiErrorCode::RecoverFailed,
+            )
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub async fn ensure_agent(
@@ -914,6 +934,39 @@ mod tests {
         )
         .expect("erroring stale row should clear active-owner constraint");
         assert_eq!(reprovisioned.agent_id, "agent-fresh");
+
+        clear_test_database(&mut conn);
+    }
+
+    #[test]
+    fn visible_agent_response_returns_active_row_for_recover_retry() {
+        let _guard = test_guard();
+        let Some(mut conn) = init_test_db_connection() else {
+            return;
+        };
+        clear_test_database(&mut conn);
+
+        let owner_npub = "npub1recovertestvisible";
+        AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-ready",
+            Some("vm-ready"),
+            AGENT_PHASE_READY,
+        )
+        .expect("insert active row");
+
+        let response = visible_agent_response(
+            &mut conn,
+            owner_npub,
+            "req-visible",
+            AgentApiErrorCode::RecoverFailed,
+        )
+        .expect("visible active row should be returned");
+
+        assert_eq!(response.0.agent_id, "agent-ready");
+        assert_eq!(response.0.vm_id.as_deref(), Some("vm-ready"));
+        assert_eq!(response.0.state, AgentAppState::Ready);
 
         clear_test_database(&mut conn);
     }

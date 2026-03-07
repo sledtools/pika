@@ -56,7 +56,7 @@ Operational guidance:
 - backup/restore this durable home path as the primary asset
 - treat tap/gcroot wiring and network identity as reconstructible launcher state derived from `vm_id`
 - treat guest autostart payload under `metadata/` as required boot input for recreate; `recover` does not rebuild it from `vm_id` alone
-- treat malformed current-format metadata as a deployment blocker to fix, not state the launcher will heal implicitly
+- treat malformed current-format metadata as quarantined state: it blocks recover/reuse until explicitly deleted, and the launcher does not heal it implicitly
 
 ## Workstream scope
 

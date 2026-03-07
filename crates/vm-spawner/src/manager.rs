@@ -790,12 +790,8 @@ impl VmManager {
         Ok(())
     }
 
-    fn cleanup_stale_staging_vm_state(&self, id: &str, staging_dir: &Path) -> anyhow::Result<()> {
+    fn cleanup_stale_staging_vm_state(&self, _id: &str, staging_dir: &Path) -> anyhow::Result<()> {
         remove_path_if_exists(staging_dir)?;
-        if self.production_ip_for_vm_id(id).is_some() {
-            remove_path_if_exists(&self.gcroot_current_path(id))?;
-            remove_path_if_exists(&self.gcroot_booted_path(id))?;
-        }
         Ok(())
     }
 
@@ -807,7 +803,14 @@ impl VmManager {
             )
         })?;
         let paths = self.vm_paths(id);
-        self.load_current_vm_metadata(id, &paths)?;
+        if let Err(err) = self.load_current_vm_metadata(id, &paths) {
+            warn!(
+                vm_id = %id,
+                slot,
+                error = %err,
+                "quarantining malformed current-format vm state until explicit cleanup"
+            );
+        }
         Ok(slot)
     }
 
@@ -1749,7 +1752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vm_manager_new_rejects_supported_ids_with_stale_network_metadata() {
+    async fn vm_manager_new_quarantines_supported_ids_with_stale_network_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let vm_id = "vm-00000002";
@@ -1767,7 +1770,8 @@ mod tests {
         .unwrap();
         fs::write(vm_dir.join("random.txt"), "not authoritative\n").unwrap();
 
-        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("current-format metadata mismatch"));
         assert!(message.contains("MICROVM_TAP"));
@@ -1817,7 +1821,8 @@ mod tests {
         )
         .unwrap();
 
-        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("current-format metadata missing"));
         assert!(message.contains("MICROVM_TAP"));
@@ -1836,7 +1841,8 @@ mod tests {
         )
         .unwrap();
 
-        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("current-format metadata out of range"));
         assert!(message.contains("PIKA_VM_CPU"));
@@ -1851,7 +1857,8 @@ mod tests {
         write_current_metadata(&cfg, vm_id, 2, 4096);
         fs::remove_file(vm_state_dir.join("metadata/autostart.command")).unwrap();
 
-        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
         let message = format!("{err:#}");
         assert!(message.contains("required current-format boot input"));
         assert!(message.contains("autostart.command"));
@@ -2114,6 +2121,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vm_manager_new_keeps_real_vm_dirs_when_cleaning_staging_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        let staging_dir = cfg.state_dir.join(".creating__vm-00000001__stale-create");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let _ = manager;
+
+        assert!(!staging_dir.exists());
+        assert!(cfg.state_dir.join(vm_id).exists());
+    }
+
+    #[tokio::test]
     async fn allocator_ignores_live_staging_dirs_without_deleting_them() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
@@ -2142,6 +2165,27 @@ mod tests {
 
         assert_eq!(allocated.id, "vm-00000001");
         assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 11));
+        assert_eq!(allocated.slot, 1);
+    }
+
+    #[tokio::test]
+    async fn allocator_blocks_slots_for_malformed_supported_vm_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000000";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::write(
+            cfg.state_dir.join(vm_id).join("metadata/runtime.env"),
+            "MICROVM_TAP='wrong-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let allocated = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap();
+
+        assert_eq!(allocated.id, "vm-00000001");
         assert_eq!(allocated.slot, 1);
     }
 

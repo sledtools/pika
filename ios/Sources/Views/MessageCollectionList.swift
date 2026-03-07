@@ -206,6 +206,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         func applyRows(_ rows: [RenderedRow], animated: Bool, completion: (() -> Void)? = nil) {
             currentIDs = rows.map(\.id)
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            syncRequestedOldestId()
 
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0])
@@ -219,6 +220,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         func reconfigureVisibleRows(with rows: [RenderedRow], completion: (() -> Void)? = nil) -> Bool {
             currentIDs = rows.map(\.id)
             rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            syncRequestedOldestId()
 
             guard let dataSource else { return false }
             let visibleIDs = visibleItemIDs()
@@ -372,6 +374,9 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if !isNearTop(scrollView) {
+                requestedOldestId = nil
+            }
             let nearBottom = isNearBottom()
             if isHoldingInitialBottomPin {
                 viewController?.setJumpButtonVisible(false, animated: true)
@@ -517,6 +522,18 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
                 return lhs.item < rhs.item
             }
             return lhs.section < rhs.section
+        }
+
+        private func syncRequestedOldestId() {
+            guard let requestedOldestId else { return }
+            let currentOldestId = parent.chat.messages.first?.id
+            if currentOldestId != requestedOldestId || !parent.chat.canLoadOlder {
+                self.requestedOldestId = nil
+            }
+        }
+
+        private func isNearTop(_ scrollView: UIScrollView, tolerance: CGFloat = 24) -> Bool {
+            scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + tolerance
         }
     }
 }

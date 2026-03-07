@@ -1,15 +1,20 @@
 use super::*;
 use crate::state::CallStatus;
-use mdk_core::encrypted_media::crypto::{derive_encryption_key, DEFAULT_SCHEME_VERSION};
-use nostr_sdk::hashes::{sha256, Hash as _};
-use pika_media::crypto::{opaque_participant_label, FrameKeyMaterial};
-use serde::{Deserialize, Serialize};
+use pika_marmot_runtime::call::{
+    build_call_signal_json,
+    derive_call_media_crypto_context as derive_shared_call_media_crypto_context,
+    derive_relay_auth_token as derive_shared_relay_auth_token, parse_call_signal,
+    validate_relay_auth_token as validate_shared_relay_auth_token, OutgoingCallSignal,
+    DEFAULT_CALL_BROADCAST_PREFIX,
+};
 
-const CALL_NS: &str = "pika.call";
-const CALL_PROTOCOL_VERSION: u8 = 1;
-const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
-const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
-const RELAY_AUTH_HEX_LEN: usize = 64;
+pub(super) use pika_marmot_runtime::call::{
+    CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
+    ParsedCallSignal,
+};
+
+#[cfg(test)]
+use pika_marmot_runtime::call::valid_relay_auth_token;
 
 /// Type-safe call end reasons. Converted to strings for the UniFFI `CallStatus::Ended { reason }`
 /// and for the wire protocol (`call.end` / `call.reject` signals).
@@ -45,210 +50,6 @@ impl std::fmt::Display for CallEndReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct CallTrackSpec {
-    pub name: String,
-    pub codec: String,
-    pub sample_rate: u32,
-    pub channels: u8,
-    pub frame_ms: u16,
-}
-
-impl CallTrackSpec {
-    fn audio0_opus_default() -> Self {
-        Self {
-            name: "audio0".to_string(),
-            codec: "opus".to_string(),
-            sample_rate: 48_000,
-            channels: 1,
-            frame_ms: 20,
-        }
-    }
-
-    fn video0_h264_default() -> Self {
-        Self {
-            name: "video0".to_string(),
-            codec: "h264".to_string(),
-            sample_rate: 90_000,
-            channels: 0,
-            frame_ms: 33,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct CallSessionParams {
-    pub moq_url: String,
-    pub broadcast_base: String,
-    pub relay_auth: String,
-    pub tracks: Vec<CallTrackSpec>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) enum ParsedCallSignal {
-    Invite {
-        call_id: String,
-        session: CallSessionParams,
-    },
-    Accept {
-        call_id: String,
-        session: CallSessionParams,
-    },
-    Reject {
-        call_id: String,
-        reason: String,
-    },
-    End {
-        call_id: String,
-        reason: String,
-    },
-}
-
-enum OutgoingCallSignal<'a> {
-    Invite(&'a CallSessionParams),
-    Accept(&'a CallSessionParams),
-    Reject { reason: &'a str },
-    End { reason: &'a str },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CallEnvelope {
-    v: u8,
-    ns: String,
-    #[serde(rename = "type")]
-    message_type: String,
-    call_id: String,
-    ts_ms: i64,
-    #[serde(default)]
-    from: Option<String>,
-    body: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CallReasonBody {
-    reason: String,
-}
-
-fn now_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-fn context_hash(parts: &[&[u8]]) -> [u8; 32] {
-    let mut buf = Vec::new();
-    for part in parts {
-        let len: u32 = part.len().try_into().unwrap_or(u32::MAX);
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(part);
-    }
-    sha256::Hash::hash(&buf).to_byte_array()
-}
-
-fn valid_relay_auth_token(token: &str) -> bool {
-    let trimmed = token.trim();
-    let Some(hex_part) = trimmed.strip_prefix(RELAY_AUTH_CAP_PREFIX) else {
-        return false;
-    };
-    hex_part.len() == RELAY_AUTH_HEX_LEN && hex_part.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn key_id_for_sender(sender_id: &[u8]) -> u64 {
-    let digest = context_hash(&[b"pika.call.media.keyid.v1", sender_id]);
-    u64::from_be_bytes(digest[0..8].try_into().expect("hash width"))
-}
-
-fn call_shared_seed(
-    call_id: &str,
-    session: &CallSessionParams,
-    local_pubkey_hex: &str,
-    peer_pubkey_hex: &str,
-) -> String {
-    let (left, right) = if local_pubkey_hex <= peer_pubkey_hex {
-        (local_pubkey_hex, peer_pubkey_hex)
-    } else {
-        (peer_pubkey_hex, local_pubkey_hex)
-    };
-    format!(
-        "pika-call-media-v1|{call_id}|{}|{}|{}|{}",
-        session.moq_url, session.broadcast_base, left, right
-    )
-}
-
-pub(super) fn parse_call_signal(content: &str) -> Option<ParsedCallSignal> {
-    let env: CallEnvelope = serde_json::from_str(content).ok()?;
-    if env.v != CALL_PROTOCOL_VERSION || env.ns != CALL_NS {
-        return None;
-    }
-
-    match env.message_type.as_str() {
-        "call.invite" => {
-            let session: CallSessionParams = serde_json::from_value(env.body).ok()?;
-            Some(ParsedCallSignal::Invite {
-                call_id: env.call_id,
-                session,
-            })
-        }
-        "call.accept" => {
-            let session: CallSessionParams = serde_json::from_value(env.body).ok()?;
-            Some(ParsedCallSignal::Accept {
-                call_id: env.call_id,
-                session,
-            })
-        }
-        "call.reject" => {
-            let body: CallReasonBody = serde_json::from_value(env.body).ok()?;
-            Some(ParsedCallSignal::Reject {
-                call_id: env.call_id,
-                reason: body.reason,
-            })
-        }
-        "call.end" => {
-            let body: CallReasonBody = serde_json::from_value(env.body).ok()?;
-            Some(ParsedCallSignal::End {
-                call_id: env.call_id,
-                reason: body.reason,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn build_call_signal_json(
-    call_id: &str,
-    outgoing: OutgoingCallSignal<'_>,
-) -> Result<String, serde_json::Error> {
-    let (message_type, body) = match outgoing {
-        OutgoingCallSignal::Invite(session) => ("call.invite", serde_json::to_value(session)?),
-        OutgoingCallSignal::Accept(session) => ("call.accept", serde_json::to_value(session)?),
-        OutgoingCallSignal::Reject { reason } => (
-            "call.reject",
-            serde_json::to_value(CallReasonBody {
-                reason: reason.to_string(),
-            })?,
-        ),
-        OutgoingCallSignal::End { reason } => (
-            "call.end",
-            serde_json::to_value(CallReasonBody {
-                reason: reason.to_string(),
-            })?,
-        ),
-    };
-
-    let env = CallEnvelope {
-        v: CALL_PROTOCOL_VERSION,
-        ns: CALL_NS.to_string(),
-        message_type: message_type.to_string(),
-        call_id: call_id.to_string(),
-        ts_ms: now_millis(),
-        from: None,
-        body,
-    };
-    serde_json::to_string(&env)
 }
 
 impl AppCore {
@@ -324,15 +125,14 @@ impl AppCore {
         self.session.as_ref().map(|s| s.pubkey.to_hex())
     }
 
-    fn derive_track_keys(
+    fn derive_mls_media_crypto_context(
         &self,
         chat_id: &str,
         call_id: &str,
         session: &CallSessionParams,
         local_pubkey_hex: &str,
         peer_pubkey_hex: &str,
-        track: &str,
-    ) -> Result<(FrameKeyMaterial, FrameKeyMaterial, [u8; 32]), String> {
+    ) -> Result<CallMediaCryptoContext, String> {
         let sess = self
             .session
             .as_ref()
@@ -346,128 +146,22 @@ impl AppCore {
             .get_group(&group_entry.mls_group_id)
             .map_err(|e| format!("load mls group failed: {e}"))?
             .ok_or_else(|| "mls group not found".to_string())?;
-
-        let shared_seed = call_shared_seed(call_id, session, local_pubkey_hex, peer_pubkey_hex);
-        let generation = 0u8;
-
-        let tx_hash = context_hash(&[
-            b"pika.call.media.base.v1",
-            shared_seed.as_bytes(),
-            local_pubkey_hex.as_bytes(),
-            track.as_bytes(),
-        ]);
-        let rx_hash = context_hash(&[
-            b"pika.call.media.base.v1",
-            shared_seed.as_bytes(),
-            peer_pubkey_hex.as_bytes(),
-            track.as_bytes(),
-        ]);
-        let root_hash = context_hash(&[
-            b"pika.call.media.root.v1",
-            shared_seed.as_bytes(),
-            track.as_bytes(),
-        ]);
-
-        let tx_filename = format!("call/{call_id}/{track}/{local_pubkey_hex}");
-        let rx_filename = format!("call/{call_id}/{track}/{peer_pubkey_hex}");
-        let root_filename = format!("call/{call_id}/{track}/group-root");
-
-        let tx_base = *derive_encryption_key(
-            &sess.mdk,
-            &group_entry.mls_group_id,
-            DEFAULT_SCHEME_VERSION,
-            &tx_hash,
-            "application/pika-call",
-            &tx_filename,
-        )
-        .map_err(|e| format!("derive tx media key for {track} failed: {e}"))?;
-
-        let rx_base = *derive_encryption_key(
-            &sess.mdk,
-            &group_entry.mls_group_id,
-            DEFAULT_SCHEME_VERSION,
-            &rx_hash,
-            "application/pika-call",
-            &rx_filename,
-        )
-        .map_err(|e| format!("derive rx media key for {track} failed: {e}"))?;
-
-        let group_root = *derive_encryption_key(
-            &sess.mdk,
-            &group_entry.mls_group_id,
-            DEFAULT_SCHEME_VERSION,
-            &root_hash,
-            "application/pika-call",
-            &root_filename,
-        )
-        .map_err(|e| format!("derive media group root for {track} failed: {e}"))?;
-
-        let tx_keys = FrameKeyMaterial::from_base_key(
-            tx_base,
-            key_id_for_sender(local_pubkey_hex.as_bytes()),
-            group.epoch,
-            generation,
-            track,
-            group_root,
-        );
-        let rx_keys = FrameKeyMaterial::from_base_key(
-            rx_base,
-            key_id_for_sender(peer_pubkey_hex.as_bytes()),
-            group.epoch,
-            generation,
-            track,
-            group_root,
-        );
-
-        Ok((tx_keys, rx_keys, group_root))
-    }
-
-    fn derive_mls_media_crypto_context(
-        &self,
-        chat_id: &str,
-        call_id: &str,
-        session: &CallSessionParams,
-        local_pubkey_hex: &str,
-        peer_pubkey_hex: &str,
-    ) -> Result<super::call_runtime::CallMediaCryptoContext, String> {
-        let (tx_keys, rx_keys, group_root) = self.derive_track_keys(
-            chat_id,
+        let video_track = session
+            .tracks
+            .iter()
+            .any(|t| t.name == "video0")
+            .then_some("video0");
+        let derive_ctx = CallCryptoDeriveContext {
+            mdk: &sess.mdk,
+            mls_group_id: &group_entry.mls_group_id,
+            group_epoch: group.epoch,
             call_id,
             session,
             local_pubkey_hex,
             peer_pubkey_hex,
-            "audio0",
-        )?;
-
-        let has_video = session.tracks.iter().any(|t| t.name == "video0");
-        let (video_tx_keys, video_rx_keys) = if has_video {
-            let (vtx, vrx, _) = self.derive_track_keys(
-                chat_id,
-                call_id,
-                session,
-                local_pubkey_hex,
-                peer_pubkey_hex,
-                "video0",
-            )?;
-            (Some(vtx), Some(vrx))
-        } else {
-            (None, None)
         };
 
-        Ok(super::call_runtime::CallMediaCryptoContext {
-            tx_keys,
-            rx_keys,
-            video_tx_keys,
-            video_rx_keys,
-            local_participant_label: opaque_participant_label(
-                &group_root,
-                local_pubkey_hex.as_bytes(),
-            ),
-            peer_participant_label: opaque_participant_label(
-                &group_root,
-                peer_pubkey_hex.as_bytes(),
-            ),
-        })
+        derive_shared_call_media_crypto_context(&derive_ctx, "audio0", video_track)
     }
 
     fn derive_relay_auth_token(
@@ -486,29 +180,17 @@ impl AppCore {
             .groups
             .get(chat_id)
             .ok_or_else(|| "chat group not found".to_string())?;
-        let shared_seed = call_shared_seed(call_id, session, local_pubkey_hex, peer_pubkey_hex);
-        let auth_hash = context_hash(&[
-            b"pika.call.relay.auth.seed.v1",
-            shared_seed.as_bytes(),
-            call_id.as_bytes(),
-        ]);
-        let auth_key = *derive_encryption_key(
-            &sess.mdk,
-            &group_entry.mls_group_id,
-            DEFAULT_SCHEME_VERSION,
-            &auth_hash,
-            "application/pika-call-auth",
-            &format!("call/{call_id}/relay-auth"),
-        )
-        .map_err(|e| format!("derive relay auth token failed: {e}"))?;
-        let token_hash = context_hash(&[
-            b"pika.call.relay.auth.token.v1",
-            &auth_key,
-            call_id.as_bytes(),
-            session.moq_url.as_bytes(),
-            session.broadcast_base.as_bytes(),
-        ]);
-        Ok(format!("capv1_{}", hex::encode(token_hash)))
+        let derive_ctx = CallCryptoDeriveContext {
+            mdk: &sess.mdk,
+            mls_group_id: &group_entry.mls_group_id,
+            group_epoch: 0,
+            call_id,
+            session,
+            local_pubkey_hex,
+            peer_pubkey_hex,
+        };
+
+        derive_shared_relay_auth_token(&derive_ctx)
     }
 
     fn validate_relay_auth_token(
@@ -519,20 +201,25 @@ impl AppCore {
         local_pubkey_hex: &str,
         peer_pubkey_hex: &str,
     ) -> Result<(), String> {
-        if !valid_relay_auth_token(&session.relay_auth) {
-            return Err("call relay auth token format invalid".to_string());
-        }
-        let expected = self.derive_relay_auth_token(
-            chat_id,
+        let sess = self
+            .session
+            .as_ref()
+            .ok_or_else(|| "no active session".to_string())?;
+        let group_entry = sess
+            .groups
+            .get(chat_id)
+            .ok_or_else(|| "chat group not found".to_string())?;
+        let derive_ctx = CallCryptoDeriveContext {
+            mdk: &sess.mdk,
+            mls_group_id: &group_entry.mls_group_id,
+            group_epoch: 0,
             call_id,
             session,
             local_pubkey_hex,
             peer_pubkey_hex,
-        )?;
-        if expected != session.relay_auth {
-            return Err("call relay auth mismatch".to_string());
-        }
-        Ok(())
+        };
+
+        validate_shared_relay_auth_token(&derive_ctx)
     }
 
     fn publish_call_signal(

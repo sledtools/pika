@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use flume::Sender;
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
-use pika_media::crypto::{decrypt_frame, encrypt_frame, FrameInfo, FrameKeyMaterial};
+use pika_media::crypto::{decrypt_frame, encrypt_frame, FrameInfo};
 use pika_media::jitter::JitterBuffer;
 use pika_media::network::NetworkRelay;
 use pika_media::session::{
@@ -19,7 +19,7 @@ use pika_media::tracks::{broadcast_path, TrackAddress};
 use crate::updates::{CoreMsg, InternalEvent};
 use crate::VideoFrameReceiver;
 
-use super::call_control::CallSessionParams;
+use super::call_control::{CallMediaCryptoContext, CallSessionParams};
 
 const SAMPLE_RATE: u32 = 48_000;
 const FRAME_DURATION_MS: u32 = 20;
@@ -577,16 +577,6 @@ impl CallRuntime {
 
 fn to_string_error(err: MediaSessionError) -> String {
     err.to_string()
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct CallMediaCryptoContext {
-    pub(super) tx_keys: FrameKeyMaterial,
-    pub(super) rx_keys: FrameKeyMaterial,
-    pub(super) video_tx_keys: Option<FrameKeyMaterial>,
-    pub(super) video_rx_keys: Option<FrameKeyMaterial>,
-    pub(super) local_participant_label: String,
-    pub(super) peer_participant_label: String,
 }
 
 #[derive(Debug)]

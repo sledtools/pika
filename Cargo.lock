@@ -6090,6 +6090,7 @@ dependencies = [
  "mdk-sqlite-storage",
  "mdk-storage-traits",
  "nostr-sdk",
+ "pika-media",
  "serde",
  "serde_json",
  "tempfile",

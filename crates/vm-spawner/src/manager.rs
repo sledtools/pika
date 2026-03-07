@@ -16,12 +16,9 @@ use pika_agent_control_plane::{
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
 };
-use serde::Deserialize;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-
-const DETERMINISTIC_VM_LAYOUT: &str = "deterministic-v1";
 
 #[derive(Clone)]
 pub struct VmManager {
@@ -43,7 +40,6 @@ struct VmDiskState {
     cpu: u32,
     memory_mb: u32,
     microvm_state_dir: PathBuf,
-    layout: VmLayout,
 }
 
 #[derive(Debug, Clone)]
@@ -59,37 +55,10 @@ struct VmIdentity {
     slot: u32,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum VmLayout {
-    Deterministic,
-    LegacyCompatible,
-}
-
 #[derive(Debug, Clone)]
 struct VmCleanupState {
     tap_name: String,
     microvm_state_dir: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct LegacyVmBootInputs {
-    tap_name: String,
-    mac_address: Option<String>,
-    ip: Option<Ipv4Addr>,
-    cpu: u32,
-    memory_mb: u32,
-}
-
-#[derive(Debug, Deserialize)]
-struct LegacyPersistedVm {
-    #[serde(default)]
-    ip: String,
-    #[serde(default)]
-    tap_name: String,
-    #[serde(default)]
-    mac_address: String,
-    cpu: Option<u32>,
-    memory_mb: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -220,7 +189,6 @@ impl VmManager {
                 memory_mb,
                 &self.cfg.runtime_artifacts_guest_mount,
                 daemon_bin.as_deref(),
-                true,
                 Some(&guest_autostart),
             )?;
 
@@ -621,68 +589,35 @@ impl VmManager {
             return Err(anyhow::Error::new(VmNotFound { id: id.to_string() }));
         }
 
-        if let Some(ip) = self
-            .use_deterministic_vm_layout(id, &paths)?
-            .then(|| self.production_ip_for_vm_id(id))
-            .flatten()
-        {
-            let cpu = read_env_assignment(
-                &paths.microvm_state_dir.join("metadata/runtime.env"),
-                "PIKA_VM_CPU",
-            )?
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(self.cfg.default_cpu)
-            .clamp(1, self.cfg.max_cpu);
-            let memory_mb = read_env_assignment(
-                &paths.microvm_state_dir.join("metadata/runtime.env"),
-                "PIKA_VM_MEMORY_MB",
-            )?
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(self.cfg.default_memory_mb)
-            .clamp(512, self.cfg.max_memory_mb);
-            return Ok(VmDiskState {
-                id: id.to_string(),
-                tap_name: id.to_string(),
-                mac_address: self
-                    .production_mac_for_vm_id(id)
-                    .unwrap_or_else(|| mac_for_guest_ip(ip)),
-                ip,
-                cpu,
-                memory_mb,
-                microvm_state_dir: paths.microvm_state_dir,
-                layout: VmLayout::Deterministic,
-            });
-        }
+        let ip = self
+            .production_ip_for_vm_id(id)
+            .ok_or_else(|| anyhow!("unsupported vm id: {id}"))?;
+        let cpu = read_env_assignment(
+            &paths.microvm_state_dir.join("metadata/runtime.env"),
+            "PIKA_VM_CPU",
+        )?
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(self.cfg.default_cpu)
+        .clamp(1, self.cfg.max_cpu);
+        let memory_mb = read_env_assignment(
+            &paths.microvm_state_dir.join("metadata/runtime.env"),
+            "PIKA_VM_MEMORY_MB",
+        )?
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(self.cfg.default_memory_mb)
+        .clamp(512, self.cfg.max_memory_mb);
 
-        let legacy = self.load_legacy_vm_disk_state(id, paths)?;
-        Ok(legacy)
-    }
-
-    fn use_deterministic_vm_layout(&self, id: &str, paths: &VmPaths) -> anyhow::Result<bool> {
-        if self.production_ip_for_vm_id(id).is_none() {
-            return Ok(false);
-        }
-
-        let runtime_env = paths.microvm_state_dir.join("metadata/runtime.env");
-        if matches!(
-            read_env_assignment(&runtime_env, "PIKA_VM_LAYOUT")?.as_deref(),
-            Some(DETERMINISTIC_VM_LAYOUT)
-        ) {
-            return Ok(true);
-        }
-
-        if paths.microvm_state_dir.join("vm.json").exists() {
-            return Ok(false);
-        }
-
-        let guest_env = paths.microvm_state_dir.join("metadata/env");
-        let has_persisted_network_metadata = read_env_assignment(&guest_env, "PIKA_VM_IP")?
-            .is_some()
-            || read_env_assignment(&runtime_env, "PIKA_VM_IP")?.is_some()
-            || read_env_assignment(&runtime_env, "MICROVM_TAP")?.is_some()
-            || read_env_assignment(&runtime_env, "MICROVM_MAC")?.is_some();
-
-        Ok(!has_persisted_network_metadata)
+        Ok(VmDiskState {
+            id: id.to_string(),
+            tap_name: id.to_string(),
+            mac_address: self
+                .production_mac_for_vm_id(id)
+                .unwrap_or_else(|| mac_for_guest_ip(ip)),
+            ip,
+            cpu,
+            memory_mb,
+            microvm_state_dir: paths.microvm_state_dir,
+        })
     }
 
     fn load_vm_cleanup_state(&self, id: &str) -> anyhow::Result<VmCleanupState> {
@@ -690,77 +625,13 @@ impl VmManager {
         if !paths.microvm_state_dir.exists() {
             return Err(anyhow::Error::new(VmNotFound { id: id.to_string() }));
         }
-
-        let tap_name = if self.use_deterministic_vm_layout(id, &paths)? {
-            id.to_string()
-        } else {
-            self.load_legacy_vm_boot_inputs(id, &paths)?.tap_name
-        };
+        if self.production_ip_for_vm_id(id).is_none() {
+            anyhow::bail!("unsupported vm id: {id}");
+        }
 
         Ok(VmCleanupState {
-            tap_name,
+            tap_name: id.to_string(),
             microvm_state_dir: paths.microvm_state_dir,
-        })
-    }
-
-    fn load_legacy_vm_disk_state(&self, id: &str, paths: VmPaths) -> anyhow::Result<VmDiskState> {
-        let legacy = self.load_legacy_vm_boot_inputs(id, &paths)?;
-        let ip = legacy
-            .ip
-            .ok_or_else(|| anyhow!("vm metadata missing IP address: {id}"))?;
-        let mac_address = legacy.mac_address.unwrap_or_else(|| mac_for_guest_ip(ip));
-
-        Ok(VmDiskState {
-            id: id.to_string(),
-            tap_name: legacy.tap_name,
-            mac_address,
-            ip,
-            cpu: legacy.cpu,
-            memory_mb: legacy.memory_mb,
-            microvm_state_dir: paths.microvm_state_dir,
-            layout: VmLayout::LegacyCompatible,
-        })
-    }
-
-    fn load_legacy_vm_boot_inputs(
-        &self,
-        id: &str,
-        paths: &VmPaths,
-    ) -> anyhow::Result<LegacyVmBootInputs> {
-        let runtime_env = paths.microvm_state_dir.join("metadata/runtime.env");
-        let guest_env = paths.microvm_state_dir.join("metadata/env");
-        let legacy = read_legacy_vm_metadata(&paths.microvm_state_dir.join("vm.json"))?;
-        let tap_name = read_env_assignment(&runtime_env, "MICROVM_TAP")?
-            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.tap_name)))
-            .unwrap_or_else(|| id.to_string());
-        let ip = read_env_assignment(&guest_env, "PIKA_VM_IP")?
-            .or(read_env_assignment(&runtime_env, "PIKA_VM_IP")?)
-            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.ip)))
-            .map(|value| {
-                value
-                    .parse()
-                    .with_context(|| format!("parse vm IP for {id}"))
-            })
-            .transpose()?;
-        let cpu = read_env_assignment(&runtime_env, "PIKA_VM_CPU")?
-            .and_then(|value| value.parse::<u32>().ok())
-            .or_else(|| legacy.as_ref().and_then(|vm| vm.cpu))
-            .unwrap_or(self.cfg.default_cpu)
-            .clamp(1, self.cfg.max_cpu);
-        let memory_mb = read_env_assignment(&runtime_env, "PIKA_VM_MEMORY_MB")?
-            .and_then(|value| value.parse::<u32>().ok())
-            .or_else(|| legacy.as_ref().and_then(|vm| vm.memory_mb))
-            .unwrap_or(self.cfg.default_memory_mb)
-            .clamp(512, self.cfg.max_memory_mb);
-        let mac_address = read_env_assignment(&runtime_env, "MICROVM_MAC")?
-            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.mac_address)));
-
-        Ok(LegacyVmBootInputs {
-            tap_name,
-            mac_address,
-            ip,
-            cpu,
-            memory_mb,
         })
     }
 
@@ -799,13 +670,6 @@ impl VmManager {
 
     fn ip_for_slot(&self, slot: u32) -> Ipv4Addr {
         from_u32(to_u32(self.cfg.ip_start) + slot)
-    }
-
-    fn slot_for_ip(&self, ip: Ipv4Addr) -> Option<u32> {
-        let start = to_u32(self.cfg.ip_start);
-        let end = to_u32(self.cfg.ip_end);
-        let value = to_u32(ip);
-        (start..=end).contains(&value).then_some(value - start)
     }
 
     fn production_ip_for_vm_id(&self, id: &str) -> Option<Ipv4Addr> {
@@ -856,27 +720,15 @@ impl VmManager {
             }
 
             let id = entry.file_name().to_string_lossy().into_owned();
-            let paths = self.vm_paths(&id);
-            if let Some(slot) = self
-                .occupied_slot_for_paths(&id, &paths)
-                .with_context(|| format!("scan occupied slot for existing vm {id}"))?
-            {
+            if let Some(slot) = self.occupied_slot_for_id(&id) {
                 occupied_slots.insert(slot);
             }
         }
         Ok(occupied_slots)
     }
 
-    fn occupied_slot_for_paths(&self, id: &str, paths: &VmPaths) -> anyhow::Result<Option<u32>> {
-        if self.use_deterministic_vm_layout(id, paths)? {
-            return Ok(self.production_slot_for_vm_id(id));
-        }
-
-        let legacy = self.load_legacy_vm_boot_inputs(id, paths)?;
-        let ip = legacy.ip.ok_or_else(|| {
-            anyhow!("vm metadata missing IP address while scanning allocator state: {id}")
-        })?;
-        Ok(self.slot_for_ip(ip))
+    fn occupied_slot_for_id(&self, id: &str) -> Option<u32> {
+        self.production_slot_for_vm_id(id)
     }
 
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
@@ -893,7 +745,6 @@ impl VmManager {
             vm.memory_mb,
             &self.cfg.runtime_artifacts_guest_mount,
             daemon_bin.as_deref(),
-            matches!(vm.layout, VmLayout::Deterministic),
             None,
         )
     }
@@ -956,26 +807,6 @@ fn env_non_empty(name: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
-}
-
-fn non_empty(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn read_legacy_vm_metadata(path: &Path) -> anyhow::Result<Option<LegacyPersistedVm>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_str(&text)
-        .map(Some)
-        .with_context(|| format!("parse legacy vm metadata {}", path.display()))
 }
 
 fn read_env_assignment(path: &Path, key: &str) -> anyhow::Result<Option<String>> {
@@ -1047,7 +878,6 @@ fn write_runtime_metadata(
     memory_mb: u32,
     runtime_artifacts_guest_mount: &Path,
     daemon_bin: Option<&Path>,
-    mark_deterministic_layout: bool,
     guest_autostart: Option<&GuestAutostartRequest>,
 ) -> anyhow::Result<()> {
     let metadata_dir = vm_state_dir.join("metadata");
@@ -1088,12 +918,6 @@ fn write_runtime_metadata(
         .with_context(|| format!("write {}", metadata_dir.join("env").display()))?;
 
     let mut runtime_env = String::new();
-    if mark_deterministic_layout {
-        runtime_env.push_str(&format!(
-            "PIKA_VM_LAYOUT={}\n",
-            shell_quote(DETERMINISTIC_VM_LAYOUT)
-        ));
-    }
     runtime_env.push_str(&format!(
         "MICROVM_TAP={}\nMICROVM_MAC={}\nPIKA_VM_CPU={}\nPIKA_VM_MEMORY_MB={}\n",
         shell_quote(tap_name),
@@ -1691,7 +1515,7 @@ mod tests {
         fs::create_dir_all(vm_dir.join("metadata")).unwrap();
         fs::write(
             vm_dir.join("metadata/runtime.env"),
-            "PIKA_VM_LAYOUT='deterministic-v1'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
+            "PIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
         )
         .unwrap();
 
@@ -1715,18 +1539,13 @@ mod tests {
         fs::create_dir_all(vm_dir.join("metadata")).unwrap();
         fs::write(
             vm_dir.join("metadata/runtime.env"),
-            "PIKA_VM_LAYOUT='deterministic-v1'\nMICROVM_TAP='wrong-tap'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
+            "MICROVM_TAP='wrong-tap'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
         )
         .unwrap();
         fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.99'\n").unwrap();
         fs::write(
-            vm_dir.join("vm.json"),
-            r#"{
-  "ip": "192.168.83.99",
-  "tap_name": "legacy-tap",
-  "cpu": 9,
-  "memory_mb": 16384
-}"#,
+            vm_dir.join("stale-network.txt"),
+            "tap=wrong-tap\nip=192.168.83.99\n",
         )
         .unwrap();
         fs::write(vm_dir.join("random.txt"), "not authoritative\n").unwrap();
@@ -1742,57 +1561,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_vm_disk_state_falls_back_to_legacy_vm_json() {
+    async fn load_vm_disk_state_rejects_unsupported_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_dir = cfg.state_dir.join("vm-test");
-        fs::create_dir_all(&vm_dir).unwrap();
-        fs::write(
-            vm_dir.join("vm.json"),
-            r#"{
-  "ip": "192.168.83.11",
-  "tap_name": "legacy-tap",
-  "mac_address": "02:00:00:00:00:02",
-  "cpu": 3,
-  "memory_mb": 8192
-}"#,
-        )
-        .unwrap();
+        let vm_id = "vm-test";
+        fs::create_dir_all(cfg.state_dir.join(vm_id)).unwrap();
 
-        let vm = manager.load_vm_disk_state("vm-test").unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
 
-        assert_eq!(vm.tap_name, "legacy-tap");
-        assert_eq!(vm.mac_address, "02:00:00:00:00:02");
-        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 11));
-        assert_eq!(vm.cpu, 3);
-        assert_eq!(vm.memory_mb, 8192);
+        assert!(err.to_string().contains("unsupported vm id: vm-test"));
     }
 
     #[tokio::test]
-    async fn load_vm_disk_state_legacy_compat_reads_runtime_metadata_without_vm_json() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_dir = cfg.state_dir.join("vm-legacy-old");
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_IP='192.168.83.11'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
-        )
-        .unwrap();
-
-        let vm = manager.load_vm_disk_state("vm-legacy-old").unwrap();
-
-        assert_eq!(vm.tap_name, "legacy-tap");
-        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0b");
-        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 11));
-        assert_eq!(vm.cpu, 5);
-        assert_eq!(vm.memory_mb, 12288);
-    }
-
-    #[tokio::test]
-    async fn load_vm_disk_state_legacy_compat_supports_out_of_pool_vm_ids() {
+    async fn load_vm_disk_state_rejects_out_of_pool_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
@@ -1801,99 +1583,44 @@ mod tests {
         fs::create_dir_all(vm_dir.join("metadata")).unwrap();
         fs::write(
             vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap-3'\nPIKA_VM_CPU='6'\nPIKA_VM_MEMORY_MB='16384'\n",
+            "PIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
         )
         .unwrap();
-        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.42'\n").unwrap();
 
-        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
 
-        assert_eq!(vm.id, vm_id);
-        assert_eq!(vm.tap_name, "legacy-tap-3");
-        assert_eq!(vm.mac_address, "02:00:c0:a8:53:2a");
-        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 42));
-        assert_eq!(vm.cpu, 6);
-        assert_eq!(vm.memory_mb, 16384);
+        assert!(err.to_string().contains("unsupported vm id: vm-00000003"));
     }
 
     #[tokio::test]
-    async fn load_vm_disk_state_prefers_persisted_legacy_metadata_for_in_pool_ids() {
+    async fn rewrite_runtime_metadata_for_recreate_rewrites_current_format_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000002";
-        let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
         fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
+            vm_state_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='wrong-tap'\nMICROVM_MAC='02:00:00:00:00:ff'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
         )
         .unwrap();
-        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
+        fs::write(
+            vm_state_dir.join("metadata/env"),
+            "PIKA_VM_IP='192.168.83.222'\nPIKA_GATEWAY_IP='192.168.83.254'\nPIKA_DNS_IP='192.168.83.254'\n",
+        )
+        .unwrap();
 
         let vm = manager.load_vm_disk_state(vm_id).unwrap();
-
-        assert_eq!(vm.id, vm_id);
-        assert_eq!(vm.tap_name, "legacy-tap");
-        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0a");
-        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 10));
-        assert_eq!(vm.cpu, 5);
-        assert_eq!(vm.memory_mb, 12288);
-    }
-
-    #[tokio::test]
-    async fn rewrite_runtime_metadata_for_recreate_repairs_missing_runtime_env() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_state_dir = cfg.state_dir.join("vm-test");
-        fs::create_dir_all(&vm_state_dir).unwrap();
-        fs::write(
-            vm_state_dir.join("vm.json"),
-            r#"{
-  "ip": "192.168.83.11",
-  "tap_name": "legacy-tap",
-  "mac_address": "02:00:00:00:00:02",
-  "cpu": 3,
-  "memory_mb": 8192
-}"#,
-        )
-        .unwrap();
-
-        let vm = manager.load_vm_disk_state("vm-test").unwrap();
         manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
 
         let runtime_env = fs::read_to_string(vm_state_dir.join("metadata/runtime.env")).unwrap();
-        assert!(!runtime_env.contains("PIKA_VM_LAYOUT='deterministic-v1'"));
-        assert!(runtime_env.contains("MICROVM_TAP='legacy-tap'"));
-        assert!(runtime_env.contains("MICROVM_MAC='02:00:00:00:00:02'"));
-    }
-
-    #[tokio::test]
-    async fn rewrite_runtime_metadata_for_recreate_preserves_legacy_layout_for_in_pool_ids() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000002";
-        let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
-        )
-        .unwrap();
-        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
-
-        let vm = manager.load_vm_disk_state(vm_id).unwrap();
-        manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
-
-        let runtime_env = fs::read_to_string(vm_dir.join("metadata/runtime.env")).unwrap();
-        assert!(!runtime_env.contains("PIKA_VM_LAYOUT='deterministic-v1'"));
-
-        let reloaded = manager.load_vm_disk_state(vm_id).unwrap();
-        assert_eq!(reloaded.tap_name, "legacy-tap");
-        assert_eq!(reloaded.ip, Ipv4Addr::new(192, 168, 83, 10));
-        assert_eq!(reloaded.mac_address, "02:00:c0:a8:53:0a");
+        let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
+        assert!(runtime_env.contains("MICROVM_TAP='vm-00000001'"));
+        assert!(runtime_env.contains("MICROVM_MAC='02:00:c0:a8:53:0b'"));
+        assert!(env.contains("PIKA_VM_IP='192.168.83.11'"));
+        assert!(env.contains("PIKA_GATEWAY_IP='192.168.83.1'"));
+        assert!(env.contains("PIKA_DNS_IP='192.168.83.1'"));
     }
 
     #[tokio::test]
@@ -1919,17 +1646,12 @@ mod tests {
         cfg.dns_ip = Ipv4Addr::new(1, 1, 1, 1);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
 
-        let vm_state_dir = cfg.state_dir.join("vm-test");
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
         fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
         fs::write(
-            vm_state_dir.join("vm.json"),
-            r#"{
-  "ip": "192.168.83.11",
-  "tap_name": "legacy-tap",
-  "mac_address": "02:00:00:00:00:02",
-  "cpu": 3,
-  "memory_mb": 8192
-}"#,
+            vm_state_dir.join("metadata/runtime.env"),
+            "PIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
         )
         .unwrap();
         fs::write(
@@ -1938,8 +1660,8 @@ mod tests {
         )
         .unwrap();
 
-        let recovered = manager.recover("vm-test").await.unwrap();
-        assert_eq!(recovered.id, "vm-test");
+        let recovered = manager.recover(vm_id).await.unwrap();
+        assert_eq!(recovered.id, vm_id);
         assert_eq!(recovered.status, "running");
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
@@ -1947,7 +1669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn destroy_tolerates_legacy_state_dirs_missing_ip_metadata() {
+    async fn destroy_rejects_unsupported_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let scripts_dir = root.path().join("scripts");
         fs::create_dir_all(&scripts_dir).unwrap();
@@ -1964,18 +1686,12 @@ mod tests {
         cfg.systemctl_cmd = systemctl_script.display().to_string();
         cfg.ip_cmd = ip_script.display().to_string();
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-legacy-bad";
-        let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
-        )
-        .unwrap();
+        let vm_id = "vm-bad-old";
+        fs::create_dir_all(cfg.state_dir.join(vm_id)).unwrap();
 
-        manager.destroy(vm_id).await.unwrap();
+        let err = manager.destroy(vm_id).await.unwrap_err();
 
-        assert!(!vm_dir.exists());
+        assert!(err.to_string().contains("unsupported vm id: vm-bad-old"));
     }
 
     #[test]
@@ -2090,18 +1806,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allocator_skips_pool_slots_occupied_by_legacy_vm_metadata() {
+    async fn allocator_ignores_unsupported_state_dirs() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_dir = cfg.state_dir.join("vm-legacy-old");
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
-        )
-        .unwrap();
-        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
+        fs::create_dir_all(cfg.state_dir.join("vm-old-layout")).unwrap();
+        fs::create_dir_all(cfg.state_dir.join("vm-00000003")).unwrap();
+        fs::create_dir_all(cfg.state_dir.join("garbage")).unwrap();
+
+        let allocated = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap();
+
+        assert_eq!(allocated.id, "vm-00000000");
+        assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 10));
+        assert_eq!(allocated.slot, 0);
+    }
+
+    #[tokio::test]
+    async fn allocator_only_blocks_slots_for_supported_vm_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        fs::create_dir_all(cfg.state_dir.join("vm-00000000")).unwrap();
+        fs::create_dir_all(cfg.state_dir.join("vm-bad-old")).unwrap();
 
         let allocated = manager
             .allocate_vm_identity_locked(&HashSet::new())
@@ -2110,31 +1838,6 @@ mod tests {
         assert_eq!(allocated.id, "vm-00000001");
         assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 11));
         assert_eq!(allocated.slot, 1);
-    }
-
-    #[tokio::test]
-    async fn allocator_blocks_on_legacy_state_dirs_missing_ip_metadata() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_dir = cfg.state_dir.join("vm-legacy-bad");
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
-        )
-        .unwrap();
-
-        let err = manager
-            .allocate_vm_identity_locked(&HashSet::new())
-            .unwrap_err();
-
-        let message = err.to_string();
-        assert!(
-            message.contains("scan occupied slot for existing vm vm-legacy-bad")
-                || message
-                    .contains("vm metadata missing IP address while scanning allocator state")
-        );
     }
 
     #[tokio::test]
@@ -2203,7 +1906,6 @@ mod tests {
             4096,
             Path::new("/opt/runtime-artifacts"),
             None,
-            true,
             Some(&guest_autostart),
         )
         .unwrap();
@@ -2215,7 +1917,6 @@ mod tests {
         root_entries.sort();
 
         assert_eq!(root_entries, vec!["metadata"]);
-        assert!(!vm_state_dir.join("vm.json").exists());
 
         let metadata_dir = vm_state_dir.join("metadata");
         let mut files = fs::read_dir(&metadata_dir)

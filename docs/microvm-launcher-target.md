@@ -36,18 +36,13 @@ The launcher is not a generic remote dev VM or SSH-first shell host.
 - owner lookup and agent-to-VM mapping stay in `pika-server`, not in spawner-managed state
 - `vm-spawner` is not consulted for authoritative enumeration or admission policy decisions
 
-## Migration compatibility
+## Supported VM identity
 
-During migration, `vm-spawner` keeps a temporary compatibility reader for already-created VMs so `recover` and `delete` remain safe across upgrades.
+Only deterministic in-pool production IDs are supported:
 
-- deterministic IDs in the current pool use vm-id-derived host layout only when runtime metadata explicitly marks the deterministic layout, or when no legacy network metadata remains
-- older IDs (including out-of-pool `vm-xxxxxxxx` and non-production legacy IDs) are loaded from persisted runtime metadata (`metadata/runtime.env`, `metadata/env`, and legacy `vm.json` fallback)
-- compatibility metadata is used only to recover host boot inputs (tap, IP, CPU, memory), never as control-plane authority
-
-Compatibility removal point:
-
-- remove this fallback after one full release cycle where production telemetry and host scans show no remaining legacy IDs or legacy metadata-dependent VMs
-- when removed, keep deterministic vm-id-only loading and delete the legacy metadata parser/tests in the same change
+- `vm-XXXXXXXX` where the hex slot resolves inside the configured IP pool
+- `recover` and `delete` derive tap, IP, MAC, gcroots, and state paths from `vm_id` only
+- out-of-pool IDs, non-production IDs, and legacy state formats are unsupported
 
 ## Operations
 
@@ -58,7 +53,7 @@ Durable state is the VM home directory:
 Operational guidance:
 
 - backup/restore this durable home path as the primary asset
-- treat tap/gcroot wiring and runtime network metadata as reconstructible launcher state
+- treat tap/gcroot wiring and network identity as reconstructible launcher state derived from `vm_id`
 - treat guest autostart payload under `metadata/` as required boot input for recreate; `recover` does not rebuild it from `vm_id` alone
 
 ## Workstream scope

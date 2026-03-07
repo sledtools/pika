@@ -15,7 +15,6 @@ This doc prevents the simplified launcher from regressing into a generic VM plat
 - perform host-local privileged operations for create, recover, delete, and health checks
 - derive deterministic host layout from `vm_id` (unit, tap, IP, MAC, gcroots, state paths)
 - write/rewrite runtime boot metadata required to start or recreate the guest
-- keep compatibility-only runtime metadata readers during migration windows
 
 ## Allowed private API surface
 
@@ -38,6 +37,7 @@ Create request:
 Create/recover response:
 
 - `id`
+- `status`
 
 ## Allowed config surface
 

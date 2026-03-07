@@ -51,9 +51,13 @@ pub async fn wait_for_latest_key_package(
     std::io::stderr().flush().ok();
     let start = tokio::time::Instant::now();
     loop {
-        match relay_util::fetch_latest_key_package(client, &bot_pubkey, relays, plan.fetch_timeout)
-            .await
-        {
+        match relay_util::fetch_latest_key_package_for_mdk(
+            client,
+            &bot_pubkey,
+            relays,
+            plan.fetch_timeout,
+        )
+        .await {
             Ok(kp) => {
                 eprintln!(" done");
                 return Ok(kp);

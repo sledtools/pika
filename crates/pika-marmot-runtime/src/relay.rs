@@ -4,6 +4,8 @@ use anyhow::{Context, Result, anyhow};
 use nostr_sdk::prelude::*;
 use tokio::time::Instant;
 
+use crate::key_package::normalize_peer_key_package_event_for_mdk;
+
 pub async fn connect_client(keys: &Keys, relay_urls: &[String]) -> Result<Client> {
     let client = Client::new(keys.clone());
     for url in relay_urls {
@@ -49,6 +51,20 @@ pub async fn fetch_latest_key_package(
         .context("fetch keypackage events")?;
     let found = events.iter().next().cloned();
     found.ok_or_else(|| anyhow!("no keypackage found for {}", author.to_hex()))
+}
+
+pub async fn fetch_latest_key_package_for_mdk(
+    client: &Client,
+    author: &PublicKey,
+    relay_urls: &[RelayUrl],
+    timeout: Duration,
+) -> Result<Event> {
+    let event = fetch_latest_key_package(client, author, relay_urls, timeout).await?;
+    Ok(normalize_fetched_key_package_for_mdk(&event))
+}
+
+fn normalize_fetched_key_package_for_mdk(event: &Event) -> Event {
+    normalize_peer_key_package_event_for_mdk(event)
 }
 
 pub fn parse_relay_urls(urls: &[String]) -> Result<Vec<RelayUrl>> {
@@ -116,5 +132,50 @@ pub async fn check_relay_ready(relay_url: &str, timeout: Duration) -> Result<()>
         last_detail = "not connected yet".to_string();
         client.shutdown().await;
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_package_event(content: &str, tags: Vec<Tag>) -> Event {
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(&Keys::generate())
+            .expect("sign key package event")
+    }
+
+    #[test]
+    fn normalize_fetched_key_package_for_mdk_applies_shared_interop_rules() {
+        let event = key_package_event(
+            "68656c6c6f",
+            vec![
+                Tag::custom(TagKind::MlsProtocolVersion, ["1"]),
+                Tag::custom(TagKind::MlsCiphersuite, ["1"]),
+            ],
+        );
+
+        let normalized = normalize_fetched_key_package_for_mdk(&event);
+
+        assert_eq!(normalized.content, "aGVsbG8=");
+        assert!(
+            normalized
+                .tags
+                .iter()
+                .any(|tag| tag.as_slice() == ["encoding", "base64"])
+        );
+        assert!(
+            normalized
+                .tags
+                .iter()
+                .any(|tag| tag.as_slice() == ["mls_protocol_version", "1.0"])
+        );
+        assert!(
+            normalized
+                .tags
+                .iter()
+                .any(|tag| tag.as_slice() == ["mls_ciphersuite", "0x0001"])
+        );
     }
 }

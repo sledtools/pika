@@ -189,7 +189,7 @@ async fn scenario_invite_and_chat_peer(
     let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
 
     // Fetch peer keypackage from the relay (kind 443).
-    let peer_kp = fetch_latest_key_package(&a_client, &peer_pubkey, relay_url.clone())
+    let peer_kp = fetch_latest_key_package_for_mdk(&a_client, &peer_pubkey, relay_url.clone())
         .await
         .context("fetch peer keypackage")?;
     info!(
@@ -336,9 +336,10 @@ async fn scenario_invite_and_chat(
     let b_kp = publish_key_package(&b_client, &b_mdk, &b_keys, relay_url.clone()).await?;
 
     // 2) Client A fetches B's key package from the relay (avoid "passed by reference" false pass)
-    let fetched_b_kp = fetch_latest_key_package(&a_client, &b_keys.public_key(), relay_url.clone())
-        .await
-        .context("fetch B keypackage")?;
+    let fetched_b_kp =
+        fetch_latest_key_package_for_mdk(&a_client, &b_keys.public_key(), relay_url.clone())
+            .await
+            .context("fetch B keypackage")?;
     if fetched_b_kp.id != b_kp.id {
         return Err(anyhow!(
             "unexpected B keypackage event id: fetched={} published={}",
@@ -566,7 +567,7 @@ async fn scenario_invite_and_chat_rustbot(
     let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
 
     // Fetch bot keypackage from the relay (stronger than trusting bot stdout).
-    let bot_kp = fetch_latest_key_package(&a_client, &bot_pubkey, relay_url.clone())
+    let bot_kp = fetch_latest_key_package_for_mdk(&a_client, &bot_pubkey, relay_url.clone())
         .await
         .context("fetch bot keypackage")?;
     info!(
@@ -832,7 +833,7 @@ async fn scenario_invite_and_chat_daemon(
     let a_mdk = new_mdk(&a_state, "a")?;
 
     let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
-    let daemon_kp = fetch_latest_key_package(&a_client, &daemon_pubkey, relay_url.clone())
+    let daemon_kp = fetch_latest_key_package_for_mdk(&a_client, &daemon_pubkey, relay_url.clone())
         .await
         .context("fetch daemon keypackage")?;
 
@@ -1605,24 +1606,19 @@ async fn publish_and_confirm(
     Ok(())
 }
 
-async fn fetch_latest_key_package(
+async fn fetch_latest_key_package_for_mdk(
     client: &Client,
     author: &PublicKey,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
-    let filter = Filter::new()
-        .kind(Kind::MlsKeyPackage)
-        .author(*author)
-        .limit(1);
-    let events = client
-        .fetch_events_from([relay_url], filter, Duration::from_secs(10))
-        .await
-        .context("fetch keypackage events")?;
-    events
-        .iter()
-        .next()
-        .cloned()
-        .ok_or_else(|| anyhow!("no keypackage event found for author {}", author.to_hex()))
+    pika_marmot_runtime::relay::fetch_latest_key_package_for_mdk(
+        client,
+        author,
+        &[relay_url],
+        Duration::from_secs(10),
+    )
+    .await
+    .context("fetch keypackage events")
 }
 
 async fn wait_for_welcome_giftwrap(

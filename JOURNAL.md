@@ -156,10 +156,15 @@ For Android specifically, this likely means:
   - `tart-beachhead`
   - `tart-ios-unit-tests`
   - `tart-ios-ui-note-to-self`
+  - `tart-ios-ui-test`
 - The Tart runner now prefers a native-Xcode Cirrus base image
   (`ghcr.io/cirruslabs/macos-sequoia-xcode:16.4`, cloned locally as `pikaci-xcode16-base`)
   over the earlier host-Xcode grafting fallback. That resolved the earlier destination validation
   failures from `sequoia-base`.
+- Scope decision: Tart is for Apple-only deterministic coverage.
+  Android-on-Tart was explored as a prototype and then intentionally dropped. It adds a second
+  Android runner stack, emulator-in-guest complexity, and nested-virtualization/HVF risk without
+  giving useful coverage beyond what the Linux runner should own.
 - The deterministic Tart UI lane is now meaningfully split from public-relay/media E2E coverage.
   The `testCreateAccount_noteToSelf_sendMessage_and_logout`,
   `testSessionPersistsAcrossRelaunch`,
@@ -176,6 +181,46 @@ For Android specifically, this likely means:
 - The current Tart probe remains green after the runner abstraction refactor.
   `tart-env-probe` still proves: boot guest, see Xcode, accept the license, and create/boot an
   iOS simulator under `pikaci`.
+- The next Tart step is packaging, not more runner R&D:
+  1. define one first-class deterministic Apple lane name
+  2. wire that lane through `just`
+  3. keep public-relay/media/E2E iOS cases out of that deterministic lane
+
+## Refactoring opportunities
+
+- Tart target definitions repeat a lot of shell/Xcode setup. Introduce a small Rust builder/helper
+  for "Xcode test in Tart guest" so the target definitions only specify scheme, destination mode,
+  and test-plan/test-filter details.
+- The current runner abstraction is still fairly command-string oriented. It would be cleaner to
+  separate:
+  - runner provisioning
+  - workspace/artifact mounts
+  - environment injection
+  - test command rendering
+  That would make it easier to add richer runner types later without growing `executor.rs` into one
+  large switch statement.
+- `executor.rs` is becoming the highest-churn file in `pikaci`. Split it by runner:
+  - `executor/vfkit.rs`
+  - `executor/tart.rs`
+  - shared logging/process helpers in `executor/common.rs`
+- The current target model is still a mix of "lane" and "single job." Consider a clearer shape:
+  - `TargetSpec` = user-facing lane
+  - `JobSpec` = one runnable unit inside a lane
+  - optional profile tags like `deterministic`, `nightly`, `apple`, `linux`, `android`, `desktop`
+  That would make filtering, summaries, and future GitHub Actions wiring easier to reason about.
+- Lane composition is still handwritten in `main.rs`. That is acceptable for now, but the next
+  cleanup should factor repeated filter sets and repeated Rust package test patterns into helper
+  constructors so the lane file reads like CI intent instead of shell assembly.
+
+## Next migration candidates
+
+- Finish the remaining deterministic Linux Rust slices that are still host-side:
+  `agent_http_*` tests from `pre-merge-agent-contracts`.
+- Package the proven Tart iOS targets into one deterministic Apple lane and wire it into `just`.
+- Keep desktop Linux coverage on the Linux runner side. Do not try to make Tart carry desktop or
+  Android responsibilities.
+- Revisit the broken `ui_e2e_local_desktop` case separately as a test/runtime bug, not as a runner
+  migration problem.
 
 ## Host issues seen tonight
 

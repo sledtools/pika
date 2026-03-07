@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
 use anyhow::{anyhow, Context};
@@ -60,6 +60,8 @@ struct VmCleanupState {
     tap_name: String,
     microvm_state_dir: PathBuf,
 }
+
+const CREATE_STAGING_PREFIX: &str = ".creating__";
 
 #[derive(Debug, Clone, Copy)]
 struct CurrentVmMetadata {
@@ -164,14 +166,11 @@ impl VmManager {
             .production_mac_for_vm_id(&id)
             .ok_or_else(|| anyhow!("invalid production vm id for deterministic MAC: {id}"))?;
         let paths = self.vm_paths(&id);
+        let staging_dir = self.create_staging_vm_state_dir(&id);
 
         let create_result = async {
             let runtime_ip = ip;
             let mut runtime_status = "running";
-
-            fs::create_dir_all(&paths.microvm_state_dir).with_context(|| {
-                format!("create vm state dir {}", paths.microvm_state_dir.display())
-            })?;
 
             self.ensure_runtime_artifacts().await?;
 
@@ -186,7 +185,7 @@ impl VmManager {
             }
 
             write_runtime_metadata(
-                &paths.microvm_state_dir,
+                &staging_dir,
                 &tap_name,
                 &mac_address,
                 ip,
@@ -199,11 +198,13 @@ impl VmManager {
                 Some(&guest_autostart),
             )?;
 
+            self.install_prebuilt_vm_state(&staging_dir, &runner_path)
+                .await?;
+            self.promote_staged_vm_state_dir(&staging_dir, &paths.microvm_state_dir)?;
+            self.sync_vm_gcroots(&id, &paths.microvm_state_dir)?;
+
             create_tap_interface(&self.cfg.ip_cmd, &tap_name).await?;
             ensure_tap_bridged(&self.cfg.ip_cmd, &tap_name, &self.cfg.bridge_name).await?;
-
-            self.install_prebuilt_vm_state(&id, &paths.microvm_state_dir, &runner_path)
-                .await?;
 
             run_command(
                 Command::new(&self.cfg.systemctl_cmd)
@@ -252,8 +253,13 @@ impl VmManager {
                 let mut guard = self.inner.lock().await;
                 guard.reserved_slots.remove(&identity.slot);
                 drop(guard);
+                let cleanup_dir = if paths.microvm_state_dir.exists() {
+                    paths.microvm_state_dir.as_path()
+                } else {
+                    staging_dir.as_path()
+                };
                 let _ = self
-                    .cleanup_artifacts_for_paths(&id, &tap_name, &paths.microvm_state_dir)
+                    .cleanup_artifacts_for_paths(&id, &tap_name, cleanup_dir)
                     .await;
                 Err(err)
             }
@@ -445,7 +451,6 @@ impl VmManager {
 
     async fn install_prebuilt_vm_state(
         &self,
-        id: &str,
         vm_state_dir: &Path,
         runner_path: &Path,
     ) -> anyhow::Result<()> {
@@ -475,11 +480,14 @@ impl VmManager {
         )
         .await?;
 
+        Ok(())
+    }
+
+    fn sync_vm_gcroots(&self, id: &str, vm_state_dir: &Path) -> anyhow::Result<()> {
         fs::create_dir_all("/nix/var/nix/gcroots/microvm")
             .context("create /nix/var/nix/gcroots/microvm")?;
         symlink_force(&vm_state_dir.join("current"), &self.gcroot_current_path(id))?;
         symlink_force(&vm_state_dir.join("booted"), &self.gcroot_booted_path(id))?;
-
         Ok(())
     }
 
@@ -523,8 +531,9 @@ impl VmManager {
         self.ensure_runtime_artifacts().await?;
         self.rewrite_runtime_metadata_for_recreate(vm)?;
         let runner_path = self.ensure_prebuilt_runner(vm.cpu, vm.memory_mb).await?;
-        self.install_prebuilt_vm_state(&vm.id, &vm.microvm_state_dir, &runner_path)
+        self.install_prebuilt_vm_state(&vm.microvm_state_dir, &runner_path)
             .await?;
+        self.sync_vm_gcroots(&vm.id, &vm.microvm_state_dir)?;
         create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
         ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
         run_command(
@@ -590,6 +599,36 @@ impl VmManager {
         }
     }
 
+    fn create_staging_vm_state_dir(&self, id: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        self.cfg
+            .state_dir
+            .join(format!("{CREATE_STAGING_PREFIX}{id}__{nonce}"))
+    }
+
+    fn promote_staged_vm_state_dir(
+        &self,
+        staging_dir: &Path,
+        final_dir: &Path,
+    ) -> anyhow::Result<()> {
+        if final_dir.exists() {
+            anyhow::bail!(
+                "refusing to overwrite existing vm state dir {}",
+                final_dir.display()
+            );
+        }
+        fs::rename(staging_dir, final_dir).with_context(|| {
+            format!(
+                "promote staged vm state dir {} -> {}",
+                staging_dir.display(),
+                final_dir.display()
+            )
+        })
+    }
+
     fn load_vm_disk_state(&self, id: &str) -> anyhow::Result<VmDiskState> {
         let paths = self.vm_paths(id);
         if !paths.microvm_state_dir.exists() {
@@ -622,7 +661,6 @@ impl VmManager {
         if self.production_ip_for_vm_id(id).is_none() {
             anyhow::bail!("unsupported vm id: {id}");
         }
-        self.load_current_vm_metadata(id, &paths)?;
 
         Ok(VmCleanupState {
             tap_name: id.to_string(),
@@ -715,6 +753,10 @@ impl VmManager {
             }
 
             let id = entry.file_name().to_string_lossy().into_owned();
+            if let Some(staging_vm_id) = parse_staging_vm_id(&id) {
+                self.cleanup_stale_staging_vm_state(staging_vm_id, &entry.path())?;
+                continue;
+            }
             let slot = self
                 .validate_state_dir_entry(&id)
                 .with_context(|| format!("validate existing vm state dir {id}"))?;
@@ -725,6 +767,15 @@ impl VmManager {
 
     fn audit_state_dir(&self) -> anyhow::Result<()> {
         let _ = self.occupied_slots_from_disk()?;
+        Ok(())
+    }
+
+    fn cleanup_stale_staging_vm_state(&self, id: &str, staging_dir: &Path) -> anyhow::Result<()> {
+        remove_path_if_exists(staging_dir)?;
+        if self.production_ip_for_vm_id(id).is_some() {
+            remove_path_if_exists(&self.gcroot_current_path(id))?;
+            remove_path_if_exists(&self.gcroot_booted_path(id))?;
+        }
         Ok(())
     }
 
@@ -813,6 +864,12 @@ fn parse_vm_id_slot(id: &str) -> Option<u32> {
         return None;
     }
     u32::from_str_radix(raw, 16).ok()
+}
+
+fn parse_staging_vm_id(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix(CREATE_STAGING_PREFIX)?;
+    let (vm_id, _) = rest.split_once("__")?;
+    Some(vm_id)
 }
 
 fn mac_for_guest_ip(ip: Ipv4Addr) -> String {
@@ -1871,6 +1928,33 @@ mod tests {
         assert!(err.to_string().contains("unsupported vm id: vm-bad-old"));
     }
 
+    #[tokio::test]
+    async fn destroy_removes_malformed_supported_vm_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(&systemctl_script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ip_script = scripts_dir.join("ip");
+        fs::write(&ip_script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&ip_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000001";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(&vm_dir).unwrap();
+
+        manager.destroy(vm_id).await.unwrap();
+
+        assert!(!vm_dir.exists());
+    }
+
     #[test]
     fn prebuilt_flake_mounts_durable_home_at_root() {
         let root = tempfile::tempdir().unwrap();
@@ -1997,6 +2081,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vm_manager_new_cleans_up_stale_staging_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let staging_dir = cfg.state_dir.join(".creating__vm-00000001__stale-create");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let _ = manager;
+
+        assert!(!staging_dir.exists());
+    }
+
+    #[tokio::test]
     async fn allocator_blocks_slots_for_supported_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
@@ -2010,6 +2107,27 @@ mod tests {
         assert_eq!(allocated.id, "vm-00000001");
         assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 11));
         assert_eq!(allocated.slot, 1);
+    }
+
+    #[tokio::test]
+    async fn create_failure_cleans_up_staging_state_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let req = CreateVmRequest {
+            guest_autostart: GuestAutostartRequest {
+                command: "".to_string(),
+                env: BTreeMap::new(),
+                files: BTreeMap::new(),
+            },
+        };
+
+        let _err = manager.create(req).await.unwrap_err();
+        let entries = fs::read_dir(&cfg.state_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(entries.is_empty());
     }
 
     #[tokio::test]

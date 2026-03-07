@@ -64,7 +64,7 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
+            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };
@@ -82,7 +82,7 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
+            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };
@@ -100,7 +100,7 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
+            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };
@@ -118,7 +118,7 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.6.0" = "sha256-7U9hTItXHOo5VtdvfxwOUo2M22wUnHK4Oi3TlmfjM+4=";
+            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
           };

@@ -22,6 +22,8 @@ in
     '';
   };
 
+  config = {
+
   boot.kernelModules = [ "kvm-amd" "tun" "bridge" "vhost_net" ];
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
@@ -159,4 +161,6 @@ in
     Durable VM asset: ${spawnerStateDir}/<vm-id>/home
     Backup/restore focuses on durable home; metadata and host wiring are reconstructed on recover.
   '';
+
+  }; # config
 }

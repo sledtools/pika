@@ -512,6 +512,11 @@ private func screenView(
         .onDisappear {
             manager.dispatch(.clearMediaGallery)
         }
+    case .agentProvisioning:
+        AgentProvisioningView(
+            state: state.agentProvisioning,
+            onRetry: { manager.ensureAgent() }
+        )
     }
 }
 

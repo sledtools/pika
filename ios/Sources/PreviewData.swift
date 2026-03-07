@@ -324,6 +324,7 @@ enum PreviewAppState {
             developerMode: false,
             updateRequired: false,
             agentButton: nil,
+            agentProvisioning: nil,
             voiceRecording: nil,
             mediaGallery: nil
         )

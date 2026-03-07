@@ -14,6 +14,7 @@ pub struct AgentAllowlistEntry {
     pub note: Option<String>,
     pub updated_by: String,
     pub updated_at: NaiveDateTime,
+    pub max_agents: Option<i32>,
 }
 
 #[derive(Insertable)]
@@ -23,6 +24,7 @@ pub struct NewAgentAllowlistEntry<'a> {
     pub active: bool,
     pub note: Option<&'a str>,
     pub updated_by: &'a str,
+    pub max_agents: Option<i32>,
 }
 
 #[derive(Queryable, Selectable, Insertable, Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -58,6 +60,15 @@ impl AgentAllowlistEntry {
         Ok(active)
     }
 
+    pub fn get(conn: &mut PgConnection, npub: &str) -> anyhow::Result<Option<Self>> {
+        let row = agent_allowlist::table
+            .filter(agent_allowlist::npub.eq(npub))
+            .select(Self::as_select())
+            .first::<Self>(conn)
+            .optional()?;
+        Ok(row)
+    }
+
     pub fn list(conn: &mut PgConnection) -> anyhow::Result<Vec<Self>> {
         let rows = agent_allowlist::table
             .order(agent_allowlist::npub.asc())
@@ -72,12 +83,14 @@ impl AgentAllowlistEntry {
         active: bool,
         note: Option<&str>,
         updated_by: &str,
+        max_agents: Option<i32>,
     ) -> anyhow::Result<Self> {
         let row = NewAgentAllowlistEntry {
             npub,
             active,
             note,
             updated_by,
+            max_agents,
         };
         let updated_at = Utc::now().naive_utc();
         let saved = diesel::insert_into(agent_allowlist::table)
@@ -89,6 +102,7 @@ impl AgentAllowlistEntry {
                 agent_allowlist::note.eq(note),
                 agent_allowlist::updated_by.eq(updated_by),
                 agent_allowlist::updated_at.eq(updated_at),
+                agent_allowlist::max_agents.eq(max_agents),
             ))
             .returning(Self::as_returning())
             .get_result(conn)?;
@@ -101,13 +115,13 @@ impl AgentAllowlistEntry {
         active: bool,
         updated_by: &str,
     ) -> anyhow::Result<Self> {
-        let existing_note = agent_allowlist::table
+        let existing = agent_allowlist::table
             .filter(agent_allowlist::npub.eq(npub))
-            .select(agent_allowlist::note)
-            .first::<Option<String>>(conn)
+            .select((agent_allowlist::note, agent_allowlist::max_agents))
+            .first::<(Option<String>, Option<i32>)>(conn)
             .optional()?;
-        let note = existing_note.flatten();
-        Self::upsert(conn, npub, active, note.as_deref(), updated_by)
+        let (note, max_agents) = existing.unwrap_or((None, None));
+        Self::upsert(conn, npub, active, note.as_deref(), updated_by, max_agents)
     }
 
     pub fn record_audit(

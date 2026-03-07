@@ -239,7 +239,7 @@ mod test {
         let mut conn = db_pool.get().unwrap();
         let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
 
-        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("agent"), npub)
+        let row = AgentAllowlistEntry::upsert(&mut conn, npub, true, Some("agent"), npub, None)
             .expect("upsert allowlist");
         assert_eq!(row.npub, npub);
         assert!(row.active);
@@ -265,7 +265,7 @@ mod test {
         let npub = "npub1rollbacktestuser";
 
         let result = conn.transaction::<_, anyhow::Error, _>(|conn| {
-            AgentAllowlistEntry::upsert(conn, npub, true, Some("agent"), npub)?;
+            AgentAllowlistEntry::upsert(conn, npub, true, Some("agent"), npub, None)?;
             AgentAllowlistEntry::record_audit(conn, npub, npub, "enabled\0invalid", None)?;
             Ok(())
         });

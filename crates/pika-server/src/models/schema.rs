@@ -7,6 +7,7 @@ diesel::table! {
         note -> Nullable<Text>,
         updated_by -> Text,
         updated_at -> Timestamp,
+        max_agents -> Nullable<Int4>,
     }
 }
 

@@ -107,6 +107,12 @@ pub enum InternalEvent {
         allowlisted: Option<bool>,
         error: Option<String>,
     },
+    AgentFlowProgress {
+        flow_token: u64,
+        phase: crate::state::AgentProvisioningPhase,
+        agent_npub: Option<String>,
+        poll_attempt: Option<u32>,
+    },
     AgentFlowCompleted {
         flow_token: u64,
         agent_id: Option<String>,
@@ -119,6 +125,7 @@ pub enum InternalEvent {
 
     // Async CreateChat fetch result (1:1)
     PeerKeyPackageFetched {
+        token: u64,
         peer_pubkey: nostr_sdk::prelude::PublicKey,
         key_package_event: Option<nostr_sdk::prelude::Event>,
         error: Option<String>,

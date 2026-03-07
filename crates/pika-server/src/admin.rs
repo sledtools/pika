@@ -31,6 +31,7 @@ const TEST_NSEC_ENV: &str = "PIKA_TEST_NSEC";
 const ADMIN_SESSION_COOKIE: &str = "pika_admin_session";
 const ADMIN_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const ADMIN_CHALLENGE_TTL_SECS: i64 = 120;
+const MAX_SUPPORTED_AGENTS: i32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct AdminConfig {
@@ -65,6 +66,7 @@ pub struct AllowlistUpsertForm {
     npub: String,
     note: Option<String>,
     active: Option<String>,
+    max_agents: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +79,7 @@ struct AdminAllowlistRow {
     npub: String,
     active: bool,
     note: String,
+    max_agents: String,
     updated_by: String,
     updated_at: String,
     next_active: String,
@@ -430,6 +433,7 @@ pub async fn dashboard(
                 npub: row.npub,
                 active: row.active,
                 note: row.note.unwrap_or_default(),
+                max_agents: row.max_agents.unwrap_or(MAX_SUPPORTED_AGENTS).to_string(),
                 updated_by: row.updated_by,
                 updated_at: row.updated_at.to_string(),
                 next_active,
@@ -460,6 +464,28 @@ pub async fn upsert_allowlist(
         .note
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let max_agents = form
+        .max_agents
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<i32>())
+        .transpose()
+        .map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid max_agents: {err}"),
+            )
+        })?
+        .unwrap_or(MAX_SUPPORTED_AGENTS);
+    if max_agents != MAX_SUPPORTED_AGENTS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "max_agents must be exactly {MAX_SUPPORTED_AGENTS} until the API/client add multi-agent selection"
+            ),
+        ));
+    }
 
     let mut conn = state
         .db_pool
@@ -467,7 +493,14 @@ pub async fn upsert_allowlist(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
     conn.transaction::<(), anyhow::Error, _>(|conn| {
-        AgentAllowlistEntry::upsert(conn, &npub, active, note.as_deref(), &admin_npub)?;
+        AgentAllowlistEntry::upsert(
+            conn,
+            &npub,
+            active,
+            note.as_deref(),
+            &admin_npub,
+            Some(max_agents),
+        )?;
         AgentAllowlistEntry::record_audit(
             conn,
             &admin_npub,

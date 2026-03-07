@@ -23,6 +23,7 @@ pub struct AppState {
     pub developer_mode: bool,
     pub update_required: bool,
     pub agent_button: Option<AgentMenuItemState>,
+    pub agent_provisioning: Option<AgentProvisioningState>,
     pub voice_recording: Option<VoiceRecordingState>,
     pub media_gallery: Option<MediaGalleryState>,
 }
@@ -48,6 +49,7 @@ impl AppState {
             developer_mode: false,
             update_required: false,
             agent_button: None,
+            agent_provisioning: None,
             voice_recording: None,
             media_gallery: None,
         }
@@ -58,6 +60,26 @@ impl AppState {
 pub struct AgentMenuItemState {
     pub title: String,
     pub is_busy: bool,
+}
+
+#[derive(uniffi::Enum, Clone, Debug, PartialEq)]
+pub enum AgentProvisioningPhase {
+    Ensuring,
+    Provisioning,
+    Recovering,
+    PublishingKeyPackage,
+    CreatingChat,
+    Error,
+}
+
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct AgentProvisioningState {
+    pub phase: AgentProvisioningPhase,
+    pub agent_npub: Option<String>,
+    pub status_message: String,
+    pub elapsed_secs: u32,
+    pub poll_attempt: Option<u32>,
+    pub poll_max: Option<u32>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]
@@ -225,6 +247,7 @@ pub enum Screen {
     NewGroupChat,
     GroupInfo { chat_id: String },
     ChatMedia { chat_id: String },
+    AgentProvisioning,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]

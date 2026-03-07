@@ -16,6 +16,7 @@
   <form method="post" action="/admin/allowlist" style="display:grid; gap:8px; max-width: 620px;">
     <label>Npub <input name="npub" required style="width:100%" /></label>
     <label>Note <input name="note" style="width:100%" /></label>
+    <label>Max Agents <input name="max_agents" type="number" min="1" max="1" value="1" style="width:100%" /></label>
     <label><input type="checkbox" name="active" checked /> Active</label>
     <button type="submit">Save</button>
   </form>
@@ -23,13 +24,14 @@
   <h2 style="margin-top:24px">Current Entries</h2>
   <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:1200px">
     <thead>
-      <tr><th>Npub</th><th>Status</th><th>Note</th><th>Updated By</th><th>Updated At (UTC)</th><th>Action</th></tr>
+      <tr><th>Npub</th><th>Status</th><th>Max Agents</th><th>Note</th><th>Updated By</th><th>Updated At (UTC)</th><th>Action</th></tr>
     </thead>
     <tbody>
       {% for row in rows %}
       <tr>
         <td><code>{{ row.npub }}</code></td>
         <td>{% if row.active %}active{% else %}inactive{% endif %}</td>
+        <td>{{ row.max_agents }}</td>
         <td>{{ row.note }}</td>
         <td><code>{{ row.updated_by }}</code></td>
         <td>{{ row.updated_at }}</td>

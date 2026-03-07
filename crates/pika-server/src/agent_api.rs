@@ -222,6 +222,15 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
     })
 }
 
+fn json_response(
+    row: AgentInstance,
+    request_id: &str,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    Ok(Json(map_row_to_response(row).map_err(|err| {
+        err.with_request_id(request_id.to_string())
+    })?))
+}
+
 fn phase_from_spawner_status(status: &str) -> &'static str {
     match status {
         "running" => AGENT_PHASE_READY,
@@ -251,6 +260,26 @@ fn load_visible_agent_row(
     Ok(select_visible_agent_row(active, latest))
 }
 
+fn visible_agent_response(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+    request_id: &str,
+    missing_code: AgentApiErrorCode,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    let Some(active) = load_visible_agent_row(conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?
+    else {
+        return Err(AgentApiError::from_code(missing_code).with_request_id(request_id.to_string()));
+    };
+    json_response(active, request_id)
+}
+
+fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    (message.contains("vm not found") || (message.contains("404") && message.contains("not found")))
+        && message.contains("vm")
+}
+
 fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
     if let Some(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)) =
         err.downcast_ref::<DieselError>()
@@ -261,12 +290,6 @@ fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
             .unwrap_or(false);
     }
     err.to_string().contains(AGENT_OWNER_ACTIVE_INDEX)
-}
-
-fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
-    let message = err.to_string().to_ascii_lowercase();
-    (message.contains("vm not found") || (message.contains("404") && message.contains("not found")))
-        && message.contains("vm")
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +381,12 @@ async fn provision_agent_for_owner(
             if is_owner_active_unique_violation(&err) {
                 AgentApiError::from_code(AgentApiErrorCode::AgentExists).with_request_id(request_id)
             } else {
+                tracing::error!(
+                    request_id,
+                    owner_npub = %owner_npub,
+                    error = %err,
+                    "failed to create agent instance row"
+                );
                 AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
             }
         })?
@@ -410,36 +439,47 @@ async fn provision_agent_for_owner(
     Ok(updated)
 }
 
+async fn reprovision_agent_response(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<Json<AgentStateResponse>, AgentApiError> {
+    match provision_agent_for_owner(state, owner_npub, request_id).await {
+        Ok(reprovisioned) => json_response(reprovisioned, request_id),
+        Err(err) if err.code == AgentApiErrorCode::AgentExists => {
+            let mut conn = state.db_pool.get().map_err(|_| {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_id.to_string())
+            })?;
+            visible_agent_response(
+                &mut conn,
+                owner_npub,
+                request_id,
+                AgentApiErrorCode::RecoverFailed,
+            )
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub async fn ensure_agent(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
-    let requester = {
-        let mut conn = state.db_pool.get().map_err(|_| {
-            AgentApiError::from_code(AgentApiErrorCode::Internal)
-                .with_request_id(request_context.request_id.clone())
-        })?;
-        let requester = require_whitelisted_requester(
-            &mut conn,
-            &headers,
-            "POST",
-            V1_AGENTS_ENSURE_PATH,
-            state.trust_forwarded_host,
-        )
-        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-        if AgentInstance::find_active_by_owner(&mut conn, &requester.owner_npub)
-            .map_err(|_| {
-                AgentApiError::from_code(AgentApiErrorCode::Internal)
-                    .with_request_id(request_context.request_id.clone())
-            })?
-            .is_some()
-        {
-            return Err(AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-                .with_request_id(request_context.request_id.clone()));
-        }
-        requester
-    };
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_context.request_id.clone())
+    })?;
+    let requester = require_whitelisted_requester(
+        &mut conn,
+        &headers,
+        "POST",
+        V1_AGENTS_ENSURE_PATH,
+        state.trust_forwarded_host,
+    )
+    .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    drop(conn);
 
     let updated =
         provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
@@ -447,10 +487,7 @@ pub async fn ensure_agent(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(
-            map_row_to_response(updated)
-                .map_err(|err| err.with_request_id(request_context.request_id.clone()))?,
-        ),
+        json_response(updated, &request_context.request_id)?,
     ))
 }
 
@@ -485,9 +522,7 @@ pub async fn get_my_agent(
         }
         None => active,
     };
-    Ok(Json(map_row_to_response(normalized).map_err(|err| {
-        err.with_request_id(request_context.request_id.clone())
-    })?))
+    json_response(normalized, &request_context.request_id)
 }
 
 pub async fn recover_my_agent(
@@ -517,19 +552,12 @@ pub async fn recover_my_agent(
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
         drop(conn);
-        let reprovisioned =
-            provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
-                .await
-                .map_err(|err| match err.code {
-                    AgentApiErrorCode::AgentExists => {
-                        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                            .with_request_id(request_context.request_id.clone())
-                    }
-                    _ => err,
-                })?;
-        return Ok(Json(map_row_to_response(reprovisioned).map_err(|err| {
-            err.with_request_id(request_context.request_id.clone())
-        })?));
+        return reprovision_agent_response(
+            &state,
+            &requester.owner_npub,
+            &request_context.request_id,
+        )
+        .await;
     }
     let vm_id = active.vm_id.clone().ok_or_else(|| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
@@ -558,22 +586,12 @@ pub async fn recover_my_agent(
             prepare_agent_for_reprovision(&mut conn, &active)
                 .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
             drop(conn);
-            let reprovisioned = provision_agent_for_owner(
+            return reprovision_agent_response(
                 &state,
                 &requester.owner_npub,
                 &request_context.request_id,
             )
-            .await
-            .map_err(|err| match err.code {
-                AgentApiErrorCode::AgentExists => {
-                    AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                        .with_request_id(request_context.request_id.clone())
-                }
-                _ => err,
-            })?;
-            return Ok(Json(map_row_to_response(reprovisioned).map_err(|err| {
-                err.with_request_id(request_context.request_id.clone())
-            })?));
+            .await;
         }
         Err(err) => {
             tracing::error!(
@@ -599,9 +617,7 @@ pub async fn recover_my_agent(
         AgentApiError::from_code(AgentApiErrorCode::Internal)
             .with_request_id(request_context.request_id.clone())
     })?;
-    Ok(Json(map_row_to_response(updated).map_err(|err| {
-        err.with_request_id(request_context.request_id.clone())
-    })?))
+    json_response(updated, &request_context.request_id)
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {
@@ -918,6 +934,39 @@ mod tests {
         )
         .expect("erroring stale row should clear active-owner constraint");
         assert_eq!(reprovisioned.agent_id, "agent-fresh");
+
+        clear_test_database(&mut conn);
+    }
+
+    #[test]
+    fn visible_agent_response_returns_active_row_for_recover_retry() {
+        let _guard = test_guard();
+        let Some(mut conn) = init_test_db_connection() else {
+            return;
+        };
+        clear_test_database(&mut conn);
+
+        let owner_npub = "npub1recovertestvisible";
+        AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-ready",
+            Some("vm-ready"),
+            AGENT_PHASE_READY,
+        )
+        .expect("insert active row");
+
+        let response = visible_agent_response(
+            &mut conn,
+            owner_npub,
+            "req-visible",
+            AgentApiErrorCode::RecoverFailed,
+        )
+        .expect("visible active row should be returned");
+
+        assert_eq!(response.0.agent_id, "agent-ready");
+        assert_eq!(response.0.vm_id.as_deref(), Some("vm-ready"));
+        assert_eq!(response.0.state, AgentAppState::Ready);
 
         clear_test_database(&mut conn);
     }

@@ -24,6 +24,7 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
         developerMode: false,
         updateRequired: false,
         agentButton: nil,
+        agentProvisioning: nil,
         voiceRecording: nil,
         mediaGallery: nil
     )
@@ -53,6 +54,7 @@ final class AppManagerTests: XCTestCase {
             developerMode: false,
             updateRequired: false,
             agentButton: nil,
+            agentProvisioning: nil,
             voiceRecording: nil,
             mediaGallery: nil
         )

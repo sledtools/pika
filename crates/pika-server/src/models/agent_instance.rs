@@ -15,7 +15,16 @@ fn is_valid_phase(phase: &str) -> bool {
 }
 
 #[derive(
-    Queryable, Selectable, Insertable, AsChangeset, Serialize, Deserialize, Debug, Clone, PartialEq,
+    Queryable,
+    Selectable,
+    Insertable,
+    AsChangeset,
+    QueryableByName,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
 )]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 #[diesel(table_name = agent_instances)]

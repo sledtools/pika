@@ -1796,6 +1796,64 @@ public object FfiConverterTypeAgentMenuItemState: FfiConverterRustBuffer<AgentMe
 
 
 
+data class AgentProvisioningState (
+    var `phase`: AgentProvisioningPhase
+    , 
+    var `agentNpub`: kotlin.String?
+    , 
+    var `statusMessage`: kotlin.String
+    , 
+    var `elapsedSecs`: kotlin.UInt
+    , 
+    var `pollAttempt`: kotlin.UInt?
+    , 
+    var `pollMax`: kotlin.UInt?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAgentProvisioningState: FfiConverterRustBuffer<AgentProvisioningState> {
+    override fun read(buf: ByteBuffer): AgentProvisioningState {
+        return AgentProvisioningState(
+            FfiConverterTypeAgentProvisioningPhase.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AgentProvisioningState) = (
+            FfiConverterTypeAgentProvisioningPhase.allocationSize(value.`phase`) +
+            FfiConverterOptionalString.allocationSize(value.`agentNpub`) +
+            FfiConverterString.allocationSize(value.`statusMessage`) +
+            FfiConverterUInt.allocationSize(value.`elapsedSecs`) +
+            FfiConverterOptionalUInt.allocationSize(value.`pollAttempt`) +
+            FfiConverterOptionalUInt.allocationSize(value.`pollMax`)
+    )
+
+    override fun write(value: AgentProvisioningState, buf: ByteBuffer) {
+            FfiConverterTypeAgentProvisioningPhase.write(value.`phase`, buf)
+            FfiConverterOptionalString.write(value.`agentNpub`, buf)
+            FfiConverterString.write(value.`statusMessage`, buf)
+            FfiConverterUInt.write(value.`elapsedSecs`, buf)
+            FfiConverterOptionalUInt.write(value.`pollAttempt`, buf)
+            FfiConverterOptionalUInt.write(value.`pollMax`, buf)
+    }
+}
+
+
+
 data class AppState (
     var `rev`: kotlin.ULong
     , 
@@ -1826,6 +1884,8 @@ data class AppState (
     var `updateRequired`: kotlin.Boolean
     , 
     var `agentButton`: AgentMenuItemState?
+    , 
+    var `agentProvisioning`: AgentProvisioningState?
     , 
     var `voiceRecording`: VoiceRecordingState?
     , 
@@ -1861,6 +1921,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeAgentMenuItemState.read(buf),
+            FfiConverterOptionalTypeAgentProvisioningState.read(buf),
             FfiConverterOptionalTypeVoiceRecordingState.read(buf),
             FfiConverterOptionalTypeMediaGalleryState.read(buf),
         )
@@ -1882,6 +1943,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.allocationSize(value.`developerMode`) +
             FfiConverterBoolean.allocationSize(value.`updateRequired`) +
             FfiConverterOptionalTypeAgentMenuItemState.allocationSize(value.`agentButton`) +
+            FfiConverterOptionalTypeAgentProvisioningState.allocationSize(value.`agentProvisioning`) +
             FfiConverterOptionalTypeVoiceRecordingState.allocationSize(value.`voiceRecording`) +
             FfiConverterOptionalTypeMediaGalleryState.allocationSize(value.`mediaGallery`)
     )
@@ -1902,6 +1964,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterBoolean.write(value.`developerMode`, buf)
             FfiConverterBoolean.write(value.`updateRequired`, buf)
             FfiConverterOptionalTypeAgentMenuItemState.write(value.`agentButton`, buf)
+            FfiConverterOptionalTypeAgentProvisioningState.write(value.`agentProvisioning`, buf)
             FfiConverterOptionalTypeVoiceRecordingState.write(value.`voiceRecording`, buf)
             FfiConverterOptionalTypeMediaGalleryState.write(value.`mediaGallery`, buf)
     }
@@ -3323,6 +3386,44 @@ public object FfiConverterTypeVoiceRecordingState: FfiConverterRustBuffer<VoiceR
             FfiConverterString.write(value.`transcript`, buf)
     }
 }
+
+
+
+
+enum class AgentProvisioningPhase {
+    
+    ENSURING,
+    PROVISIONING,
+    RECOVERING,
+    PUBLISHING_KEY_PACKAGE,
+    CREATING_CHAT,
+    ERROR;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAgentProvisioningPhase: FfiConverterRustBuffer<AgentProvisioningPhase> {
+    override fun read(buf: ByteBuffer) = try {
+        AgentProvisioningPhase.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: AgentProvisioningPhase) = 4UL
+
+    override fun write(value: AgentProvisioningPhase, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
@@ -5578,6 +5679,9 @@ sealed class Screen {
         companion object
     }
     
+    object AgentProvisioning : Screen()
+    
+    
 
     
 
@@ -5607,6 +5711,7 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             7 -> Screen.ChatMedia(
                 FfiConverterString.read(buf),
                 )
+            8 -> Screen.AgentProvisioning
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -5657,6 +5762,12 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
                 + FfiConverterString.allocationSize(value.`chatId`)
             )
         }
+        is Screen.AgentProvisioning -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: Screen, buf: ByteBuffer) {
@@ -5690,6 +5801,10 @@ public object FfiConverterTypeScreen : FfiConverterRustBuffer<Screen>{
             is Screen.ChatMedia -> {
                 buf.putInt(7)
                 FfiConverterString.write(value.`chatId`, buf)
+                Unit
+            }
+            is Screen.AgentProvisioning -> {
+                buf.putInt(8)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -6211,6 +6326,38 @@ public object FfiConverterOptionalTypeAgentMenuItemState: FfiConverterRustBuffer
         } else {
             buf.put(1)
             FfiConverterTypeAgentMenuItemState.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeAgentProvisioningState: FfiConverterRustBuffer<AgentProvisioningState?> {
+    override fun read(buf: ByteBuffer): AgentProvisioningState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeAgentProvisioningState.read(buf)
+    }
+
+    override fun allocationSize(value: AgentProvisioningState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeAgentProvisioningState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: AgentProvisioningState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeAgentProvisioningState.write(value, buf)
         }
     }
 }

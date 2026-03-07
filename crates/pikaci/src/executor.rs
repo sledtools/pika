@@ -97,10 +97,7 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
             .arg("--accept-flake-config")
             .arg("-o")
             .arg(&runner_link)
-            .arg(format!(
-                "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
-                flake_dir.display()
-            )),
+            .arg(vfkit_runner_installable(&flake_dir)),
         &ctx.host_log_path,
         "[pikaci] build runner",
     )?;
@@ -990,7 +987,7 @@ fn render_guest_flake(
     ))
 }
 
-fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
+pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
     match job.guest_command {
         GuestCommand::ExactCargoTest { package, test_name } => (
             format!(
@@ -1028,6 +1025,13 @@ fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
             true,
         ),
     }
+}
+
+pub(crate) fn vfkit_runner_installable(flake_dir: &Path) -> String {
+    format!(
+        "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
+        flake_dir.display()
+    )
 }
 
 fn ownership_ids(path: &Path) -> anyhow::Result<(u32, u32)> {

@@ -49,6 +49,33 @@ impl RunnerKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanExecutorKind {
+    HostLocal,
+    VfkitLocal,
+    TartLocal,
+}
+
+impl PlanExecutorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HostLocal => "host_local",
+            Self::VfkitLocal => "vfkit_local",
+            Self::TartLocal => "tart_local",
+        }
+    }
+}
+
+impl From<RunnerKind> for PlanExecutorKind {
+    fn from(value: RunnerKind) -> Self {
+        match value {
+            RunnerKind::VfkitLocal => Self::VfkitLocal,
+            RunnerKind::TartLocal => Self::TartLocal,
+        }
+    }
+}
+
 impl JobSpec {
     pub fn runner_kind(&self) -> RunnerKind {
         if self.id.starts_with("tart-") {
@@ -75,6 +102,60 @@ impl JobSpec {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PrepareNode {
+    NixBuild {
+        installable: String,
+        output_name: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecuteNode {
+    VmCommand {
+        command: String,
+        run_as_root: bool,
+        timeout_secs: u64,
+        writable_workspace: bool,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlanNodeRecord {
+    Prepare {
+        id: String,
+        description: String,
+        executor: PlanExecutorKind,
+        #[serde(default)]
+        depends_on: Vec<String>,
+        prepare: PrepareNode,
+    },
+    Execute {
+        id: String,
+        description: String,
+        executor: PlanExecutorKind,
+        #[serde(default)]
+        depends_on: Vec<String>,
+        execute: ExecuteNode,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RunPlanRecord {
+    pub schema_version: u32,
+    pub run_id: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub target_description: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub nodes: Vec<PlanNodeRecord>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
@@ -97,6 +178,8 @@ pub struct JobRecord {
     pub description: String,
     pub status: RunStatus,
     pub executor: String,
+    #[serde(default)]
+    pub plan_node_id: Option<String>,
     pub timeout_secs: u64,
     pub host_log_path: String,
     pub guest_log_path: String,
@@ -122,6 +205,8 @@ pub struct RunRecord {
     pub git_dirty: Option<bool>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub plan_path: Option<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]

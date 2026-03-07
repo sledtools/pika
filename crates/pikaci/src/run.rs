@@ -7,8 +7,13 @@ use anyhow::{Context, anyhow};
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::executor::{HostContext, run_job_on_runner};
-use crate::model::{JobRecord, JobSpec, RunRecord, RunStatus};
+use crate::executor::{
+    HostContext, compiled_guest_command, run_job_on_runner, vfkit_runner_installable,
+};
+use crate::model::{
+    ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PrepareNode, RunPlanRecord,
+    RunRecord, RunStatus, RunnerKind,
+};
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +110,8 @@ fn run_jobs_against_snapshot(
     snapshot: &SnapshotSource,
     metadata: RunMetadata,
 ) -> anyhow::Result<RunRecord> {
+    let plan = build_run_plan(jobs, prepared, &metadata);
+    let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let mut run_record = RunRecord {
         run_id: prepared.run_id.clone(),
         status: RunStatus::Running,
@@ -117,6 +124,7 @@ fn run_jobs_against_snapshot(
         git_dirty: snapshot.git_dirty,
         created_at: prepared.created_at.clone(),
         finished_at: None,
+        plan_path: Some(plan_path.display().to_string()),
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -125,9 +133,10 @@ fn run_jobs_against_snapshot(
     write_run_record(&prepared.run_dir, &run_record)?;
 
     let mut run_failed = false;
-    for job in jobs {
+    for planned_job in &plan.jobs {
         let job_record = run_one_job(
-            job,
+            &planned_job.job,
+            &planned_job.execute_node_id,
             &snapshot.snapshot_dir,
             &prepared.jobs_dir,
             &prepared.shared_cargo_home_dir,
@@ -178,6 +187,7 @@ pub fn record_skipped_run(
         git_dirty: git_dirty(&options.source_root),
         created_at: created_at.clone(),
         finished_at: Some(created_at),
+        plan_path: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -189,6 +199,7 @@ pub fn record_skipped_run(
 
 fn run_one_job(
     job: &JobSpec,
+    plan_node_id: &str,
     snapshot_dir: &Path,
     jobs_dir: &Path,
     shared_cargo_home_dir: &Path,
@@ -205,6 +216,7 @@ fn run_one_job(
         description: job.description.to_string(),
         status: RunStatus::Running,
         executor: job.runner_kind().as_str().to_string(),
+        plan_node_id: Some(plan_node_id.to_string()),
         timeout_secs: job.timeout_secs,
         host_log_path: host_log_path.display().to_string(),
         guest_log_path: guest_log_path.display().to_string(),
@@ -365,6 +377,12 @@ fn write_run_record(run_dir: &Path, record: &RunRecord) -> anyhow::Result<()> {
     write_json(run_dir.join("run.json"), record)
 }
 
+fn write_run_plan_record(run_dir: &Path, record: &RunPlanRecord) -> anyhow::Result<PathBuf> {
+    let path = run_dir.join("plan.json");
+    write_json(path.clone(), record)?;
+    Ok(path)
+}
+
 fn write_job_record(job_dir: &Path, record: &JobRecord) -> anyhow::Result<()> {
     write_json(job_dir.join("status.json"), record)
 }
@@ -382,6 +400,16 @@ fn new_run_id() -> String {
     )
 }
 
+struct PlannedJob {
+    job: JobSpec,
+    execute_node_id: String,
+}
+
+struct RunPlan {
+    record: RunPlanRecord,
+    jobs: Vec<PlannedJob>,
+}
+
 struct PreparedRun {
     run_id: String,
     created_at: String,
@@ -397,6 +425,62 @@ struct SnapshotSource {
     snapshot_dir_string: String,
     git_head: Option<String>,
     git_dirty: Option<bool>,
+}
+
+fn build_run_plan(jobs: &[JobSpec], prepared: &PreparedRun, metadata: &RunMetadata) -> RunPlan {
+    let mut nodes = Vec::new();
+    let mut planned_jobs = Vec::new();
+
+    for job in jobs {
+        let mut depends_on = Vec::new();
+        if job.runner_kind() == RunnerKind::VfkitLocal {
+            let prepare_node_id = format!("prepare-{}-runner", job.id);
+            let flake_dir = prepared.jobs_dir.join(job.id).join("vm").join("flake");
+            nodes.push(PlanNodeRecord::Prepare {
+                id: prepare_node_id.clone(),
+                description: format!("Build vfkit runner for `{}`", job.id),
+                executor: PlanExecutorKind::HostLocal,
+                depends_on: Vec::new(),
+                prepare: PrepareNode::NixBuild {
+                    installable: vfkit_runner_installable(&flake_dir),
+                    output_name: "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                        .to_string(),
+                },
+            });
+            depends_on.push(prepare_node_id);
+        }
+
+        let execute_node_id = format!("execute-{}", job.id);
+        let (command, run_as_root) = compiled_guest_command(job);
+        nodes.push(PlanNodeRecord::Execute {
+            id: execute_node_id.clone(),
+            description: job.description.to_string(),
+            executor: job.runner_kind().into(),
+            depends_on,
+            execute: ExecuteNode::VmCommand {
+                command,
+                run_as_root,
+                timeout_secs: job.timeout_secs,
+                writable_workspace: job.writable_workspace,
+            },
+        });
+        planned_jobs.push(PlannedJob {
+            job: job.clone(),
+            execute_node_id,
+        });
+    }
+
+    RunPlan {
+        record: RunPlanRecord {
+            schema_version: 1,
+            run_id: prepared.run_id.clone(),
+            target_id: metadata.target_id.clone(),
+            target_description: metadata.target_description.clone(),
+            created_at: prepared.created_at.clone(),
+            nodes,
+        },
+        jobs: planned_jobs,
+    }
 }
 
 fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
@@ -484,7 +568,11 @@ fn run_host_setup_commands(
 mod tests {
     use std::fs;
 
-    use super::gc_runs;
+    use super::{PreparedRun, RunMetadata, build_run_plan, gc_runs, write_run_plan_record};
+    use crate::model::{
+        ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PrepareNode,
+        RunPlanRecord,
+    };
 
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
@@ -513,5 +601,145 @@ mod tests {
         assert!(!runs_root.join("20260307T000001Z-aaaa0001").exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_plan_records_prepare_and_execute_nodes_for_vfkit_jobs() {
+        let root = std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
+        let prepared = sample_prepared_run(&root);
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            target_description: Some("Run pika rust lane".to_string()),
+            ..RunMetadata::default()
+        };
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-tests",
+            description: "Run pika_core lib and test targets in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --tests -- --nocapture",
+            },
+        }];
+
+        let plan = build_run_plan(&jobs, &prepared, &metadata);
+
+        assert_eq!(plan.record.schema_version, 1);
+        assert_eq!(plan.record.nodes.len(), 2);
+        match &plan.record.nodes[0] {
+            PlanNodeRecord::Prepare {
+                id,
+                executor,
+                prepare,
+                ..
+            } => {
+                assert_eq!(id, "prepare-pika-core-lib-tests-runner");
+                assert_eq!(*executor, PlanExecutorKind::HostLocal);
+                match prepare {
+                    PrepareNode::NixBuild {
+                        installable,
+                        output_name,
+                    } => {
+                        assert!(installable.contains(
+                            "jobs/pika-core-lib-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                        ));
+                        assert_eq!(
+                            output_name,
+                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                        );
+                    }
+                }
+            }
+            other => panic!("expected prepare node, got {other:?}"),
+        }
+
+        match &plan.record.nodes[1] {
+            PlanNodeRecord::Execute {
+                id,
+                executor,
+                depends_on,
+                execute,
+                ..
+            } => {
+                assert_eq!(id, "execute-pika-core-lib-tests");
+                assert_eq!(*executor, PlanExecutorKind::VfkitLocal);
+                assert_eq!(
+                    depends_on,
+                    &vec!["prepare-pika-core-lib-tests-runner".to_string()]
+                );
+                match execute {
+                    ExecuteNode::VmCommand {
+                        command,
+                        run_as_root,
+                        timeout_secs,
+                        writable_workspace,
+                    } => {
+                        assert_eq!(
+                            command,
+                            "bash --noprofile --norc -lc 'cargo test -p pika_core --lib --tests -- --nocapture'"
+                        );
+                        assert!(!run_as_root);
+                        assert_eq!(*timeout_secs, 1800);
+                        assert!(!writable_workspace);
+                    }
+                }
+            }
+            other => panic!("expected execute node, got {other:?}"),
+        }
+
+        assert_eq!(plan.jobs.len(), 1);
+        assert_eq!(plan.jobs[0].execute_node_id, "execute-pika-core-lib-tests");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_run_plan_record_persists_machine_readable_plan() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-plan-write-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create root");
+        let plan = RunPlanRecord {
+            schema_version: 1,
+            run_id: "run-1".to_string(),
+            target_id: Some("beachhead".to_string()),
+            target_description: Some("Run one tiny exact unit test".to_string()),
+            created_at: "2026-03-07T00:00:00Z".to_string(),
+            nodes: vec![PlanNodeRecord::Execute {
+                id: "execute-beachhead".to_string(),
+                description: "Run one tiny exact unit test in a vfkit guest".to_string(),
+                executor: PlanExecutorKind::VfkitLocal,
+                depends_on: Vec::new(),
+                execute: ExecuteNode::VmCommand {
+                    command: "cargo test -p pika-agent-control-plane tests::command_envelope_round_trips -- --exact --nocapture".to_string(),
+                    run_as_root: false,
+                    timeout_secs: 1800,
+                    writable_workspace: false,
+                },
+            }],
+        };
+
+        let path = write_run_plan_record(&root, &plan).expect("write plan");
+        let bytes = fs::read(&path).expect("read plan");
+        let decoded: RunPlanRecord = serde_json::from_slice(&bytes).expect("decode plan");
+
+        assert_eq!(decoded.run_id, "run-1");
+        assert_eq!(decoded.nodes.len(), 1);
+        assert!(path.ends_with("plan.json"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn sample_prepared_run(root: &std::path::Path) -> PreparedRun {
+        let run_dir = root.join("runs").join("run-1");
+        let jobs_dir = run_dir.join("jobs");
+        fs::create_dir_all(&jobs_dir).expect("create jobs dir");
+        PreparedRun {
+            run_id: "run-1".to_string(),
+            created_at: "2026-03-07T00:00:00Z".to_string(),
+            run_dir,
+            jobs_dir,
+            shared_cargo_home_dir: root.join("cache").join("cargo-home"),
+            run_target_dir: root.join("runs").join("run-1").join("cargo-target"),
+        }
     }
 }

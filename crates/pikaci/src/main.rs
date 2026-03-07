@@ -128,6 +128,9 @@ fn main() -> anyhow::Result<()> {
                 run.target_id.as_deref().unwrap_or("-"),
                 status_text(run.status)
             );
+            if let Some(plan_path) = &run.plan_path {
+                println!("plan={plan_path}");
+            }
             if let Some(message) = &run.message {
                 println!("{message}");
             }
@@ -1190,6 +1193,7 @@ mod tests {
             git_dirty: Some(true),
             created_at: "2026-03-07T00:00:00Z".to_string(),
             finished_at: Some("2026-03-07T00:00:01Z".to_string()),
+            plan_path: None,
             changed_files: vec![],
             filters: vec![],
             message: None,
@@ -1203,6 +1207,7 @@ mod tests {
             description: "job".to_string(),
             status: RunStatus::Passed,
             executor: "vfkit_local".to_string(),
+            plan_node_id: None,
             timeout_secs: 1,
             host_log_path: "/tmp/host.log".to_string(),
             guest_log_path: "/tmp/guest.log".to_string(),

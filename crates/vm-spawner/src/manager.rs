@@ -754,7 +754,7 @@ impl VmManager {
 
             let id = entry.file_name().to_string_lossy().into_owned();
             if let Some(staging_vm_id) = parse_staging_vm_id(&id) {
-                self.cleanup_stale_staging_vm_state(staging_vm_id, &entry.path())?;
+                let _ = staging_vm_id;
                 continue;
             }
             let slot = self
@@ -766,6 +766,26 @@ impl VmManager {
     }
 
     fn audit_state_dir(&self) -> anyhow::Result<()> {
+        for entry in fs::read_dir(&self.cfg.state_dir)
+            .with_context(|| format!("read state dir {}", self.cfg.state_dir.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("read entry in state dir {}", self.cfg.state_dir.display())
+            })?;
+            if !entry
+                .file_type()
+                .with_context(|| format!("read file type for {}", entry.path().display()))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if let Some(staging_vm_id) = parse_staging_vm_id(&id) {
+                self.cleanup_stale_staging_vm_state(staging_vm_id, &entry.path())?;
+            }
+        }
+
         let _ = self.occupied_slots_from_disk()?;
         Ok(())
     }
@@ -2091,6 +2111,22 @@ mod tests {
         let _ = manager;
 
         assert!(!staging_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn allocator_ignores_live_staging_dirs_without_deleting_them() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let staging_dir = cfg.state_dir.join(".creating__vm-00000000__live-create");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let allocated = manager
+            .allocate_vm_identity_locked(&HashSet::from([0]))
+            .unwrap();
+
+        assert_eq!(allocated.id, "vm-00000001");
+        assert!(staging_dir.exists());
     }
 
     #[tokio::test]

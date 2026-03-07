@@ -1,0 +1,365 @@
+## Status
+
+This is the guiding architecture plan for the `pika_core` extraction.
+
+It is intentionally not a rigid migration script. The target architecture should stay steady, but
+the implementation should land across a series of narrow PRs that each prove one concrete slice.
+The goal is to grow the new system organically, not to stop the world and land a speculative final
+engine API all at once.
+
+The app-side code is the reference implementation unless the daemon has a clearly better or
+host-specific behavior.
+
+## Current Landscape
+
+Current high-risk files:
+- app runtime god file: `rust/src/core/mod.rs` (~8.5k LOC)
+- app runtime overall: `rust/src/core/` (~20k LOC)
+- daemon god file: `crates/pikachat-sidecar/src/daemon.rs` (~5.1k LOC)
+
+Current unit-test concentration:
+- `rust/src/core/`: 259 tests
+- `crates/pikachat-sidecar/src/`: 35 tests
+- `cli/src/`: 13 tests
+- `crates/pika-marmot-runtime/src/`: 10 tests
+
+Interpretation:
+- there is a lot of test volume already
+- coverage is concentrated in god files and host-specific code
+- this is not yet the same thing as good architectural coverage
+- each extraction PR should improve code sharing and improve our understanding of coverage
+
+Relevant existing coverage map:
+- `docs/testing/integration-matrix.md`
+
+## Non-Negotiables
+
+1. Do not start with crate/package renames.
+Keep naming churn out of the early extraction PRs. End-state names can come later.
+
+2. Do not combine early `pika_core` extraction work with ACP/Pi migration.
+The shared-engine refactor should prove itself first.
+
+3. Do not push app projection state into core.
+`AppAction`, `AppState`, routing, busy flags, toasts, optimistic UI, paging windows, and other
+app-host concerns stay in the app host.
+
+4. Do not make wire protocol enums become engine domain events.
+Wire contracts and engine events are different layers and should stay different.
+
+5. Do not route high-rate media through the normal event channel.
+Video/audio payloads should use dedicated sinks/callbacks.
+
+6. `AppCore` is allowed to survive as an orchestration shell for a while.
+The early goal is not “delete AppCore.” The early goal is “make AppCore stop owning Marmot
+business logic directly.”
+
+## End-State Direction
+
+This is the desired end state, not the day-one starting point:
+
+- shared engine: `pika_core`
+- UI host: `pika_app`
+- daemon host: `pikad`
+
+What `pika_core` should eventually own:
+- session/bootstrap services
+- storage policy abstraction
+- relay lifecycle helpers
+- key-package publish/fetch/normalize/validate
+- welcome ingest/accept and group lifecycle
+- message ingest/classification
+- media encrypt/upload/download/decrypt helpers
+- call signal protocol and call crypto derivation
+- typed command/query/event interfaces
+
+What the app host should eventually own:
+- `AppAction`
+- `AppState`
+- `AppUpdate`
+- UniFFI/RpcApp surface
+- routing and navigation state
+- busy flags and toasts
+- optimistic UI and local projection state
+- host-specific media/call sinks
+
+What the daemon host should eventually own:
+- ACP/native protocol/socket hosting
+- request correlation
+- protocol-specific event mapping
+
+## Migration Rule Of Thumb
+
+The order of operations should be:
+
+1. share code
+2. share workflows
+3. share state authority
+4. formalize the engine boundary
+5. split hosts cleanly
+6. rename topology later
+
+This is safer than starting with architecture theater.
+
+## Target Interface Model
+
+The eventual engine boundary should be:
+
+- commands down
+- events up
+- queries sideways
+- media sinks separate
+
+But this should be treated as an end-state model, not something we force into PR 1.
+
+The end-state contract should look roughly like:
+
+```rust
+pub struct EngineHandle { ... }
+
+pub enum EngineCommand { ... }
+pub enum EngineQuery { ... }
+pub enum EngineEvent { ... }
+
+pub struct OperationId(pub uuid::Uuid);
+
+pub trait VideoFrameSink: Send + Sync {
+    fn on_video_frame(&self, call_id: String, payload: Vec<u8>);
+}
+```
+
+Important nuance:
+- early PRs can share plain Rust modules/services without introducing the full `EngineHandle`
+  machinery yet
+- once 2-3 real shared subsystems exist, the engine boundary can be formalized from reality rather
+  than guessed up front
+
+## Phase 0: Coverage Baseline
+
+Before or alongside the first extraction PRs, establish a lightweight coverage audit process.
+
+What we care about first:
+- what subsystem is currently covered
+- whether the coverage is at the right layer
+- what important behavior is untested
+- whether extraction preserves or improves confidence
+
+What we do not need first:
+- perfect global coverage percentages
+- a huge separate coverage initiative before writing code
+
+Per-PR coverage audit requirement:
+1. Identify the subsystem being extracted.
+2. List existing tests that cover it today.
+3. Call out obvious gaps or slop.
+4. Add or move tests so the extracted module has direct coverage.
+5. Add parity/contract coverage if the subsystem is shared by app and daemon.
+
+Desired test layers per extraction PR:
+- module-level tests for the extracted shared code
+- host-level parity tests where app and daemon both consume it
+- relay/integration selector coverage only when the behavior truly crosses that boundary
+
+Notes:
+- use `docs/testing/integration-matrix.md` as the integration coverage ownership map
+- do not blindly optimize for test count
+- prefer characterization tests before changing behavior in areas where app and daemon drift
+
+## Phase 1: Shared Pure / Domain Helpers
+
+Goal:
+extract the highest-value low-risk shared code first, without forcing the full engine abstraction.
+
+Candidate PR 1: shared call crypto / call auth / call wire helpers
+- extract:
+  - relay auth token derivation/validation
+  - shared seed derivation
+  - media crypto derivation
+  - call signal parse/build helpers
+- reason:
+  - high duplication
+  - high drift risk
+  - low architectural risk
+- acceptance:
+  - app and daemon both consume the same implementation
+  - no behavior change
+  - parity tests prove equivalent behavior
+
+Candidate PR 2: shared key-package interop / normalization
+- extract:
+  - peer key-package normalization
+  - validation helpers
+- reason:
+  - app already has the better implementation
+  - daemon/CLI should converge on it
+- acceptance:
+  - one authoritative implementation
+  - interop edge cases are directly tested
+
+Candidate PR 3: shared relay publish helpers
+- extract:
+  - publish-with-retry
+  - gift-wrap publish helpers
+  - similar reusable relay-side mechanics
+- reason:
+  - mostly mechanical extraction
+  - reduces surface area in both god files
+- acceptance:
+  - app and daemon call one implementation
+  - host-specific wrappers stay thin
+
+Candidate PR 4: shared message classification helpers
+- extract:
+  - message-kind classification
+  - typing/call/hypernote/reaction helpers where appropriate
+- reason:
+  - needed before workflow-level convergence
+- acceptance:
+  - classification logic is no longer duplicated or drifting
+
+Phase 1 rule:
+do not try to make the app “engine-driven” yet. Let `AppCore` remain the controller while shared
+modules are carved out.
+
+## Phase 2: Shared Workflow Services
+
+Goal:
+move real Marmot business logic out of hosts once the helper extraction pattern is proven.
+
+Candidate PR 5: welcome/group lifecycle investigation and convergence
+- investigate:
+  - app vs daemon behavior on welcome accept
+  - backlog ingest differences
+  - create/join/merge behavior differences
+- possible outcomes:
+  - app behavior wins
+  - daemon behavior wins
+  - shared service with host policy hooks
+- acceptance:
+  - one documented behavior
+  - one shared implementation where possible
+
+Candidate PR 6: shared welcome/group workflow service
+- extract:
+  - publish welcomes
+  - accept welcome
+  - create group
+  - join/merge lifecycle
+- acceptance:
+  - app uses shared service first
+  - daemon follows onto the same service
+
+Candidate PR 7: shared media helpers / workflow primitives
+- extract:
+  - encrypt/upload primitives
+  - download/decrypt primitives
+  - attachment parsing helpers
+- non-goal:
+  - app-specific optimistic outbox or projection state
+- acceptance:
+  - shared media mechanics
+  - host-specific orchestration remains local when needed
+
+Phase 2 rule:
+when app and daemon differ, stop and decide the correct behavior before extracting. Do not hide
+behavioral disagreement inside “shared” code.
+
+## Phase 3: Shared Session-Facing Services
+
+Goal:
+only after several concrete subsystems are shared, begin converging session/state authority.
+
+Likely work:
+- relay/session lifecycle helpers
+- durable state/query helpers
+- storage policy boundaries
+- more explicit ownership of authoritative session state
+
+Important caution:
+this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction
+the first extraction slice.
+
+## Phase 4: Formalize The Engine Boundary
+
+Goal:
+once enough real shared services exist, define the explicit command/query/event boundary from
+concrete needs rather than speculation.
+
+What should happen here:
+- introduce `EngineEvent` families based on already-extracted domains
+- introduce command/query surfaces based on already-shared workflows
+- let the app host and daemon host consume those types more formally
+
+Recommended event families:
+- `Session`
+- `Conversation`
+- `Operation`
+- `Call`
+- `Media`
+
+Operation event rule:
+long-running work should carry an operation ID so app-host pending state and daemon-host request
+correlation both remain clean.
+
+## Phase 5: Thin Hosts
+
+Goal:
+after the engine boundary is real, make hosts thinner instead of trying to design them thin first.
+
+App host target:
+- `AppCore` or successor becomes primarily a reducer/projection/orchestration shell
+- app keeps owning its UI-specific state and emissions
+
+Daemon host target:
+- daemon becomes a protocol adapter over shared services
+- duplicate Marmot business logic is removed subsystem by subsystem
+
+Only later:
+- formalize `pikad`
+- formalize `pika_app`
+- split or rename crates/packages once the boundaries are stable
+
+## Phase 6: Later Follow-On Work
+
+These should be later work, not early blocking work:
+- native protocol crate cleanup for TS/OpenClaw alignment
+- ACP frontend cleanup
+- Pi cleanup and bridge deletion
+- app-side agent registry work
+- crate/package renames
+
+## Review / PR Discipline
+
+Each PR should answer:
+1. What subsystem is being extracted?
+2. Is this a pure extraction, a behavior convergence, or both?
+3. What existing behavior is the reference?
+4. What tests covered this before?
+5. What tests cover it now?
+6. What is still intentionally deferred?
+
+Strong preference:
+- one subsystem per PR
+- app consumes the extracted code first when practical
+- daemon follows onto it after the pattern is proven
+- keep PRs independently reviewable and revertable
+
+## Success Criteria
+
+We are succeeding if:
+- `AppCore` and `daemon.rs` get smaller for real reasons, not cosmetic movement
+- shared Marmot behavior is implemented once
+- drift between app and daemon stops increasing
+- each extracted subsystem gets clearer, more direct tests
+- by the time we formalize the engine boundary, it is describing reality rather than wishful
+  thinking
+
+## Non-Goals
+
+1. Do not force the final engine abstraction into PR 1.
+2. Do not create `pika_app` and `pikad` crates early just for architecture aesthetics.
+3. Do not start with session/bootstrap/storage abstraction.
+4. Do not begin with crate renames.
+5. Do not combine early `pika_core` extraction work with ACP/Pi migration.
+6. Do not delete `AppCore` early.
+7. Do not treat raw test count as the same thing as useful confidence.

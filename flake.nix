@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
     moq = {
       url = "github:kixelated/moq";
@@ -30,7 +31,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, microvm }:
+  outputs = { self, nixpkgs, crane, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, microvm }:
     let
       mkRelay = hostFile: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
@@ -44,9 +45,26 @@
 
       serverPkgs = import nixpkgs { system = "x86_64-linux"; };
       armPkgs = import nixpkgs { system = "aarch64-linux"; };
+      ciArmPkgs = import nixpkgs {
+        system = "aarch64-linux";
+        overlays = [ (import rust-overlay) ];
+        config.allowUnfree = true;
+      };
       rustWorkspaceSrc = serverPkgs.lib.fileset.toSource {
         root = ./.;
         fileset = serverPkgs.lib.fileset.unions [
+          ./Cargo.toml
+          ./Cargo.lock
+          ./config
+          ./crates
+          ./rust
+          ./cli
+          ./uniffi-bindgen
+        ];
+      };
+      ciRustWorkspaceSrc = ciArmPkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = ciArmPkgs.lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
           ./config
@@ -629,6 +647,25 @@ EOF
       lib = {
         pikaci = {
           mkGuestModule = import ./nix/pikaci/guest-module.nix;
+        };
+      };
+
+      # Phase 2a staged Linux Rust build outputs.
+      # These are intentionally scoped to the deterministic Linux Rust lane family
+      # we expect phase 2b to migrate first (`pre-merge-pika-rust` / `pika_core`
+      # lib+test compilation). They are not wired into `pikaci` yet.
+      ci.aarch64-linux = import ./nix/ci/linux-rust.nix {
+        pkgs = ciArmPkgs;
+        crane = crane;
+        src = ciRustWorkspaceSrc;
+        cargoLock = ./Cargo.lock;
+        outputHashes = {
+          "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
+            "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+          "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
+            "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+          "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
+            "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
         };
       };
 

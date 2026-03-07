@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PROFILE="${PIKA_RUST_PROFILE:-debug}"
+ABI="${PIKA_ANDROID_ABI:-arm64-v8a}"
+TEST_CLASS="${PIKA_ANDROID_TEST_CLASS:-com.pika.app.NostrConnectIntentTest}"
+TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"
+
+if [ -z "${ANDROID_HOME:-}" ] || [ -z "${JAVA_HOME:-}" ]; then
+  echo "error: ANDROID_HOME and JAVA_HOME must be set" >&2
+  exit 2
+fi
+
+for tool in adb emulator avdmanager cargo gradle; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: missing required tool on PATH: $tool" >&2
+    exit 2
+  fi
+done
+
+build_profile_flag=()
+profile_dir="debug"
+case "$PROFILE" in
+  debug) ;;
+  release)
+    build_profile_flag+=(--release)
+    profile_dir="release"
+    ;;
+  *)
+    echo "error: unsupported PIKA_RUST_PROFILE=$PROFILE" >&2
+    exit 2
+    ;;
+esac
+
+host_lib_core="$CARGO_TARGET_DIR/$profile_dir/libpika_core.so"
+host_lib_share="$CARGO_TARGET_DIR/$profile_dir/libpika_share.so"
+
+cargo build -p pika_core -p pika-share "${build_profile_flag[@]}"
+
+if [ ! -f "$host_lib_core" ] || [ ! -f "$host_lib_share" ]; then
+  echo "error: expected host UniFFI libraries missing under $CARGO_TARGET_DIR/$profile_dir" >&2
+  exit 1
+fi
+
+mkdir -p android/app/src/main/java/com/pika/app/rust
+cargo run -q -p uniffi-bindgen -- generate \
+  --library "$host_lib_core" \
+  --language kotlin \
+  --out-dir android/app/src/main/java \
+  --no-format \
+  --config rust/uniffi.toml
+cargo run -q -p uniffi-bindgen -- generate \
+  --library "$host_lib_share" \
+  --language kotlin \
+  --out-dir android/app/src/main/java \
+  --no-format \
+  --config crates/pika-share/uniffi.toml
+
+ndk_help="$(cargo ndk --help 2>&1 || true)"
+if ! echo "$ndk_help" | grep -q -- '--platform'; then
+  echo "error: could not determine cargo-ndk platform flag from --help output" >&2
+  exit 2
+fi
+ndk_platform_flag="-p"
+if echo "$ndk_help" | grep -q -- '-P, --platform'; then
+  ndk_platform_flag="-P"
+fi
+
+rm -rf android/app/src/main/jniLibs
+mkdir -p android/app/src/main/jniLibs
+cargo ndk -o android/app/src/main/jniLibs "$ndk_platform_flag" 26 -t "$ABI" \
+  build -p pika_core -p pika-share "${build_profile_flag[@]}"
+
+printf "sdk.dir=%s\n" "$ANDROID_HOME" > android/local.properties
+
+export PIKA_ANDROID_FORCE_GUI="${PIKA_ANDROID_FORCE_GUI:-0}"
+export PIKA_ANDROID_EMULATOR_ARGS="${PIKA_ANDROID_EMULATOR_ARGS:--no-window -no-boot-anim -accel off}"
+
+./tools/android-avd-ensure >/dev/null
+./tools/android-emulator-ensure
+SERIAL="$(./tools/android-pick-serial)"
+
+TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"
+PIKA_ANDROID_APP_ID="$TEST_APP_ID" PIKA_ANDROID_SERIAL="$SERIAL" ./tools/android-ensure-debug-installable
+
+cd android
+ANDROID_SERIAL="$SERIAL" ./gradlew \
+  :app:connectedDebugAndroidTest \
+  -PPIKA_ANDROID_APPLICATION_ID_SUFFIX="$TEST_SUFFIX" \
+  -Pandroid.testInstrumentationRunnerArguments.class="$TEST_CLASS"

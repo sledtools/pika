@@ -271,7 +271,6 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 ".github/workflows/pre-merge.yml",
                 "crates/pikaci/**",
                 "rust/**",
-                "crates/pika-desktop/**",
                 "crates/pika-media/**",
                 "crates/pika-marmot-runtime/**",
                 "crates/pika-relay-profiles/**",
@@ -508,26 +507,15 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
 }
 
 fn pika_rust_jobs() -> Vec<JobSpec> {
-    vec![
-        JobSpec {
-            id: "pika-core-lib-tests",
-            description: "Run pika_core lib and test targets in a vfkit guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "cargo test -p pika_core --lib --tests -- --nocapture",
-            },
+    vec![JobSpec {
+        id: "pika-core-lib-tests",
+        description: "Run pika_core lib and test targets in a vfkit guest",
+        timeout_secs: 1800,
+        writable_workspace: false,
+        guest_command: GuestCommand::ShellCommand {
+            command: "cargo test -p pika_core --lib --tests -- --nocapture",
         },
-        JobSpec {
-            id: "pika-desktop-package-tests",
-            description: "Run pika-desktop package tests in a vfkit guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::PackageTests {
-                package: "pika-desktop",
-            },
-        },
-    ]
+    }]
 }
 
 fn notification_jobs() -> Vec<JobSpec> {

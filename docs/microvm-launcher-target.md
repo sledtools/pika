@@ -43,6 +43,7 @@ Only deterministic in-pool production IDs are supported:
 - `vm-XXXXXXXX` where the hex slot resolves inside the configured IP pool
 - `recover` and `delete` derive tap, IP, MAC, gcroots, and state paths from `vm_id` only
 - out-of-pool IDs, non-production IDs, and legacy state formats are unsupported
+- `vm-spawner` refuses to start or allocate when incompatible state dirs are present; host cleanup is an enforced pre-deploy gate, not a best-effort guideline
 
 ## Operations
 
@@ -55,6 +56,7 @@ Operational guidance:
 - backup/restore this durable home path as the primary asset
 - treat tap/gcroot wiring and network identity as reconstructible launcher state derived from `vm_id`
 - treat guest autostart payload under `metadata/` as required boot input for recreate; `recover` does not rebuild it from `vm_id` alone
+- treat malformed current-format metadata as a deployment blocker to fix, not state the launcher will heal implicitly
 
 ## Workstream scope
 

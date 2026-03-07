@@ -61,6 +61,12 @@ struct VmCleanupState {
     microvm_state_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CurrentVmMetadata {
+    cpu: u32,
+    memory_mb: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct VmNotFound {
     pub(crate) id: String,
@@ -100,6 +106,7 @@ impl VmManager {
                 runner_cache: HashMap::new(),
             })),
         };
+        manager.audit_state_dir()?;
 
         Ok(manager)
     }
@@ -592,20 +599,7 @@ impl VmManager {
         let ip = self
             .production_ip_for_vm_id(id)
             .ok_or_else(|| anyhow!("unsupported vm id: {id}"))?;
-        let cpu = read_env_assignment(
-            &paths.microvm_state_dir.join("metadata/runtime.env"),
-            "PIKA_VM_CPU",
-        )?
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(self.cfg.default_cpu)
-        .clamp(1, self.cfg.max_cpu);
-        let memory_mb = read_env_assignment(
-            &paths.microvm_state_dir.join("metadata/runtime.env"),
-            "PIKA_VM_MEMORY_MB",
-        )?
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(self.cfg.default_memory_mb)
-        .clamp(512, self.cfg.max_memory_mb);
+        let metadata = self.load_current_vm_metadata(id, &paths)?;
 
         Ok(VmDiskState {
             id: id.to_string(),
@@ -614,8 +608,8 @@ impl VmManager {
                 .production_mac_for_vm_id(id)
                 .unwrap_or_else(|| mac_for_guest_ip(ip)),
             ip,
-            cpu,
-            memory_mb,
+            cpu: metadata.cpu,
+            memory_mb: metadata.memory_mb,
             microvm_state_dir: paths.microvm_state_dir,
         })
     }
@@ -628,6 +622,7 @@ impl VmManager {
         if self.production_ip_for_vm_id(id).is_none() {
             anyhow::bail!("unsupported vm id: {id}");
         }
+        self.load_current_vm_metadata(id, &paths)?;
 
         Ok(VmCleanupState {
             tap_name: id.to_string(),
@@ -720,15 +715,54 @@ impl VmManager {
             }
 
             let id = entry.file_name().to_string_lossy().into_owned();
-            if let Some(slot) = self.occupied_slot_for_id(&id) {
-                occupied_slots.insert(slot);
-            }
+            let slot = self
+                .validate_state_dir_entry(&id)
+                .with_context(|| format!("validate existing vm state dir {id}"))?;
+            occupied_slots.insert(slot);
         }
         Ok(occupied_slots)
     }
 
-    fn occupied_slot_for_id(&self, id: &str) -> Option<u32> {
-        self.production_slot_for_vm_id(id)
+    fn audit_state_dir(&self) -> anyhow::Result<()> {
+        let _ = self.occupied_slots_from_disk()?;
+        Ok(())
+    }
+
+    fn validate_state_dir_entry(&self, id: &str) -> anyhow::Result<u32> {
+        let slot = self.production_slot_for_vm_id(id).ok_or_else(|| {
+            anyhow!(
+                "unsupported vm state dir `{id}` present in {}; clean up incompatible state before starting vm-spawner",
+                self.cfg.state_dir.display()
+            )
+        })?;
+        let paths = self.vm_paths(id);
+        self.load_current_vm_metadata(id, &paths)?;
+        Ok(slot)
+    }
+
+    fn load_current_vm_metadata(
+        &self,
+        id: &str,
+        paths: &VmPaths,
+    ) -> anyhow::Result<CurrentVmMetadata> {
+        let runtime_env = paths.microvm_state_dir.join("metadata/runtime.env");
+        let guest_env = paths.microvm_state_dir.join("metadata/env");
+        let expected_ip = self
+            .production_ip_for_vm_id(id)
+            .ok_or_else(|| anyhow!("unsupported vm id: {id}"))?;
+        let expected_mac = self
+            .production_mac_for_vm_id(id)
+            .unwrap_or_else(|| mac_for_guest_ip(expected_ip));
+
+        require_env_assignment(&runtime_env, "MICROVM_TAP", id)?;
+        require_env_assignment(&runtime_env, "MICROVM_MAC", &expected_mac)?;
+        require_ipv4_env_assignment(&guest_env, "PIKA_VM_IP", expected_ip)?;
+        let cpu =
+            require_u32_env_assignment(&runtime_env, "PIKA_VM_CPU")?.clamp(1, self.cfg.max_cpu);
+        let memory_mb = require_u32_env_assignment(&runtime_env, "PIKA_VM_MEMORY_MB")?
+            .clamp(512, self.cfg.max_memory_mb);
+
+        Ok(CurrentVmMetadata { cpu, memory_mb })
     }
 
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
@@ -824,6 +858,59 @@ fn read_env_assignment(path: &Path, key: &str) -> anyhow::Result<Option<String>>
         }
     }
     Ok(None)
+}
+
+fn require_env_assignment(path: &Path, key: &str, expected: &str) -> anyhow::Result<()> {
+    let value = read_env_assignment(path, key)?.ok_or_else(|| {
+        anyhow!(
+            "current-format metadata missing {key} in {}",
+            path.display()
+        )
+    })?;
+    if value == expected {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "current-format metadata mismatch for {key} in {}: expected `{expected}`, found `{value}`",
+        path.display()
+    ))
+}
+
+fn require_u32_env_assignment(path: &Path, key: &str) -> anyhow::Result<u32> {
+    let value = read_env_assignment(path, key)?.ok_or_else(|| {
+        anyhow!(
+            "current-format metadata missing {key} in {}",
+            path.display()
+        )
+    })?;
+    value.parse::<u32>().with_context(|| {
+        format!(
+            "parse current-format metadata {key} as u32 in {}",
+            path.display()
+        )
+    })
+}
+
+fn require_ipv4_env_assignment(path: &Path, key: &str, expected: Ipv4Addr) -> anyhow::Result<()> {
+    let value = read_env_assignment(path, key)?.ok_or_else(|| {
+        anyhow!(
+            "current-format metadata missing {key} in {}",
+            path.display()
+        )
+    })?;
+    let parsed = value.parse::<Ipv4Addr>().with_context(|| {
+        format!(
+            "parse current-format metadata {key} as IPv4 in {}",
+            path.display()
+        )
+    })?;
+    if parsed == expected {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "current-format metadata mismatch for {key} in {}: expected `{expected}`, found `{parsed}`",
+        path.display()
+    ))
 }
 
 fn shell_unquote(value: &str) -> String {
@@ -1505,19 +1592,33 @@ mod tests {
         }
     }
 
+    fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
+        let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
+        let ip = from_u32(to_u32(cfg.ip_start) + slot);
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_runtime_metadata(
+            &vm_state_dir,
+            vm_id,
+            &mac_for_guest_ip(ip),
+            ip,
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            cpu,
+            memory_mb,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn load_vm_disk_state_uses_vm_id_for_current_path() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
         let vm_id = "vm-00000002";
-        let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "PIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
-        )
-        .unwrap();
+        write_current_metadata(&cfg, vm_id, 3, 8192);
 
         let vm = manager.load_vm_disk_state(vm_id).unwrap();
 
@@ -1530,19 +1631,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_vm_disk_state_ignores_extra_state_files_for_current_path() {
+    async fn vm_manager_new_rejects_supported_ids_with_stale_network_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
         let vm_id = "vm-00000002";
         let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        write_current_metadata(&cfg, vm_id, 3, 8192);
         fs::write(
             vm_dir.join("metadata/runtime.env"),
             "MICROVM_TAP='wrong-tap'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
         )
         .unwrap();
-        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.99'\n").unwrap();
         fs::write(
             vm_dir.join("stale-network.txt"),
             "tap=wrong-tap\nip=192.168.83.99\n",
@@ -1550,14 +1649,10 @@ mod tests {
         .unwrap();
         fs::write(vm_dir.join("random.txt"), "not authoritative\n").unwrap();
 
-        let vm = manager.load_vm_disk_state(vm_id).unwrap();
-
-        assert_eq!(vm.id, vm_id);
-        assert_eq!(vm.tap_name, vm_id);
-        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0c");
-        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 12));
-        assert_eq!(vm.cpu, 3);
-        assert_eq!(vm.memory_mb, 8192);
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata mismatch"));
+        assert!(message.contains("MICROVM_TAP"));
     }
 
     #[tokio::test]
@@ -1577,41 +1672,53 @@ mod tests {
     async fn load_vm_disk_state_rejects_out_of_pool_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
         let vm_id = "vm-00000003";
-        let vm_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        write_current_metadata(&cfg, vm_id, 5, 12288);
+
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("validate existing vm state dir vm-00000003"));
+        assert!(message.contains("unsupported vm state dir"));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_current_format_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
         fs::write(
-            vm_dir.join("metadata/runtime.env"),
-            "PIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
+            vm_state_dir.join("metadata/runtime.env"),
+            "PIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
+        )
+        .unwrap();
+        fs::write(
+            vm_state_dir.join("metadata/env"),
+            "PIKA_VM_IP='192.168.83.11'\n",
         )
         .unwrap();
 
-        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
-
-        assert!(err.to_string().contains("unsupported vm id: vm-00000003"));
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata missing"));
+        assert!(message.contains("MICROVM_TAP"));
     }
 
     #[tokio::test]
     async fn rewrite_runtime_metadata_for_recreate_rewrites_current_format_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
         let vm_id = "vm-00000001";
         let vm_state_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_state_dir.join("metadata/runtime.env"),
-            "MICROVM_TAP='wrong-tap'\nMICROVM_MAC='02:00:00:00:00:ff'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
-        )
-        .unwrap();
+        write_current_metadata(&cfg, vm_id, 3, 8192);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
         fs::write(
             vm_state_dir.join("metadata/env"),
             "PIKA_VM_IP='192.168.83.222'\nPIKA_GATEWAY_IP='192.168.83.254'\nPIKA_DNS_IP='192.168.83.254'\n",
         )
         .unwrap();
-
-        let vm = manager.load_vm_disk_state(vm_id).unwrap();
         manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
 
         let runtime_env = fs::read_to_string(vm_state_dir.join("metadata/runtime.env")).unwrap();
@@ -1644,16 +1751,11 @@ mod tests {
         cfg.systemctl_cmd = systemctl_script.display().to_string();
         cfg.ip_cmd = ip_script.display().to_string();
         cfg.dns_ip = Ipv4Addr::new(1, 1, 1, 1);
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 3, 8192);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
 
-        let vm_id = "vm-00000001";
         let vm_state_dir = cfg.state_dir.join(vm_id);
-        fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
-        fs::write(
-            vm_state_dir.join("metadata/runtime.env"),
-            "PIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
-        )
-        .unwrap();
         fs::write(
             vm_state_dir.join("metadata/env"),
             "PIKA_VM_IP='192.168.83.11'\nPIKA_GATEWAY_IP='192.168.83.1'\nPIKA_DNS_IP='192.168.83.1'\n",
@@ -1753,8 +1855,8 @@ mod tests {
     async fn allocate_ip_locked_uses_direct_slot_ids_and_reservations() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
+        write_current_metadata(&cfg, "vm-00000000", 2, 4096);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        fs::create_dir_all(cfg.state_dir.join("vm-00000000")).unwrap();
 
         let reserved = HashSet::from([1]);
         let identity = manager.allocate_vm_identity_locked(&reserved).unwrap();
@@ -1806,30 +1908,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allocator_ignores_unsupported_state_dirs() {
+    async fn vm_manager_new_blocks_on_unsupported_state_dirs() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
         fs::create_dir_all(cfg.state_dir.join("vm-old-layout")).unwrap();
         fs::create_dir_all(cfg.state_dir.join("vm-00000003")).unwrap();
         fs::create_dir_all(cfg.state_dir.join("garbage")).unwrap();
 
-        let allocated = manager
-            .allocate_vm_identity_locked(&HashSet::new())
-            .unwrap();
-
-        assert_eq!(allocated.id, "vm-00000000");
-        assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 10));
-        assert_eq!(allocated.slot, 0);
+        let err = VmManager::new(cfg.clone()).await.err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("validate existing vm state dir"));
+        assert!(message.contains("unsupported vm state dir"));
     }
 
     #[tokio::test]
-    async fn allocator_only_blocks_slots_for_supported_vm_ids() {
+    async fn allocator_blocks_slots_for_supported_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
+        write_current_metadata(&cfg, "vm-00000000", 2, 4096);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        fs::create_dir_all(cfg.state_dir.join("vm-00000000")).unwrap();
-        fs::create_dir_all(cfg.state_dir.join("vm-bad-old")).unwrap();
 
         let allocated = manager
             .allocate_vm_identity_locked(&HashSet::new())

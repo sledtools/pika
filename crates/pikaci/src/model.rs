@@ -16,6 +16,9 @@ pub enum GuestCommand {
         package: &'static str,
         filter: &'static str,
     },
+    ShellCommand {
+        command: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]

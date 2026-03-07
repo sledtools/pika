@@ -315,7 +315,7 @@ fn render_guest_flake(
     target_dir: &Path,
     socket_path: &Path,
 ) -> anyhow::Result<String> {
-    let cargo_test_args = match job.guest_command {
+    let guest_command = match job.guest_command {
         GuestCommand::ExactCargoTest { package, test_name } => format!(
             "cargo test -p {} {} -- --exact --nocapture",
             shell_escape(package),
@@ -335,13 +335,14 @@ fn render_guest_flake(
             shell_escape(package),
             shell_escape(filter)
         ),
+        GuestCommand::ShellCommand { command } => command.to_string(),
     };
     let snapshot_dir = nix_escape(&snapshot_dir.display().to_string());
     let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
     let cargo_home_dir = nix_escape(&cargo_home_dir.display().to_string());
     let target_dir = nix_escape(&target_dir.display().to_string());
     let socket_path = nix_escape(&socket_path.display().to_string());
-    let cargo_test_args = nix_escape(&cargo_test_args);
+    let guest_command = nix_escape(&guest_command);
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
     let timeout_secs = job.timeout_secs;
 
@@ -365,7 +366,7 @@ fn render_guest_flake(
           cargoHomeDir = "{cargo_home_dir}";
           cargoTargetDir = "{target_dir}";
           socketPath = "{socket_path}";
-          guestCommand = "{cargo_test_args}";
+          guestCommand = "{guest_command}";
           timeoutSecs = {timeout_secs};
           cacertBundle = "{cacert_bundle}";
         }})
@@ -538,5 +539,31 @@ mod tests {
         assert!(filtered_flake.contains(
             "guestCommand = \"cargo test -p 'pika-server' -- 'agent_api::tests' --nocapture\";"
         ));
+    }
+
+    #[test]
+    fn guest_flake_can_run_shell_commands() {
+        let spec = JobSpec {
+            id: "rmp-init-smoke-ci",
+            description: "test",
+            timeout_secs: 120,
+            guest_command: GuestCommand::ShellCommand {
+                command: "set -euo pipefail; cargo build -p rmp-cli; echo ok",
+            },
+        };
+        let flake = render_guest_flake(
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            Path::new("/tmp/pikaci/jobs/rmp-init-smoke-ci/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
+            Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock"),
+        )
+        .expect("render flake");
+
+        assert!(
+            flake
+                .contains("guestCommand = \"set -euo pipefail; cargo build -p rmp-cli; echo ok\";")
+        );
     }
 }

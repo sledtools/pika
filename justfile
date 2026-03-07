@@ -285,8 +285,14 @@ pre-merge-agent-contracts:
 
 # CI-safe pre-merge for the RMP tooling lane.
 pre-merge-rmp:
-    just rmp-init-smoke-ci
-    @echo "pre-merge-rmp complete"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        nix run .#pikaci -- run pre-merge-rmp
+    else
+        just rmp-init-smoke-ci
+    fi
+    echo "pre-merge-rmp complete"
 
 # CI-safe pre-merge for the pikahut tooling lane.
 pre-merge-fixture:

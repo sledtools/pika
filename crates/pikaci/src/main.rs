@@ -253,6 +253,23 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             jobs: agent_contract_jobs(),
         }),
+        "pre-merge-rmp" => Ok(TargetSpec {
+            id: "pre-merge-rmp",
+            description: "Run the VM-backed pre-merge RMP lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "crates/rmp-cli/**",
+                "crates/pika-relay-profiles/**",
+            ],
+            jobs: rmp_jobs(),
+        }),
         other => bail!("unknown job `{other}`"),
     }
 }
@@ -302,6 +319,35 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             },
         },
     ]
+}
+
+fn rmp_jobs() -> Vec<JobSpec> {
+    vec![JobSpec {
+        id: "rmp-init-smoke-ci",
+        description: "Run the RMP init smoke checks in a vfkit guest",
+        timeout_secs: 1800,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "ROOT=$PWD; ",
+                "BIN=$ROOT/target/debug/rmp; ",
+                "TMP=$(mktemp -d \"${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX\"); ",
+                "TARGET=$TMP/target; ",
+                "cargo build -p rmp-cli; ",
+                "\"$BIN\" init \"$TMP/rmp-mobile-no-iced\" --yes --org 'com.example' --no-iced --json >/dev/null; ",
+                "(cd \"$TMP/rmp-mobile-no-iced\" && CARGO_TARGET_DIR=\"$TARGET\" cargo check >/dev/null); ",
+                "\"$BIN\" init \"$TMP/rmp-all\" --yes --org 'com.example' --json >/dev/null; ",
+                "(cd \"$TMP/rmp-all\" && CARGO_TARGET_DIR=\"$TARGET\" cargo check >/dev/null); ",
+                "\"$BIN\" init \"$TMP/rmp-android\" --yes --org 'com.example' --no-ios --json >/dev/null; ",
+                "(cd \"$TMP/rmp-android\" && CARGO_TARGET_DIR=\"$TARGET\" cargo check >/dev/null); ",
+                "\"$BIN\" init \"$TMP/rmp-ios\" --yes --org 'com.example' --no-android --json >/dev/null; ",
+                "(cd \"$TMP/rmp-ios\" && CARGO_TARGET_DIR=\"$TARGET\" cargo check >/dev/null); ",
+                "\"$BIN\" init \"$TMP/rmp-iced\" --yes --org 'com.example' --no-ios --no-android --iced --json >/dev/null; ",
+                "(cd \"$TMP/rmp-iced\" && CARGO_TARGET_DIR=\"$TARGET\" cargo check -p rmp-iced_core_desktop_iced >/dev/null); ",
+                "echo 'ok: rmp init ci smoke passed'"
+            ),
+        },
+    }]
 }
 
 fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci::RunRecord> {

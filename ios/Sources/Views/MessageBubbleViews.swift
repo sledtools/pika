@@ -11,7 +11,7 @@ private let webViewBaseURL = URL(string: "https://webview.benthecarman.com")!
 
 // MARK: - Message grouping
 
-struct GroupedChatMessage: Identifiable {
+struct GroupedChatMessage: Identifiable, Equatable {
     let senderPubkey: String
     let senderName: String?
     let senderNpub: String

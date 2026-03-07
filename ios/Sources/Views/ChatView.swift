@@ -496,7 +496,7 @@ struct ChatView: View {
         }
     }
 
-    enum ChatTimelineRow: Identifiable {
+    enum ChatTimelineRow: Identifiable, Equatable {
         case messageGroup(GroupedChatMessage)
         case unreadDivider
         case callEvent(CallTimelineEvent)
@@ -815,7 +815,7 @@ struct ChatView: View {
                 }
 
                 do {
-                    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    let data = try Data(contentsOf: url)
                     DispatchQueue.main.async {
                         if !caption.isEmpty {
                             messageText = ""

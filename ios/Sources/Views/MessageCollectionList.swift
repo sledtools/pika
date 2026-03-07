@@ -5,6 +5,7 @@ import UIKit
 struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresentable {
     struct ContentState: Equatable {
         let chat: ChatViewState
+        let rows: [ChatView.ChatTimelineRow]
         let activeReactionMessageId: String?
     }
 
@@ -29,7 +30,7 @@ struct MessageCollectionList<AccessoryContent: View>: UIViewControllerRepresenta
     var activeReactionMessageId: String?
 
     private var contentState: ContentState {
-        ContentState(chat: chat, activeReactionMessageId: activeReactionMessageId)
+        ContentState(chat: chat, rows: rows, activeReactionMessageId: activeReactionMessageId)
     }
 
     func makeCoordinator() -> Coordinator {

@@ -22,7 +22,10 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
         callTimeline: [],
         toast: toast,
         developerMode: false,
-        voiceRecording: nil
+        updateRequired: false,
+        agentButton: nil,
+        voiceRecording: nil,
+        mediaGallery: nil
     )
 }
 
@@ -48,7 +51,10 @@ final class AppManagerTests: XCTestCase {
             callTimeline: [],
             toast: toast,
             developerMode: false,
-            voiceRecording: nil
+            updateRequired: false,
+            agentButton: nil,
+            voiceRecording: nil,
+            mediaGallery: nil
         )
     }
 
@@ -137,20 +143,19 @@ final class AppManagerTests: XCTestCase {
         )
         let manager = await MainActor.run { AppManager(core: core, authStore: store) }
 
-        let buttonState = await MainActor.run {
-            manager.agentButtonState(for: "npub1bunkeruser")
-        }
+        let buttonState = await MainActor.run { manager.state.agentButton }
 
         XCTAssertNil(buttonState)
     }
 
-    func testAgentButtonVisibleWhenLocalSigningNsecExists() async {
+    func testAgentButtonMirrorsRustStateForLocalNsecSessions() async {
         var state = makeState(rev: 1)
         state.auth = .loggedIn(
             npub: "npub1localuser",
             pubkey: "pubkey1localuser",
             mode: .localNsec
         )
+        state.agentButton = AgentMenuItemState(title: "New Agent", isBusy: false)
         let core = MockCore(state: state)
         let store = MockAuthStore(
             stored: StoredAuth(
@@ -162,49 +167,31 @@ final class AppManagerTests: XCTestCase {
         )
         let manager = await MainActor.run { AppManager(core: core, authStore: store) }
 
-        let buttonState = await MainActor.run {
-            manager.agentButtonState(for: "npub1localuser")
-        }
+        let buttonState = await MainActor.run { manager.state.agentButton }
 
-        XCTAssertEqual(buttonState, AgentButtonState(title: "Start Agent", isBusy: false))
+        XCTAssertEqual(buttonState, AgentMenuItemState(title: "New Agent", isBusy: false))
     }
 
-    func testAgentButtonBusyUsesAgentFlagOnly() async {
+    func testAgentButtonBusyComesFromRustState() async {
         var state = makeState(rev: 1)
         state.auth = .loggedIn(
             npub: "npub1localuser",
             pubkey: "pubkey1localuser",
             mode: .localNsec
         )
-        state.busy = BusyState(
-            creatingAccount: false,
-            loggingIn: false,
-            creatingChat: true,
-            startingAgent: false,
-            fetchingFollowList: false
-        )
+        state.agentButton = AgentMenuItemState(title: "New Agent", isBusy: false)
         let core = MockCore(state: state)
         let manager = await MainActor.run { AppManager(core: core, authStore: MockAuthStore()) }
 
-        let notBusy = await MainActor.run {
-            manager.agentButtonState(for: "npub1localuser")
-        }
-        XCTAssertEqual(notBusy, AgentButtonState(title: "Start Agent", isBusy: false))
+        let notBusy = await MainActor.run { manager.state.agentButton }
+        XCTAssertEqual(notBusy, AgentMenuItemState(title: "New Agent", isBusy: false))
 
         var stateBusy = state
-        stateBusy.busy = BusyState(
-            creatingAccount: false,
-            loggingIn: false,
-            creatingChat: false,
-            startingAgent: true,
-            fetchingFollowList: false
-        )
+        stateBusy.agentButton = AgentMenuItemState(title: "New Agent", isBusy: true)
         let busyCore = MockCore(state: stateBusy)
         let busyManager = await MainActor.run { AppManager(core: busyCore, authStore: MockAuthStore()) }
-        let busy = await MainActor.run {
-            busyManager.agentButtonState(for: "npub1localuser")
-        }
-        XCTAssertEqual(busy, AgentButtonState(title: "Starting Agent...", isBusy: true))
+        let busy = await MainActor.run { busyManager.state.agentButton }
+        XCTAssertEqual(busy, AgentMenuItemState(title: "New Agent", isBusy: true))
     }
 }
 

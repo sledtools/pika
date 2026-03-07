@@ -374,15 +374,7 @@ final class AppManager: AppReconciler {
         authStore.getNsec()
     }
 
-    func agentButtonState(for npub: String?) -> AgentButtonState? {
-        guard isAgentEligible(npub: npub, auth: state.auth) else {
-            return nil
-        }
-        return makeAgentButtonState(isBusy: state.busy.startingAgent)
-    }
-
     func ensureAgent() {
-        guard isAgentEligible(npub: currentNpub(), auth: state.auth) else { return }
         dispatch(.ensureAgent)
     }
 
@@ -592,15 +584,6 @@ final class AppManager: AppReconciler {
 
         if openFirstChat, let chatId = firstOpenedChatId {
             dispatch(.openChat(chatId: chatId))
-        }
-    }
-
-    private func currentNpub() -> String? {
-        switch state.auth {
-        case .loggedIn(let npub, _, _):
-            return npub
-        default:
-            return nil
         }
     }
 

@@ -91,6 +91,7 @@ pub enum InternalEvent {
         error: Option<String>,
     },
     KeyPackagePublished {
+        token: u64,
         ok: bool,
         error: Option<String>,
     },
@@ -99,6 +100,12 @@ pub enum InternalEvent {
     },
     PushUnsubscriptionsSynced {
         groups: Vec<String>,
+    },
+    AgentAllowlistResolved {
+        token: u64,
+        pubkey: String,
+        allowlisted: Option<bool>,
+        error: Option<String>,
     },
     AgentFlowCompleted {
         flow_token: u64,

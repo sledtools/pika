@@ -1758,6 +1758,44 @@ public object FfiConverterTypeFfiApp: FfiConverter<FfiApp, Long> {
 
 
 
+data class AgentMenuItemState (
+    var `title`: kotlin.String
+    , 
+    var `isBusy`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAgentMenuItemState: FfiConverterRustBuffer<AgentMenuItemState> {
+    override fun read(buf: ByteBuffer): AgentMenuItemState {
+        return AgentMenuItemState(
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AgentMenuItemState) = (
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterBoolean.allocationSize(value.`isBusy`)
+    )
+
+    override fun write(value: AgentMenuItemState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterBoolean.write(value.`isBusy`, buf)
+    }
+}
+
+
+
 data class AppState (
     var `rev`: kotlin.ULong
     , 
@@ -1786,6 +1824,8 @@ data class AppState (
     var `developerMode`: kotlin.Boolean
     , 
     var `updateRequired`: kotlin.Boolean
+    , 
+    var `agentButton`: AgentMenuItemState?
     , 
     var `voiceRecording`: VoiceRecordingState?
     , 
@@ -1820,6 +1860,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterOptionalTypeAgentMenuItemState.read(buf),
             FfiConverterOptionalTypeVoiceRecordingState.read(buf),
             FfiConverterOptionalTypeMediaGalleryState.read(buf),
         )
@@ -1840,6 +1881,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.allocationSize(value.`toast`) +
             FfiConverterBoolean.allocationSize(value.`developerMode`) +
             FfiConverterBoolean.allocationSize(value.`updateRequired`) +
+            FfiConverterOptionalTypeAgentMenuItemState.allocationSize(value.`agentButton`) +
             FfiConverterOptionalTypeVoiceRecordingState.allocationSize(value.`voiceRecording`) +
             FfiConverterOptionalTypeMediaGalleryState.allocationSize(value.`mediaGallery`)
     )
@@ -1859,6 +1901,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.write(value.`toast`, buf)
             FfiConverterBoolean.write(value.`developerMode`, buf)
             FfiConverterBoolean.write(value.`updateRequired`, buf)
+            FfiConverterOptionalTypeAgentMenuItemState.write(value.`agentButton`, buf)
             FfiConverterOptionalTypeVoiceRecordingState.write(value.`voiceRecording`, buf)
             FfiConverterOptionalTypeMediaGalleryState.write(value.`mediaGallery`, buf)
     }
@@ -6136,6 +6179,38 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
         } else {
             buf.put(1)
             FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeAgentMenuItemState: FfiConverterRustBuffer<AgentMenuItemState?> {
+    override fun read(buf: ByteBuffer): AgentMenuItemState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeAgentMenuItemState.read(buf)
+    }
+
+    override fun allocationSize(value: AgentMenuItemState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeAgentMenuItemState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: AgentMenuItemState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeAgentMenuItemState.write(value, buf)
         }
     }
 }

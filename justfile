@@ -874,6 +874,10 @@ agent-microvm *ARGS="":
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
     ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
 
+# Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
+agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel

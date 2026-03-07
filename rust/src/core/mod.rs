@@ -611,6 +611,18 @@ struct PendingNostrConnectLogin {
     connect_response_result: Arc<Mutex<Option<Result<NostrConnectConnectResponse, String>>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentAllowlistState {
+    Unknown,
+    Allowlisted,
+    NotAllowlisted,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDirectChatCreation {
+    peer_pubkey: PublicKey,
+}
+
 #[derive(Debug, Clone)]
 struct NostrConnectConnectResponse {
     remote_signer_pubkey: PublicKey,
@@ -757,6 +769,11 @@ pub struct AppCore {
     voice_recording_tick_token: u64,
     pending_nostr_connect_login: Option<PendingNostrConnectLogin>,
     next_nostr_connect_attempt_id: u64,
+    agent_allowlist_state: AgentAllowlistState,
+    agent_allowlist_probe_token: u64,
+    local_key_package_published: bool,
+    key_package_publish_token: u64,
+    pending_direct_chat_creation: Option<PendingDirectChatCreation>,
     agent_flow_token: u64,
     agent_flow_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -877,6 +894,11 @@ impl AppCore {
             voice_recording_tick_token: 0,
             pending_nostr_connect_login: None,
             next_nostr_connect_attempt_id: 1,
+            agent_allowlist_state: AgentAllowlistState::Unknown,
+            agent_allowlist_probe_token: 0,
+            local_key_package_published: false,
+            key_package_publish_token: 0,
+            pending_direct_chat_creation: None,
             agent_flow_token: 0,
             agent_flow_task: None,
         };
@@ -2838,21 +2860,109 @@ impl AppCore {
         self.push_screen(screen);
     }
 
+    fn sync_agent_menu_item_state(&mut self) {
+        self.state.agent_button = match (
+            &self.state.auth,
+            self.agent_allowlist_state,
+            self.network_enabled(),
+        ) {
+            (
+                AuthState::LoggedIn {
+                    mode: AuthMode::LocalNsec,
+                    ..
+                },
+                AgentAllowlistState::Allowlisted,
+                true,
+            ) => Some(crate::state::AgentMenuItemState {
+                title: "New Agent".to_string(),
+                is_busy: self.state.busy.starting_agent,
+            }),
+            _ => None,
+        };
+    }
+
+    fn invalidate_agent_allowlist_probe(&mut self) {
+        self.agent_allowlist_probe_token = self.agent_allowlist_probe_token.wrapping_add(1);
+    }
+
+    fn invalidate_key_package_publish(&mut self) {
+        self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
+        self.local_key_package_published = false;
+    }
+
+    fn clear_pending_direct_chat_creation(&mut self, clear_busy: bool) {
+        self.pending_direct_chat_creation = None;
+        if clear_busy {
+            self.set_busy(|b| b.creating_chat = false);
+        }
+    }
+
+    fn begin_direct_chat_creation(&mut self, peer_pubkey: PublicKey) {
+        let (client, tx) = {
+            let Some(sess) = self.session.as_ref() else {
+                self.clear_pending_direct_chat_creation(true);
+                return;
+            };
+            (sess.client.clone(), self.core_sender.clone())
+        };
+        tracing::info!(peer = %peer_pubkey.to_hex(), "create_chat: fetching peer key package");
+        self.runtime.spawn(async move {
+            let kp_filter = Filter::new()
+                .author(peer_pubkey)
+                .kind(Kind::MlsKeyPackage)
+                .limit(10);
+
+            match client.fetch_events(kp_filter, Duration::from_secs(8)).await {
+                Ok(events) => {
+                    let best = events
+                        .into_iter()
+                        .filter(|e| e.verify().is_ok())
+                        .max_by_key(|e| e.created_at);
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::PeerKeyPackageFetched {
+                            peer_pubkey,
+                            key_package_event: best,
+                            error: None,
+                        },
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::PeerKeyPackageFetched {
+                            peer_pubkey,
+                            key_package_event: None,
+                            error: Some(format!("Fetch peer key package failed: {e}")),
+                        },
+                    )));
+                }
+            }
+        });
+    }
+
     fn handle_auth_transition(&mut self, logged_in: bool) {
         if logged_in {
             self.call_runtime.stop_all();
             self.cancel_call_duration_ticks();
             self.cancel_voice_recording_ticks();
+            self.agent_allowlist_state = AgentAllowlistState::Unknown;
+            self.invalidate_agent_allowlist_probe();
+            self.invalidate_key_package_publish();
+            self.pending_direct_chat_creation = None;
             self.state.router.default_screen = Screen::ChatList;
             self.state.router.screen_stack.clear();
             self.state.active_call = None;
             self.state.voice_recording = None;
+            self.sync_agent_menu_item_state();
             self.call_session_params = None;
             self.emit_router();
         } else {
             self.call_runtime.stop_all();
             self.cancel_call_duration_ticks();
             self.cancel_voice_recording_ticks();
+            self.agent_allowlist_state = AgentAllowlistState::Unknown;
+            self.invalidate_agent_allowlist_probe();
+            self.invalidate_key_package_publish();
+            self.pending_direct_chat_creation = None;
             self.state.router.default_screen = Screen::Login;
             self.state.router.screen_stack.clear();
             self.state.current_chat = None;
@@ -2881,6 +2991,7 @@ impl AppCore {
             self.state.my_profile = MyProfileState::empty();
             self.state.follow_list = vec![];
             self.state.peer_profile = None;
+            self.state.agent_button = None;
             self.call_session_params = None;
             self.call_timeline_logged_keys.clear();
             self.save_call_timeline();
@@ -2963,6 +3074,7 @@ impl AppCore {
         f(&mut next);
         if next != self.state.busy {
             self.state.busy = next;
+            self.sync_agent_menu_item_state();
             self.emit_busy();
         }
     }
@@ -3059,8 +3171,8 @@ impl AppCore {
             InternalEvent::VideoFrameFromPlatform { payload } => {
                 self.handle_video_frame_from_platform(payload)
             }
-            InternalEvent::KeyPackagePublished { ok, error } => {
-                self.handle_key_package_published(ok, error)
+            InternalEvent::KeyPackagePublished { token, ok, error } => {
+                self.handle_key_package_published(token, ok, error)
             }
             InternalEvent::PushSubscriptionsSynced { groups } => {
                 self.handle_push_subscriptions_synced(groups)
@@ -3068,6 +3180,12 @@ impl AppCore {
             InternalEvent::PushUnsubscriptionsSynced { groups } => {
                 self.handle_push_unsubscriptions_synced(groups)
             }
+            InternalEvent::AgentAllowlistResolved {
+                token,
+                pubkey,
+                allowlisted,
+                error,
+            } => self.handle_agent_allowlist_resolved(token, pubkey, allowlisted, error),
             InternalEvent::AgentFlowCompleted {
                 flow_token,
                 agent_id,
@@ -3470,8 +3588,61 @@ impl AppCore {
         }
     }
 
-    fn handle_key_package_published(&mut self, ok: bool, error: Option<String>) {
+    fn handle_agent_allowlist_resolved(
+        &mut self,
+        token: u64,
+        pubkey: String,
+        allowlisted: Option<bool>,
+        error: Option<String>,
+    ) {
+        if token != self.agent_allowlist_probe_token {
+            return;
+        }
+        let matches_current_session = matches!(
+            &self.state.auth,
+            AuthState::LoggedIn {
+                pubkey: current_pubkey,
+                mode: AuthMode::LocalNsec,
+                ..
+            } if current_pubkey == &pubkey
+        );
+        if !matches_current_session {
+            return;
+        }
+
+        if let Some(err) = error {
+            tracing::warn!(pubkey = %pubkey, error = %err, "agent allowlist probe failed");
+            if self.agent_allowlist_state != AgentAllowlistState::Unknown {
+                return;
+            }
+        }
+
+        self.agent_allowlist_state = match allowlisted {
+            Some(true) => AgentAllowlistState::Allowlisted,
+            Some(false) => AgentAllowlistState::NotAllowlisted,
+            None => AgentAllowlistState::Unknown,
+        };
+        self.sync_agent_menu_item_state();
+        self.emit_state();
+    }
+
+    fn handle_key_package_published(&mut self, token: u64, ok: bool, error: Option<String>) {
+        if token != self.key_package_publish_token {
+            return;
+        }
         tracing::info!(ok, ?error, "key_package_published");
+        self.local_key_package_published = ok;
+        if ok {
+            if let Some(pending) = self.pending_direct_chat_creation.take() {
+                self.begin_direct_chat_creation(pending.peer_pubkey);
+            }
+            return;
+        }
+
+        if self.pending_direct_chat_creation.take().is_some() {
+            self.set_busy(|b| b.creating_chat = false);
+        }
+
         if !ok {
             let msg = error.unwrap_or_else(|| "unknown error".into());
             if msg.contains("no relays")
@@ -4725,6 +4896,7 @@ impl AppCore {
             }
             AppAction::ReloadConfig => {
                 self.config = config::load_app_config(&self.data_dir);
+                self.sync_agent_menu_item_state();
 
                 if !self.network_enabled() {
                     self.toast("Config reloaded (network disabled)");
@@ -4732,6 +4904,7 @@ impl AppCore {
                 }
 
                 if self.is_logged_in() {
+                    self.refresh_agent_allowlist();
                     self.publish_key_package_relays_best_effort();
                     self.ensure_key_package_published_best_effort();
                     self.recompute_subscriptions();
@@ -4932,55 +5105,30 @@ impl AppCore {
                     return;
                 }
 
+                if let Some(chat_id) = self.existing_direct_chat_for_peer(&peer_pubkey.to_hex()) {
+                    self.open_chat_screen(&chat_id);
+                    self.refresh_current_chat(&chat_id);
+                    self.unread_counts.insert(chat_id.clone(), 0);
+                    self.refresh_chat_list_from_storage();
+                    self.emit_router();
+                    self.set_busy(|b| b.creating_chat = false);
+                    return;
+                }
+
                 if !network_enabled {
                     self.set_busy(|b| b.creating_chat = false);
                     self.toast("Network disabled (set PIKA_DISABLE_NETWORK=0)");
                     return;
                 }
 
-                // Fetch peer key package asynchronously; actor will create the group on completion.
-                // The user stays on the NewChat screen with a loading indicator until the
-                // operation completes (success navigates to the chat; failure toasts an error).
-                let (client, tx) = {
-                    let Some(sess) = self.session.as_ref() else {
-                        self.set_busy(|b| b.creating_chat = false);
-                        return;
-                    };
-                    (sess.client.clone(), self.core_sender.clone())
-                };
-                tracing::info!(peer = %peer_pubkey.to_hex(), "create_chat: fetching peer key package");
-                self.runtime.spawn(async move {
-                    // Fetch peer key package (kind 443) from connected relays.
-                    let kp_filter = Filter::new()
-                        .author(peer_pubkey)
-                        .kind(Kind::MlsKeyPackage)
-                        .limit(10);
+                if !self.local_key_package_published {
+                    self.pending_direct_chat_creation =
+                        Some(PendingDirectChatCreation { peer_pubkey });
+                    self.ensure_key_package_published_best_effort();
+                    return;
+                }
 
-                    match client.fetch_events(kp_filter, Duration::from_secs(8)).await {
-                        Ok(events) => {
-                            let best = events
-                                .into_iter()
-                                .filter(|e| e.verify().is_ok())
-                                .max_by_key(|e| e.created_at);
-                            let _ = tx.send(CoreMsg::Internal(Box::new(
-                                InternalEvent::PeerKeyPackageFetched {
-                                    peer_pubkey,
-                                    key_package_event: best,
-                                    error: None,
-                                },
-                            )));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(CoreMsg::Internal(Box::new(
-                                InternalEvent::PeerKeyPackageFetched {
-                                    peer_pubkey,
-                                    key_package_event: None,
-                                    error: Some(format!("Fetch peer key package failed: {e}")),
-                                },
-                            )));
-                        }
-                    }
-                });
+                self.begin_direct_chat_creation(peer_pubkey);
             }
             AppAction::OpenChat { chat_id } => {
                 if !self.is_logged_in() {
@@ -7330,6 +7478,8 @@ mod tests {
     mod group_management_validation {
         use super::*;
         use crate::actions::AppAction;
+        use crate::state::{AuthMode, AuthState};
+        use crate::updates::InternalEvent;
         use nostr_sdk::{Keys, ToBech32};
 
         /// Create a core with a minimal session (logged in, no groups registered).
@@ -7424,6 +7574,99 @@ mod tests {
             assert!(core.state.toast.is_none());
             assert!(core.state.router.screen_stack.is_empty());
             assert!(core.state.busy.creating_chat);
+        }
+
+        #[test]
+        fn create_chat_waits_for_local_key_package_publication() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_pubkey = peer_keys.public_key();
+            let peer_npub = peer_pubkey.to_bech32().unwrap();
+
+            core.handle_action(AppAction::CreateChat {
+                peer_npub: peer_npub.clone(),
+            });
+
+            assert!(core.state.busy.creating_chat);
+            assert_eq!(
+                core.pending_direct_chat_creation
+                    .as_ref()
+                    .map(|pending| pending.peer_pubkey),
+                Some(peer_pubkey)
+            );
+            assert!(!core.local_key_package_published);
+        }
+
+        #[test]
+        fn key_package_publish_failure_clears_pending_direct_chat() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                peer_pubkey: peer_keys.public_key(),
+            });
+            core.state.busy.creating_chat = true;
+            core.key_package_publish_token = 7;
+
+            core.handle_internal(InternalEvent::KeyPackagePublished {
+                token: 7,
+                ok: false,
+                error: Some("boom".into()),
+            });
+
+            assert!(core.pending_direct_chat_creation.is_none());
+            assert!(!core.state.busy.creating_chat);
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some("Key package publish failed: boom")
+            );
+        }
+
+        #[test]
+        fn stale_key_package_publish_failure_is_ignored() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                peer_pubkey: peer_keys.public_key(),
+            });
+            core.state.busy.creating_chat = true;
+            core.key_package_publish_token = 9;
+
+            core.handle_internal(InternalEvent::KeyPackagePublished {
+                token: 8,
+                ok: false,
+                error: Some("stale".into()),
+            });
+
+            assert!(core.pending_direct_chat_creation.is_some());
+            assert!(core.state.busy.creating_chat);
+            assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn allowlist_probe_error_does_not_override_known_state() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let pubkey = core.session.as_ref().expect("session").pubkey.to_hex();
+            core.state.auth = AuthState::LoggedIn {
+                npub: "npub1test".into(),
+                pubkey: pubkey.clone(),
+                mode: AuthMode::LocalNsec,
+            };
+            core.agent_allowlist_state = super::super::AgentAllowlistState::Allowlisted;
+            core.agent_allowlist_probe_token = 4;
+            core.sync_agent_menu_item_state();
+
+            core.handle_internal(InternalEvent::AgentAllowlistResolved {
+                token: 4,
+                pubkey,
+                allowlisted: None,
+                error: Some("timeout".into()),
+            });
+
+            assert_eq!(
+                core.agent_allowlist_state,
+                super::super::AgentAllowlistState::Allowlisted
+            );
+            assert!(core.state.agent_button.is_some());
         }
 
         #[test]

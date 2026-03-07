@@ -7,9 +7,10 @@ use serde::Deserialize;
 
 use super::*;
 
-const DEFAULT_AGENT_API_URL: &str = "https://test.notifs.benthecarman.com";
-const AGENT_POLL_MAX_ATTEMPTS: u32 = 60;
+const DEFAULT_AGENT_API_URL: &str = "https://api.pikachat.org";
+const AGENT_POLL_MAX_ATTEMPTS: u32 = 45;
 const AGENT_POLL_DELAY: Duration = Duration::from_secs(2);
+const AGENT_RECOVER_AFTER_ATTEMPT: u32 = 20;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -35,7 +36,6 @@ enum AgentFlowError {
     Unauthorized,
     NotWhitelisted,
     AgentNotFound,
-    AgentErrorState,
     Timeout,
     InvalidResponse,
     SigningFailed,
@@ -49,7 +49,6 @@ impl AgentFlowError {
             Self::Unauthorized => "Agent auth failed. Please sign in again.".to_string(),
             Self::NotWhitelisted => "This account is not allowlisted for agents.".to_string(),
             Self::AgentNotFound => "Agent was not found after creation. Try again.".to_string(),
-            Self::AgentErrorState => "Agent entered an error state. Try again.".to_string(),
             Self::Timeout => "Agent is still starting. Try again in a moment.".to_string(),
             Self::InvalidResponse => "Agent API returned an invalid response.".to_string(),
             Self::SigningFailed => "Agent requires local key signer.".to_string(),
@@ -215,26 +214,96 @@ async fn get_my_agent(
     }
 }
 
+async fn recover_my_agent(
+    client: &reqwest::Client,
+    keys: &Keys,
+    base_url: &str,
+) -> Result<AgentStateResponse, AgentFlowError> {
+    let response = send_agent_request(
+        client,
+        keys,
+        Method::POST,
+        &endpoint(base_url, "/v1/agents/me/recover"),
+    )
+    .await?;
+    match response.status().as_u16() {
+        200 => response
+            .json::<AgentStateResponse>()
+            .await
+            .map_err(|_| AgentFlowError::InvalidResponse),
+        401 => Err(AgentFlowError::Unauthorized),
+        403 => Err(AgentFlowError::NotWhitelisted),
+        404 => Err(AgentFlowError::AgentNotFound),
+        503 => Err(AgentFlowError::Remote("recover_failed".to_string())),
+        status => {
+            let code = decode_error_code(response).await.unwrap_or_default();
+            let detail = if code.is_empty() {
+                format!("http {status}")
+            } else {
+                format!("{code} (http {status})")
+            };
+            Err(AgentFlowError::Remote(detail))
+        }
+    }
+}
+
+async fn probe_agent_allowlist(
+    client: &reqwest::Client,
+    keys: &Keys,
+    base_url: &str,
+) -> Result<bool, AgentFlowError> {
+    let response = send_agent_request(
+        client,
+        keys,
+        Method::GET,
+        &endpoint(base_url, "/v1/agents/me"),
+    )
+    .await?;
+    match response.status().as_u16() {
+        200 | 404 => Ok(true),
+        401 | 403 => Ok(false),
+        status => {
+            let code = decode_error_code(response).await.unwrap_or_default();
+            let detail = if code.is_empty() {
+                format!("http {status}")
+            } else {
+                format!("{code} (http {status})")
+            };
+            Err(AgentFlowError::Remote(detail))
+        }
+    }
+}
+
 async fn run_agent_flow(
     client: reqwest::Client,
     keys: Keys,
     base_url: String,
 ) -> Result<String, AgentFlowError> {
     ensure_agent(&client, &keys, &base_url).await?;
+    let mut recovered_stalled_creating = false;
 
-    for attempt in 0..AGENT_POLL_MAX_ATTEMPTS {
+    for attempt in 1..=AGENT_POLL_MAX_ATTEMPTS {
         match get_my_agent(&client, &keys, &base_url).await {
             Ok(state) => match state.state {
                 AgentAppState::Ready => return Ok(state.agent_id),
                 AgentAppState::Creating => {
-                    if attempt + 1 < AGENT_POLL_MAX_ATTEMPTS {
+                    if !recovered_stalled_creating && attempt >= AGENT_RECOVER_AFTER_ATTEMPT {
+                        recover_my_agent(&client, &keys, &base_url).await?;
+                        recovered_stalled_creating = true;
+                    }
+                    if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
                     }
                 }
-                AgentAppState::Error => return Err(AgentFlowError::AgentErrorState),
+                AgentAppState::Error => {
+                    recover_my_agent(&client, &keys, &base_url).await?;
+                    if attempt < AGENT_POLL_MAX_ATTEMPTS {
+                        tokio::time::sleep(AGENT_POLL_DELAY).await;
+                    }
+                }
             },
             Err(AgentFlowError::AgentNotFound) => {
-                if attempt + 1 < AGENT_POLL_MAX_ATTEMPTS {
+                if attempt < AGENT_POLL_MAX_ATTEMPTS {
                     tokio::time::sleep(AGENT_POLL_DELAY).await;
                     continue;
                 }
@@ -263,13 +332,93 @@ impl AppCore {
         )
     }
 
+    pub(super) fn refresh_agent_allowlist(&mut self) {
+        self.invalidate_agent_allowlist_probe();
+        let (client, keys, base_url, pubkey) = match (&self.state.auth, self.session.as_ref()) {
+            (
+                AuthState::LoggedIn {
+                    pubkey,
+                    mode: AuthMode::LocalNsec,
+                    ..
+                },
+                Some(sess),
+            ) if self.network_enabled() => {
+                let Some(local_keys) = sess.local_keys.clone() else {
+                    self.agent_allowlist_state = AgentAllowlistState::Unknown;
+                    self.sync_agent_menu_item_state();
+                    self.emit_state();
+                    return;
+                };
+                (
+                    self.http_client.clone(),
+                    local_keys,
+                    self.agent_api_url(),
+                    pubkey.clone(),
+                )
+            }
+            _ => {
+                self.agent_allowlist_state = AgentAllowlistState::Unknown;
+                self.sync_agent_menu_item_state();
+                self.emit_state();
+                return;
+            }
+        };
+        let token = self.agent_allowlist_probe_token;
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            let event = match probe_agent_allowlist(&client, &keys, &base_url).await {
+                Ok(allowlisted) => InternalEvent::AgentAllowlistResolved {
+                    token,
+                    pubkey,
+                    allowlisted: Some(allowlisted),
+                    error: None,
+                },
+                Err(err) => InternalEvent::AgentAllowlistResolved {
+                    token,
+                    pubkey,
+                    allowlisted: None,
+                    error: Some(err.to_user_message()),
+                },
+            };
+            let _ = tx.send(CoreMsg::Internal(Box::new(event)));
+        });
+    }
+
     pub(super) fn ensure_agent(&mut self) {
         if !self.is_logged_in() {
             self.toast("Please log in first");
             return;
         }
+        let Some(sess) = self.session.as_ref() else {
+            self.toast("Please log in first");
+            return;
+        };
+        if sess.local_keys.is_none()
+            || !matches!(
+                self.state.auth,
+                AuthState::LoggedIn {
+                    mode: AuthMode::LocalNsec,
+                    ..
+                }
+            )
+        {
+            self.toast("Agent requires local key signer");
+            return;
+        }
         if self.state.busy.starting_agent {
             return;
+        }
+        match self.agent_allowlist_state {
+            AgentAllowlistState::Allowlisted => {}
+            AgentAllowlistState::NotAllowlisted => {
+                self.toast("This account is not allowlisted for agents.");
+                return;
+            }
+            AgentAllowlistState::Unknown => {
+                self.refresh_agent_allowlist();
+                self.toast("Checking agent access. Try again in a moment.");
+                return;
+            }
         }
         if !self.network_enabled() {
             self.toast("Network disabled");
@@ -284,22 +433,12 @@ impl AppCore {
             }
         }
 
-        let (client, keys, base_url, tx) = {
-            let Some(sess) = self.session.as_ref() else {
-                self.toast("Please log in first");
-                return;
-            };
-            let Some(local_keys) = sess.local_keys.clone() else {
-                self.toast("Agent requires local key signer");
-                return;
-            };
-            (
-                self.http_client.clone(),
-                local_keys,
-                self.agent_api_url(),
-                self.core_sender.clone(),
-            )
-        };
+        let (client, keys, base_url, tx) = (
+            self.http_client.clone(),
+            sess.local_keys.clone().expect("checked local keys above"),
+            self.agent_api_url(),
+            self.core_sender.clone(),
+        );
 
         self.agent_flow_token = self.agent_flow_token.wrapping_add(1);
         let flow_token = self.agent_flow_token;
@@ -380,7 +519,7 @@ impl AppCore {
         Ok(())
     }
 
-    fn existing_direct_chat_for_peer(&self, peer_key: &str) -> Option<String> {
+    pub(super) fn existing_direct_chat_for_peer(&self, peer_key: &str) -> Option<String> {
         self.state
             .chat_list
             .iter()

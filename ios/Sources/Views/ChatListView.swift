@@ -119,11 +119,10 @@ struct ChatListView: View {
                         Label("New Group", systemImage: "person.3")
                     }
                     if let agent = state.agentButton {
-                        Divider()
                         Button {
                             onEnsureAgent()
                         } label: {
-                            Label(agent.title, systemImage: "desktopcomputer")
+                            Label(agent.title, systemImage: "sparkles")
                         }
                         .disabled(agent.isBusy)
                         .accessibilityIdentifier(TestIds.chatListAgent)

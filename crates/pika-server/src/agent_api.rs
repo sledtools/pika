@@ -219,14 +219,6 @@ fn load_visible_agent_row(
     Ok(select_visible_agent_row(active, latest))
 }
 
-fn load_recoverable_agent_row(
-    conn: &mut PgConnection,
-    owner_npub: &str,
-) -> Result<Option<AgentInstance>, AgentApiError> {
-    AgentInstance::find_active_by_owner(conn, owner_npub)
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))
-}
-
 fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
     if let Some(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info)) =
         err.downcast_ref::<DieselError>()
@@ -237,6 +229,12 @@ fn is_owner_active_unique_violation(err: &anyhow::Error) -> bool {
             .unwrap_or(false);
     }
     err.to_string().contains(AGENT_OWNER_ACTIVE_INDEX)
+}
+
+fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    (message.contains("vm not found") || (message.contains("404") && message.contains("not found")))
+        && message.contains("vm")
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +251,24 @@ fn generate_provisioning_bot_identity() -> anyhow::Result<ProvisioningBotIdentit
         pubkey_hex: bot_keys.public_key().to_hex(),
         secret_hex: bot_keys.secret_key().to_secret_hex(),
     })
+}
+
+fn mark_agent_errored(
+    conn: &mut PgConnection,
+    agent_id: &str,
+) -> Result<AgentInstance, AgentApiError> {
+    AgentInstance::update_phase(conn, agent_id, AGENT_PHASE_ERROR, None)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))
+}
+
+fn prepare_agent_for_reprovision(
+    conn: &mut PgConnection,
+    active: &AgentInstance,
+) -> Result<(), AgentApiError> {
+    if active.phase != AGENT_PHASE_ERROR {
+        mark_agent_errored(conn, &active.agent_id)?;
+    }
+    Ok(())
 }
 
 fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
@@ -287,6 +303,56 @@ async fn provision_vm_for_owner(
     Ok(vm.id)
 }
 
+async fn provision_agent_for_owner(
+    state: &State,
+    owner_npub: &str,
+) -> Result<AgentInstance, AgentApiError> {
+    let bot_identity = generate_provisioning_bot_identity()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+
+    let created = {
+        let mut conn = state
+            .db_pool
+            .get()
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+        AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            &bot_identity.pubkey_npub,
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .map_err(|err| {
+            if is_owner_active_unique_violation(&err) {
+                AgentApiError::from_code(AgentApiErrorCode::AgentExists)
+            } else {
+                AgentApiError::from_code(AgentApiErrorCode::Internal)
+            }
+        })?
+    };
+
+    let vm_id = match provision_vm_for_owner(owner_npub, &bot_identity).await {
+        Ok(vm_id) => vm_id,
+        Err(err) => {
+            error!(owner_npub = %owner_npub, error = %err, "failed to provision microvm for agent");
+            if let Ok(mut conn) = state.db_pool.get() {
+                let _ = mark_agent_errored(&mut conn, &created.agent_id);
+            }
+            return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
+        }
+    };
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+    AgentInstance::update_phase(&mut conn, &created.agent_id, AGENT_PHASE_READY, Some(&vm_id))
+        .map_err(|err| {
+            error!(agent_id = %created.agent_id, error = %err, "failed to update agent phase after provision");
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+        })
+}
+
 pub async fn ensure_agent(
     Extension(state): Extension<State>,
     headers: HeaderMap,
@@ -311,61 +377,7 @@ pub async fn ensure_agent(
         }
         requester
     };
-    let bot_identity = generate_provisioning_bot_identity()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-
-    let created = {
-        let mut conn = state
-            .db_pool
-            .get()
-            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-        AgentInstance::create(
-            &mut conn,
-            &requester.owner_npub,
-            &bot_identity.pubkey_npub,
-            None,
-            AGENT_PHASE_CREATING,
-        )
-        .map_err(|err| {
-            if is_owner_active_unique_violation(&err) {
-                AgentApiError::from_code(AgentApiErrorCode::AgentExists)
-            } else {
-                AgentApiError::from_code(AgentApiErrorCode::Internal)
-            }
-        })?
-    };
-
-    let vm_id = match provision_vm_for_owner(&requester.owner_npub, &bot_identity).await {
-        Ok(vm_id) => vm_id,
-        Err(err) => {
-            error!(owner_npub = %requester.owner_npub, error = %err, "failed to provision microvm for agent");
-            if let Ok(mut conn) = state.db_pool.get() {
-                let _ = AgentInstance::update_phase(
-                    &mut conn,
-                    &created.agent_id,
-                    AGENT_PHASE_ERROR,
-                    None,
-                );
-            }
-            return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
-        }
-    };
-
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &created.agent_id,
-        AGENT_PHASE_READY,
-        Some(&vm_id),
-    )
-    .map_err(|err| {
-        error!(agent_id = %created.agent_id, error = %err, "failed to update agent phase after provision");
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-    })?;
-
+    let updated = provision_agent_for_owner(&state, &requester.owner_npub).await?;
     Ok((StatusCode::ACCEPTED, Json(map_row_to_response(updated)?)))
 }
 
@@ -395,6 +407,8 @@ pub async fn get_my_agent(
             active.vm_id.as_deref(),
         )
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?
+    } else if active.phase != AGENT_PHASE_ERROR && active.vm_id.is_none() {
+        mark_agent_errored(&mut conn, &active.agent_id)?
     } else {
         active
     };
@@ -416,9 +430,22 @@ pub async fn recover_my_agent(
         V1_AGENTS_RECOVER_PATH,
         state.trust_forwarded_host,
     )?;
-    let Some(active) = load_recoverable_agent_row(&mut conn, &requester.owner_npub)? else {
+    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)? else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound));
     };
+    if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
+        prepare_agent_for_reprovision(&mut conn, &active)?;
+        drop(conn);
+        let reprovisioned = provision_agent_for_owner(&state, &requester.owner_npub)
+            .await
+            .map_err(|err| match err.code {
+                AgentApiErrorCode::AgentExists => {
+                    AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                }
+                _ => err,
+            })?;
+        return Ok(Json(map_row_to_response(reprovisioned)?));
+    }
     let vm_id = active
         .vm_id
         .clone()
@@ -427,19 +454,39 @@ pub async fn recover_my_agent(
     let resolved = resolved_spawner_params()
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
-    let recovered = spawner
-        .recover_vm(&vm_id)
-        .await
-        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::RecoverFailed))?;
-
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &active.agent_id,
-        AGENT_PHASE_READY,
-        Some(&recovered.id),
-    )
-    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
-    Ok(Json(map_row_to_response(updated)?))
+    match spawner.recover_vm(&vm_id).await {
+        Ok(recovered) => {
+            let updated = AgentInstance::update_phase(
+                &mut conn,
+                &active.agent_id,
+                AGENT_PHASE_READY,
+                Some(&recovered.id),
+            )
+            .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
+            Ok(Json(map_row_to_response(updated)?))
+        }
+        Err(err) if is_vm_not_found_error(&err) => {
+            error!(
+                owner_npub = %requester.owner_npub,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "recover requested for missing vm; marking stale agent errored and reprovisioning"
+            );
+            mark_agent_errored(&mut conn, &active.agent_id)?;
+            drop(conn);
+            let reprovisioned = provision_agent_for_owner(&state, &requester.owner_npub)
+                .await
+                .map_err(|err| match err.code {
+                    AgentApiErrorCode::AgentExists => {
+                        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                    }
+                    _ => err,
+                })?;
+            Ok(Json(map_row_to_response(reprovisioned)?))
+        }
+        Err(_) => Err(AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)),
+    }
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {
@@ -453,7 +500,10 @@ mod tests {
     use axum::http::header;
     use base64::Engine;
     use chrono::NaiveDate;
+    use diesel::prelude::*;
+    use diesel_migrations::MigrationHarness;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
+    use std::sync::{Mutex, OnceLock};
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -470,6 +520,37 @@ mod tests {
                 .and_hms_opt(0, 0, 0)
                 .expect("valid timestamp"),
         }
+    }
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        match GUARD.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn init_test_db_connection() -> Option<PgConnection> {
+        dotenv::dotenv().ok();
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let mut conn = match PgConnection::establish(&url) {
+            Ok(conn) => conn,
+            Err(err) => {
+                eprintln!("SKIP: postgres unavailable for agent_api db test: {err}");
+                return None;
+            }
+        };
+        conn.run_pending_migrations(crate::models::MIGRATIONS)
+            .expect("run migrations");
+        Some(conn)
+    }
+
+    fn clear_test_database(conn: &mut PgConnection) {
+        diesel::sql_query(
+            "TRUNCATE TABLE agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
+        )
+        .execute(conn)
+        .expect("truncate test tables");
     }
 
     #[test]
@@ -688,5 +769,66 @@ mod tests {
             selected.is_none(),
             "non-error latest row must not replace active lookup"
         );
+    }
+
+    #[test]
+    fn vm_not_found_detection_matches_spawner_404_recover_errors() {
+        let err = anyhow::anyhow!(
+            "failed to recover vm vm-123: 404 Not Found {{\"error\":\"vm not found: vm-123\"}}"
+        );
+        assert!(is_vm_not_found_error(&err));
+    }
+
+    #[test]
+    fn vm_not_found_detection_matches_plain_vm_not_found_text() {
+        let err = anyhow::anyhow!("vm not found: vm-123");
+        assert!(is_vm_not_found_error(&err));
+    }
+
+    #[test]
+    fn vm_not_found_detection_rejects_other_recover_errors() {
+        let err = anyhow::anyhow!("failed to recover vm vm-123: 500 Internal Server Error");
+        assert!(!is_vm_not_found_error(&err));
+    }
+
+    #[test]
+    fn prepare_agent_for_reprovision_clears_active_constraint_for_missing_vm_id_row() {
+        let _guard = test_guard();
+        let Some(mut conn) = init_test_db_connection() else {
+            return;
+        };
+        clear_test_database(&mut conn);
+
+        let owner_npub = "npub1recovermissingvmtest";
+        let active = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-stale",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("insert stale active row");
+
+        prepare_agent_for_reprovision(&mut conn, &active)
+            .expect("mark stale row errored before reprovision");
+
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row should exist");
+        assert_eq!(latest.agent_id, "agent-stale");
+        assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+        assert_eq!(latest.vm_id, None);
+
+        let reprovisioned = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-fresh",
+            Some("vm-fresh"),
+            AGENT_PHASE_CREATING,
+        )
+        .expect("erroring stale row should clear active-owner constraint");
+        assert_eq!(reprovisioned.agent_id, "agent-fresh");
+
+        clear_test_database(&mut conn);
     }
 }

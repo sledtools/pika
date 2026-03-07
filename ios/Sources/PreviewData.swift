@@ -323,6 +323,7 @@ enum PreviewAppState {
             toast: toast,
             developerMode: false,
             updateRequired: false,
+            agentButton: nil,
             voiceRecording: nil,
             mediaGallery: nil
         )

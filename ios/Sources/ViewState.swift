@@ -12,10 +12,7 @@ struct ChatListViewState: Equatable {
     let agentButton: AgentButtonState?
 }
 
-struct AgentButtonState: Equatable {
-    let title: String
-    let isBusy: Bool
-}
+typealias AgentButtonState = AgentMenuItemState
 
 struct NewChatViewState: Equatable {
     let isCreatingChat: Bool

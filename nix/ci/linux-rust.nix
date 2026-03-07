@@ -17,6 +17,7 @@ let
     ];
 
     buildInputs = [
+      pkgs.alsa-lib
       pkgs.openssl
     ];
   };
@@ -24,20 +25,23 @@ let
   # Phase 2a stays intentionally narrow: these outputs model the first staged
   # Linux Rust lane family (`pre-merge-pika-rust`) by compiling the deterministic
   # `pika_core` lib + test targets without executing them.
-  laneBuildCommand = ''
-    cargo test --profile release --locked -p pika_core --lib --tests --no-run
+  laneCompileCommand = ''
+    cargo test --locked -p pika_core --lib --tests --no-run
   '';
 in
 rec {
   workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
     pname = "${commonArgs.pname}-deps";
-    buildPhaseCargoCommand = laneBuildCommand;
+    doCheck = false;
+    buildPhaseCargoCommand = laneCompileCommand;
   });
 
-  workspaceBuild = craneLib.cargoBuild (commonArgs // {
+  workspaceBuild = craneLib.mkCargoDerivation (commonArgs // {
     pname = "${commonArgs.pname}-build";
     cargoArtifacts = workspaceDeps;
-    buildPhaseCargoCommand = laneBuildCommand;
+    doCheck = false;
+    buildPhaseCargoCommand = laneCompileCommand;
     doInstallCargoArtifacts = true;
+    installPhaseCommand = "mkdir -p $out";
   });
 }

@@ -73,6 +73,7 @@ impl AppCore {
         self.state.my_profile = self.my_profile_state();
         self.emit_auth();
         self.handle_auth_transition(true);
+        self.refresh_agent_allowlist();
 
         // Start notifications processing (async -> internal events).
         if self.network_enabled() {
@@ -118,6 +119,11 @@ impl AppCore {
         self.subs_recompute_dirty = false;
         self.subs_force_reconnect = false;
         self.invalidate_agent_flow();
+        self.invalidate_key_package_publish();
+        self.pending_direct_chat_creation = None;
+        self.agent_allowlist_state = AgentAllowlistState::Unknown;
+        self.invalidate_agent_allowlist_probe();
+        self.state.agent_button = None;
         self.group_profiles.clear();
 
         if let Some(sess) = self.session.take() {
@@ -209,12 +215,16 @@ impl AppCore {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
+        self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
+        let token = self.key_package_publish_token;
+        self.local_key_package_published = false;
         let (content, tags, _hash_ref) = match sess
             .mdk
             .create_key_package_for_event(&sess.pubkey, relays_for_tags)
         {
             Ok(v) => v,
             Err(e) => {
+                self.clear_pending_direct_chat_creation(true);
                 self.toast(format!("Key package create failed: {e}"));
                 return;
             }
@@ -235,6 +245,7 @@ impl AppCore {
                 Err(e) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::KeyPackagePublished {
+                            token,
                             ok: false,
                             error: Some(format!("key package sign failed: {e}")),
                         },
@@ -260,6 +271,7 @@ impl AppCore {
                 super::relay_publish::PublishOutcome::Ok => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::KeyPackagePublished {
+                            token,
                             ok: true,
                             error: None,
                         },
@@ -268,6 +280,7 @@ impl AppCore {
                 super::relay_publish::PublishOutcome::Err(err) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::KeyPackagePublished {
+                            token,
                             ok: false,
                             error: Some(err),
                         },

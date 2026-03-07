@@ -87,6 +87,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             toast = null,
             developerMode = false,
             updateRequired = false,
+            agentButton = null,
             voiceRecording = null,
             mediaGallery = null,
         ),

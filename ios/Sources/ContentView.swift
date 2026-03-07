@@ -531,7 +531,7 @@ private func chatListState(from state: AppState, manager: AppManager) -> ChatLis
         chats: state.chatList,
         myNpub: myNpub,
         myProfile: state.myProfile,
-        agentButton: manager.agentButtonState(for: myNpub)
+        agentButton: state.agentButton
     )
 }
 

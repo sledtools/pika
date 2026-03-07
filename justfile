@@ -888,6 +888,10 @@ agent-microvm-vmspawner-logs:
 agent-microvm-guest-logs VM_ID:
     nix develop .#infra -c just -f infra/justfile build-guest-logs {{ VM_ID }}
 
+# Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
+agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel

@@ -22,6 +22,7 @@ pub struct AppState {
     pub toast: Option<String>,
     pub developer_mode: bool,
     pub update_required: bool,
+    pub agent_button: Option<AgentMenuItemState>,
     pub voice_recording: Option<VoiceRecordingState>,
     pub media_gallery: Option<MediaGalleryState>,
 }
@@ -46,10 +47,17 @@ impl AppState {
             toast: None,
             developer_mode: false,
             update_required: false,
+            agent_button: None,
             voice_recording: None,
             media_gallery: None,
         }
     }
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct AgentMenuItemState {
+    pub title: String,
+    pub is_busy: bool,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

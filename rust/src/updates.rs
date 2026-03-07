@@ -245,6 +245,9 @@ pub enum InternalEvent {
     CallDurationTick {
         token: u64,
     },
+    CallOfferTimeout {
+        token: u64,
+    },
     VoiceRecordingDurationTick {
         token: u64,
     },

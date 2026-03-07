@@ -11,6 +11,42 @@ const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
 const RELAY_AUTH_CAP_PREFIX: &str = "capv1_";
 const RELAY_AUTH_HEX_LEN: usize = 64;
 
+/// Type-safe call end reasons. Converted to strings for the UniFFI `CallStatus::Ended { reason }`
+/// and for the wire protocol (`call.end` / `call.reject` signals).
+#[derive(Debug, Clone)]
+pub(super) enum CallEndReason {
+    UserHangup,
+    Timeout,
+    Declined,
+    RuntimeError,
+    AuthFailed,
+    SerializeFailed,
+    PublishFailed,
+    /// Reason received from the network (reject/end signal from peer).
+    Remote(String),
+}
+
+impl CallEndReason {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::UserHangup => "user_hangup",
+            Self::Timeout => "timeout",
+            Self::Declined => "declined",
+            Self::RuntimeError => "runtime_error",
+            Self::AuthFailed => "auth_failed",
+            Self::SerializeFailed => "serialize_failed",
+            Self::PublishFailed => "publish_failed",
+            Self::Remote(s) => s.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for CallEndReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct CallTrackSpec {
     pub name: String,
@@ -548,49 +584,17 @@ impl AppCore {
         }
 
         let tx = self.core_sender.clone();
-        let wrapper_id = wrapper.id.to_hex();
-        let relays_dbg: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
         self.runtime.spawn(async move {
-            tracing::info!(
-                wrapper_id = %wrapper_id,
-                relays = ?relays_dbg,
-                "{failure_context}: publish start"
-            );
-            let out = client.send_event_to(relays, &wrapper).await;
-            let error = match out {
-                Ok(output) if !output.success.is_empty() => {
-                    tracing::info!(
-                        wrapper_id = %wrapper_id,
-                        ok_relays = ?output.success,
-                        failed_relays = ?output.failed.keys().collect::<Vec<_>>(),
-                        "{failure_context}: publish ok"
-                    );
-                    None
-                }
-                Ok(output) => {
-                    let err = output
-                        .failed
-                        .values()
-                        .next()
-                        .cloned()
-                        .unwrap_or_else(|| "no relay accepted event".to_string());
-                    tracing::warn!(
-                        wrapper_id = %wrapper_id,
-                        ok_relays = ?output.success,
-                        failed_relays = ?output.failed,
-                        "{failure_context}: publish failed err={err}"
-                    );
-                    Some(err)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        wrapper_id = %wrapper_id,
-                        "{failure_context}: publish error err={e:#}"
-                    );
-                    Some(e.to_string())
-                }
-            };
-            if let Some(err) = error {
+            let outcome = super::relay_publish::publish_event_with_retry(
+                &client,
+                &relays,
+                &wrapper,
+                4,
+                failure_context,
+                false,
+            )
+            .await;
+            if let super::relay_publish::PublishOutcome::Err(err) = outcome {
                 let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(format!(
                     "{failure_context}: {err}",
                 )))));
@@ -601,6 +605,7 @@ impl AppCore {
 
     fn update_call_status(&mut self, status: CallStatus) {
         let should_tick = matches!(status, CallStatus::Active);
+        let cancel_offer_timeout = matches!(status, CallStatus::Connecting | CallStatus::Active);
         let previous = self.state.active_call.clone();
         let mut should_tick_after_update: Option<bool> = None;
         if let Some(call) = self.state.active_call.as_mut() {
@@ -611,6 +616,9 @@ impl AppCore {
         let Some(should_tick_after_update) = should_tick_after_update else {
             return;
         };
+        if cancel_offer_timeout {
+            self.cancel_call_offer_timeout();
+        }
         if should_tick_after_update {
             self.ensure_call_duration_ticks();
         } else {
@@ -619,12 +627,12 @@ impl AppCore {
         self.emit_call_state_with_previous(previous);
     }
 
-    fn end_call_local(&mut self, reason: String) {
+    fn end_call_local(&mut self, reason: CallEndReason) {
         let previous = self.state.active_call.clone();
         let mut should_emit = false;
         if let Some(call) = self.state.active_call.as_mut() {
             call.set_status(CallStatus::Ended {
-                reason: reason.clone(),
+                reason: reason.to_string(),
             });
             call.refresh_duration_display(now_seconds());
             self.call_runtime.on_call_ended(&call.call_id);
@@ -634,6 +642,7 @@ impl AppCore {
         if !should_emit {
             return;
         }
+        self.cancel_call_offer_timeout();
         self.cancel_call_duration_ticks();
         self.emit_call_state_with_previous(previous);
     }
@@ -685,6 +694,7 @@ impl AppCore {
                 None,
             ));
             self.call_session_params = Some(session);
+            self.schedule_call_offer_timeout();
             self.emit_call_state_with_previous(previous);
             tracing::info!(call_id = %call_id, is_video_call, "call_start_offline");
             return;
@@ -728,13 +738,14 @@ impl AppCore {
             None,
         ));
         self.call_session_params = Some(session.clone());
+        self.schedule_call_offer_timeout();
         self.emit_call_state_with_previous(previous);
 
         let payload = match build_call_signal_json(&call_id, OutgoingCallSignal::Invite(&session)) {
             Ok(v) => v,
             Err(e) => {
                 self.toast(format!("Serialize invite failed: {e}"));
-                self.end_call_local("serialize_failed".to_string());
+                self.end_call_local(CallEndReason::SerializeFailed);
                 return;
             }
         };
@@ -748,7 +759,7 @@ impl AppCore {
         );
         if let Err(e) = self.publish_call_signal(chat_id, payload, "Call invite publish failed") {
             self.toast(e);
-            self.end_call_local("publish_failed".to_string());
+            self.end_call_local(CallEndReason::PublishFailed);
         }
     }
 
@@ -770,14 +781,14 @@ impl AppCore {
 
         let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
             self.toast("No local pubkey for call runtime");
-            self.end_call_local("runtime_error".to_string());
+            self.end_call_local(CallEndReason::RuntimeError);
             return;
         };
         let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
             Ok(pk) => pk.to_hex(),
             Err(e) => {
                 self.toast(format!("Peer pubkey parse failed: {e}"));
-                self.end_call_local("runtime_error".to_string());
+                self.end_call_local(CallEndReason::RuntimeError);
                 return;
             }
         };
@@ -790,7 +801,7 @@ impl AppCore {
         ) {
             self.toast(format!("Call relay auth verification failed: {err}"));
             self.send_call_reject(chat_id, &active.call_id, "auth_failed");
-            self.end_call_local("auth_failed".to_string());
+            self.end_call_local(CallEndReason::AuthFailed);
             return;
         }
         let payload =
@@ -815,7 +826,7 @@ impl AppCore {
             Ok(ctx) => ctx,
             Err(err) => {
                 self.toast(format!("Call media key setup failed: {err}"));
-                self.end_call_local("runtime_error".to_string());
+                self.end_call_local(CallEndReason::RuntimeError);
                 return;
             }
         };
@@ -827,7 +838,7 @@ impl AppCore {
             self.core_sender.clone(),
         ) {
             self.toast(format!("Call runtime start failed: {e}"));
-            self.end_call_local("runtime_error".to_string());
+            self.end_call_local(CallEndReason::RuntimeError);
             return;
         }
         self.call_session_params = Some(session);
@@ -846,7 +857,7 @@ impl AppCore {
         }
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
-        self.end_call_local("declined".to_string());
+        self.end_call_local(CallEndReason::Declined);
         let payload = match build_call_signal_json(
             &active.call_id,
             OutgoingCallSignal::Reject { reason: "declined" },
@@ -877,7 +888,7 @@ impl AppCore {
         }
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
-        self.end_call_local("user_hangup".to_string());
+        self.end_call_local(CallEndReason::UserHangup);
         let payload = match build_call_signal_json(
             &active.call_id,
             OutgoingCallSignal::End {
@@ -894,6 +905,28 @@ impl AppCore {
             self.publish_call_signal(&active.chat_id, payload, "Call end publish failed")
         {
             self.toast(e);
+        }
+    }
+
+    pub(super) fn handle_call_offer_timeout(&mut self) {
+        let Some(active) = self.state.active_call.clone() else {
+            return;
+        };
+        if !matches!(active.status, CallStatus::Offering | CallStatus::Ringing) {
+            return;
+        }
+        tracing::info!("call_offer_timeout: ending unanswered call");
+        self.end_call_local(CallEndReason::Timeout);
+        let payload = build_call_signal_json(
+            &active.call_id,
+            OutgoingCallSignal::End { reason: "timeout" },
+        );
+        if let Ok(payload) = payload {
+            let _ = self.publish_call_signal(
+                &active.chat_id,
+                payload,
+                "Call timeout end publish failed",
+            );
         }
     }
 
@@ -1006,6 +1039,7 @@ impl AppCore {
                     is_video_call,
                     None,
                 ));
+                self.schedule_call_offer_timeout();
                 self.emit_call_state_with_previous(previous);
             }
             ParsedCallSignal::Accept { call_id, session } => {
@@ -1020,21 +1054,21 @@ impl AppCore {
                 }
                 let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
                     self.toast("No local pubkey for call runtime");
-                    self.end_call_local("runtime_error".to_string());
+                    self.end_call_local(CallEndReason::RuntimeError);
                     return;
                 };
                 let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
                     Ok(pk) => pk.to_hex(),
                     Err(e) => {
                         self.toast(format!("Peer pubkey parse failed: {e}"));
-                        self.end_call_local("runtime_error".to_string());
+                        self.end_call_local(CallEndReason::RuntimeError);
                         return;
                     }
                 };
                 if let Some(expected) = self.call_session_params.as_ref() {
                     if expected.relay_auth != session.relay_auth {
                         self.toast("Call relay auth mismatch between invite and accept");
-                        self.end_call_local("auth_failed".to_string());
+                        self.end_call_local(CallEndReason::AuthFailed);
                         return;
                     }
                 }
@@ -1046,7 +1080,7 @@ impl AppCore {
                     &peer_pubkey_hex,
                 ) {
                     self.toast(format!("Call relay auth verification failed: {err}"));
-                    self.end_call_local("auth_failed".to_string());
+                    self.end_call_local(CallEndReason::AuthFailed);
                     return;
                 }
                 self.call_session_params = Some(session.clone());
@@ -1061,7 +1095,7 @@ impl AppCore {
                     Ok(ctx) => ctx,
                     Err(err) => {
                         self.toast(format!("Call media key setup failed: {err}"));
-                        self.end_call_local("runtime_error".to_string());
+                        self.end_call_local(CallEndReason::RuntimeError);
                         return;
                     }
                 };
@@ -1073,7 +1107,7 @@ impl AppCore {
                     self.core_sender.clone(),
                 ) {
                     self.toast(format!("Call runtime start failed: {e}"));
-                    self.end_call_local("runtime_error".to_string());
+                    self.end_call_local(CallEndReason::RuntimeError);
                     return;
                 }
                 self.update_call_status(CallStatus::Connecting);
@@ -1085,7 +1119,7 @@ impl AppCore {
                 if active.call_id != call_id || active.chat_id != chat_id {
                     return;
                 }
-                self.end_call_local(reason);
+                self.end_call_local(CallEndReason::Remote(reason));
             }
             ParsedCallSignal::End { call_id, reason } => {
                 let Some(active) = self.state.active_call.as_ref() else {
@@ -1094,7 +1128,7 @@ impl AppCore {
                 if active.call_id != call_id || active.chat_id != chat_id {
                     return;
                 }
-                self.end_call_local(reason);
+                self.end_call_local(CallEndReason::Remote(reason));
             }
         }
     }

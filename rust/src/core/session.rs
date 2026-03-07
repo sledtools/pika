@@ -163,21 +163,19 @@ impl AppCore {
                         }
 
                         match ev.kind {
-                            Kind::GiftWrap => {
-                                match client.unwrap_gift_wrap(&ev).await {
-                                    Ok(unwrapped) => {
-                                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                                            InternalEvent::GiftWrapReceived {
-                                                wrapper: ev,
-                                                rumor: unwrapped.rumor,
-                                            },
-                                        )));
-                                    }
-                                    Err(_) => {
-                                        // Ignore malformed/unreadable giftwrap.
-                                    }
+                            Kind::GiftWrap => match client.unwrap_gift_wrap(&ev).await {
+                                Ok(unwrapped) => {
+                                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                                        InternalEvent::GiftWrapReceived {
+                                            wrapper: ev,
+                                            rumor: unwrapped.rumor,
+                                        },
+                                    )));
                                 }
-                            }
+                                Err(e) => {
+                                    tracing::warn!("giftwrap unwrap failed: {e}");
+                                }
+                            },
                             Kind::MlsGroupMessage => {
                                 let _ = tx.send(CoreMsg::Internal(Box::new(
                                     InternalEvent::GroupMessageReceived { event: ev },
@@ -232,7 +230,6 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            let relay_list: Vec<String> = publish_relays.iter().map(|r| r.to_string()).collect();
             let event = match client.sign_event_builder(builder).await {
                 Ok(e) => e,
                 Err(e) => {
@@ -250,65 +247,33 @@ impl AppCore {
                 let _ = client.add_relay(r).await;
             }
 
-            // Best-effort with retries:
-            // - relays can be slow to connect right after login/restore
-            // - some relays require NIP-42 auth
-            let mut last_err: Option<String> = None;
-            for attempt in 0..6u8 {
-                client.connect().await;
-                client.wait_for_connection(Duration::from_secs(5)).await;
-
-                match client.send_event_to(&publish_relays, &event).await {
-                    Ok(output) if !output.success.is_empty() => {
-                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::KeyPackagePublished {
-                                ok: true,
-                                error: None,
-                            },
-                        )));
-                        return;
-                    }
-                    Ok(output) => {
-                        let errors: Vec<&str> =
-                            output.failed.values().map(|s| s.as_str()).collect();
-                        let summary = if errors.is_empty() {
-                            "no relay accepted event".to_string()
-                        } else {
-                            errors.join("; ")
-                        };
-                        let any_retryable = errors
-                            .iter()
-                            .any(|e| e.contains("auth") || e.contains("AUTH"));
-                        let maybe_not_connected = errors.iter().any(|e| {
-                            e.contains("no relays")
-                                || e.contains("not ready")
-                                || e.contains("not connected")
-                        });
-                        last_err = Some(format!("{summary}; relays={}", relay_list.join(",")));
-                        if !any_retryable && !maybe_not_connected {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let es = e.to_string();
-                        let maybe_not_connected = es.contains("no relays")
-                            || es.contains("not ready")
-                            || es.contains("not connected");
-                        last_err = Some(format!("{es}; relays={}", relay_list.join(",")));
-                        if !maybe_not_connected {
-                            break;
-                        }
-                    }
+            let outcome = super::relay_publish::publish_event_with_retry(
+                &client,
+                &publish_relays,
+                &event,
+                6,
+                "key package publish",
+                true,
+            )
+            .await;
+            match outcome {
+                super::relay_publish::PublishOutcome::Ok => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::KeyPackagePublished {
+                            ok: true,
+                            error: None,
+                        },
+                    )));
                 }
-                let delay_ms = 250u64.saturating_mul(1u64 << attempt);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                super::relay_publish::PublishOutcome::Err(err) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::KeyPackagePublished {
+                            ok: false,
+                            error: Some(err),
+                        },
+                    )));
+                }
             }
-            let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::KeyPackagePublished {
-                    ok: false,
-                    error: last_err,
-                },
-            )));
         });
     }
 
@@ -484,9 +449,20 @@ impl AppCore {
             let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
             let tags = vec![Tag::expiration(expires)];
             for rumor in welcome_rumors {
-                let _ = client
-                    .gift_wrap_to(relays.clone(), &peer_pubkey, rumor, tags.clone())
-                    .await;
+                let outcome = super::relay_publish::gift_wrap_with_retry(
+                    &client,
+                    &relays,
+                    &peer_pubkey,
+                    rumor,
+                    tags.clone(),
+                    4,
+                    "welcome publish",
+                    true,
+                )
+                .await;
+                if let super::relay_publish::PublishOutcome::Err(err) = outcome {
+                    tracing::error!("welcome delivery failed after retries: {err}");
+                }
             }
         });
     }

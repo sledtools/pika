@@ -8,6 +8,7 @@ import UIKit
 struct CallScreenView: View {
     let call: CallState
     let peerName: String
+    let peerPictureUrl: String?
     let onAcceptCall: @MainActor () -> Void
     let onRejectCall: @MainActor () -> Void
     let onEndCall: @MainActor () -> Void
@@ -82,15 +83,12 @@ struct CallScreenView: View {
                 Spacer(minLength: 12)
 
                 VStack(spacing: 10) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.white.opacity(0.18))
-                            .frame(width: 112, height: 112)
-
-                        Text(String(peerName.prefix(1)).uppercased())
-                            .font(.system(size: 42, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                    }
+                    AvatarView(
+                        name: peerName,
+                        npub: call.peerNpub,
+                        pictureUrl: peerPictureUrl,
+                        size: 112
+                    )
 
                     Text(peerName)
                         .font(.system(.title2, design: .rounded).weight(.semibold))
@@ -518,6 +516,7 @@ private struct CallControlButton: View {
             )
         ),
         peerName: "Waffle",
+        peerPictureUrl: nil,
         onAcceptCall: {},
         onRejectCall: {},
         onEndCall: {},
@@ -547,6 +546,7 @@ private struct CallControlButton: View {
             debug: nil
         ),
         peerName: "Waffle",
+        peerPictureUrl: nil,
         onAcceptCall: {},
         onRejectCall: {},
         onEndCall: {},

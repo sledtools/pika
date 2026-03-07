@@ -998,14 +998,17 @@ impl State {
                 )
                 .map(Message::NewChat)
         } else if let Some(call) = state.active_call.as_ref().filter(|_| self.show_call_screen) {
-            let peer_name = state
-                .current_chat
-                .as_ref()
-                .and_then(|c| c.members.first())
-                .and_then(|m| m.name.as_deref())
-                .unwrap_or("Unknown");
-            views::call_screen::call_screen_view(call, peer_name, &self.video_pipeline)
-                .map(Message::CallScreen)
+            let peer = state.current_chat.as_ref().and_then(|c| c.members.first());
+            let peer_name = peer.and_then(|m| m.name.as_deref()).unwrap_or("Unknown");
+            let peer_picture_url = peer.and_then(|m| m.picture_url.as_deref());
+            views::call_screen::call_screen_view(
+                call,
+                peer_name,
+                peer_picture_url,
+                &self.video_pipeline,
+                cache,
+            )
+            .map(Message::CallScreen)
         } else if matches!(route.detail_pane, DesktopDetailPane::PeerProfile { .. }) {
             if let Some(profile) = &state.peer_profile {
                 views::peer_profile::peer_profile_view(profile, cache).map(Message::PeerProfile)

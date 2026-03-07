@@ -172,6 +172,7 @@ struct ContentView: View {
             CallScreenView(
                 call: call,
                 peerName: callPeerDisplayName(for: call, in: state),
+                peerPictureUrl: callPeerPictureUrl(for: call, in: state),
                 onAcceptCall: {
                     manager.dispatch(.openChat(chatId: call.chatId))
                     manager.dispatch(.acceptCall(chatId: call.chatId))
@@ -612,27 +613,42 @@ private func directMessageChatId(for profile: PeerProfileState, in state: AppSta
     return state.chatList.first(where: { !$0.isGroup && matchesProfile($0.members) })?.chatId
 }
 
+/// Resolves the DM peer for a call by checking currentChat then chatList.
+/// Returns nil for group chats.
 @MainActor
-private func callPeerDisplayName(for call: CallState, in state: AppState) -> String {
+private func callPeerMember(for call: CallState, in state: AppState) -> MemberInfo? {
     if let currentChat = state.currentChat, currentChat.chatId == call.chatId {
-        if currentChat.isGroup {
-            return currentChat.groupName ?? "Group"
-        }
-        if let peer = currentChat.members.first {
-            return peer.name ?? shortenedNpub(peer.npub)
-        }
+        if currentChat.isGroup { return nil }
+        return currentChat.members.first
     }
 
     if let summary = state.chatList.first(where: { $0.chatId == call.chatId }) {
-        if summary.isGroup {
-            return summary.groupName ?? "Group"
-        }
-        if let peer = summary.members.first {
-            return peer.name ?? shortenedNpub(peer.npub)
-        }
+        if summary.isGroup { return nil }
+        return summary.members.first
     }
 
+    return nil
+}
+
+@MainActor
+private func callPeerDisplayName(for call: CallState, in state: AppState) -> String {
+    // Group calls: show group name (currently rejected at protocol level, but handle gracefully).
+    if let currentChat = state.currentChat, currentChat.chatId == call.chatId, currentChat.isGroup {
+        return currentChat.groupName ?? "Group"
+    }
+    if let summary = state.chatList.first(where: { $0.chatId == call.chatId }), summary.isGroup {
+        return summary.groupName ?? "Group"
+    }
+
+    if let peer = callPeerMember(for: call, in: state) {
+        return peer.name ?? shortenedNpub(peer.npub)
+    }
     return shortenedNpub(call.peerNpub)
+}
+
+@MainActor
+private func callPeerPictureUrl(for call: CallState, in state: AppState) -> String? {
+    callPeerMember(for: call, in: state)?.pictureUrl
 }
 
 @MainActor

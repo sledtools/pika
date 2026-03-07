@@ -114,9 +114,13 @@ impl NetworkRelay {
             .tx
             .send(Command::Connect { reply: reply_tx })
             .map_err(|_| MediaSessionError::NotConnected)?;
-        reply_rx
-            .recv()
-            .map_err(|_| MediaSessionError::NotConnected)?
+        match reply_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MediaSessionError::Timeout(
+                "connect reply timed out".to_string(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaSessionError::NotConnected),
+        }
     }
 
     pub fn publish(
@@ -133,9 +137,13 @@ impl NetworkRelay {
                 reply: reply_tx,
             })
             .map_err(|_| MediaSessionError::NotConnected)?;
-        reply_rx
-            .recv()
-            .map_err(|_| MediaSessionError::NotConnected)?
+        match reply_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MediaSessionError::Timeout(
+                "publish reply timed out".to_string(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaSessionError::NotConnected),
+        }
     }
 
     pub fn subscribe(
@@ -150,9 +158,13 @@ impl NetworkRelay {
                 reply: reply_tx,
             })
             .map_err(|_| MediaSessionError::NotConnected)?;
-        let parts = reply_rx
-            .recv()
-            .map_err(|_| MediaSessionError::NotConnected)??;
+        let parts = match reply_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MediaSessionError::Timeout(
+                "subscribe reply timed out".to_string(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MediaSessionError::NotConnected),
+        }?;
 
         // Keep the worker thread (and its tokio runtime) alive for as long as the subscription
         // exists, even if the caller drops all NetworkRelay handles.

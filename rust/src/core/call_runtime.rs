@@ -220,8 +220,12 @@ impl CallRuntime {
             let video_rx = transport
                 .subscribe(&video_subscribe_track)
                 .map_err(to_string_error)?;
-            let video_tx_keys = media_ctx.video_tx_keys.unwrap();
-            let video_rx_keys = media_ctx.video_rx_keys.unwrap();
+            let Some(video_tx_keys) = media_ctx.video_tx_keys else {
+                return Err("video_tx_keys missing despite has_video check".to_string());
+            };
+            let Some(video_rx_keys) = media_ctx.video_rx_keys else {
+                return Err("video_rx_keys missing despite has_video check".to_string());
+            };
 
             let (vtx, vrx) = std::sync::mpsc::channel::<Vec<u8>>();
             let call_id_for_video = call_id.to_string();
@@ -769,7 +773,7 @@ impl CpalAudio {
                         move |data: &[i16], _| {
                             push_mono_i16_from_i16(data, channels, &capture_for_input);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio input stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build input stream failed: {e}"))?
@@ -782,7 +786,7 @@ impl CpalAudio {
                         move |data: &[u16], _| {
                             push_mono_i16_from_u16(data, channels, &capture_for_input);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio input stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build input stream failed: {e}"))?
@@ -795,7 +799,7 @@ impl CpalAudio {
                         move |data: &[f32], _| {
                             push_mono_i16_from_f32(data, channels, &capture_for_input);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio input stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build input stream failed: {e}"))?
@@ -815,7 +819,7 @@ impl CpalAudio {
                         move |data: &mut [i16], _| {
                             pop_playback_to_i16(data, channels, &playback_for_output);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio output stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build output stream failed: {e}"))?
@@ -828,7 +832,7 @@ impl CpalAudio {
                         move |data: &mut [u16], _| {
                             pop_playback_to_u16(data, channels, &playback_for_output);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio output stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build output stream failed: {e}"))?
@@ -841,7 +845,7 @@ impl CpalAudio {
                         move |data: &mut [f32], _| {
                             pop_playback_to_f32(data, channels, &playback_for_output);
                         },
-                        |_| {},
+                        |e| tracing::error!("audio output stream error: {e}"),
                         None,
                     )
                     .map_err(|e| format!("build output stream failed: {e}"))?

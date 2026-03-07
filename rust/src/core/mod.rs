@@ -11,6 +11,7 @@ mod profile;
 mod profile_db;
 mod profile_pics;
 mod push;
+mod relay_publish;
 mod session;
 mod storage;
 
@@ -666,6 +667,50 @@ struct Session {
     groups: HashMap<String, GroupIndexEntry>,
 }
 
+/// Cancellable one-shot timer based on a monotonically increasing token.
+///
+/// Schedule fires a tokio sleep that sends an `InternalEvent` after the delay.
+/// Cancel invalidates any pending timer by incrementing the token.
+/// The handler checks `is_current(token)` before processing.
+struct TimerToken(u64);
+
+impl TimerToken {
+    fn new() -> Self {
+        Self(0)
+    }
+
+    /// Invalidate any pending timer.
+    fn cancel(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+
+    /// Schedule a new timer, cancelling any previously scheduled one.
+    ///
+    /// Spawns a tokio task on `runtime` that sleeps for `delay`, then sends
+    /// `make_event(token)` via `tx`. The token is passed to `make_event` so
+    /// the handler can verify it is still current via `is_current()`.
+    fn schedule(
+        &mut self,
+        runtime: &tokio::runtime::Runtime,
+        tx: &Sender<CoreMsg>,
+        delay: Duration,
+        make_event: impl FnOnce(u64) -> InternalEvent + Send + 'static,
+    ) {
+        self.0 = self.0.saturating_add(1);
+        let token = self.0;
+        let tx = tx.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(CoreMsg::Internal(Box::new(make_event(token))));
+        });
+    }
+
+    /// Check whether a received token is still current.
+    fn is_current(&self, token: u64) -> bool {
+        token == self.0
+    }
+}
+
 pub struct AppCore {
     pub state: crate::state::AppState,
     rev: u64,
@@ -752,9 +797,10 @@ pub struct AppCore {
     call_runtime: call_runtime::CallRuntime,
     call_session_params: Option<call_control::CallSessionParams>,
     call_timeline_logged_keys: HashSet<String>,
-    toast_dismiss_token: u64,
-    call_duration_tick_token: u64,
-    voice_recording_tick_token: u64,
+    toast_dismiss_timer: TimerToken,
+    call_duration_timer: TimerToken,
+    call_offer_timeout_timer: TimerToken,
+    voice_recording_timer: TimerToken,
     pending_nostr_connect_login: Option<PendingNostrConnectLogin>,
     next_nostr_connect_attempt_id: u64,
     agent_flow_token: u64,
@@ -872,9 +918,10 @@ impl AppCore {
             call_runtime: call_runtime::CallRuntime::default(),
             call_session_params: None,
             call_timeline_logged_keys: HashSet::new(),
-            toast_dismiss_token: 0,
-            call_duration_tick_token: 0,
-            voice_recording_tick_token: 0,
+            toast_dismiss_timer: TimerToken::new(),
+            call_duration_timer: TimerToken::new(),
+            call_offer_timeout_timer: TimerToken::new(),
+            voice_recording_timer: TimerToken::new(),
             pending_nostr_connect_login: None,
             next_nostr_connect_attempt_id: 1,
             agent_flow_token: 0,
@@ -1191,33 +1238,39 @@ impl AppCore {
 
     fn toast(&mut self, msg: impl Into<String>) {
         self.state.toast = Some(msg.into());
-        self.toast_dismiss_token = self.toast_dismiss_token.saturating_add(1);
-        self.schedule_toast_auto_dismiss(self.toast_dismiss_token);
+        self.toast_dismiss_timer.schedule(
+            &self.runtime,
+            &self.core_sender,
+            Duration::from_secs(3),
+            |token| InternalEvent::ToastAutoDismiss { token },
+        );
         self.emit_toast();
     }
 
-    fn schedule_toast_auto_dismiss(&self, token: u64) {
-        let tx = self.core_sender.clone();
-        self.runtime.spawn(async move {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::ToastAutoDismiss { token },
-            )));
-        });
+    fn cancel_call_offer_timeout(&mut self) {
+        self.call_offer_timeout_timer.cancel();
+    }
+
+    fn schedule_call_offer_timeout(&mut self) {
+        self.call_offer_timeout_timer.schedule(
+            &self.runtime,
+            &self.core_sender,
+            Duration::from_secs(30),
+            |token| InternalEvent::CallOfferTimeout { token },
+        );
     }
 
     fn cancel_call_duration_ticks(&mut self) {
-        self.call_duration_tick_token = self.call_duration_tick_token.saturating_add(1);
+        self.call_duration_timer.cancel();
     }
 
-    fn schedule_call_duration_tick(&self, token: u64) {
-        let tx = self.core_sender.clone();
-        self.runtime.spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::CallDurationTick { token },
-            )));
-        });
+    fn schedule_call_duration_tick(&mut self) {
+        self.call_duration_timer.schedule(
+            &self.runtime,
+            &self.core_sender,
+            Duration::from_secs(1),
+            |token| InternalEvent::CallDurationTick { token },
+        );
     }
 
     fn ensure_call_duration_ticks(&mut self) {
@@ -1231,8 +1284,7 @@ impl AppCore {
             self.cancel_call_duration_ticks();
             return;
         }
-        self.call_duration_tick_token = self.call_duration_tick_token.saturating_add(1);
-        self.schedule_call_duration_tick(self.call_duration_tick_token);
+        self.schedule_call_duration_tick();
     }
 
     fn refresh_active_call_duration_display(&mut self) -> bool {
@@ -1246,22 +1298,20 @@ impl AppCore {
     }
 
     fn cancel_voice_recording_ticks(&mut self) {
-        self.voice_recording_tick_token = self.voice_recording_tick_token.saturating_add(1);
+        self.voice_recording_timer.cancel();
     }
 
-    fn schedule_voice_recording_tick(&self, token: u64) {
-        let tx = self.core_sender.clone();
-        self.runtime.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::VoiceRecordingDurationTick { token },
-            )));
-        });
+    fn schedule_voice_recording_tick(&mut self) {
+        self.voice_recording_timer.schedule(
+            &self.runtime,
+            &self.core_sender,
+            Duration::from_millis(100),
+            |token| InternalEvent::VoiceRecordingDurationTick { token },
+        );
     }
 
     fn start_voice_recording_ticks(&mut self) {
-        self.voice_recording_tick_token = self.voice_recording_tick_token.saturating_add(1);
-        self.schedule_voice_recording_tick(self.voice_recording_tick_token);
+        self.schedule_voice_recording_tick();
     }
 
     fn is_logged_in(&self) -> bool {
@@ -2842,6 +2892,7 @@ impl AppCore {
         if logged_in {
             self.call_runtime.stop_all();
             self.cancel_call_duration_ticks();
+            self.cancel_call_offer_timeout();
             self.cancel_voice_recording_ticks();
             self.state.router.default_screen = Screen::ChatList;
             self.state.router.screen_stack.clear();
@@ -2852,6 +2903,7 @@ impl AppCore {
         } else {
             self.call_runtime.stop_all();
             self.cancel_call_duration_ticks();
+            self.cancel_call_offer_timeout();
             self.cancel_voice_recording_ticks();
             self.state.router.default_screen = Screen::Login;
             self.state.router.screen_stack.clear();
@@ -2903,6 +2955,7 @@ impl AppCore {
         self.state.developer_mode = false;
         self.state.voice_recording = None;
         self.cancel_call_duration_ticks();
+        self.cancel_call_offer_timeout();
         self.cancel_voice_recording_ticks();
 
         let root = std::path::Path::new(&self.data_dir);
@@ -3053,6 +3106,7 @@ impl AppCore {
                 video_rx_decrypt_fail,
             ),
             InternalEvent::CallDurationTick { token } => self.handle_call_duration_tick(token),
+            InternalEvent::CallOfferTimeout { token } => self.dispatch_call_offer_timeout(token),
             InternalEvent::VoiceRecordingDurationTick { token } => {
                 self.handle_voice_recording_duration_tick(token)
             }
@@ -3296,7 +3350,7 @@ impl AppCore {
     }
 
     fn handle_toast_auto_dismiss(&mut self, token: u64) {
-        if token != self.toast_dismiss_token {
+        if !self.toast_dismiss_timer.is_current(token) {
             return;
         }
         if self.state.toast.is_some() {
@@ -3427,7 +3481,7 @@ impl AppCore {
     }
 
     fn handle_call_duration_tick(&mut self, token: u64) {
-        if token != self.call_duration_tick_token {
+        if !self.call_duration_timer.is_current(token) {
             return;
         }
         let should_continue = self
@@ -3442,11 +3496,18 @@ impl AppCore {
         if self.refresh_active_call_duration_display() {
             self.emit_call_state();
         }
-        self.schedule_call_duration_tick(token);
+        self.schedule_call_duration_tick();
+    }
+
+    fn dispatch_call_offer_timeout(&mut self, token: u64) {
+        if !self.call_offer_timeout_timer.is_current(token) {
+            return;
+        }
+        self.handle_call_offer_timeout();
     }
 
     fn handle_voice_recording_duration_tick(&mut self, token: u64) {
-        if token != self.voice_recording_tick_token {
+        if !self.voice_recording_timer.is_current(token) {
             return;
         }
         let mut should_continue = false;
@@ -3458,7 +3519,7 @@ impl AppCore {
             }
         }
         if should_continue {
-            self.schedule_voice_recording_tick(token);
+            self.schedule_voice_recording_tick();
         }
     }
 
@@ -5715,58 +5776,34 @@ impl AppCore {
         let mls_group_id_clone = mls_group_id.clone();
 
         self.runtime.spawn(async move {
-            // Retry with exponential backoff, matching key-package publish pattern.
-            // Some relays require NIP-42 auth before accepting protected events.
-            let mut last_err: Option<String> = None;
-            for attempt in 0..5u8 {
-                match client.send_event_to(&relays, &event).await {
-                    Ok(output) if !output.success.is_empty() => {
-                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::GroupEvolutionPublished {
-                                chat_id,
-                                mls_group_id: mls_group_id_clone,
-                                welcome_rumors,
-                                added_pubkeys,
-                                ok: true,
-                                error: None,
-                            },
-                        )));
-                        return;
-                    }
-                    Ok(output) => {
-                        let errors: Vec<&str> =
-                            output.failed.values().map(|s| s.as_str()).collect();
-                        let summary = if errors.is_empty() {
-                            "no relay accepted event".to_string()
-                        } else {
-                            errors.join("; ")
-                        };
-                        let any_retryable = errors.iter().any(|e| {
-                            e.contains("protected")
-                                || e.contains("auth")
-                                || e.contains("AUTH")
-                        });
-                        last_err = Some(summary);
-                        if !any_retryable {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        last_err = Some(e.to_string());
-                    }
+            let outcome = relay_publish::publish_event_with_retry(
+                &client,
+                &relays,
+                &event,
+                5,
+                "group evolution",
+                false,
+            )
+            .await;
+            let (ok, error) = match outcome {
+                relay_publish::PublishOutcome::Ok => (true, None),
+                relay_publish::PublishOutcome::Err(err) => {
+                    tracing::warn!(
+                        error = err,
+                        chat_id,
+                        "evolution event broadcast failed after retries"
+                    );
+                    (false, Some(err))
                 }
-                let delay_ms = 250u64.saturating_mul(1u64 << attempt);
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            }
-            tracing::warn!(error = ?last_err, chat_id, "evolution event broadcast failed after retries");
+            };
             let _ = tx.send(CoreMsg::Internal(Box::new(
                 InternalEvent::GroupEvolutionPublished {
                     chat_id,
                     mls_group_id: mls_group_id_clone,
                     welcome_rumors,
                     added_pubkeys,
-                    ok: false,
-                    error: last_err,
+                    ok,
+                    error,
                 },
             )));
         });

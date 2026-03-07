@@ -2,6 +2,7 @@ use iced::widget::{button, center, column, container, row, shader, stack, text, 
 use iced::{Alignment, Element, Fill, Theme};
 use pika_core::{CallState, CallStatus};
 
+use super::avatar::{avatar_circle, AvatarCache};
 use crate::video::DesktopVideoPipeline;
 use crate::{design, theme};
 
@@ -21,7 +22,9 @@ pub enum Message {
 pub fn call_screen_view<'a>(
     call: &'a CallState,
     peer_name: &'a str,
+    peer_picture_url: Option<&str>,
     video_pipeline: &DesktopVideoPipeline,
+    cache: &mut AvatarCache,
 ) -> Element<'a, Message, Theme> {
     let status_text = match &call.status {
         CallStatus::Offering => "Calling\u{2026}",
@@ -47,32 +50,18 @@ pub fn call_screen_view<'a>(
     }
 
     // Audio call (or video call without a frame yet): standard layout
-    build_audio_call_layout(call, peer_name, status_text)
+    build_audio_call_layout(call, peer_name, peer_picture_url, status_text, cache)
 }
 
 fn build_audio_call_layout<'a>(
     call: &'a CallState,
     peer_name: &'a str,
+    peer_picture_url: Option<&str>,
     status_text: &'a str,
+    cache: &mut AvatarCache,
 ) -> Element<'a, Message, Theme> {
-    let initial = peer_name
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .to_string();
-    let avatar = container(text(initial).size(42).color(iced::Color::WHITE).center())
-        .width(112)
-        .height(112)
-        .center_x(112)
-        .center_y(112)
-        .style(|_: &Theme| container::Style {
-            background: Some(iced::Background::Color(iced::Color::from_rgba(
-                1.0, 1.0, 1.0, 0.18,
-            ))),
-            border: iced::border::rounded(56),
-            ..Default::default()
-        });
+    let avatar: Element<'a, Message, Theme> =
+        avatar_circle(Some(peer_name), peer_picture_url, 112.0, cache);
 
     let mut content = column![
         dismiss_button_row(),

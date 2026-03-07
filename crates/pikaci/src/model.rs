@@ -32,6 +32,7 @@ pub enum RunStatus {
     Running,
     Passed,
     Failed,
+    Skipped,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -60,11 +61,21 @@ pub struct JobRecord {
 pub struct RunRecord {
     pub run_id: String,
     pub status: RunStatus,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub target_description: Option<String>,
     pub source_root: String,
     pub snapshot_dir: String,
     pub git_head: Option<String>,
     pub git_dirty: Option<bool>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub filters: Vec<String>,
+    #[serde(default)]
+    pub message: Option<String>,
     pub jobs: Vec<JobRecord>,
 }

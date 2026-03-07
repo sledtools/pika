@@ -268,14 +268,22 @@ pre-merge-pikachat:
 
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
 pre-merge-agent-contracts:
-    cargo test -p pika-agent-microvm
-    cargo test -p pika-server -- agent_api::tests
-    cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        cargo run -q -p pikaci -- run pre-merge-agent-contracts
+    else
+        cargo test -p pika-agent-microvm
+        cargo test -p pika-server -- agent_api::tests
+        cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
+    fi
     cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
-    @echo "pre-merge-agent-contracts complete"
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_chat_reply_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic agent_http_cli_chat_no_reply_timeout_local -- --ignored --nocapture
+    echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.
 pre-merge-rmp:

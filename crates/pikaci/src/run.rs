@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::executor::{HostContext, run_vfkit_job};
 use crate::model::{JobRecord, JobSpec, RunRecord, RunStatus};
-use crate::snapshot::create_snapshot;
+use crate::snapshot::{create_snapshot, git_dirty, git_head};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogKind {
@@ -28,11 +28,28 @@ pub struct RunOptions {
     pub state_root: PathBuf,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RunMetadata {
+    pub target_id: Option<String>,
+    pub target_description: Option<String>,
+    pub changed_files: Vec<String>,
+    pub filters: Vec<String>,
+    pub message: Option<String>,
+}
+
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
     run_jobs(std::slice::from_ref(job), options)
 }
 
 pub fn run_jobs(jobs: &[JobSpec], options: &RunOptions) -> anyhow::Result<RunRecord> {
+    run_jobs_with_metadata(jobs, options, RunMetadata::default())
+}
+
+pub fn run_jobs_with_metadata(
+    jobs: &[JobSpec],
+    options: &RunOptions,
+    metadata: RunMetadata,
+) -> anyhow::Result<RunRecord> {
     let run_id = new_run_id();
     let created_at = Utc::now().to_rfc3339();
     let run_dir = options.state_root.join("runs").join(&run_id);
@@ -51,12 +68,17 @@ pub fn run_jobs(jobs: &[JobSpec], options: &RunOptions) -> anyhow::Result<RunRec
     let mut run_record = RunRecord {
         run_id: run_id.clone(),
         status: RunStatus::Running,
+        target_id: metadata.target_id,
+        target_description: metadata.target_description,
         source_root: snapshot.source_root.clone(),
         snapshot_dir: snapshot.snapshot_dir.clone(),
         git_head: snapshot.git_head.clone(),
         git_dirty: snapshot.git_dirty,
         created_at: created_at.clone(),
         finished_at: None,
+        changed_files: metadata.changed_files,
+        filters: metadata.filters,
+        message: metadata.message,
         jobs: Vec::new(),
     };
     write_run_record(&run_dir, &run_record)?;
@@ -90,6 +112,35 @@ pub fn run_jobs(jobs: &[JobSpec], options: &RunOptions) -> anyhow::Result<RunRec
         RunStatus::Passed
     };
     run_record.finished_at = Some(Utc::now().to_rfc3339());
+    write_run_record(&run_dir, &run_record)?;
+    Ok(run_record)
+}
+
+pub fn record_skipped_run(
+    options: &RunOptions,
+    metadata: RunMetadata,
+) -> anyhow::Result<RunRecord> {
+    let run_id = new_run_id();
+    let created_at = Utc::now().to_rfc3339();
+    let run_dir = options.state_root.join("runs").join(&run_id);
+    fs::create_dir_all(&run_dir).with_context(|| format!("create {}", run_dir.display()))?;
+
+    let run_record = RunRecord {
+        run_id,
+        status: RunStatus::Skipped,
+        target_id: metadata.target_id,
+        target_description: metadata.target_description,
+        source_root: options.source_root.display().to_string(),
+        snapshot_dir: String::new(),
+        git_head: git_head(&options.source_root),
+        git_dirty: git_dirty(&options.source_root),
+        created_at: created_at.clone(),
+        finished_at: Some(created_at),
+        changed_files: metadata.changed_files,
+        filters: metadata.filters,
+        message: metadata.message,
+        jobs: Vec::new(),
+    };
     write_run_record(&run_dir, &run_record)?;
     Ok(run_record)
 }
@@ -180,7 +231,7 @@ pub fn load_logs(
     job_id: Option<&str>,
     kind: LogKind,
 ) -> anyhow::Result<Logs> {
-    let run = load_run(state_root, run_id)?;
+    let run = load_run_record(state_root, run_id)?;
     let job = if let Some(job_id) = job_id {
         run.jobs
             .iter()
@@ -211,7 +262,7 @@ pub fn load_logs(
     Ok(Logs { host, guest })
 }
 
-fn load_run(state_root: &Path, run_id: &str) -> anyhow::Result<RunRecord> {
+pub fn load_run_record(state_root: &Path, run_id: &str) -> anyhow::Result<RunRecord> {
     let path = state_root.join("runs").join(run_id).join("run.json");
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))

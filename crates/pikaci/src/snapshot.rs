@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
@@ -85,16 +86,29 @@ fn should_skip(name: &str, root: bool) -> bool {
         || (!root && name == "node_modules")
 }
 
-fn git_head(source_root: &Path) -> Option<String> {
+pub fn git_head(source_root: &Path) -> Option<String> {
     run_git(source_root, &["rev-parse", "HEAD"])
 }
 
-fn git_dirty(source_root: &Path) -> Option<bool> {
+pub fn git_dirty(source_root: &Path) -> Option<bool> {
     let output = run_git(
         source_root,
         &["status", "--short", "--untracked-files=normal"],
     )?;
     Some(!output.trim().is_empty())
+}
+
+pub fn git_changed_files(source_root: &Path) -> Option<Vec<String>> {
+    let tracked = run_git_lines(
+        source_root,
+        &["diff", "--name-only", "--relative", "HEAD", "--"],
+    )?;
+    let untracked = run_git_lines(source_root, &["ls-files", "--others", "--exclude-standard"])?;
+
+    let mut files = BTreeSet::new();
+    files.extend(tracked);
+    files.extend(untracked);
+    Some(files.into_iter().collect())
 }
 
 fn run_git(source_root: &Path, args: &[&str]) -> Option<String> {
@@ -113,6 +127,27 @@ fn run_git(source_root: &Path, args: &[&str]) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn run_git_lines(source_root: &Path, args: &[&str]) -> Option<Vec<String>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(source_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    )
 }
 
 fn write_json(path: PathBuf, value: &impl Serialize) -> anyhow::Result<()> {

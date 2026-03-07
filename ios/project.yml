@@ -17,7 +17,7 @@ settings:
     # PIKA_APP_GROUP: derived from bundle ID. Override via xcodebuild if needed.
     PIKA_APP_GROUP: "group.$(PIKA_APP_BUNDLE_ID)"
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: 1.0.0
+    MARKETING_VERSION: 1.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.0
 

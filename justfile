@@ -525,6 +525,32 @@ android-ui-e2e-local:
 desktop-e2e-local:
     cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
 
+# Sync the shared release version across app + pikachat/OpenClaw manifests.
+release-bump VERSION:
+    set -euo pipefail; \
+    release_version="{{ VERSION }}"; \
+    case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
+    ./scripts/set-release-version "$release_version"
+
+# Create a single coordinated release version commit without tagging.
+release-commit VERSION:
+    set -euo pipefail; \
+    release_version="{{ VERSION }}"; \
+    case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
+    branch="$(git rev-parse --abbrev-ref HEAD)"; \
+    if [ "$branch" != "master" ]; then \
+      echo "error: release commits must be created from master (currently on $branch)"; \
+      exit 1; \
+    fi; \
+    if [ -n "$(git status --porcelain)" ]; then \
+      echo "error: git working tree is dirty"; \
+      git status --short; \
+      exit 1; \
+    fi; \
+    ./scripts/set-release-version "$release_version"; \
+    git add VERSION ios/project.yml cli/Cargo.toml pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json Cargo.lock; \
+    git commit -m "release: bump to $release_version"
+
 # Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
 release VERSION:
     set -euo pipefail; \

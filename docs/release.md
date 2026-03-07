@@ -1,7 +1,7 @@
 ---
-summary: Release process for Pika app artifacts (Android + macOS) and pikachat
+summary: Release process for Pika app artifacts (Android + macOS), iOS TestFlight, and pikachat
 read_when:
-  - preparing an Android, macOS, or pikachat release
+  - preparing an Android, macOS, iOS, or pikachat release
   - rotating Android signing keys or CI release secrets
   - changing release automation in justfile, Gradle, or GitHub Actions
 ---
@@ -13,9 +13,16 @@ This repo has two independent release tag families:
 | Target | Tag pattern | CI workflow | Artifacts |
 |--------|------------|-------------|-----------|
 | Pika app release | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` | Signed Android APK + macOS universal DMG + SHA256SUMS on GitHub Releases |
+| iOS TestFlight | `master` push or manual dispatch | `ios-testflight.yml` | Signed IPA uploaded to TestFlight |
 | Zapstore publish | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`publish-zapstore` job) | NIP-82 app/release/asset events on Zapstore relays |
 | Nostr announcement | `pika/v*` (e.g. `pika/v0.2.2`) | `release.yml` (`announce-release` job) | Kind-1 release announcement note |
 | pikachat (OpenClaw extension) | `pikachat-v*` (e.g. `pikachat-v0.5.2`) | `pikachat-release.yml` | Linux + macOS binaries on GitHub Releases, npm package |
+
+There is not currently a single cross-repo version file for both release
+families. `VERSION` is the source of truth for Pika app artifacts (Android,
+macOS, and the iOS marketing version). pikachat uses concrete versions in
+`cli/Cargo.toml` and the OpenClaw extension `package.json`, but those can be
+synced from `VERSION` with `./scripts/sync-pikachat-version`.
 
 **Important:** All release tags must be created from the `master` branch. Tags on
 feature branches break GitHub's auto-generated release notes (it diffs between
@@ -30,12 +37,19 @@ recipe enforces this with a branch check.
 
 - Version lives in `VERSION` (format `x.y.z`).
 - Android reads it in `android/app/build.gradle.kts`.
+- macOS release packaging reads it in `scripts/build-macos-release`.
+- iOS TestFlight stamps it into `CFBundleShortVersionString` during the Xcode
+  build via `ios/project.yml`.
 - `versionCode` is `major*10000 + minor*100 + patch`.
 - Helper script:
   - `./scripts/version-read --name`
   - `./scripts/version-read --code`
 
 CI enforces that the pushed tag equals `pika/v$(cat VERSION)`.
+
+For a coordinated cross-channel release, use `just release-commit <version>` to
+create one version-only commit that syncs `VERSION`, iOS `MARKETING_VERSION`,
+`cli/Cargo.toml`, and the OpenClaw extension `package.json`.
 
 ### Runbook
 
@@ -44,10 +58,8 @@ CI enforces that the pushed tag equals `pika/v$(cat VERSION)`.
 git checkout master
 git pull origin master
 
-# 2. Bump the version
-echo "0.3.0" > VERSION
-git add VERSION
-git commit -m "release: bump to 0.3.0"
+# 2. Create the coordinated release version commit
+just release-commit 0.3.0
 git push origin master
 
 # 3. Tag and push (this triggers the CI release)
@@ -137,6 +149,27 @@ cleanup), and passes it to `zsp` only for the publish command.
 
 ---
 
+## iOS TestFlight
+
+iOS does not use a release tag. The workflow in `/.github/workflows/ios-testflight.yml`
+runs on every push to `master` and on manual dispatch.
+
+### Version source of truth
+
+- Marketing version: `VERSION` at the repo root
+- Build number in CI: `github.run_number`, written to `ios/.build-number`
+- Build number outside CI: timestamp fallback from `ios/project.yml`
+  (`date +"%Y%m%d%H%M"`) when `ios/.build-number` is absent
+
+For CI builds on `master`, build-number conflicts should not happen because
+`github.run_number` increases monotonically for each workflow run. The timestamp
+fallback only matters for local/manual archives and can collide if you archive
+twice within the same minute for the same marketing version.
+
+See `docs/ios-testflight-ci.md` for App Store Connect setup and troubleshooting.
+
+---
+
 ## pikachat (OpenClaw extension)
 
 pikachat is the sidecar binary used by the OpenClaw bot. It is released as
@@ -146,9 +179,21 @@ and as an npm package.
 ### Version source of truth
 
 - Rust version: `cli/Cargo.toml`
-- npm version: `pikachat-openclaw/openclaw/extensions/pikachat/package.json`
+- npm version: `pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json`
 
-Both must match. The `bump-pikachat.sh` script keeps them in sync.
+Both must match.
+
+Helpers:
+
+- `just release-commit <version>` makes a coordinated version-only commit for
+  app + pikachat/OpenClaw releases
+- `just release-bump <version>` syncs the version files without committing
+- `./scripts/sync-pikachat-version` syncs both files from repo-root `VERSION`
+  without committing or tagging
+- `./scripts/bump-pikachat.sh` is the pikachat-only release helper: it requires
+  a clean `master` checkout and refuses version drift unless
+  `PIKACHAT_ALLOW_VERSION_DRIFT=1` is set
+- `./scripts/bump-pikachat.sh` with no argument uses repo-root `VERSION`
 
 ### Runbook
 
@@ -157,24 +202,43 @@ Both must match. The `bump-pikachat.sh` script keeps them in sync.
 git checkout master
 git pull origin master
 
-# 2. Bump version, commit, and tag (all done by the script)
-./scripts/bump-pikachat.sh 0.5.2
+# 2. Preferred for coordinated releases after the version commit is on master:
+gh workflow run pikachat-release.yml -R sledtools/pika -f version=0.5.2
 
-# 3. Push commit and tag (this triggers the CI release)
-git push origin master pikachat-v0.5.2
-
-# 4. Monitor the release workflow
+# 3. Monitor the release workflow
 gh run list --limit 1
 gh run watch <run-id>
 
-# 5. Verify
+# 4. Verify
 gh release view pikachat-v0.5.2
 npm view pikachat-openclaw version
 ```
 
+Alternate path for a pikachat-only release from a clean `master` checkout:
+
+```bash
+# Reuse repo-root VERSION
+./scripts/bump-pikachat.sh
+
+# Or intentionally diverge from VERSION
+PIKACHAT_ALLOW_VERSION_DRIFT=1 ./scripts/bump-pikachat.sh 0.5.2
+
+git push origin master pikachat-v0.5.2
+```
+
 ### CI workflow
 
-`/.github/workflows/pikachat-release.yml` runs on `push.tags: ["pikachat-v*"]`.
+`/.github/workflows/pikachat-release.yml` runs on both:
+
+- `push.tags: ["pikachat-v*"]`
+- `workflow_dispatch`
+
+Recommended usage:
+
+- coordinated app + pikachat releases: use `workflow_dispatch` after the
+  version commit is merged to `master`
+- pikachat-only releases: use `./scripts/bump-pikachat.sh` and push the
+  `pikachat-vX.Y.Z` tag
 
 Jobs:
 

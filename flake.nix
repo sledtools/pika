@@ -176,7 +176,8 @@
         meta.mainProgram = "pika-relay";
       };
     in
-    flake-utils.lib.eachDefaultSystem (system:
+    nixpkgs.lib.recursiveUpdate
+    (flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -326,6 +327,40 @@
         linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
         linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
         linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
+        pikaciSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./flake.nix
+            ./flake.lock
+            ./cli
+            ./crates
+            ./nix
+            ./rust
+            ./uniffi-bindgen
+          ];
+        };
+        pikaciPkg = pkgs.rustPlatform.buildRustPackage {
+          pname = "pikaci";
+          version = "0.1.0";
+          src = pikaciSrc;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+              "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            };
+          };
+          cargoBuildFlags = [ "-p" "pikaci" ];
+          cargoTestFlags = [ "-p" "pikaci" ];
+          doCheck = false;
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          meta = {
+            mainProgram = "pikaci";
+          };
+        };
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -564,8 +599,22 @@ EOF
             fi
           '';
         };
+
+        packages = {
+          pikaci = pikaciPkg;
+          default = pikaciPkg;
+        };
+
+        apps = {
+          pikaci = flake-utils.lib.mkApp {
+            drv = pikaciPkg;
+          };
+          default = flake-utils.lib.mkApp {
+            drv = pikaciPkg;
+          };
+        };
       }
-    ) // {
+    )) {
       lib = {
         pikaci = {
           mkGuestModule = import ./nix/pikaci/guest-module.nix;

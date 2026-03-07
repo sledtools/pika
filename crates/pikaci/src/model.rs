@@ -19,6 +19,9 @@ pub enum GuestCommand {
     ShellCommand {
         command: &'static str,
     },
+    ShellCommandAsRoot {
+        command: &'static str,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +29,7 @@ pub struct JobSpec {
     pub id: &'static str,
     pub description: &'static str,
     pub timeout_secs: u64,
+    pub writable_workspace: bool,
     pub guest_command: GuestCommand,
 }
 

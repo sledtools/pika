@@ -21,7 +21,7 @@ pub fn create_snapshot(
     snapshot_dir: &Path,
     created_at: &str,
 ) -> anyhow::Result<SnapshotMetadata> {
-    copy_tree(source_root, snapshot_dir, true)?;
+    copy_filtered_tree(source_root, snapshot_dir)?;
     let metadata = SnapshotMetadata {
         source_root: source_root.display().to_string(),
         snapshot_dir: snapshot_dir.display().to_string(),
@@ -31,6 +31,14 @@ pub fn create_snapshot(
     };
     write_json(snapshot_dir.join("pikaci-snapshot.json"), &metadata)?;
     Ok(metadata)
+}
+
+pub fn materialize_workspace(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    copy_filtered_tree(source, destination)
+}
+
+fn copy_filtered_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    copy_tree(source, destination, true)
 }
 
 fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()> {

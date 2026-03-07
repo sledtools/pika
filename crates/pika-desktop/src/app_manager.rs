@@ -584,7 +584,7 @@ mod tests {
         let data_dir = temp.path().join("desktop-e2e-local");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
         let config = format!(
-            r#"{{"disable_network":false,"relay_urls":["{relay}"],"key_package_relay_urls":["{relay}"],"call_moq_url":"https://us-east.moq.logos.surf/anon","call_broadcast_prefix":"pika/calls"}}"#,
+            r#"{{"disable_network":false,"relay_urls":["{relay}"],"key_package_relay_urls":["{relay}"],"call_moq_url":"https://us-east.moq.logos.surf/anon","call_broadcast_prefix":"pika/calls","call_audio_backend":"mock"}}"#,
             relay = relay_url
         );
         std::fs::write(data_dir.join("pika_config.json"), config).expect("write pika_config.json");

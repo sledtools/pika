@@ -209,7 +209,7 @@
           platforms-android-35
           ndk-28-2-13676358
           emulator
-          (if pkgs.stdenv.isDarwin
+          (if pkgs.stdenv.hostPlatform.isAarch64
            then system-images-android-35-google-apis-arm64-v8a
            else system-images-android-35-google-apis-x86-64)
         ]) else null;
@@ -600,10 +600,18 @@ EOF
           '';
         };
 
-        packages = {
-          pikaci = pikaciPkg;
-          default = pikaciPkg;
-        };
+        packages =
+          {
+            pikaci = pikaciPkg;
+            default = pikaciPkg;
+            rustToolchain = rustToolchain;
+          }
+          // pkgs.lib.optionalAttrs hasAndroidSdk {
+            androidSdk = androidSdk;
+            androidJdk = pkgs.jdk17_headless;
+            androidGradle = pkgs.gradle;
+            androidCargoNdk = pkgs.cargo-ndk;
+          };
 
         apps = {
           pikaci = flake-utils.lib.mkApp {

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::executor::{HostContext, run_vfkit_job};
 use crate::model::{JobRecord, JobSpec, RunRecord, RunStatus};
-use crate::snapshot::{create_snapshot, git_dirty, git_head};
+use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogKind {
@@ -128,7 +128,7 @@ fn run_jobs_against_snapshot(
             &snapshot.snapshot_dir,
             &prepared.jobs_dir,
             &prepared.shared_cargo_home_dir,
-            &prepared.shared_target_dir,
+            &prepared.run_target_dir,
         )?;
         if job_record.status == RunStatus::Failed {
             run_failed = true;
@@ -213,7 +213,8 @@ fn run_one_job(
     write_job_record(&job_dir, &job_record)?;
 
     let ctx = HostContext {
-        workspace_snapshot_dir: snapshot_dir.to_path_buf(),
+        workspace_snapshot_dir: prepare_job_workspace(job, snapshot_dir, &job_dir)?,
+        workspace_read_only: !job.writable_workspace,
         job_dir: job_dir.clone(),
         host_log_path,
         guest_log_path,
@@ -238,6 +239,20 @@ fn run_one_job(
     }
     write_job_record(&job_dir, &job_record)?;
     Ok(job_record)
+}
+
+fn prepare_job_workspace(
+    job: &JobSpec,
+    snapshot_dir: &Path,
+    job_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    if !job.writable_workspace {
+        return Ok(snapshot_dir.to_path_buf());
+    }
+
+    let workspace_dir = job_dir.join("workspace");
+    materialize_workspace(snapshot_dir, &workspace_dir)?;
+    Ok(workspace_dir)
 }
 
 pub fn list_runs(state_root: &Path) -> anyhow::Result<Vec<RunRecord>> {
@@ -334,7 +349,7 @@ struct PreparedRun {
     run_dir: PathBuf,
     jobs_dir: PathBuf,
     shared_cargo_home_dir: PathBuf,
-    shared_target_dir: PathBuf,
+    run_target_dir: PathBuf,
 }
 
 struct SnapshotSource {
@@ -352,18 +367,18 @@ fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
     let jobs_dir = run_dir.join("jobs");
     let cache_dir = options.state_root.join("cache");
     let shared_cargo_home_dir = cache_dir.join("cargo-home");
-    let shared_target_dir = cache_dir.join("target");
+    let run_target_dir = run_dir.join("cargo-target");
     fs::create_dir_all(&jobs_dir).with_context(|| format!("create {}", jobs_dir.display()))?;
     fs::create_dir_all(&shared_cargo_home_dir)
         .with_context(|| format!("create {}", shared_cargo_home_dir.display()))?;
-    fs::create_dir_all(&shared_target_dir)
-        .with_context(|| format!("create {}", shared_target_dir.display()))?;
+    fs::create_dir_all(&run_target_dir)
+        .with_context(|| format!("create {}", run_target_dir.display()))?;
     Ok(PreparedRun {
         run_id,
         created_at,
         run_dir,
         jobs_dir,
         shared_cargo_home_dir,
-        shared_target_dir,
+        run_target_dir,
     })
 }

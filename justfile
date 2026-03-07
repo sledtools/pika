@@ -229,7 +229,13 @@ pre-commit: fmt clippy
 
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt clippy
-    just test --lib --tests
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        nix run .#pikaci -- run pre-merge-pika-rust
+    else
+        just test --lib --tests
+    fi
     cd android && ./gradlew :app:compileDebugAndroidTestKotlin
     cargo build -p pikachat
     just desktop-check
@@ -242,27 +248,39 @@ pre-merge-pika: fmt clippy
 pre-merge-notifications:
     #!/usr/bin/env bash
     set -euo pipefail
-    SD="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
-    cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
-    trap cleanup EXIT
-    cargo run -q -p pikahut -- up --profile postgres --background --state-dir "$SD" >/dev/null
-    eval "$(cargo run -q -p pikahut -- env --state-dir "$SD")"
     cargo clippy -p pika-server -- -D warnings
-    cargo test -p pika-server -- --test-threads=1
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        nix run .#pikaci -- run pre-merge-notifications
+    else
+        SD="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
+        cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
+        trap cleanup EXIT
+        cargo run -q -p pikahut -- up --profile postgres --background --state-dir "$SD" >/dev/null
+        eval "$(cargo run -q -p pikahut -- env --state-dir "$SD")"
+        cargo test -p pika-server -- --test-threads=1
+    fi
     echo "pre-merge-notifications complete"
 
 # CI-safe pre-merge for the pikachat lane (deterministic only).
 pre-merge-pikachat:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo clippy -p pikachat -- -D warnings
     cargo clippy -p pikachat-sidecar -- -D warnings
-    cargo test -p pikachat
-    cargo test -p pikachat-sidecar
-    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture
-    just openclaw-pikachat-deterministic
-    @echo "pre-merge-pikachat complete"
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        nix run .#pikaci -- run pre-merge-pikachat-rust
+        cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
+        npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
+    else
+        cargo test -p pikachat
+        cargo test -p pikachat-sidecar
+        cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+        cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
+        cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture
+        cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture
+        just openclaw-pikachat-deterministic
+    fi
+    echo "pre-merge-pikachat complete"
 
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
 pre-merge-agent-contracts:
@@ -299,7 +317,11 @@ pre-merge-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo clippy -p pikahut -- -D warnings
-    cargo test -p pikahut
+    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        nix run .#pikaci -- run pre-merge-fixture-rust
+    else
+        cargo test -p pikahut
+    fi
     SD="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
     cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT

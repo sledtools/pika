@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,7 @@ use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus};
 #[derive(Clone, Debug)]
 pub struct HostContext {
     pub workspace_snapshot_dir: PathBuf,
+    pub workspace_read_only: bool,
     pub job_dir: PathBuf,
     pub host_log_path: PathBuf,
     pub guest_log_path: PathBuf,
@@ -52,6 +54,7 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
     let flake_nix = render_guest_flake(
         job,
         &ctx.workspace_snapshot_dir,
+        ctx.workspace_read_only,
         &artifacts_dir,
         &ctx.shared_cargo_home_dir,
         &ctx.shared_target_dir,
@@ -309,40 +312,56 @@ fn setting_contains(raw: &str, needle: &str) -> bool {
 
 fn render_guest_flake(
     job: &JobSpec,
-    snapshot_dir: &Path,
+    workspace_dir: &Path,
+    workspace_read_only: bool,
     artifacts_dir: &Path,
     cargo_home_dir: &Path,
     target_dir: &Path,
     socket_path: &Path,
 ) -> anyhow::Result<String> {
-    let guest_command = match job.guest_command {
-        GuestCommand::ExactCargoTest { package, test_name } => format!(
-            "cargo test -p {} {} -- --exact --nocapture",
-            shell_escape(package),
-            shell_escape(test_name)
+    let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
+    let (guest_command, run_as_root) = match job.guest_command {
+        GuestCommand::ExactCargoTest { package, test_name } => (
+            format!(
+                "cargo test -p {} {} -- --exact --nocapture",
+                shell_escape(package),
+                shell_escape(test_name)
+            ),
+            false,
         ),
-        GuestCommand::PackageUnitTests { package } => {
+        GuestCommand::PackageUnitTests { package } => (
             format!(
                 "cargo test -p {} --lib -- --nocapture",
                 shell_escape(package)
-            )
-        }
-        GuestCommand::PackageTests { package } => {
-            format!("cargo test -p {} -- --nocapture", shell_escape(package))
-        }
-        GuestCommand::FilteredCargoTests { package, filter } => format!(
-            "cargo test -p {} -- {} --nocapture",
-            shell_escape(package),
-            shell_escape(filter)
+            ),
+            false,
         ),
-        GuestCommand::ShellCommand { command } => command.to_string(),
+        GuestCommand::PackageTests { package } => (
+            format!("cargo test -p {} -- --nocapture", shell_escape(package)),
+            false,
+        ),
+        GuestCommand::FilteredCargoTests { package, filter } => (
+            format!(
+                "cargo test -p {} -- {} --nocapture",
+                shell_escape(package),
+                shell_escape(filter)
+            ),
+            false,
+        ),
+        GuestCommand::ShellCommand { command } => {
+            (format!("bash -lc {}", shell_escape(command)), false)
+        }
+        GuestCommand::ShellCommandAsRoot { command } => {
+            (format!("bash -lc {}", shell_escape(command)), true)
+        }
     };
-    let snapshot_dir = nix_escape(&snapshot_dir.display().to_string());
+    let workspace_dir = nix_escape(&workspace_dir.display().to_string());
     let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
     let cargo_home_dir = nix_escape(&cargo_home_dir.display().to_string());
     let target_dir = nix_escape(&target_dir.display().to_string());
     let socket_path = nix_escape(&socket_path.display().to_string());
     let guest_command = nix_escape(&guest_command);
+    let workspace_read_only = if workspace_read_only { "true" } else { "false" };
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
     let timeout_secs = job.timeout_secs;
 
@@ -350,7 +369,7 @@ fn render_guest_flake(
         r#"{{
   description = "pikaci wave1 guest";
 
-  inputs.pika.url = "path:{snapshot_dir}";
+  inputs.pika.url = "path:{workspace_dir}";
   inputs.nixpkgs.follows = "pika/nixpkgs";
   inputs.microvm.follows = "pika/microvm";
 
@@ -361,12 +380,21 @@ fn render_guest_flake(
         microvm.nixosModules.microvm
         (pika.lib.pikaci.mkGuestModule {{
           hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;
-          snapshotDir = "{snapshot_dir}";
+          hostUid = {host_uid};
+          hostGid = {host_gid};
+          workspaceDir = "{workspace_dir}";
+          workspaceReadOnly = {workspace_read_only};
           artifactsDir = "{artifacts_dir}";
           cargoHomeDir = "{cargo_home_dir}";
           cargoTargetDir = "{target_dir}";
           socketPath = "{socket_path}";
+          rustToolchain = pika.packages.aarch64-linux.rustToolchain;
+          androidSdk = if pika.packages.aarch64-linux ? androidSdk then pika.packages.aarch64-linux.androidSdk else null;
+          androidJdk = if pika.packages.aarch64-linux ? androidJdk then pika.packages.aarch64-linux.androidJdk else null;
+          androidGradle = if pika.packages.aarch64-linux ? androidGradle then pika.packages.aarch64-linux.androidGradle else null;
+          androidCargoNdk = if pika.packages.aarch64-linux ? androidCargoNdk then pika.packages.aarch64-linux.androidCargoNdk else null;
           guestCommand = "{guest_command}";
+          runAsRoot = {run_as_root};
           timeoutSecs = {timeout_secs};
           cacertBundle = "{cacert_bundle}";
         }})
@@ -376,6 +404,14 @@ fn render_guest_flake(
 }}
 "#
     ))
+}
+
+fn ownership_ids(path: &Path) -> anyhow::Result<(u32, u32)> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => fs::metadata(".").context("read metadata for current directory")?,
+    };
+    Ok((metadata.uid(), metadata.gid()))
 }
 
 fn vfkit_socket_path(job: &JobSpec, artifacts_dir: &Path) -> PathBuf {
@@ -413,6 +449,7 @@ mod tests {
             id: "beachhead",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::ExactCargoTest {
                 package: "pika-agent-control-plane",
                 test_name: "tests::command_envelope_round_trips",
@@ -421,6 +458,7 @@ mod tests {
         let flake = render_guest_flake(
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
+            true,
             Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
             Path::new("/tmp/pikaci/cache/cargo-home"),
             Path::new("/tmp/pikaci/cache/target"),
@@ -432,7 +470,8 @@ mod tests {
         assert!(flake.contains("pika.lib.pikaci.mkGuestModule"));
         assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;"));
         assert!(flake.contains("guestCommand = \"cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture\";"));
-        assert!(flake.contains("snapshotDir = \"/tmp/pikaci/snapshot\";"));
+        assert!(flake.contains("workspaceDir = \"/tmp/pikaci/snapshot\";"));
+        assert!(flake.contains("workspaceReadOnly = true;"));
         assert!(flake.contains("artifactsDir = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
         assert!(flake.contains("cargoHomeDir = \"/tmp/pikaci/cache/cargo-home\";"));
         assert!(flake.contains("cargoTargetDir = \"/tmp/pikaci/cache/target\";"));
@@ -455,6 +494,7 @@ mod tests {
             id: "beachhead",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::ExactCargoTest {
                 package: "pika-agent-control-plane",
                 test_name: "tests::command_envelope_round_trips",
@@ -475,6 +515,7 @@ mod tests {
             id: "agent-control-plane-unit",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
@@ -482,6 +523,7 @@ mod tests {
         let flake = render_guest_flake(
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
+            true,
             Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
             Path::new("/tmp/pikaci/cache/cargo-home"),
             Path::new("/tmp/pikaci/cache/target"),
@@ -500,6 +542,7 @@ mod tests {
             id: "agent-microvm-tests",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::PackageTests {
                 package: "pika-agent-microvm",
             },
@@ -507,6 +550,7 @@ mod tests {
         let package_flake = render_guest_flake(
             &package_spec,
             Path::new("/tmp/pikaci/snapshot"),
+            true,
             Path::new("/tmp/pikaci/jobs/agent-microvm-tests/artifacts"),
             Path::new("/tmp/pikaci/cache/cargo-home"),
             Path::new("/tmp/pikaci/cache/target"),
@@ -522,6 +566,7 @@ mod tests {
             id: "server-agent-api-tests",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::FilteredCargoTests {
                 package: "pika-server",
                 filter: "agent_api::tests",
@@ -530,6 +575,7 @@ mod tests {
         let filtered_flake = render_guest_flake(
             &filtered_spec,
             Path::new("/tmp/pikaci/snapshot"),
+            true,
             Path::new("/tmp/pikaci/jobs/server-agent-api-tests/artifacts"),
             Path::new("/tmp/pikaci/cache/cargo-home"),
             Path::new("/tmp/pikaci/cache/target"),
@@ -547,6 +593,7 @@ mod tests {
             id: "rmp-init-smoke-ci",
             description: "test",
             timeout_secs: 120,
+            writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
                 command: "set -euo pipefail; cargo build -p rmp-cli; echo ok",
             },
@@ -554,6 +601,7 @@ mod tests {
         let flake = render_guest_flake(
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
+            true,
             Path::new("/tmp/pikaci/jobs/rmp-init-smoke-ci/artifacts"),
             Path::new("/tmp/pikaci/cache/cargo-home"),
             Path::new("/tmp/pikaci/cache/target"),
@@ -561,9 +609,37 @@ mod tests {
         )
         .expect("render flake");
 
-        assert!(
-            flake
-                .contains("guestCommand = \"set -euo pipefail; cargo build -p rmp-cli; echo ok\";")
-        );
+        assert!(flake.contains(
+            "guestCommand = \"bash -lc 'set -euo pipefail; cargo build -p rmp-cli; echo ok'\";"
+        ));
+        assert!(flake.contains("runAsRoot = false;"));
+    }
+
+    #[test]
+    fn guest_flake_can_run_root_shell_commands() {
+        let spec = JobSpec {
+            id: "android-sdk-probe",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommandAsRoot {
+                command: "nix develop .#default -c bash -lc 'command -v adb'",
+            },
+        };
+        let flake = render_guest_flake(
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            true,
+            Path::new("/tmp/pikaci/jobs/android-sdk-probe/artifacts"),
+            Path::new("/tmp/pikaci/cache/cargo-home"),
+            Path::new("/tmp/pikaci/cache/target"),
+            Path::new("/tmp/pikaci-android-sdk-probe.sock"),
+        )
+        .expect("render flake");
+
+        assert!(flake.contains("guestCommand = \"bash -lc "));
+        assert!(flake.contains("nix develop .#default -c bash -lc"));
+        assert!(flake.contains("command -v adb"));
+        assert!(flake.contains("runAsRoot = true;"));
     }
 }

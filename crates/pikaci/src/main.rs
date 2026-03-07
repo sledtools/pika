@@ -163,6 +163,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 id: "beachhead",
                 description: "Run one tiny exact unit test in a vfkit guest",
                 timeout_secs: 1800,
+                writable_workspace: false,
                 guest_command: GuestCommand::ExactCargoTest {
                     package: "pika-agent-control-plane",
                     test_name: "tests::command_envelope_round_trips",
@@ -177,6 +178,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 id: "agent-control-plane-unit",
                 description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
                 timeout_secs: 1800,
+                writable_workspace: false,
                 guest_command: GuestCommand::PackageUnitTests {
                     package: "pika-agent-control-plane",
                 },
@@ -190,6 +192,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 id: "agent-microvm-tests",
                 description: "Run pika-agent-microvm tests in a vfkit guest",
                 timeout_secs: 1800,
+                writable_workspace: false,
                 guest_command: GuestCommand::PackageTests {
                     package: "pika-agent-microvm",
                 },
@@ -203,6 +206,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 id: "server-agent-api-tests",
                 description: "Run pika-server agent_api tests in a vfkit guest",
                 timeout_secs: 1800,
+                writable_workspace: false,
                 guest_command: GuestCommand::FilteredCargoTests {
                     package: "pika-server",
                     filter: "agent_api::tests",
@@ -217,6 +221,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 id: "core-agent-nip98-test",
                 description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
                 timeout_secs: 1800,
+                writable_workspace: false,
                 guest_command: GuestCommand::ExactCargoTest {
                     package: "pika_core",
                     test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
@@ -253,6 +258,183 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             jobs: agent_contract_jobs(),
         }),
+        "pre-merge-pika-rust" => Ok(TargetSpec {
+            id: "pre-merge-pika-rust",
+            description: "Run the VM-backed Rust tests from the pre-merge pika lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "rust/**",
+                "crates/pika-desktop/**",
+                "crates/pika-media/**",
+                "crates/pika-marmot-runtime/**",
+                "crates/pika-relay-profiles/**",
+                "crates/pika-tls/**",
+            ],
+            jobs: pika_rust_jobs(),
+        }),
+        "pre-merge-notifications" => Ok(TargetSpec {
+            id: "pre-merge-notifications",
+            description: "Run the VM-backed Rust tests from the notifications lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "crates/pika-server/**",
+                "crates/pikahut/**",
+                "crates/pika-marmot-runtime/**",
+                "crates/pika-relay-profiles/**",
+                "crates/pika-tls/**",
+            ],
+            jobs: notification_jobs(),
+        }),
+        "pre-merge-pikachat-rust" => Ok(TargetSpec {
+            id: "pre-merge-pikachat-rust",
+            description: "Run the VM-backed Rust tests from the pikachat lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "cli/**",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "crates/pika-desktop/**",
+                "crates/pikachat-sidecar/**",
+                "crates/pikahut/**",
+                "crates/pika-agent-protocol/**",
+                "crates/pika-marmot-runtime/**",
+                "crates/pika-media/**",
+                "crates/pika-relay-profiles/**",
+                "crates/pika-test-utils/**",
+                "crates/pika-tls/**",
+                "rust/**",
+            ],
+            jobs: pikachat_rust_jobs(),
+        }),
+        "pikachat-ui-e2e-local-desktop" => Ok(TargetSpec {
+            id: "pikachat-ui-e2e-local-desktop",
+            description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "pikachat-ui-e2e-local-desktop",
+                description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture",
+                },
+            }],
+        }),
+        "pika-desktop-e2e-compile" => Ok(TargetSpec {
+            id: "pika-desktop-e2e-compile",
+            description: "Compile the pika-desktop E2E test target in a vfkit guest without running it",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "pika-desktop-e2e-compile",
+                description: "Compile the pika-desktop E2E test target in a vfkit guest without running it",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika-desktop desktop_e2e_local_ping_pong_with_bot --no-run",
+                },
+            }],
+        }),
+        "pika-desktop-package-tests" => Ok(TargetSpec {
+            id: "pika-desktop-package-tests",
+            description: "Run pika-desktop package tests in a vfkit guest",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "pika-desktop-package-tests",
+                description: "Run pika-desktop package tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::PackageTests {
+                    package: "pika-desktop",
+                },
+            }],
+        }),
+        "pre-merge-fixture-rust" => Ok(TargetSpec {
+            id: "pre-merge-fixture-rust",
+            description: "Run the VM-backed Rust tests from the fixture lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                ".github/workflows/pre-merge.yml",
+                "crates/pikaci/**",
+                "crates/pikahut/**",
+                "crates/pika-marmot-runtime/**",
+                "crates/pika-relay-profiles/**",
+                "cmd/pika-relay/**",
+            ],
+            jobs: fixture_rust_jobs(),
+        }),
+        "android-sdk-probe" => Ok(TargetSpec {
+            id: "android-sdk-probe",
+            description: "Verify Android SDK tooling is available inside a Linux guest",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "android-sdk-probe",
+                description: "Verify Android tooling and AVD provisioning in a Linux guest",
+                timeout_secs: 3600,
+                writable_workspace: true,
+                guest_command: GuestCommand::ShellCommandAsRoot {
+                    command: concat!(
+                        "set -euo pipefail; ",
+                        "echo ANDROID_HOME=$ANDROID_HOME; ",
+                        "echo JAVA_HOME=$JAVA_HOME; ",
+                        "command -v java; ",
+                        "command -v adb; ",
+                        "command -v emulator; ",
+                        "command -v avdmanager; ",
+                        "command -v gradle; ",
+                        "cargo ndk --help >/dev/null; ",
+                        "rustc --print target-list | grep -qx aarch64-linux-android; ",
+                        "./tools/android-avd-ensure >/dev/null; ",
+                        "emulator -list-avds",
+                    ),
+                },
+            }],
+        }),
+        "android-nostr-connect-intent-test" => Ok(TargetSpec {
+            id: "android-nostr-connect-intent-test",
+            description: "Run the smallest Android instrumentation class in a Linux guest",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "android-nostr-connect-intent-test",
+                description: "Run NostrConnectIntentTest on a headless Android emulator in a Linux guest",
+                timeout_secs: 7200,
+                writable_workspace: true,
+                guest_command: GuestCommand::ShellCommandAsRoot {
+                    command: concat!(
+                        "set -euo pipefail; ",
+                        "export PIKA_RUST_PROFILE=debug; ",
+                        "export PIKA_ANDROID_ABI=arm64-v8a; ",
+                        "export PIKA_ANDROID_TEST_CLASS=com.pika.app.NostrConnectIntentTest; ",
+                        "export PIKA_ANDROID_FORCE_GUI=0; ",
+                        "export PIKA_ANDROID_EMULATOR_ARGS='-no-window -no-boot-anim -accel off'; ",
+                        "./tools/android-ui-test-ci",
+                    ),
+                },
+            }],
+        }),
         "pre-merge-rmp" => Ok(TargetSpec {
             id: "pre-merge-rmp",
             description: "Run the VM-backed pre-merge RMP lane",
@@ -288,6 +470,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             id: "agent-control-plane-unit",
             description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
             timeout_secs: 1800,
+            writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
@@ -296,6 +479,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             id: "agent-microvm-tests",
             description: "Run pika-agent-microvm tests in a vfkit guest",
             timeout_secs: 1800,
+            writable_workspace: false,
             guest_command: GuestCommand::PackageTests {
                 package: "pika-agent-microvm",
             },
@@ -304,6 +488,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             id: "server-agent-api-tests",
             description: "Run pika-server agent_api tests in a vfkit guest",
             timeout_secs: 1800,
+            writable_workspace: false,
             guest_command: GuestCommand::FilteredCargoTests {
                 package: "pika-server",
                 filter: "agent_api::tests",
@@ -313,6 +498,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             id: "core-agent-nip98-test",
             description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
             timeout_secs: 1800,
+            writable_workspace: false,
             guest_command: GuestCommand::ExactCargoTest {
                 package: "pika_core",
                 test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
@@ -321,11 +507,160 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
     ]
 }
 
+fn pika_rust_jobs() -> Vec<JobSpec> {
+    vec![
+        JobSpec {
+            id: "pika-core-lib-tests",
+            description: "Run pika_core lib and test targets in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --tests -- --nocapture",
+            },
+        },
+        JobSpec {
+            id: "pika-desktop-package-tests",
+            description: "Run pika-desktop package tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::PackageTests {
+                package: "pika-desktop",
+            },
+        },
+    ]
+}
+
+fn notification_jobs() -> Vec<JobSpec> {
+    vec![JobSpec {
+        id: "pika-server-package-tests",
+        description: "Run pika-server package tests with a pikahut postgres fixture in a vfkit guest",
+        timeout_secs: 1800,
+        writable_workspace: false,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "SD=$(mktemp -d /tmp/pikahut-notifications.XXXXXX); ",
+                "cleanup() { cargo run -q -p pikahut -- down --state-dir \"$SD\" 2>/dev/null || true; rm -rf \"$SD\"; }; ",
+                "trap cleanup EXIT; ",
+                "cargo run -q -p pikahut -- up --profile postgres --background --state-dir \"$SD\" >/dev/null; ",
+                "eval \"$(cargo run -q -p pikahut -- env --state-dir \"$SD\")\"; ",
+                "cargo test -p pika-server -- --test-threads=1 --nocapture"
+            ),
+        },
+    }]
+}
+
+fn pikachat_rust_jobs() -> Vec<JobSpec> {
+    vec![
+        JobSpec {
+            id: "pikachat-package-tests",
+            description: "Run pikachat package tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::PackageTests {
+                package: "pikachat",
+            },
+        },
+        JobSpec {
+            id: "pikachat-sidecar-package-tests",
+            description: "Run pikachat-sidecar package tests with deterministic TTS in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar -- --nocapture",
+            },
+        },
+        JobSpec {
+            id: "pika-desktop-package-tests",
+            description: "Run pika-desktop package tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::PackageTests {
+                package: "pika-desktop",
+            },
+        },
+        JobSpec {
+            id: "pikachat-cli-smoke-local",
+            description: "Run the pikahut cli_smoke_local deterministic test in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "pikachat-post-rebase-invalid-event",
+            description: "Run the post_rebase_invalid_event_rejection boundary test in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "pikachat-post-rebase-logout-session",
+            description: "Run the post_rebase_logout_session_convergence boundary test in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "openclaw-invite-and-chat",
+            description: "Run the OpenClaw invite-and-chat scenario in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "openclaw-invite-and-chat-rust-bot",
+            description: "Run the OpenClaw invite-and-chat rust bot scenario in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "openclaw-invite-and-chat-daemon",
+            description: "Run the OpenClaw invite-and-chat daemon scenario in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture",
+            },
+        },
+        JobSpec {
+            id: "openclaw-audio-echo",
+            description: "Run the OpenClaw audio echo scenario in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture",
+            },
+        },
+    ]
+}
+
+fn fixture_rust_jobs() -> Vec<JobSpec> {
+    vec![JobSpec {
+        id: "pikahut-package-tests",
+        description: "Run pikahut package tests in a vfkit guest",
+        timeout_secs: 1800,
+        writable_workspace: false,
+        guest_command: GuestCommand::PackageTests { package: "pikahut" },
+    }]
+}
+
 fn rmp_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "rmp-init-smoke-ci",
         description: "Run the RMP init smoke checks in a vfkit guest",
         timeout_secs: 1800,
+        writable_workspace: false,
         guest_command: GuestCommand::ShellCommand {
             command: concat!(
                 "set -euo pipefail; ",

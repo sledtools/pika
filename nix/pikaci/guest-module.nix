@@ -1,11 +1,20 @@
 {
   hostPkgs,
-  snapshotDir,
+  hostUid,
+  hostGid,
+  workspaceDir,
+  workspaceReadOnly ? true,
   artifactsDir,
   cargoHomeDir,
   cargoTargetDir,
   socketPath,
+  rustToolchain ? null,
+  androidSdk ? null,
+  androidJdk ? null,
+  androidGradle ? null,
+  androidCargoNdk ? null,
   guestCommand,
+  runAsRoot ? false,
   timeoutSecs,
   cacertBundle ? "/etc/ssl/certs/ca-bundle.crt",
 }:
@@ -17,34 +26,55 @@
 let
   alsaDev = lib.getDev pkgs.alsa-lib;
   alsaLib = lib.getLib pkgs.alsa-lib;
+  clangLib = lib.getLib pkgs.llvmPackages.libclang;
   opensslDev = lib.getDev pkgs.openssl;
   opensslLib = lib.getLib pkgs.openssl;
   postgresqlDev = lib.getDev pkgs.postgresql;
   postgresqlLib = lib.getLib pkgs.postgresql;
+  androidPackages =
+    lib.optionals (androidSdk != null) [ androidSdk ]
+    ++ lib.optionals (androidJdk != null) [ androidJdk ]
+    ++ lib.optionals (androidGradle != null) [ androidGradle ]
+    ++ lib.optionals (androidCargoNdk != null) [ androidCargoNdk ];
+  rustPackages = if rustToolchain != null then [ rustToolchain ] else with pkgs; [ cargo rustc ];
+  androidSdkRoot = if androidSdk != null then "${androidSdk}/share/android-sdk" else "";
 in
 {
   system.stateVersion = "24.11";
   boot.initrd.systemd.enable = lib.mkForce false;
 
   services.getty.autologinUser = "root";
+  users.users.pikaci = {
+    isSystemUser = true;
+    uid = hostUid;
+    group = "users";
+    home = "/home/pikaci";
+    createHome = true;
+  };
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  environment.pathsToLink = [ "/share/postgresql" ];
   environment.systemPackages = with pkgs; [
     alsa-lib
     bash
-    cargo
     cacert
+    clang
     coreutils
     findutils
     gcc
+    gawk
+    go
     gnugrep
     gnused
     git
+    linuxHeaders
+    llvmPackages.libclang
     nix
     openssl
     pkg-config
     postgresql
-    rustc
-  ];
+    procps
+    util-linux
+  ] ++ rustPackages ++ androidPackages;
 
   systemd.services.pikaci-job = {
     description = "Run pikaci guest job";
@@ -54,18 +84,21 @@ in
     path = with pkgs; [
       alsa-lib
       bash
-      cargo
       cacert
       coreutils
       findutils
       gcc
+      gawk
+      go
       gnugrep
       gnused
       git
       nix
+      postgresql
+      procps
       pkg-config
-      rustc
-    ];
+      util-linux
+    ] ++ rustPackages ++ androidPackages;
     serviceConfig = {
       Type = "oneshot";
     };
@@ -75,12 +108,27 @@ in
       exec > >(tee -a /artifacts/guest.log) 2>&1
 
       echo "[pikaci] guest booted at $(date -Iseconds)"
+      mkdir -p /home/pikaci
+      chown pikaci:users /artifacts /cargo-home /cargo-target /home/pikaci || true
       cd /workspace/snapshot
-      export HOME=/root
+      if [ "${lib.boolToString runAsRoot}" = "true" ]; then
+        export HOME=/root
+      else
+        export HOME=/home/pikaci
+      fi
+      export PATH="${pkgs.postgresql}/bin:$PATH"
+      export LIBCLANG_PATH="${clangLib}/lib"
+      export PGSYSCONFDIR="${pkgs.postgresql}"
+      export PGSHAREDIR="${pkgs.postgresql}/share/postgresql"
       export CARGO_TERM_COLOR=never
       export CARGO_HOME=/cargo-home
       export CARGO_TARGET_DIR=/cargo-target
       export CARGO_INCREMENTAL=0
+      export XDG_CACHE_HOME="$CARGO_HOME/xdg-cache"
+      export XDG_STATE_HOME="/artifacts/xdg-state"
+      export NIX_STATE_DIR="/artifacts/nix/var/nix"
+      export NIX_LOG_DIR="/artifacts/nix/var/log/nix"
+      export BINDGEN_EXTRA_CLANG_ARGS="''${BINDGEN_EXTRA_CLANG_ARGS-} -I${pkgs.glibc.dev}/include -I${pkgs.linuxHeaders}/include"
       export OPENSSL_DIR="${opensslDev}"
       export OPENSSL_LIB_DIR="${opensslLib}/lib"
       export OPENSSL_INCLUDE_DIR="${opensslDev}/include"
@@ -89,10 +137,36 @@ in
       export RUSTFLAGS="''${RUSTFLAGS-} -C debuginfo=0 -L native=${alsaLib}/lib -L native=${postgresqlLib}/lib"
       export SSL_CERT_FILE="${cacertBundle}"
       export NIX_SSL_CERT_FILE="${cacertBundle}"
-      mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+      ${lib.optionalString (androidSdk != null) ''
+      export ANDROID_HOME="${androidSdkRoot}"
+      export ANDROID_SDK_ROOT="${androidSdkRoot}"
+      export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+      export ADB_MDNS_OPENSCREEN=0
+      export ANDROID_AVD_HOME="''${ANDROID_AVD_HOME:-$HOME/.local/share/android/avd}"
+      export ANDROID_USER_HOME="''${ANDROID_USER_HOME:-$HOME/.local/state/android}"
+      export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+      ''}
+      ${lib.optionalString (androidJdk != null) ''
+      export JAVA_HOME="${androidJdk}"
+      export PATH="$JAVA_HOME/bin:$PATH"
+      ''}
+      mkdir -p \
+        "$CARGO_HOME" \
+        "$CARGO_TARGET_DIR" \
+        "$XDG_CACHE_HOME" \
+        "$XDG_STATE_HOME" \
+        "$NIX_STATE_DIR/temproots" \
+        "$NIX_STATE_DIR/profiles/per-user/pikaci" \
+        "$NIX_LOG_DIR" \
+        "''${ANDROID_AVD_HOME:-/tmp/android-avd}" \
+        "''${ANDROID_USER_HOME:-/tmp/android-user}"
 
       set +e
-      timeout ${toString timeoutSecs}s ${guestCommand}
+      if [ "${lib.boolToString runAsRoot}" = "true" ]; then
+        timeout ${toString timeoutSecs}s ${guestCommand}
+      else
+        runuser -u pikaci -m -- timeout ${toString timeoutSecs}s ${guestCommand}
+      fi
       code=$?
       set -e
 
@@ -145,9 +219,9 @@ EOF
       {
         proto = "virtiofs";
         tag = "snapshot";
-        source = snapshotDir;
+        source = workspaceDir;
         mountPoint = "/workspace/snapshot";
-        readOnly = true;
+        readOnly = workspaceReadOnly;
       }
       {
         proto = "virtiofs";

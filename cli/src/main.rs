@@ -16,6 +16,7 @@ use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
+use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -1045,6 +1046,7 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
     )
     .await
     .context("fetch peer key package — has the peer run `publish-kp`?")?;
+    let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
 
     // Create group.
     let config = NostrGroupConfigData::new(
@@ -1569,6 +1571,7 @@ async fn cmd_send_hypernote(
                         }
                     }
                 };
+                let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),

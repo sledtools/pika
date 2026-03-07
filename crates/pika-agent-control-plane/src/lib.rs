@@ -64,6 +64,12 @@ pub struct SpawnerGuestAutostartRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SpawnerVmResponse {
     pub id: String,
+    #[serde(default = "default_spawner_vm_status")]
+    pub status: String,
+}
+
+fn default_spawner_vm_status() -> String {
+    "running".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

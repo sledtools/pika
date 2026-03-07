@@ -222,6 +222,13 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
     })
 }
 
+fn phase_from_spawner_status(status: &str) -> &'static str {
+    match status {
+        "running" => AGENT_PHASE_READY,
+        _ => AGENT_PHASE_CREATING,
+    }
+}
+
 fn select_visible_agent_row(
     active: Option<AgentInstance>,
     latest: Option<AgentInstance>,
@@ -311,7 +318,7 @@ async fn provision_vm_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
     request_id: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<pika_agent_control_plane::SpawnerVmResponse> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     let resolved = resolved_spawner_params()?;
     let create_vm = build_create_vm_request(
@@ -321,11 +328,10 @@ async fn provision_vm_for_owner(
         &bot_identity.pubkey_hex,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
-    let vm = spawner
+    spawner
         .create_vm_with_request_id(&create_vm, Some(request_id))
         .await
-        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))?;
-    Ok(vm.id)
+        .map_err(|err| spawner_create_error(&resolved.spawner_url, err))
 }
 
 async fn provision_agent_for_owner(
@@ -357,8 +363,8 @@ async fn provision_agent_for_owner(
         })?
     };
 
-    let vm_id = match provision_vm_for_owner(owner_npub, &bot_identity, request_id).await {
-        Ok(vm_id) => vm_id,
+    let vm = match provision_vm_for_owner(owner_npub, &bot_identity, request_id).await {
+        Ok(vm) => vm,
         Err(err) => {
             tracing::error!(
                 request_id,
@@ -381,8 +387,8 @@ async fn provision_agent_for_owner(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        AGENT_PHASE_READY,
-        Some(&vm_id),
+        phase_from_spawner_status(&vm.status),
+        Some(&vm.id),
     )
     .map_err(|err| {
         tracing::error!(
@@ -396,7 +402,8 @@ async fn provision_agent_for_owner(
     tracing::info!(
         request_id,
         agent_id = %updated.agent_id,
-        vm_id = %vm_id,
+        vm_id = %vm.id,
+        vm_status = %vm.status,
         owner_npub = %owner_npub,
         "provisioned agent microvm"
     );
@@ -471,13 +478,6 @@ pub async fn get_my_agent(
             .with_request_id(request_context.request_id.clone()));
     };
     let normalized = match active.vm_id.as_deref() {
-        Some(vm_id) if active.phase == AGENT_PHASE_CREATING => {
-            AgentInstance::update_phase(&mut conn, &active.agent_id, AGENT_PHASE_READY, Some(vm_id))
-                .map_err(|_| {
-                    AgentApiError::from_code(AgentApiErrorCode::Internal)
-                        .with_request_id(request_context.request_id.clone())
-                })?
-        }
         Some(_) => active,
         None if active.phase != AGENT_PHASE_ERROR => {
             mark_agent_errored(&mut conn, &active.agent_id)
@@ -592,7 +592,7 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        AGENT_PHASE_READY,
+        phase_from_spawner_status(&recovered.status),
         Some(&recovered.id),
     )
     .map_err(|_| {
@@ -869,6 +869,16 @@ mod tests {
     fn vm_not_found_detection_rejects_other_recover_errors() {
         let err = anyhow::anyhow!("failed to recover vm vm-123: 500 Internal Server Error");
         assert!(!is_vm_not_found_error(&err));
+    }
+
+    #[test]
+    fn phase_from_spawner_status_only_marks_running_ready() {
+        assert_eq!(phase_from_spawner_status("running"), AGENT_PHASE_READY);
+        assert_eq!(phase_from_spawner_status("starting"), AGENT_PHASE_CREATING);
+        assert_eq!(
+            phase_from_spawner_status("anything-else"),
+            AGENT_PHASE_CREATING
+        );
     }
 
     #[test]

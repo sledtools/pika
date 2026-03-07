@@ -157,7 +157,12 @@ fn spawn_mock_vm_spawner(
             let is_create_or_recover = request_line.starts_with("POST /vms ")
                 || request_line.starts_with("POST /vms/vm-test-1/recover ");
             let (status, body) = if is_create_or_recover {
-                ("200 OK", r#"{"id":"vm-test-1","ip":"10.0.0.2"}"#)
+                let body = if request_line.starts_with("POST /vms/vm-test-1/recover ") {
+                    r#"{"id":"vm-test-1","status":"running"}"#
+                } else {
+                    r#"{"id":"vm-test-1","status":"starting"}"#
+                };
+                ("200 OK", body)
             } else {
                 ("404 Not Found", r#"{"error":"unexpected path"}"#)
             };
@@ -513,8 +518,8 @@ async fn agent_http_ensure_local() -> Result<()> {
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "ready" {
-        bail!("expected state=ready after ensure, got: {state}");
+    if state != "creating" {
+        bail!("expected state=creating after ensure, got: {state}");
     }
     let agent_id = ensure_json
         .get("agent_id")
@@ -545,6 +550,10 @@ async fn agent_http_ensure_local() -> Result<()> {
         bail!("expected 200 from /v1/agents/me, got {me_status}: {me_body}");
     }
     let me_json: Value = serde_json::from_str(&me_body).context("decode /me response json")?;
+    let me_state = me_json.get("state").and_then(Value::as_str).unwrap_or("");
+    if me_state != "creating" {
+        bail!("expected state=creating from /me before recover, got: {me_state}");
+    }
     let me_agent_id = me_json
         .get("agent_id")
         .and_then(Value::as_str)
@@ -680,8 +689,8 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .and_then(|value| value.get("state"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    if state != "ready" {
-        bail!("expected CLI ensure state=ready, got: {state}");
+    if state != "creating" {
+        bail!("expected CLI ensure state=creating, got: {state}");
     }
 
     let me_url = format!("{server_url}/v1/agents/me");
@@ -938,6 +947,14 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     let me_json: Value = serde_json::from_str(me_stdout.trim()).context("decode me json")?;
     if me_json.get("operation").and_then(Value::as_str) != Some("me") {
         bail!("unexpected CLI me payload: {me_json}");
+    }
+    let me_state = me_json
+        .get("agent")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if me_state != "creating" {
+        bail!("expected CLI me state=creating before recover, got: {me_state}");
     }
 
     let recover_output = runner.run(

@@ -816,7 +816,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_vm_contract_request_shape() {
-        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"id":"vm-123"}"#);
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-123","status":"starting"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
             guest_autostart: GuestAutostartRequest {
@@ -831,6 +832,7 @@ mod tests {
             .await
             .expect("create vm succeeds");
         assert_eq!(vm.id, "vm-123");
+        assert_eq!(vm.status, "starting");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -878,7 +880,8 @@ mod tests {
 
     #[tokio::test]
     async fn recover_vm_contract_request_shape() {
-        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1"}"#);
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","status":"running"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
 
         let recovered = client
@@ -886,6 +889,7 @@ mod tests {
             .await
             .expect("recover vm succeeds");
         assert_eq!(recovered.id, "vm-recover-1");
+        assert_eq!(recovered.status, "running");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))

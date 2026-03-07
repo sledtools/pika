@@ -267,7 +267,10 @@ impl VmManager {
                     "vm create complete"
                 );
 
-                Ok(VmResponse { id })
+                Ok(VmResponse {
+                    id,
+                    status: runtime_status.to_string(),
+                })
             }
             Err(err) => {
                 error!(vm_id = %id, error = %err, "vm create failed; cleaning up");
@@ -328,7 +331,10 @@ impl VmManager {
             recover_total_ms,
             "vm recover complete"
         );
-        Ok(VmResponse { id: id.to_string() })
+        Ok(VmResponse {
+            id: id.to_string(),
+            status: status.to_string(),
+        })
     }
 
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
@@ -530,17 +536,14 @@ impl VmManager {
         vm: &VmDiskState,
     ) -> anyhow::Result<()> {
         let unit_name = self.microvm_unit_name(&vm.id);
-        let _ = Command::new(&self.cfg.systemctl_cmd)
-            .arg("stop")
-            .arg(&unit_name)
-            .status()
-            .await;
-        let _ = Command::new(&self.cfg.ip_cmd)
-            .arg("link")
-            .arg("del")
-            .arg(&vm.tap_name)
-            .status()
-            .await;
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("stop")
+                .arg(&unit_name),
+            "stop microvm service before recreate",
+        )
+        .await?;
+        delete_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
 
         self.ensure_runtime_artifacts().await?;
         self.rewrite_runtime_metadata_for_recreate(vm)?;
@@ -567,39 +570,37 @@ impl VmManager {
         microvm_state_dir: &Path,
     ) -> anyhow::Result<()> {
         let unit_name = self.microvm_unit_name(id);
+        let mut stop_cmd = Command::new(&self.cfg.systemctl_cmd);
+        stop_cmd.arg("stop").arg(&unit_name);
         match tokio::time::timeout(
             Duration::from_secs(20),
-            Command::new(&self.cfg.systemctl_cmd)
-                .arg("stop")
-                .arg(&unit_name)
-                .status(),
+            run_command(&mut stop_cmd, "stop microvm service"),
         )
         .await
         {
-            Ok(_) => {}
+            Ok(result) => result?,
             Err(_) => {
                 warn!(vm_id = %id, "timed out stopping microvm; force killing");
-                let _ = Command::new(&self.cfg.systemctl_cmd)
-                    .arg("kill")
-                    .arg("-s")
-                    .arg("KILL")
-                    .arg(&unit_name)
-                    .status()
-                    .await;
-                let _ = Command::new(&self.cfg.systemctl_cmd)
-                    .arg("stop")
-                    .arg(&unit_name)
-                    .status()
-                    .await;
+                run_command(
+                    Command::new(&self.cfg.systemctl_cmd)
+                        .arg("kill")
+                        .arg("-s")
+                        .arg("KILL")
+                        .arg(&unit_name),
+                    "kill microvm service after stop timeout",
+                )
+                .await?;
+                run_command(
+                    Command::new(&self.cfg.systemctl_cmd)
+                        .arg("stop")
+                        .arg(&unit_name),
+                    "stop microvm service after kill",
+                )
+                .await?;
             }
         }
 
-        let _ = Command::new(&self.cfg.ip_cmd)
-            .arg("link")
-            .arg("del")
-            .arg(tap_name)
-            .status()
-            .await;
+        delete_tap_interface(&self.cfg.ip_cmd, tap_name).await?;
 
         remove_path_if_exists(microvm_state_dir)?;
         remove_path_if_exists(&self.gcroot_current_path(id))?;
@@ -1490,6 +1491,33 @@ async fn create_tap_interface(ip_cmd: &str, tap_name: &str) -> anyhow::Result<()
     .await
 }
 
+async fn delete_tap_interface(ip_cmd: &str, tap_name: &str) -> anyhow::Result<()> {
+    let output = Command::new(ip_cmd)
+        .arg("link")
+        .arg("del")
+        .arg(tap_name)
+        .output()
+        .await
+        .context("failed to spawn command for delete tap")?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Cannot find device") || stderr.contains("does not exist") {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(anyhow!(
+        "delete tap failed (code {:?})\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        stdout,
+        stderr
+    ))
+}
+
 async fn ensure_tap_bridged(ip_cmd: &str, tap_name: &str, bridge_name: &str) -> anyhow::Result<()> {
     run_command(
         Command::new(ip_cmd)
@@ -1912,6 +1940,7 @@ mod tests {
 
         let recovered = manager.recover("vm-test").await.unwrap();
         assert_eq!(recovered.id, "vm-test");
+        assert_eq!(recovered.status, "running");
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
         assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
@@ -1920,7 +1949,20 @@ mod tests {
     #[tokio::test]
     async fn destroy_tolerates_legacy_state_dirs_missing_ip_metadata() {
         let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
+        let scripts_dir = root.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(&systemctl_script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ip_script = scripts_dir.join("ip");
+        fs::write(&ip_script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&ip_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
         let manager = VmManager::new(cfg.clone()).await.unwrap();
         let vm_id = "vm-legacy-bad";
         let vm_dir = cfg.state_dir.join(vm_id);

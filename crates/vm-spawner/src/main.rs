@@ -174,6 +174,7 @@ async fn recover_vm(
 struct ApiError {
     status: StatusCode,
     message: String,
+    log_detail: Option<String>,
     request_id: Option<String>,
 }
 
@@ -182,6 +183,16 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            log_detail: None,
+            request_id: None,
+        }
+    }
+
+    fn internal(detail: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "internal server error".to_string(),
+            log_detail: Some(detail.into()),
             request_id: None,
         }
     }
@@ -194,7 +205,7 @@ impl ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(value: anyhow::Error) -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, value.to_string())
+        Self::internal(value.to_string())
     }
 }
 
@@ -205,14 +216,14 @@ impl axum::response::IntoResponse for ApiError {
                 error!(
                     request_id,
                     status = self.status.as_u16(),
-                    error = %self.message,
+                    error = %self.log_detail.as_deref().unwrap_or(&self.message),
                     "vm-spawner request failed"
                 );
             } else {
                 warn!(
                     request_id,
                     status = self.status.as_u16(),
-                    error = %self.message,
+                    error = %self.log_detail.as_deref().unwrap_or(&self.message),
                     "vm-spawner request failed"
                 );
             }
@@ -227,6 +238,7 @@ impl axum::response::IntoResponse for ApiError {
 
 fn validate_vm_id(id: &str) -> Result<(), ApiError> {
     let valid = !id.is_empty()
+        && id != "."
         && id.len() <= 128
         && id
             .chars()
@@ -246,7 +258,7 @@ fn map_manager_error_to_api(err: anyhow::Error) -> ApiError {
     if let Some(not_found) = err.downcast_ref::<VmNotFound>() {
         return ApiError::new(StatusCode::NOT_FOUND, not_found.to_string());
     }
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+    ApiError::internal(err.to_string())
 }
 
 #[cfg(test)]
@@ -262,6 +274,9 @@ mod tests {
 
         let err = validate_vm_id("vm with space").unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        let err = validate_vm_id(".").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -276,6 +291,7 @@ mod tests {
     fn map_manager_error_keeps_internal_failures_as_500() {
         let err = map_manager_error_to_api(anyhow::anyhow!("restart microvm service failed"));
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "internal server error");
     }
 
     #[tokio::test]
@@ -292,5 +308,21 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], "boom");
         assert_eq!(json["request_id"], "req-123");
+    }
+
+    #[tokio::test]
+    async fn internal_error_response_redacts_raw_details() {
+        let response = ApiError::from(anyhow::anyhow!("systemctl failed for /nix/store/secret"))
+            .with_request_id("req-456")
+            .into_response();
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk_result) = body.data().await {
+            let chunk = chunk_result.expect("read response chunk");
+            bytes.extend_from_slice(chunk.as_ref());
+        }
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
+        assert_eq!(json["error"], "internal server error");
+        assert_eq!(json["request_id"], "req-456");
     }
 }

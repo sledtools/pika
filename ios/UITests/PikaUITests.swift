@@ -1,6 +1,10 @@
 import XCTest
+import UIKit
 
 final class PikaUITests: XCTestCase {
+    private let localUiTestNsec = "nsec1ds2my67qq6ls28vyms056cwz460w6nkpemxmqejgk77d6xw277as0692cq"
+    private let localUiTestNpub = "npub1q49v9chr3cqt2gectr0g98aj4sw3dch8tpnur0yl9q9gxg26e2ysdl24fy"
+
     private func dismissSystemOpenAppAlertIfPresent(timeout: TimeInterval = 5) {
         let app = XCUIApplication()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -83,9 +87,13 @@ final class PikaUITests: XCTestCase {
     }
 
     private func openNewChatFromChatList(_ app: XCUIApplication, timeout: TimeInterval = 10) {
-        let newChat = app.buttons.matching(identifier: "chatlist_new_chat").firstMatch
-        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
-        newChat.tap()
+        let chatsNav = app.navigationBars["Chats"]
+        XCTAssertTrue(chatsNav.waitForExistence(timeout: timeout))
+
+        // Toolbar menu buttons in the simulator can report bogus accessibility scrolling behavior.
+        // Bypass the toolbar item's AX node entirely and tap the trailing corner of the main window.
+        let window = app.windows.element(boundBy: 0)
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.08)).tap()
 
         let nav = app.navigationBars["New Chat"]
         if nav.waitForExistence(timeout: 2) {
@@ -104,9 +112,9 @@ final class PikaUITests: XCTestCase {
         profileNavBar: XCUIElement? = nil,
         timeout: TimeInterval = 5
     ) {
-        let copyCode = app.buttons.matching(identifier: "chatlist_my_npub_copy").firstMatch
+        let copyCode = app.descendants(matching: .any).matching(identifier: "chatlist_my_npub_copy").firstMatch
         XCTAssertTrue(copyCode.waitForExistence(timeout: timeout))
-        copyCode.tap()
+        copyCode.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
 
         let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
         if close.exists {
@@ -118,12 +126,93 @@ final class PikaUITests: XCTestCase {
         }
     }
 
+    private func copyMyCodeAndReadValue(
+        _ app: XCUIApplication,
+        profileNavBar: XCUIElement? = nil,
+        timeout: TimeInterval = 5
+    ) -> String? {
+        UIPasteboard.general.string = ""
+
+        let copyCode = app.descendants(matching: .any).matching(identifier: "chatlist_my_npub_copy").firstMatch
+        XCTAssertTrue(copyCode.waitForExistence(timeout: timeout))
+        copyCode.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let value = UIPasteboard.general.string, !value.isEmpty {
+                let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+                if close.exists {
+                    close.tap()
+                } else if let profileNavBar {
+                    profileNavBar.buttons.element(boundBy: 0).tap()
+                } else {
+                    app.navigationBars["Profile"].buttons.element(boundBy: 0).tap()
+                }
+                return value
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
+        if close.exists {
+            close.tap()
+        } else if let profileNavBar {
+            profileNavBar.buttons.element(boundBy: 0).tap()
+        } else {
+            app.navigationBars["Profile"].buttons.element(boundBy: 0).tap()
+        }
+        return nil
+    }
+
     private func createNoteToSelfViaPaste(_ app: XCUIApplication, timeout: TimeInterval = 10) {
         openNewChatFromChatList(app, timeout: timeout)
 
         let paste = app.buttons.matching(identifier: "newchat_paste").firstMatch
         XCTAssertTrue(paste.waitForExistence(timeout: timeout))
         paste.tap()
+    }
+
+    private func loginOfflineTestIdentity(_ app: XCUIApplication, timeout: TimeInterval = 15) {
+        let chatsNavBar = app.navigationBars["Chats"]
+        if chatsNavBar.exists {
+            return
+        }
+
+        let loginNsec = app.secureTextFields.matching(identifier: "login_nsec_input").firstMatch
+        let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
+        if loginNsec.waitForExistence(timeout: 5) && loginSubmit.waitForExistence(timeout: 5) {
+            loginNsec.tap()
+            loginNsec.typeText(localUiTestNsec)
+            loginSubmit.tap()
+        } else {
+            let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
+            XCTAssertTrue(createAccount.waitForExistence(timeout: 5), "Login screen not shown")
+            createAccount.tap()
+        }
+
+        XCTAssertTrue(chatsNavBar.waitForExistence(timeout: timeout), "Chat list not shown after login")
+    }
+
+    private func createNoteToSelfChat(
+        _ app: XCUIApplication,
+        peerNpub: String? = nil,
+        timeout: TimeInterval = 10
+    ) {
+        openNewChatFromChatList(app, timeout: timeout)
+
+        let manualEntry = app.buttons.matching(identifier: "newchat_manual_entry").firstMatch
+        XCTAssertTrue(manualEntry.waitForExistence(timeout: timeout))
+        manualEntry.tap()
+
+        let peer = app.descendants(matching: .any).matching(identifier: "newchat_peer_npub").firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: timeout))
+        peer.tap()
+        peer.typeText(peerNpub ?? localUiTestNpub)
+
+        let start = app.buttons.matching(identifier: "newchat_start").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: timeout))
+        XCTAssertTrue(start.isEnabled, "Start button should be enabled for note-to-self chat")
+        start.tap()
     }
 
     private func waitForChatComposer(_ app: XCUIApplication, timeout: TimeInterval = 10) -> XCUIElement {
@@ -198,32 +287,11 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
         app.launch()
-
-        // If we land on Login, create an account; otherwise we may have restored a prior session.
-        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
-        if createAccount.waitForExistence(timeout: 2) {
-            createAccount.tap()
-            // No blocking toasts to dismiss; navigation happens automatically.
-        }
+        loginOfflineTestIdentity(app)
 
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
-
-        // Fetch our npub from the profile sheet (avoid clipboard access from UI tests).
-        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
-        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
-        myNpubBtn.tap()
-
-        let myNpubNavBar = app.navigationBars["Profile"]
-        XCTAssertTrue(myNpubNavBar.waitForExistence(timeout: 5))
-
-        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
-        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
-        let myNpub = npubValue.label
-        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
-
-        copyMyCodeAndCloseProfile(app, profileNavBar: myNpubNavBar)
-        createNoteToSelfViaPaste(app)
+        createNoteToSelfChat(app)
         // Note-to-self is synchronous; navigation to the chat happens immediately.
 
         // Send a message and ensure it appears.
@@ -247,6 +315,8 @@ final class PikaUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 10))
 
+        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
+        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
         myNpubBtn.tap()
         XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
 
@@ -273,26 +343,11 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
         app.launch()
-
-        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
-        XCTAssertTrue(createAccount.waitForExistence(timeout: 5), "Login screen not shown on first launch")
-        createAccount.tap()
+        loginOfflineTestIdentity(app)
 
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15), "Chat list not shown after account creation")
-
-        // Get our npub for note-to-self.
-        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
-        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
-        myNpubBtn.tap()
-
-        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
-        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
-        let myNpub = npubValue.label
-        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
-
-        copyMyCodeAndCloseProfile(app)
-        createNoteToSelfViaPaste(app)
+        createNoteToSelfChat(app)
 
         // Send a message so we have something to verify after relaunch.
         let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
@@ -360,26 +415,11 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
         app.launch()
-
-        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
-        if createAccount.waitForExistence(timeout: 2) {
-            createAccount.tap()
-        }
+        loginOfflineTestIdentity(app)
 
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
-
-        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
-        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
-        myNpubBtn.tap()
-
-        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
-        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
-        let myNpub = npubValue.label
-        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
-
-        copyMyCodeAndCloseProfile(app)
-        createNoteToSelfViaPaste(app)
+        createNoteToSelfChat(app)
 
         let composer = waitForChatComposer(app, timeout: 10)
         XCTAssertTrue(composer.exists, "Composer missing after opening chat")
@@ -432,30 +472,11 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
         app.launch()
-
-        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
-        if createAccount.waitForExistence(timeout: 2) {
-            createAccount.tap()
-        }
+        loginOfflineTestIdentity(app)
 
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
-
-        // Read our own npub so we can create a deterministic note-to-self chat.
-        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
-        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
-        myNpubBtn.tap()
-
-        let myNpubNavBar = app.navigationBars["Profile"]
-        XCTAssertTrue(myNpubNavBar.waitForExistence(timeout: 5))
-
-        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
-        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
-        let myNpub = npubValue.label
-        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
-
-        copyMyCodeAndCloseProfile(app, profileNavBar: myNpubNavBar)
-        createNoteToSelfViaPaste(app)
+        createNoteToSelfChat(app)
 
         let msgField = app.textViews.matching(identifier: "chat_message_input").firstMatch
         let msgFieldFallback = app.textFields.matching(identifier: "chat_message_input").firstMatch
@@ -848,28 +869,11 @@ final class PikaUITests: XCTestCase {
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"
         app.launchEnvironment["PIKA_DISABLE_NETWORK"] = "1"
         app.launch()
-
-        let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
-        if createAccount.waitForExistence(timeout: 2) {
-            createAccount.tap()
-        }
+        loginOfflineTestIdentity(app)
 
         let chatsNavBar = app.navigationBars["Chats"]
         XCTAssertTrue(chatsNavBar.waitForExistence(timeout: 15))
-
-        // Read our own npub for a deterministic note-to-self deep link.
-        let myNpubBtn = app.buttons.matching(identifier: "chatlist_my_npub").firstMatch
-        XCTAssertTrue(myNpubBtn.waitForExistence(timeout: 5))
-        myNpubBtn.tap()
-
-        let npubValue = app.staticTexts.matching(identifier: "chatlist_my_npub_value").firstMatch
-        XCTAssertTrue(npubValue.waitForExistence(timeout: 5))
-        let myNpub = npubValue.label
-        XCTAssertTrue(myNpub.hasPrefix("npub1"), "Expected npub1..., got: \(myNpub)")
-
-        let close = app.buttons.matching(identifier: "chatlist_my_npub_close").firstMatch
-        if close.exists { close.tap() }
-        else { app.navigationBars["Profile"].buttons.element(boundBy: 0).tap() }
+        let myNpub = localUiTestNpub
 
         // Navigate to New Chat and paste the full deep-link URL (as if scanned
         // from the QR code). normalizePeerKey strips the pika://chat/ prefix.

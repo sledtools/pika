@@ -65,16 +65,21 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          if [ ! -f "$PLIST_PATH" ]; then
+            echo "warning: skipping plist stamp; $PLIST_PATH not found"
+            exit 0
+          fi
           if [ -f "${PROJECT_DIR}/../VERSION" ]; then
             APP_VERSION=$(cat "${PROJECT_DIR}/../VERSION" | tr -d '[:space:]')
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST_PATH"
           fi
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
         basedOnDependencyAnalysis: false
 
   PikaNotificationService:
@@ -99,16 +104,21 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          if [ ! -f "$PLIST_PATH" ]; then
+            echo "warning: skipping plist stamp; $PLIST_PATH not found"
+            exit 0
+          fi
           if [ -f "${PROJECT_DIR}/../VERSION" ]; then
             APP_VERSION=$(cat "${PROJECT_DIR}/../VERSION" | tr -d '[:space:]')
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST_PATH"
           fi
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
         basedOnDependencyAnalysis: false
 
   PikaShareExtension:
@@ -133,16 +143,21 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          if [ ! -f "$PLIST_PATH" ]; then
+            echo "warning: skipping plist stamp; $PLIST_PATH not found"
+            exit 0
+          fi
           if [ -f "${PROJECT_DIR}/../VERSION" ]; then
             APP_VERSION=$(cat "${PROJECT_DIR}/../VERSION" | tr -d '[:space:]')
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST_PATH"
           fi
           if [ -f "${PROJECT_DIR}/.build-number" ]; then
             BUILD_NUMBER=$(cat "${PROJECT_DIR}/.build-number")
           else
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
         basedOnDependencyAnalysis: false
 
   PikaTests:

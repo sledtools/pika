@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
-    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus, git_changed_files,
+    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus, gc_runs, git_changed_files,
     list_runs, load_logs, load_run_record, record_skipped_run, rerun_jobs_with_metadata,
     run_jobs_with_metadata,
 };
@@ -28,6 +28,10 @@ enum Command {
         job: String,
     },
     List,
+    Gc {
+        #[arg(long, default_value_t = 10)]
+        keep_runs: usize,
+    },
     Logs {
         run_id: String,
         #[arg(long)]
@@ -93,6 +97,13 @@ fn main() -> anyhow::Result<()> {
                     target,
                     run.created_at
                 );
+            }
+        }
+        Command::Gc { keep_runs } => {
+            let removed = gc_runs(&options.state_root, keep_runs)?;
+            println!("removed_runs={}", removed.len());
+            for run_id in removed {
+                println!("{run_id}");
             }
         }
         Command::Logs { run_id, job, kind } => {
@@ -502,6 +513,33 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "Run AgentTests.testAgentButtonStateReflectsBusyFlag in a Tart macOS guest",
             )],
         }),
+        "tart-ios-unit-tests" => Ok(TargetSpec {
+            id: "tart-ios-unit-tests",
+            description: "Run the full PikaTests unit-test bundle in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_ios_unit_tests_job(
+                "tart-ios-unit-tests",
+                "Run the full PikaTests unit-test bundle in a Tart macOS guest",
+            )],
+        }),
+        "tart-ios-ui-test" => Ok(TargetSpec {
+            id: "tart-ios-ui-test",
+            description: "Run the deterministic ios-ui-test lane in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_ios_ui_test_job(
+                "tart-ios-ui-test",
+                "Run the deterministic ios-ui-test lane in a Tart macOS guest",
+            )],
+        }),
+        "tart-ios-ui-note-to-self" => Ok(TargetSpec {
+            id: "tart-ios-ui-note-to-self",
+            description: "Run one deterministic iOS UI test in a Tart macOS guest",
+            filters: &[],
+            jobs: vec![tart_ios_ui_note_to_self_job(
+                "tart-ios-ui-note-to-self",
+                "Run the note-to-self UI test in a Tart macOS guest",
+            )],
+        }),
         "pre-merge-rmp" => Ok(TargetSpec {
             id: "pre-merge-rmp",
             description: "Run the VM-backed pre-merge RMP lane",
@@ -751,16 +789,12 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
             command: concat!(
                 "set -euo pipefail; ",
                 "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
-                "runtime_id=\"com.apple.CoreSimulator.SimRuntime.iOS-18-6\"; ",
-                "device_type_id=\"$($simctl list devicetypes | awk -F '[()]' '/iPhone 16/ {print $2; exit}')\"; ",
-                "if [ -z \"$device_type_id\" ]; then echo 'error: could not determine iPhone 16 device type'; exit 1; fi; ",
-                "udid=\"$($simctl list devices | awk -F '[()]' '/Pikaci iPhone 16/ && /18\\.6/ {print $2; exit}')\"; ",
-                "if [ -z \"$udid\" ]; then udid=\"$($simctl create 'Pikaci iPhone 16' \"$device_type_id\" \"$runtime_id\")\"; fi; ",
-                "$simctl boot \"$udid\" >/dev/null 2>&1 || true; ",
-                "if $simctl help 2>/dev/null | grep -q bootstatus; then $simctl bootstatus \"$udid\" -b >/dev/null 2>&1 || true; fi; ",
-                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; exit 1; fi; ",
+                "rm -rf ios/build ios/build-logs; ",
+                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
+                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
                 "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
-                "./tools/xcode-run xcodebuild ",
+                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
                 "-project ios/Pika.xcodeproj ",
                 "-scheme Pika ",
                 "-derivedDataPath ios/build ",
@@ -774,6 +808,109 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
                 "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
                 "-only-testing:PikaTests/AgentTests/testAgentButtonStateReflectsBusyFlag ",
                 "-skip-testing:PikaUITests",
+            ),
+        },
+    }
+}
+
+fn tart_ios_unit_tests_job(id: &'static str, description: &'static str) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs: 7200,
+        writable_workspace: true,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
+                "rm -rf ios/build ios/build-logs; ",
+                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
+                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
+                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
+                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "-project ios/Pika.xcodeproj ",
+                "-scheme Pika ",
+                "-derivedDataPath ios/build ",
+                "-destination \"id=$udid\" ",
+                "test ",
+                "-skipMacroValidation ",
+                "ARCHS=arm64 ",
+                "ONLY_ACTIVE_ARCH=YES ",
+                "CODE_SIGNING_ALLOWED=NO ",
+                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
+                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
+                "-only-testing:PikaTests ",
+                "-skip-testing:PikaUITests",
+            ),
+        },
+    }
+}
+
+fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs: 7200,
+        writable_workspace: true,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
+                "rm -rf ios/build ios/build-logs; ",
+                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
+                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
+                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
+                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "-project ios/Pika.xcodeproj ",
+                "-scheme Pika ",
+                "-derivedDataPath ios/build ",
+                "-destination \"id=$udid\" ",
+                "test ",
+                "-skipMacroValidation ",
+                "ARCHS=arm64 ",
+                "ONLY_ACTIVE_ARCH=YES ",
+                "CODE_SIGNING_ALLOWED=NO ",
+                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
+                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
+                "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong ",
+                "-skip-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock ",
+                "-skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid",
+            ),
+        },
+    }
+}
+
+fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs: 7200,
+        writable_workspace: true,
+        guest_command: GuestCommand::ShellCommand {
+            command: concat!(
+                "set -euo pipefail; ",
+                "simctl=\"$DEVELOPER_DIR/usr/bin/simctl\"; ",
+                "rm -rf ios/build ios/build-logs; ",
+                "./tools/ios-sim-ensure >/tmp/pikaci-ios-sim-ensure.log; ",
+                "udid=\"$($simctl list devices | awk -F '[()]' '/Pika iPhone 15/ {print $2; exit}')\"; ",
+                "if [ -z \"$udid\" ]; then echo 'error: could not determine simulator udid'; cat /tmp/pikaci-ios-sim-ensure.log; exit 1; fi; ",
+                "./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -showdestinations >/dev/null 2>&1 || true; ",
+                "PIKA_XCODEBUILD_LOG_DIR=ios/build-logs ./tools/xcodebuild-compact ",
+                "-project ios/Pika.xcodeproj ",
+                "-scheme Pika ",
+                "-derivedDataPath ios/build ",
+                "-destination \"id=$udid\" ",
+                "test ",
+                "-skipMacroValidation ",
+                "ARCHS=arm64 ",
+                "ONLY_ACTIVE_ARCH=YES ",
+                "CODE_SIGNING_ALLOWED=NO ",
+                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
+                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\" ",
+                "-only-testing:PikaUITests/PikaUITests/testCreateAccount_noteToSelf_sendMessage_and_logout ",
+                "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
             ),
         },
     }

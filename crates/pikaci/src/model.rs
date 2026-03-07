@@ -60,21 +60,15 @@ impl JobSpec {
 
     pub fn host_setup_command(&self) -> Option<&'static str> {
         match self.id {
-            "tart-beachhead" | "tart-ios-agent-button-state-test" => Some(concat!(
+            "tart-beachhead" => Some(concat!(
                 "set -euo pipefail; ",
                 "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
-                "just ios-xcframework ios-xcodeproj; ",
-                "./tools/xcode-run xcodebuild ",
-                "-resolvePackageDependencies ",
-                "-project ios/Pika.xcodeproj ",
-                "-scheme Pika ",
-                "-derivedDataPath ios/build ",
-                "-skipMacroValidation ",
-                "ARCHS=arm64 ",
-                "ONLY_ACTIVE_ARCH=YES ",
-                "CODE_SIGNING_ALLOWED=NO ",
-                "PIKA_APP_BUNDLE_ID=\"${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}\" ",
-                "PIKA_IOS_URL_SCHEME=\"${PIKA_IOS_URL_SCHEME:-pika}\"",
+                "just ios-xcframework ios-xcodeproj",
+            )),
+            id if id.starts_with("tart-ios") => Some(concat!(
+                "set -euo pipefail; ",
+                "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
+                "just ios-xcframework ios-xcodeproj",
             )),
             _ => None,
         }

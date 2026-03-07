@@ -31,7 +31,10 @@ final class CallAudioSessionCoordinator {
         let session = AVAudioSession.sharedInstance()
         do {
             let mode: AVAudioSession.Mode = isVideoCall ? .videoChat : .voiceChat
-            var options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP]
+            // `allowBluetoothHFP` is not available in the Xcode 16.4 / iOS 18.5 simulator SDK.
+            // Keep the broader Bluetooth route enabled so the iOS test lane can compile under the
+            // stable CI toolchain while preserving the main call-session intent.
+            var options: AVAudioSession.CategoryOptions = [.allowBluetooth]
             if isVideoCall {
                 options.insert(.defaultToSpeaker)
             }

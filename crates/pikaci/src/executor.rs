@@ -596,13 +596,36 @@ killall -9 com.apple.CoreSimulator.CoreSimulatorService >/dev/null 2>&1 || true
     } else {
         String::new()
     };
+    let developer_dir_setup = if use_host_xcode {
+        r#"export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+"#
+        .to_string()
+    } else {
+        r#"if [ -z "${DEVELOPER_DIR:-}" ] || [ ! -x "${DEVELOPER_DIR}/usr/bin/xcodebuild" ]; then
+  selected_dir="$(xcode-select -p 2>/dev/null || true)"
+  if [ -n "$selected_dir" ] && [ -x "$selected_dir/usr/bin/xcodebuild" ]; then
+    export DEVELOPER_DIR="$selected_dir"
+  else
+    latest_dir="$(ls -d /Applications/Xcode*.app/Contents/Developer 2>/dev/null | sort -V | tail -n 1 || true)"
+    if [ -n "$latest_dir" ] && [ -x "$latest_dir/usr/bin/xcodebuild" ]; then
+      export DEVELOPER_DIR="$latest_dir"
+    fi
+  fi
+fi
+if [ -z "${DEVELOPER_DIR:-}" ] || [ ! -x "${DEVELOPER_DIR}/usr/bin/xcodebuild" ]; then
+  echo "error: no usable Xcode Developer directory found in Tart guest" >&2
+  exit 1
+fi
+"#
+        .to_string()
+    };
     format!(
         r#"set -euo pipefail
 ARTIFACTS="{artifacts_mount}"
 exec > >(tee -a "$ARTIFACTS/guest.log") 2>&1
 echo "[pikaci] tart guest booted at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 {xcode_setup}\
-export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+{developer_dir_setup}\
 sudo xcodebuild -license accept >/dev/null 2>&1 || true
 export PATH="$DEVELOPER_DIR/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cd "{workspace_mount}"

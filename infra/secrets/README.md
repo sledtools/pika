@@ -10,9 +10,8 @@ Required keys:
 - `apns_team_id` -- Apple Developer Team ID
 - `fcm_credentials` -- Contents of the Firebase service account JSON
 
-`PIKA_ADMIN_SESSION_SECRET` is no longer derived from APNS key material. By default the
-server generates and persists a dedicated secret at `/var/lib/pika-server/admin-session-secret`
-on first start, and you can still override it via environment if needed.
+`PIKA_ADMIN_SESSION_SECRET` is derived at runtime from the APNS private key hash, so no
+separate admin session secret key is required in `pika-server.yaml`.
 
 ## Setup
 
@@ -64,3 +63,5 @@ MicroVM home backups use `restic` with a host-local env file instead of sops:
 
 - `/etc/microvm-backup.env`
 - Example template is installed at `/etc/microvm-backup.env.example`
+- Durable asset path: `/var/lib/microvms/<vm-id>/home`
+- Use `microvm-home-restore <vm-id> [snapshot]` on `pika-build` for restore workflows

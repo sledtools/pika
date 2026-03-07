@@ -26,6 +26,8 @@ pub struct Config {
     pub dns_ip: Ipv4Addr,
     pub default_cpu: u32,
     pub default_memory_mb: u32,
+    pub max_cpu: u32,
+    pub max_memory_mb: u32,
     pub prewarm_enabled: bool,
     pub systemctl_cmd: String,
     pub ip_cmd: String,
@@ -66,14 +68,15 @@ impl Config {
         );
         let runtime_artifacts = parse_runtime_artifacts_env("VM_RUNTIME_ARTIFACTS")
             .context("parse VM_RUNTIME_ARTIFACTS")?;
-
         let ip_start = parse_ipv4_env("VM_IP_POOL_START", "192.168.83.10")?;
         let ip_end = parse_ipv4_env("VM_IP_POOL_END", "192.168.83.254")?;
         let gateway_ip = parse_ipv4_env("VM_GATEWAY_IP", "192.168.83.1")?;
-        let dns_ip = parse_ipv4_env("VM_DNS_IP", "192.168.83.1")?;
+        let dns_ip = parse_ipv4_env("VM_DNS_IP", "1.1.1.1")?;
 
         let default_cpu = parse_u32_env("VM_DEFAULT_CPU", 2);
         let default_memory_mb = parse_u32_env("VM_DEFAULT_MEMORY_MB", 4096);
+        let max_cpu = parse_u32_env("VM_MAX_CPU", 16);
+        let max_memory_mb = parse_u32_env("VM_MAX_MEMORY_MB", 65536);
         let prewarm_enabled = parse_bool_env("VM_PREWARM_ENABLED", true);
 
         let systemctl_cmd = std::env::var("VM_SYSTEMCTL_CMD")
@@ -107,6 +110,8 @@ impl Config {
             dns_ip,
             default_cpu,
             default_memory_mb,
+            max_cpu,
+            max_memory_mb,
             prewarm_enabled,
             systemctl_cmd,
             ip_cmd,

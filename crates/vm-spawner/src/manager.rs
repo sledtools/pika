@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
@@ -8,20 +8,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
-
-use anyhow::{anyhow, Context};
-use serde::{Deserialize, Serialize};
-use tokio::process::Command;
-use tokio::sync::Mutex;
-use tracing::{info, warn};
-use uuid::Uuid;
+use std::time::{Duration, Instant};
 
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
-use crate::models::{CreateVmRequest, GuestAutostartRequest, VmResponse};
+use anyhow::{anyhow, Context};
+use pika_agent_control_plane::{
+    SpawnerCreateVmRequest as CreateVmRequest,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+};
+use serde::Deserialize;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 
-const MAX_VM_ID_LEN: usize = 32;
-const VM_ID_ATTEMPTS: usize = 1024;
+const DETERMINISTIC_VM_LAYOUT: &str = "deterministic-v1";
 
 #[derive(Clone)]
 pub struct VmManager {
@@ -30,51 +30,80 @@ pub struct VmManager {
 }
 
 struct ManagerState {
-    runner_cache: Option<PathBuf>,
-    reserved_vm_ids: HashSet<String>,
-    reserved_ips: HashSet<Ipv4Addr>,
+    reserved_slots: HashSet<u32>,
+    runner_cache: HashMap<String, PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct VmHostLayout {
+#[derive(Debug, Clone)]
+struct VmDiskState {
     id: String,
-    unit_name: String,
     tap_name: String,
     mac_address: String,
     ip: Ipv4Addr,
-    state_dir: PathBuf,
-    gcroot_current: PathBuf,
-    gcroot_booted: PathBuf,
+    cpu: u32,
+    memory_mb: u32,
+    microvm_state_dir: PathBuf,
+    layout: VmLayout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct VmRuntimeMetadata {
-    ip: Ipv4Addr,
+#[derive(Debug, Clone)]
+struct VmPaths {
+    microvm_state_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct VmIdentity {
+    id: String,
     tap_name: String,
+    ip: Ipv4Addr,
+    slot: u32,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum VmLayout {
+    Deterministic,
+    LegacyCompatible,
+}
+
+#[derive(Debug, Clone)]
+struct VmCleanupState {
+    tap_name: String,
+    microvm_state_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyVmBootInputs {
+    tap_name: String,
+    mac_address: Option<String>,
+    ip: Option<Ipv4Addr>,
+    cpu: u32,
+    memory_mb: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyPersistedVm {
+    #[serde(default)]
+    ip: String,
+    #[serde(default)]
+    tap_name: String,
+    #[serde(default)]
     mac_address: String,
+    cpu: Option<u32>,
+    memory_mb: Option<u32>,
 }
 
 #[derive(Debug)]
-pub(crate) struct InvalidVmIdError(pub(crate) String);
+pub(crate) struct VmNotFound {
+    pub(crate) id: String,
+}
 
-impl fmt::Display for InvalidVmIdError {
+impl fmt::Display for VmNotFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "vm not found: {}", self.id)
     }
 }
 
-impl std::error::Error for InvalidVmIdError {}
-
-#[derive(Debug)]
-pub(crate) struct VmNotFoundError(pub(crate) String);
-
-impl fmt::Display for VmNotFoundError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for VmNotFoundError {}
+impl std::error::Error for VmNotFound {}
 
 impl VmManager {
     pub async fn new(cfg: Config) -> anyhow::Result<Self> {
@@ -95,14 +124,15 @@ impl VmManager {
             )
         })?;
 
-        Ok(Self {
+        let manager = Self {
             cfg,
             inner: Arc::new(Mutex::new(ManagerState {
-                runner_cache: None,
-                reserved_vm_ids: HashSet::new(),
-                reserved_ips: HashSet::new(),
+                reserved_slots: HashSet::new(),
+                runner_cache: HashMap::new(),
             })),
-        })
+        };
+
+        Ok(manager)
     }
 
     pub async fn prewarm_defaults_if_enabled(&self) -> anyhow::Result<()> {
@@ -125,228 +155,191 @@ impl VmManager {
         Ok(())
     }
 
+    pub async fn vm_count(&self) -> usize {
+        match self.list_active_vm_units().await {
+            Ok(count) => count,
+            Err(err) => {
+                warn!(error = %err, "failed to count active microvm units");
+                0
+            }
+        }
+    }
+
     pub async fn create(&self, req: CreateVmRequest) -> anyhow::Result<VmResponse> {
-        let layout = self.allocate_layout().await?;
+        let guest_autostart = req.guest_autostart.clone();
+        let cpu = self.cfg.default_cpu.clamp(1, self.cfg.max_cpu);
+        let memory_mb = self
+            .cfg
+            .default_memory_mb
+            .clamp(512, self.cfg.max_memory_mb);
+
+        let total_started = Instant::now();
+
+        let identity = {
+            let mut guard = self.inner.lock().await;
+            let identity = self.allocate_vm_identity_locked(&guard.reserved_slots)?;
+            guard.reserved_slots.insert(identity.slot);
+            identity
+        };
+        let id = identity.id.clone();
+        let tap_name = identity.tap_name.clone();
+        let ip = identity.ip;
+        let mac_address = self
+            .production_mac_for_vm_id(&id)
+            .ok_or_else(|| anyhow!("invalid production vm id for deterministic MAC: {id}"))?;
+        let paths = self.vm_paths(&id);
 
         let create_result = async {
-            fs::create_dir_all(&layout.state_dir)
-                .with_context(|| format!("create vm state dir {}", layout.state_dir.display()))?;
+            let runtime_ip = ip;
+            let mut runtime_status = "running";
+
+            fs::create_dir_all(&paths.microvm_state_dir).with_context(|| {
+                format!("create vm state dir {}", paths.microvm_state_dir.display())
+            })?;
 
             self.ensure_runtime_artifacts().await?;
-            let runner_path = self
-                .ensure_prebuilt_runner(self.cfg.default_cpu, self.cfg.default_memory_mb)
-                .await?;
+
+            let runner_path = self.ensure_prebuilt_runner(cpu, memory_mb).await?;
+
             let daemon_bin = resolve_agent_daemon_bin();
+            if daemon_bin.is_none() {
+                warn!(
+                    vm_id = %id,
+                    "no packaged pikachat binary found; relying on guest PATH"
+                );
+            }
+
             write_runtime_metadata(
-                &layout.state_dir,
-                layout.ip,
+                &paths.microvm_state_dir,
+                &tap_name,
+                &mac_address,
+                ip,
                 self.cfg.gateway_ip,
                 self.cfg.dns_ip,
+                cpu,
+                memory_mb,
                 &self.cfg.runtime_artifacts_guest_mount,
-                &layout.tap_name,
-                &layout.mac_address,
                 daemon_bin.as_deref(),
-                req.guest_autostart.as_ref(),
+                true,
+                Some(&guest_autostart),
             )?;
-            create_tap_interface(&self.cfg.ip_cmd, &layout.tap_name).await?;
-            ensure_tap_bridged(&self.cfg.ip_cmd, &layout.tap_name, &self.cfg.bridge_name).await?;
-            self.install_prebuilt_vm_state(&layout, &runner_path)
+
+            create_tap_interface(&self.cfg.ip_cmd, &tap_name).await?;
+            ensure_tap_bridged(&self.cfg.ip_cmd, &tap_name, &self.cfg.bridge_name).await?;
+
+            self.install_prebuilt_vm_state(&id, &paths.microvm_state_dir, &runner_path)
                 .await?;
+
             run_command(
                 Command::new(&self.cfg.systemctl_cmd)
                     .arg("start")
                     .arg("--no-block")
-                    .arg(&layout.unit_name),
+                    .arg(self.microvm_unit_name(&id)),
                 "start microvm service",
             )
             .await?;
-
-            Ok::<String, anyhow::Error>(
-                if wait_for_unit_active_or_fail_fast(
-                    &self.cfg.systemctl_cmd,
-                    &layout.unit_name,
-                    Duration::from_secs(2),
-                )
-                .await?
-                {
-                    "running".to_string()
-                } else {
-                    "starting".to_string()
-                },
+            if !wait_for_unit_active_or_fail_fast(
+                &self.cfg.systemctl_cmd,
+                &self.microvm_unit_name(&id),
+                Duration::from_secs(2),
             )
+            .await?
+            {
+                runtime_status = "starting";
+            }
+
+            Ok::<(Ipv4Addr, &'static str), anyhow::Error>((runtime_ip, runtime_status))
         }
         .await;
 
         match create_result {
-            Ok(status) => {
-                self.release_layout(&layout).await;
-                Ok(VmResponse {
-                    id: layout.id,
-                    status,
-                })
+            Ok((runtime_ip, runtime_status)) => {
+                let mut guard = self.inner.lock().await;
+                guard.reserved_slots.remove(&identity.slot);
+                drop(guard);
+
+                let create_total_ms = to_ms(total_started.elapsed());
+                info!(
+                    vm_id = %id,
+                    vm_ip = %runtime_ip,
+                    status = runtime_status,
+                    create_total_ms,
+                    "vm create complete"
+                );
+
+                Ok(VmResponse { id })
             }
             Err(err) => {
-                warn!(vm_id = %layout.id, error = %err, "vm create failed; cleaning up");
-                let _ = self.cleanup_layout(&layout).await;
-                self.release_layout(&layout).await;
+                error!(vm_id = %id, error = %err, "vm create failed; cleaning up");
+                let mut guard = self.inner.lock().await;
+                guard.reserved_slots.remove(&identity.slot);
+                drop(guard);
+                let _ = self
+                    .cleanup_artifacts_for_paths(&id, &tap_name, &paths.microvm_state_dir)
+                    .await;
                 Err(err)
             }
         }
     }
 
     pub async fn destroy(&self, id: &str) -> anyhow::Result<()> {
-        let layout = self.resolved_layout_for_vm_id(id)?;
-        self.cleanup_layout(&layout).await
+        let vm = self.load_vm_cleanup_state(id)?;
+        self.cleanup_artifacts_for_paths(id, &vm.tap_name, &vm.microvm_state_dir)
+            .await
     }
 
     pub async fn recover(&self, id: &str) -> anyhow::Result<VmResponse> {
-        let layout = self.resolved_layout_for_vm_id(id)?;
-        if !layout.state_dir.exists() {
-            return Err(VmNotFoundError(format!("vm not found: {id}")).into());
-        }
+        let vm = self.load_vm_disk_state(id)?;
+        let total_started = Instant::now();
 
-        let status = match self.try_reboot_vm(&layout).await {
-            Ok(()) => "running".to_string(),
+        // Durable-home contract: reboot first; only recreate if reboot fails.
+        self.rewrite_runtime_metadata_for_recreate(&vm)?;
+        let reboot_result = self.try_reboot_vm(&vm.id, &vm.tap_name).await;
+
+        let status = match reboot_result {
+            Ok(()) => "running",
             Err(reboot_err) => {
                 warn!(
                     vm_id = %id,
+                    vm_ip = %vm.ip,
                     error = %reboot_err,
                     "reboot failed; attempting recreate with existing persistent home"
                 );
-                self.recreate_prebuilt_vm_with_existing_home(&layout)
-                    .await?;
+                self.recreate_prebuilt_vm_with_existing_home(&vm).await?;
                 if wait_for_unit_active_or_fail_fast(
                     &self.cfg.systemctl_cmd,
-                    &layout.unit_name,
+                    &self.microvm_unit_name(&vm.id),
                     Duration::from_secs(2),
                 )
                 .await?
                 {
-                    "running".to_string()
+                    "running"
                 } else {
-                    "starting".to_string()
+                    "starting"
                 }
             }
         };
 
-        Ok(VmResponse {
-            id: layout.id,
+        let recover_total_ms = to_ms(total_started.elapsed());
+        info!(
+            vm_id = %id,
+            vm_ip = %vm.ip,
             status,
-        })
-    }
-
-    pub async fn get(&self, id: &str) -> anyhow::Result<VmResponse> {
-        let layout = self.resolved_layout_for_vm_id(id)?;
-        if !layout.state_dir.exists() {
-            return Err(VmNotFoundError(format!("vm not found: {id}")).into());
-        }
-
-        let active_state = unit_active_state(&self.cfg.systemctl_cmd, &layout.unit_name).await;
-        let status = match active_state.as_deref() {
-            Some("active") => "running",
-            Some("activating") | Some("reloading") => "starting",
-            Some("inactive") | Some("deactivating") => "stopped",
-            Some("failed") => "failed",
-            Some(other) if !other.is_empty() => other,
-            _ => "unknown",
-        };
-
-        Ok(VmResponse {
-            id: layout.id,
-            status: status.to_string(),
-        })
-    }
-
-    async fn allocate_layout(&self) -> anyhow::Result<VmHostLayout> {
-        let mut guard = self.inner.lock().await;
-        for _ in 0..VM_ID_ATTEMPTS {
-            let id = format!("vm-{}", &Uuid::new_v4().simple().to_string()[..8]);
-            let layout = self.layout_for_vm_id(&id)?;
-            if layout.state_dir.exists() || guard.reserved_vm_ids.contains(&id) {
-                continue;
-            }
-            if self.ip_in_use_locked(layout.ip, &id, &guard)? {
-                continue;
-            }
-            guard.reserved_vm_ids.insert(id.clone());
-            guard.reserved_ips.insert(layout.ip);
-            return Ok(layout);
-        }
-
-        Err(anyhow!(
-            "failed to allocate vm_id without deterministic IP collision after {VM_ID_ATTEMPTS} attempts"
-        ))
-    }
-
-    fn layout_for_vm_id(&self, id: &str) -> anyhow::Result<VmHostLayout> {
-        validate_vm_id(id)?;
-        Ok(VmHostLayout {
-            id: id.to_string(),
-            unit_name: format!("microvm@{id}.service"),
-            tap_name: derive_tap_name(id),
-            mac_address: derive_mac_address(id),
-            ip: derive_vm_ip(id, &self.cfg),
-            state_dir: self.cfg.state_dir.join(id),
-            gcroot_current: PathBuf::from(format!("/nix/var/nix/gcroots/microvm/{id}")),
-            gcroot_booted: PathBuf::from(format!("/nix/var/nix/gcroots/microvm/booted-{id}")),
-        })
-    }
-
-    fn resolved_layout_for_vm_id(&self, id: &str) -> anyhow::Result<VmHostLayout> {
-        let mut layout = self.layout_for_vm_id(id)?;
-        if let Some(metadata) = load_runtime_metadata(&layout.state_dir)? {
-            layout.tap_name = metadata.tap_name;
-            layout.mac_address = metadata.mac_address;
-            layout.ip = metadata.ip;
-        }
-        Ok(layout)
-    }
-
-    async fn release_layout(&self, layout: &VmHostLayout) {
-        let mut guard = self.inner.lock().await;
-        guard.reserved_vm_ids.remove(&layout.id);
-        guard.reserved_ips.remove(&layout.ip);
-    }
-
-    fn ip_in_use_locked(
-        &self,
-        ip: Ipv4Addr,
-        candidate_id: &str,
-        guard: &ManagerState,
-    ) -> anyhow::Result<bool> {
-        if guard.reserved_ips.contains(&ip) || guard.reserved_vm_ids.contains(candidate_id) {
-            return Ok(true);
-        }
-        for entry in fs::read_dir(&self.cfg.state_dir)
-            .with_context(|| format!("read {}", self.cfg.state_dir.display()))?
-        {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let existing_id = entry.file_name().to_string_lossy().into_owned();
-            if existing_id == candidate_id {
-                return Ok(true);
-            }
-            let Ok(existing_layout) = self.resolved_layout_for_vm_id(&existing_id) else {
-                continue;
-            };
-            if existing_layout.ip == ip {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+            recover_total_ms,
+            "vm recover complete"
+        );
+        Ok(VmResponse { id: id.to_string() })
     }
 
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
+        let key = format!("{cpu}c-{memory_mb}m");
         {
             let guard = self.inner.lock().await;
-            if let Some(path) = &guard.runner_cache {
+            if let Some(path) = guard.runner_cache.get(&key) {
                 return Ok(path.clone());
             }
         }
 
-        let key = format!("{cpu}c-{memory_mb}m");
         let flake_dir = self.cfg.runner_flake_dir.join(&key);
         fs::create_dir_all(&flake_dir)
             .with_context(|| format!("create runner flake dir {}", flake_dir.display()))?;
@@ -377,7 +370,7 @@ impl VmManager {
             .with_context(|| format!("resolve runner symlink {}", runner_link.display()))?;
 
         let mut guard = self.inner.lock().await;
-        guard.runner_cache = Some(runner_path.clone());
+        guard.runner_cache.insert(key, runner_path.clone());
         Ok(runner_path)
     }
 
@@ -471,55 +464,56 @@ impl VmManager {
 
     async fn install_prebuilt_vm_state(
         &self,
-        layout: &VmHostLayout,
+        id: &str,
+        vm_state_dir: &Path,
         runner_path: &Path,
     ) -> anyhow::Result<()> {
-        fs::create_dir_all(&layout.state_dir)
-            .with_context(|| format!("create vm state dir {}", layout.state_dir.display()))?;
-        fs::create_dir_all(layout.state_dir.join("home")).with_context(|| {
+        fs::create_dir_all(vm_state_dir)
+            .with_context(|| format!("create vm state dir {}", vm_state_dir.display()))?;
+        fs::create_dir_all(vm_state_dir.join("home")).with_context(|| {
             format!(
                 "create persistent home dir {}",
-                layout.state_dir.join("home").display()
+                vm_state_dir.join("home").display()
             )
         })?;
 
-        symlink_force(runner_path, &layout.state_dir.join("current"))?;
+        symlink_force(runner_path, &vm_state_dir.join("current"))?;
 
         run_command(
             Command::new(&self.cfg.chown_cmd)
                 .arg(":kvm")
-                .arg(&layout.state_dir),
+                .arg(vm_state_dir),
             "chown vm state dir",
         )
         .await?;
         run_command(
             Command::new(&self.cfg.chmod_cmd)
                 .arg("g+rwx")
-                .arg(&layout.state_dir),
+                .arg(vm_state_dir),
             "chmod vm state dir",
         )
         .await?;
 
         fs::create_dir_all("/nix/var/nix/gcroots/microvm")
             .context("create /nix/var/nix/gcroots/microvm")?;
-        symlink_force(&layout.state_dir.join("current"), &layout.gcroot_current)?;
-        symlink_force(&layout.state_dir.join("booted"), &layout.gcroot_booted)?;
+        symlink_force(&vm_state_dir.join("current"), &self.gcroot_current_path(id))?;
+        symlink_force(&vm_state_dir.join("booted"), &self.gcroot_booted_path(id))?;
 
         Ok(())
     }
 
-    async fn try_reboot_vm(&self, layout: &VmHostLayout) -> anyhow::Result<()> {
+    async fn try_reboot_vm(&self, id: &str, tap_name: &str) -> anyhow::Result<()> {
         run_command(
             Command::new(&self.cfg.systemctl_cmd)
                 .arg("restart")
-                .arg(&layout.unit_name),
+                .arg(self.microvm_unit_name(id)),
             "restart microvm service",
         )
         .await?;
 
         if !wait_for_unit_active_or_fail_fast(
             &self.cfg.systemctl_cmd,
-            &layout.unit_name,
+            &self.microvm_unit_name(id),
             Duration::from_secs(3),
         )
         .await?
@@ -527,78 +521,74 @@ impl VmManager {
             anyhow::bail!("microvm service did not become active after reboot");
         }
 
-        ensure_tap_bridged(&self.cfg.ip_cmd, &layout.tap_name, &self.cfg.bridge_name).await?;
+        ensure_tap_bridged(&self.cfg.ip_cmd, tap_name, &self.cfg.bridge_name).await?;
         Ok(())
     }
 
     async fn recreate_prebuilt_vm_with_existing_home(
         &self,
-        layout: &VmHostLayout,
+        vm: &VmDiskState,
     ) -> anyhow::Result<()> {
+        let unit_name = self.microvm_unit_name(&vm.id);
         let _ = Command::new(&self.cfg.systemctl_cmd)
             .arg("stop")
-            .arg(&layout.unit_name)
+            .arg(&unit_name)
             .status()
             .await;
         let _ = Command::new(&self.cfg.ip_cmd)
             .arg("link")
             .arg("del")
-            .arg(&layout.tap_name)
+            .arg(&vm.tap_name)
             .status()
             .await;
 
         self.ensure_runtime_artifacts().await?;
-        let runner_path = self
-            .ensure_prebuilt_runner(self.cfg.default_cpu, self.cfg.default_memory_mb)
+        self.rewrite_runtime_metadata_for_recreate(vm)?;
+        let runner_path = self.ensure_prebuilt_runner(vm.cpu, vm.memory_mb).await?;
+        self.install_prebuilt_vm_state(&vm.id, &vm.microvm_state_dir, &runner_path)
             .await?;
-        write_runtime_metadata(
-            &layout.state_dir,
-            layout.ip,
-            self.cfg.gateway_ip,
-            self.cfg.dns_ip,
-            &self.cfg.runtime_artifacts_guest_mount,
-            &layout.tap_name,
-            &layout.mac_address,
-            resolve_agent_daemon_bin().as_deref(),
-            None,
-        )?;
-        self.install_prebuilt_vm_state(layout, &runner_path).await?;
-        create_tap_interface(&self.cfg.ip_cmd, &layout.tap_name).await?;
-        ensure_tap_bridged(&self.cfg.ip_cmd, &layout.tap_name, &self.cfg.bridge_name).await?;
+        create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
+        ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
         run_command(
             Command::new(&self.cfg.systemctl_cmd)
                 .arg("start")
                 .arg("--no-block")
-                .arg(&layout.unit_name),
+                .arg(&unit_name),
             "start microvm service",
         )
         .await?;
         Ok(())
     }
 
-    async fn cleanup_layout(&self, layout: &VmHostLayout) -> anyhow::Result<()> {
+    async fn cleanup_artifacts_for_paths(
+        &self,
+        id: &str,
+        tap_name: &str,
+        microvm_state_dir: &Path,
+    ) -> anyhow::Result<()> {
+        let unit_name = self.microvm_unit_name(id);
         match tokio::time::timeout(
             Duration::from_secs(20),
             Command::new(&self.cfg.systemctl_cmd)
                 .arg("stop")
-                .arg(&layout.unit_name)
+                .arg(&unit_name)
                 .status(),
         )
         .await
         {
             Ok(_) => {}
             Err(_) => {
-                warn!(vm_id = %layout.id, "timed out stopping microvm; force killing");
+                warn!(vm_id = %id, "timed out stopping microvm; force killing");
                 let _ = Command::new(&self.cfg.systemctl_cmd)
                     .arg("kill")
                     .arg("-s")
                     .arg("KILL")
-                    .arg(&layout.unit_name)
+                    .arg(&unit_name)
                     .status()
                     .await;
                 let _ = Command::new(&self.cfg.systemctl_cmd)
                     .arg("stop")
-                    .arg(&layout.unit_name)
+                    .arg(&unit_name)
                     .status()
                     .await;
             }
@@ -607,63 +597,336 @@ impl VmManager {
         let _ = Command::new(&self.cfg.ip_cmd)
             .arg("link")
             .arg("del")
-            .arg(&layout.tap_name)
+            .arg(tap_name)
             .status()
             .await;
 
-        remove_path_if_exists(&layout.state_dir)?;
-        remove_path_if_exists(&layout.gcroot_current)?;
-        remove_path_if_exists(&layout.gcroot_booted)?;
+        remove_path_if_exists(microvm_state_dir)?;
+        remove_path_if_exists(&self.gcroot_current_path(id))?;
+        remove_path_if_exists(&self.gcroot_booted_path(id))?;
 
         Ok(())
     }
+
+    fn vm_paths(&self, id: &str) -> VmPaths {
+        VmPaths {
+            microvm_state_dir: self.cfg.state_dir.join(id),
+        }
+    }
+
+    fn load_vm_disk_state(&self, id: &str) -> anyhow::Result<VmDiskState> {
+        let paths = self.vm_paths(id);
+        if !paths.microvm_state_dir.exists() {
+            return Err(anyhow::Error::new(VmNotFound { id: id.to_string() }));
+        }
+
+        if let Some(ip) = self
+            .use_deterministic_vm_layout(id, &paths)?
+            .then(|| self.production_ip_for_vm_id(id))
+            .flatten()
+        {
+            let cpu = read_env_assignment(
+                &paths.microvm_state_dir.join("metadata/runtime.env"),
+                "PIKA_VM_CPU",
+            )?
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(self.cfg.default_cpu)
+            .clamp(1, self.cfg.max_cpu);
+            let memory_mb = read_env_assignment(
+                &paths.microvm_state_dir.join("metadata/runtime.env"),
+                "PIKA_VM_MEMORY_MB",
+            )?
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(self.cfg.default_memory_mb)
+            .clamp(512, self.cfg.max_memory_mb);
+            return Ok(VmDiskState {
+                id: id.to_string(),
+                tap_name: id.to_string(),
+                mac_address: self
+                    .production_mac_for_vm_id(id)
+                    .unwrap_or_else(|| mac_for_guest_ip(ip)),
+                ip,
+                cpu,
+                memory_mb,
+                microvm_state_dir: paths.microvm_state_dir,
+                layout: VmLayout::Deterministic,
+            });
+        }
+
+        let legacy = self.load_legacy_vm_disk_state(id, paths)?;
+        Ok(legacy)
+    }
+
+    fn use_deterministic_vm_layout(&self, id: &str, paths: &VmPaths) -> anyhow::Result<bool> {
+        if self.production_ip_for_vm_id(id).is_none() {
+            return Ok(false);
+        }
+
+        let runtime_env = paths.microvm_state_dir.join("metadata/runtime.env");
+        if matches!(
+            read_env_assignment(&runtime_env, "PIKA_VM_LAYOUT")?.as_deref(),
+            Some(DETERMINISTIC_VM_LAYOUT)
+        ) {
+            return Ok(true);
+        }
+
+        if paths.microvm_state_dir.join("vm.json").exists() {
+            return Ok(false);
+        }
+
+        let guest_env = paths.microvm_state_dir.join("metadata/env");
+        let has_persisted_network_metadata = read_env_assignment(&guest_env, "PIKA_VM_IP")?
+            .is_some()
+            || read_env_assignment(&runtime_env, "PIKA_VM_IP")?.is_some()
+            || read_env_assignment(&runtime_env, "MICROVM_TAP")?.is_some()
+            || read_env_assignment(&runtime_env, "MICROVM_MAC")?.is_some();
+
+        Ok(!has_persisted_network_metadata)
+    }
+
+    fn load_vm_cleanup_state(&self, id: &str) -> anyhow::Result<VmCleanupState> {
+        let paths = self.vm_paths(id);
+        if !paths.microvm_state_dir.exists() {
+            return Err(anyhow::Error::new(VmNotFound { id: id.to_string() }));
+        }
+
+        let tap_name = if self.use_deterministic_vm_layout(id, &paths)? {
+            id.to_string()
+        } else {
+            self.load_legacy_vm_boot_inputs(id, &paths)?.tap_name
+        };
+
+        Ok(VmCleanupState {
+            tap_name,
+            microvm_state_dir: paths.microvm_state_dir,
+        })
+    }
+
+    fn load_legacy_vm_disk_state(&self, id: &str, paths: VmPaths) -> anyhow::Result<VmDiskState> {
+        let legacy = self.load_legacy_vm_boot_inputs(id, &paths)?;
+        let ip = legacy
+            .ip
+            .ok_or_else(|| anyhow!("vm metadata missing IP address: {id}"))?;
+        let mac_address = legacy.mac_address.unwrap_or_else(|| mac_for_guest_ip(ip));
+
+        Ok(VmDiskState {
+            id: id.to_string(),
+            tap_name: legacy.tap_name,
+            mac_address,
+            ip,
+            cpu: legacy.cpu,
+            memory_mb: legacy.memory_mb,
+            microvm_state_dir: paths.microvm_state_dir,
+            layout: VmLayout::LegacyCompatible,
+        })
+    }
+
+    fn load_legacy_vm_boot_inputs(
+        &self,
+        id: &str,
+        paths: &VmPaths,
+    ) -> anyhow::Result<LegacyVmBootInputs> {
+        let runtime_env = paths.microvm_state_dir.join("metadata/runtime.env");
+        let guest_env = paths.microvm_state_dir.join("metadata/env");
+        let legacy = read_legacy_vm_metadata(&paths.microvm_state_dir.join("vm.json"))?;
+        let tap_name = read_env_assignment(&runtime_env, "MICROVM_TAP")?
+            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.tap_name)))
+            .unwrap_or_else(|| id.to_string());
+        let ip = read_env_assignment(&guest_env, "PIKA_VM_IP")?
+            .or(read_env_assignment(&runtime_env, "PIKA_VM_IP")?)
+            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.ip)))
+            .map(|value| {
+                value
+                    .parse()
+                    .with_context(|| format!("parse vm IP for {id}"))
+            })
+            .transpose()?;
+        let cpu = read_env_assignment(&runtime_env, "PIKA_VM_CPU")?
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| legacy.as_ref().and_then(|vm| vm.cpu))
+            .unwrap_or(self.cfg.default_cpu)
+            .clamp(1, self.cfg.max_cpu);
+        let memory_mb = read_env_assignment(&runtime_env, "PIKA_VM_MEMORY_MB")?
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| legacy.as_ref().and_then(|vm| vm.memory_mb))
+            .unwrap_or(self.cfg.default_memory_mb)
+            .clamp(512, self.cfg.max_memory_mb);
+        let mac_address = read_env_assignment(&runtime_env, "MICROVM_MAC")?
+            .or_else(|| legacy.as_ref().and_then(|vm| non_empty(&vm.mac_address)));
+
+        Ok(LegacyVmBootInputs {
+            tap_name,
+            mac_address,
+            ip,
+            cpu,
+            memory_mb,
+        })
+    }
+
+    fn allocate_vm_identity_locked(
+        &self,
+        reserved_slots: &HashSet<u32>,
+    ) -> anyhow::Result<VmIdentity> {
+        let pool_size = self.ip_pool_size()?;
+        let occupied_slots = self.occupied_slots_from_disk()?;
+
+        for slot in 0..pool_size {
+            if reserved_slots.contains(&slot) || occupied_slots.contains(&slot) {
+                continue;
+            }
+
+            let id = self.production_vm_id_for_slot(slot);
+            return Ok(VmIdentity {
+                tap_name: id.clone(),
+                ip: self.ip_for_slot(slot),
+                id,
+                slot,
+            });
+        }
+
+        Err(anyhow!("no free IP addresses in pool"))
+    }
+
+    fn ip_pool_size(&self) -> anyhow::Result<u32> {
+        let start = to_u32(self.cfg.ip_start);
+        let end = to_u32(self.cfg.ip_end);
+        if end < start {
+            return Err(anyhow!("invalid IP pool: start must be <= end"));
+        }
+        Ok(end - start + 1)
+    }
+
+    fn ip_for_slot(&self, slot: u32) -> Ipv4Addr {
+        from_u32(to_u32(self.cfg.ip_start) + slot)
+    }
+
+    fn slot_for_ip(&self, ip: Ipv4Addr) -> Option<u32> {
+        let start = to_u32(self.cfg.ip_start);
+        let end = to_u32(self.cfg.ip_end);
+        let value = to_u32(ip);
+        (start..=end).contains(&value).then_some(value - start)
+    }
+
+    fn production_ip_for_vm_id(&self, id: &str) -> Option<Ipv4Addr> {
+        self.production_slot_for_vm_id(id)
+            .map(|slot| self.ip_for_slot(slot))
+    }
+
+    fn production_mac_for_vm_id(&self, id: &str) -> Option<String> {
+        self.production_ip_for_vm_id(id).map(mac_for_guest_ip)
+    }
+
+    fn production_vm_id_for_slot(&self, slot: u32) -> String {
+        format!("vm-{slot:08x}")
+    }
+
+    fn production_slot_for_vm_id(&self, id: &str) -> Option<u32> {
+        let slot = parse_vm_id_slot(id)?;
+        let pool_size = self.ip_pool_size().ok()?;
+        (slot < pool_size).then_some(slot)
+    }
+
+    fn microvm_unit_name(&self, id: &str) -> String {
+        format!("microvm@{id}.service")
+    }
+
+    fn gcroot_current_path(&self, id: &str) -> PathBuf {
+        PathBuf::from(format!("/nix/var/nix/gcroots/microvm/{id}"))
+    }
+
+    fn gcroot_booted_path(&self, id: &str) -> PathBuf {
+        PathBuf::from(format!("/nix/var/nix/gcroots/microvm/booted-{id}"))
+    }
+
+    fn occupied_slots_from_disk(&self) -> anyhow::Result<HashSet<u32>> {
+        let mut occupied_slots = HashSet::new();
+        for entry in fs::read_dir(&self.cfg.state_dir)
+            .with_context(|| format!("read state dir {}", self.cfg.state_dir.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("read entry in state dir {}", self.cfg.state_dir.display())
+            })?;
+            if !entry
+                .file_type()
+                .with_context(|| format!("read file type for {}", entry.path().display()))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let paths = self.vm_paths(&id);
+            if let Some(slot) = self
+                .occupied_slot_for_paths(&id, &paths)
+                .with_context(|| format!("scan occupied slot for existing vm {id}"))?
+            {
+                occupied_slots.insert(slot);
+            }
+        }
+        Ok(occupied_slots)
+    }
+
+    fn occupied_slot_for_paths(&self, id: &str, paths: &VmPaths) -> anyhow::Result<Option<u32>> {
+        if self.use_deterministic_vm_layout(id, paths)? {
+            return Ok(self.production_slot_for_vm_id(id));
+        }
+
+        let legacy = self.load_legacy_vm_boot_inputs(id, paths)?;
+        let ip = legacy.ip.ok_or_else(|| {
+            anyhow!("vm metadata missing IP address while scanning allocator state: {id}")
+        })?;
+        Ok(self.slot_for_ip(ip))
+    }
+
+    fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
+        let daemon_bin = resolve_agent_daemon_bin();
+
+        write_runtime_metadata(
+            &vm.microvm_state_dir,
+            &vm.tap_name,
+            &vm.mac_address,
+            vm.ip,
+            self.cfg.gateway_ip,
+            self.cfg.dns_ip,
+            vm.cpu,
+            vm.memory_mb,
+            &self.cfg.runtime_artifacts_guest_mount,
+            daemon_bin.as_deref(),
+            matches!(vm.layout, VmLayout::Deterministic),
+            None,
+        )
+    }
+
+    async fn list_active_vm_units(&self) -> anyhow::Result<usize> {
+        let output = run_command_capture_stdout(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("list-units")
+                .arg("--plain")
+                .arg("--no-legend")
+                .arg("--state=active")
+                .arg("microvm@*.service"),
+            "list active microvm units",
+        )
+        .await?;
+
+        Ok(output
+            .lines()
+            .filter(|line| line.trim_start().starts_with("microvm@"))
+            .count())
+    }
 }
 
-fn validate_vm_id(vm_id: &str) -> anyhow::Result<()> {
-    if vm_id.is_empty() {
-        return Err(InvalidVmIdError("vm_id must not be empty".to_string()).into());
+fn parse_vm_id_slot(id: &str) -> Option<u32> {
+    let raw = id.strip_prefix("vm-")?;
+    if raw.len() != 8 || !raw.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
     }
-    if vm_id.len() > MAX_VM_ID_LEN {
-        return Err(InvalidVmIdError(format!("vm_id must be <= {MAX_VM_ID_LEN} bytes")).into());
-    }
-    if !vm_id.starts_with("vm-") {
-        return Err(InvalidVmIdError("vm_id must start with `vm-`".to_string()).into());
-    }
-    if !vm_id
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return Err(InvalidVmIdError("vm_id contains invalid characters".to_string()).into());
-    }
-    Ok(())
+    u32::from_str_radix(raw, 16).ok()
 }
 
-fn stable_hash(vm_id: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in vm_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-fn derive_tap_name(vm_id: &str) -> String {
-    format!("mv-{:012x}", stable_hash(vm_id) & 0x00ff_ffff_ffff)
-}
-
-fn derive_mac_address(vm_id: &str) -> String {
-    let bytes = stable_hash(vm_id).to_be_bytes();
-    format!(
-        "02:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]
-    )
-}
-
-fn derive_vm_ip(vm_id: &str, cfg: &Config) -> Ipv4Addr {
-    let start = to_u32(cfg.ip_start);
-    let size = u64::from(to_u32(cfg.ip_end) - start + 1);
-    let offset = (stable_hash(vm_id) % size) as u32;
-    from_u32(start + offset)
+fn mac_for_guest_ip(ip: Ipv4Addr) -> String {
+    let [a, b, c, d] = ip.octets();
+    format!("02:00:{a:02x}:{b:02x}:{c:02x}:{d:02x}")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -691,6 +954,51 @@ fn env_non_empty(name: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn read_legacy_vm_metadata(path: &Path) -> anyhow::Result<Option<LegacyPersistedVm>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .with_context(|| format!("parse legacy vm metadata {}", path.display()))
+}
+
+fn read_env_assignment(path: &Path, key: &str) -> anyhow::Result<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    for line in text.lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() == key {
+            return Ok(Some(shell_unquote(value.trim())));
+        }
+    }
+    Ok(None)
+}
+
+fn shell_unquote(value: &str) -> String {
+    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        value[1..value.len() - 1].replace("'\"'\"'", "'")
+    } else {
+        value.to_string()
     }
 }
 
@@ -729,31 +1037,35 @@ fn find_in_path(bin_name: &str) -> Option<PathBuf> {
 #[allow(clippy::too_many_arguments)]
 fn write_runtime_metadata(
     vm_state_dir: &Path,
+    tap_name: &str,
+    mac_address: &str,
     vm_ip: Ipv4Addr,
     gateway_ip: Ipv4Addr,
     dns_ip: Ipv4Addr,
+    cpu: u32,
+    memory_mb: u32,
     runtime_artifacts_guest_mount: &Path,
-    tap_name: &str,
-    mac_address: &str,
     daemon_bin: Option<&Path>,
+    mark_deterministic_layout: bool,
     guest_autostart: Option<&GuestAutostartRequest>,
 ) -> anyhow::Result<()> {
     let metadata_dir = vm_state_dir.join("metadata");
     fs::create_dir_all(&metadata_dir)
         .with_context(|| format!("create metadata dir {}", metadata_dir.display()))?;
 
-    let mut env_file = format!(
+    let mut env_file = String::new();
+    env_file.push_str(&format!(
         "PIKA_VM_IP={}\nPIKA_GATEWAY_IP={}\nPIKA_DNS_IP={}\n",
         shell_quote(&vm_ip.to_string()),
         shell_quote(&gateway_ip.to_string()),
         shell_quote(&dns_ip.to_string()),
-    );
+    ));
     env_file.push_str(&format!(
         "PIKA_RUNTIME_ARTIFACTS_GUEST={}\n",
         shell_quote(&runtime_artifacts_guest_mount.display().to_string()),
     ));
     let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
-    env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd)));
+    env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
     if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
             "PIKA_PIKACHAT_BIN={}\n",
@@ -774,22 +1086,22 @@ fn write_runtime_metadata(
     fs::write(metadata_dir.join("env"), env_file)
         .with_context(|| format!("write {}", metadata_dir.join("env").display()))?;
 
-    let runtime_env = format!(
-        "MICROVM_TAP={}\nMICROVM_MAC={}\n",
+    let mut runtime_env = String::new();
+    if mark_deterministic_layout {
+        runtime_env.push_str(&format!(
+            "PIKA_VM_LAYOUT={}\n",
+            shell_quote(DETERMINISTIC_VM_LAYOUT)
+        ));
+    }
+    runtime_env.push_str(&format!(
+        "MICROVM_TAP={}\nMICROVM_MAC={}\nPIKA_VM_CPU={}\nPIKA_VM_MEMORY_MB={}\n",
         shell_quote(tap_name),
         shell_quote(mac_address),
-    );
+        shell_quote(&cpu.to_string()),
+        shell_quote(&memory_mb.to_string()),
+    ));
     fs::write(metadata_dir.join("runtime.env"), runtime_env)
         .with_context(|| format!("write {}", metadata_dir.join("runtime.env").display()))?;
-    fs::write(
-        metadata_dir.join("runtime.json"),
-        serde_json::to_vec_pretty(&VmRuntimeMetadata {
-            ip: vm_ip,
-            tap_name: tap_name.to_string(),
-            mac_address: mac_address.to_string(),
-        })?,
-    )
-    .with_context(|| format!("write {}", metadata_dir.join("runtime.json").display()))?;
 
     if let Some(autostart) = guest_autostart {
         write_guest_autostart_metadata(&metadata_dir, autostart)?;
@@ -954,13 +1266,30 @@ fn write_prebuilt_base_flake(
           networking.resolvconf.enable = lib.mkForce false;
           services.resolved.enable = false;
 
+          users.users.root.initialHashedPassword = lib.mkForce "!";
+
+          nix.settings = {{
+            experimental-features = [ "nix-command" "flakes" ];
+            substituters = [
+              "https://cache.nixos.org"
+              "http://192.168.83.1:5000"
+            ];
+            trusted-public-keys = [
+              "builder-cache:G1k8YbPhD93miUqFsuTqMxLAk2GN17eNKd1dJiC7DKk="
+            ];
+          }};
+
           environment.systemPackages = with pkgs; [
             bash
-            cacert
             coreutils
             curl
-            iproute2
+            cacert
+            git
+            jq
+            nix
+            nodejs
             python3
+            iproute2
           ];
 
           systemd.services.agent-bootstrap = {{
@@ -980,6 +1309,9 @@ fn write_prebuilt_base_flake(
                 chmod 0644 /etc/agent-env
               fi
 
+              # v1 durability contract:
+              # - /root is backed by host persistent storage (virtiofs share)
+              # - /workspace resolves to /root
               rm -rf /workspace
               ln -sfn /root /workspace
             '';
@@ -1186,8 +1518,8 @@ async fn wait_for_unit_active_or_fail_fast(
     unit: &str,
     timeout: Duration,
 ) -> anyhow::Result<bool> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    while tokio::time::Instant::now() < deadline {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
         match unit_active_state(systemctl_cmd, unit).await.as_deref() {
             Some("active") => return Ok(true),
             Some("failed") => return Err(anyhow!("unit {unit} entered failed state after start")),
@@ -1279,236 +1611,598 @@ async fn run_command_capture_stdout(cmd: &mut Command, context: &str) -> anyhow:
     ))
 }
 
-#[derive(Debug, Deserialize)]
-struct LegacyVmRecord {
-    ip: String,
-    tap_name: String,
-    mac_address: String,
-}
-
-fn load_runtime_metadata(state_dir: &Path) -> anyhow::Result<Option<VmRuntimeMetadata>> {
-    let metadata_dir = state_dir.join("metadata");
-    let runtime_json = metadata_dir.join("runtime.json");
-    if runtime_json.exists() {
-        let bytes =
-            fs::read(&runtime_json).with_context(|| format!("read {}", runtime_json.display()))?;
-        let metadata = serde_json::from_slice::<VmRuntimeMetadata>(&bytes)
-            .with_context(|| format!("parse {}", runtime_json.display()))?;
-        return Ok(Some(metadata));
-    }
-
-    let env_path = metadata_dir.join("env");
-    let runtime_env_path = metadata_dir.join("runtime.env");
-    if env_path.exists() && runtime_env_path.exists() {
-        let env_vars = parse_shell_env_file(&env_path)?;
-        let runtime_vars = parse_shell_env_file(&runtime_env_path)?;
-        if let (Some(ip), Some(tap_name), Some(mac_address)) = (
-            env_vars.get("PIKA_VM_IP"),
-            runtime_vars.get("MICROVM_TAP"),
-            runtime_vars.get("MICROVM_MAC"),
-        ) {
-            return Ok(Some(VmRuntimeMetadata {
-                ip: ip
-                    .parse()
-                    .with_context(|| format!("parse PIKA_VM_IP in {}", env_path.display()))?,
-                tap_name: tap_name.clone(),
-                mac_address: mac_address.clone(),
-            }));
-        }
-    }
-
-    let legacy_vm_json = state_dir.join("vm.json");
-    if legacy_vm_json.exists() {
-        let bytes = fs::read(&legacy_vm_json)
-            .with_context(|| format!("read {}", legacy_vm_json.display()))?;
-        let record = serde_json::from_slice::<LegacyVmRecord>(&bytes)
-            .with_context(|| format!("parse {}", legacy_vm_json.display()))?;
-        return Ok(Some(VmRuntimeMetadata {
-            ip: record
-                .ip
-                .parse()
-                .with_context(|| format!("parse ip in {}", legacy_vm_json.display()))?,
-            tap_name: record.tap_name,
-            mac_address: record.mac_address,
-        }));
-    }
-
-    Ok(None)
-}
-
-fn parse_shell_env_file(path: &Path) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let mut values = std::collections::BTreeMap::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        values.insert(key.to_string(), parse_shell_quoted_value(value.trim())?);
-    }
-    Ok(values)
-}
-
-fn parse_shell_quoted_value(value: &str) -> anyhow::Result<String> {
-    if let Some(inner) = value
-        .strip_prefix('\'')
-        .and_then(|rest| rest.strip_suffix('\''))
-    {
-        return Ok(inner.replace("'\"'\"'", "'"));
-    }
-    if value.contains('\'') {
-        anyhow::bail!("unsupported shell-quoted value: {value}");
-    }
-    Ok(value.to_string())
+fn to_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::collections::BTreeMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::os::unix::fs::PermissionsExt;
 
-    fn test_config() -> Config {
+    use tempfile::TempDir;
+
+    fn test_config(root: &TempDir) -> Config {
+        let root = root.path();
         Config {
-            bind: "127.0.0.1:8080".parse().expect("bind"),
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             bridge_name: "microbr".to_string(),
-            state_dir: PathBuf::from("/tmp/microvms"),
-            run_dir: PathBuf::from("/tmp/microvm-agent"),
-            runner_cache_dir: PathBuf::from("/tmp/microvm-agent/runner-cache"),
-            runner_flake_dir: PathBuf::from("/tmp/microvm-agent/runner-flakes"),
-            runtime_artifacts_host_dir: PathBuf::from("/tmp/microvm-artifacts"),
+            state_dir: root.join("state"),
+            run_dir: root.join("run"),
+            runner_cache_dir: root.join("run/runner-cache"),
+            runner_flake_dir: root.join("run/runner-flakes"),
+            runtime_artifacts_host_dir: root.join("artifacts"),
             runtime_artifacts_guest_mount: PathBuf::from("/opt/runtime-artifacts"),
             runtime_artifacts: Vec::new(),
-            ip_start: "192.168.83.10".parse().expect("ip_start"),
-            ip_end: "192.168.83.254".parse().expect("ip_end"),
-            gateway_ip: "192.168.83.1".parse().expect("gateway"),
-            dns_ip: "192.168.83.1".parse().expect("dns"),
+            ip_start: Ipv4Addr::new(192, 168, 83, 10),
+            ip_end: Ipv4Addr::new(192, 168, 83, 12),
+            gateway_ip: Ipv4Addr::new(192, 168, 83, 1),
+            dns_ip: Ipv4Addr::new(192, 168, 83, 1),
             default_cpu: 2,
             default_memory_mb: 4096,
+            max_cpu: 16,
+            max_memory_mb: 65536,
             prewarm_enabled: false,
-            systemctl_cmd: "/bin/systemctl".to_string(),
-            ip_cmd: "/bin/ip".to_string(),
-            nix_cmd: "/bin/nix".to_string(),
-            chown_cmd: "/bin/chown".to_string(),
-            chmod_cmd: "/bin/chmod".to_string(),
+            systemctl_cmd: "/bin/true".to_string(),
+            ip_cmd: "/bin/true".to_string(),
+            nix_cmd: "/bin/true".to_string(),
+            chown_cmd: "/bin/true".to_string(),
+            chmod_cmd: "/bin/true".to_string(),
         }
-    }
-
-    fn test_manager(cfg: Config) -> VmManager {
-        VmManager {
-            cfg,
-            inner: Arc::new(Mutex::new(ManagerState {
-                runner_cache: None,
-                reserved_vm_ids: HashSet::new(),
-                reserved_ips: HashSet::new(),
-            })),
-        }
-    }
-
-    fn unique_test_dir(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{nanos}-{}", std::process::id()))
-    }
-
-    #[test]
-    fn deterministic_host_derivations_are_stable() {
-        let cfg = test_config();
-        let first = test_manager(cfg.clone())
-            .layout_for_vm_id("vm-1234abcd")
-            .expect("layout");
-        let second = test_manager(cfg)
-            .layout_for_vm_id("vm-1234abcd")
-            .expect("layout");
-
-        assert_eq!(first.tap_name, second.tap_name);
-        assert_eq!(first.mac_address, second.mac_address);
-        assert_eq!(first.ip, second.ip);
-        assert!(first.tap_name.len() <= 15);
-    }
-
-    #[test]
-    fn vm_id_validation_rejects_invalid_values() {
-        let too_long = "v".repeat(40);
-        let bad_ids = ["", "abc", "vm-UPPER", "vm-slash/name", too_long.as_str()];
-        for bad in bad_ids {
-            assert!(validate_vm_id(bad).is_err(), "{bad} should be rejected");
-        }
-        validate_vm_id("vm-1234abcd").expect("valid vm id");
-    }
-
-    #[test]
-    fn derived_ip_is_within_pool() {
-        let cfg = test_config();
-        let ip = derive_vm_ip("vm-feedface", &cfg);
-        assert!(ip >= cfg.ip_start);
-        assert!(ip <= cfg.ip_end);
-    }
-
-    #[test]
-    fn resolved_layout_prefers_legacy_vm_json_runtime_metadata() {
-        let state_dir = unique_test_dir("vm-spawner-legacy");
-        let mut cfg = test_config();
-        cfg.state_dir = state_dir.clone();
-        fs::create_dir_all(state_dir.join("vm-legacy01")).expect("create state dir");
-        fs::write(
-            state_dir.join("vm-legacy01").join("vm.json"),
-            r#"{
-  "ip": "192.168.83.42",
-  "tap_name": "vm-legacy01",
-  "mac_address": "02:aa:bb:cc:dd:ee"
-}"#,
-        )
-        .expect("write vm.json");
-
-        let layout = test_manager(cfg)
-            .resolved_layout_for_vm_id("vm-legacy01")
-            .expect("resolved layout");
-        assert_eq!(layout.ip, "192.168.83.42".parse::<Ipv4Addr>().expect("ip"));
-        assert_eq!(layout.tap_name, "vm-legacy01");
-        assert_eq!(layout.mac_address, "02:aa:bb:cc:dd:ee");
-
-        let _ = fs::remove_dir_all(state_dir);
     }
 
     #[tokio::test]
-    async fn allocate_layout_reserves_ip_while_create_is_in_flight() {
-        let state_dir = unique_test_dir("vm-spawner-reserve");
-        let run_dir = unique_test_dir("vm-spawner-run");
-        let artifacts_dir = unique_test_dir("vm-spawner-artifacts");
-        let mut cfg = test_config();
-        cfg.state_dir = state_dir.clone();
-        cfg.run_dir = run_dir.clone();
-        cfg.runner_cache_dir = run_dir.join("runner-cache");
-        cfg.runner_flake_dir = run_dir.join("runner-flakes");
-        cfg.runtime_artifacts_host_dir = artifacts_dir.clone();
-        cfg.ip_start = "192.168.83.10".parse().expect("ip_start");
-        cfg.ip_end = cfg.ip_start;
+    async fn load_vm_disk_state_uses_vm_id_for_current_path() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "PIKA_VM_LAYOUT='deterministic-v1'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
+        )
+        .unwrap();
 
-        fs::create_dir_all(&cfg.state_dir).expect("create state dir");
-        fs::create_dir_all(&cfg.run_dir).expect("create run dir");
-        fs::create_dir_all(&cfg.runner_cache_dir).expect("create runner cache");
-        fs::create_dir_all(&cfg.runner_flake_dir).expect("create runner flake dir");
-        fs::create_dir_all(&cfg.runtime_artifacts_host_dir).expect("create artifacts dir");
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
 
-        let manager = VmManager::new(cfg).await.expect("manager");
-        let first = manager.allocate_layout().await.expect("first layout");
-        let second = manager.allocate_layout().await;
+        assert_eq!(vm.id, vm_id);
+        assert_eq!(vm.tap_name, vm_id);
+        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0c");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 12));
+        assert_eq!(vm.cpu, 3);
+        assert_eq!(vm.memory_mb, 8192);
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_ignores_extra_state_files_for_current_path() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "PIKA_VM_LAYOUT='deterministic-v1'\nMICROVM_TAP='wrong-tap'\nPIKA_VM_CPU='3'\nPIKA_VM_MEMORY_MB='8192'\n",
+        )
+        .unwrap();
+        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.99'\n").unwrap();
+        fs::write(
+            vm_dir.join("vm.json"),
+            r#"{
+  "ip": "192.168.83.99",
+  "tap_name": "legacy-tap",
+  "cpu": 9,
+  "memory_mb": 16384
+}"#,
+        )
+        .unwrap();
+        fs::write(vm_dir.join("random.txt"), "not authoritative\n").unwrap();
+
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+
+        assert_eq!(vm.id, vm_id);
+        assert_eq!(vm.tap_name, vm_id);
+        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0c");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 12));
+        assert_eq!(vm.cpu, 3);
+        assert_eq!(vm.memory_mb, 8192);
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_falls_back_to_legacy_vm_json() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_dir = cfg.state_dir.join("vm-test");
+        fs::create_dir_all(&vm_dir).unwrap();
+        fs::write(
+            vm_dir.join("vm.json"),
+            r#"{
+  "ip": "192.168.83.11",
+  "tap_name": "legacy-tap",
+  "mac_address": "02:00:00:00:00:02",
+  "cpu": 3,
+  "memory_mb": 8192
+}"#,
+        )
+        .unwrap();
+
+        let vm = manager.load_vm_disk_state("vm-test").unwrap();
+
+        assert_eq!(vm.tap_name, "legacy-tap");
+        assert_eq!(vm.mac_address, "02:00:00:00:00:02");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 11));
+        assert_eq!(vm.cpu, 3);
+        assert_eq!(vm.memory_mb, 8192);
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_legacy_compat_reads_runtime_metadata_without_vm_json() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_dir = cfg.state_dir.join("vm-legacy-old");
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_IP='192.168.83.11'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
+        )
+        .unwrap();
+
+        let vm = manager.load_vm_disk_state("vm-legacy-old").unwrap();
+
+        assert_eq!(vm.tap_name, "legacy-tap");
+        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0b");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 11));
+        assert_eq!(vm.cpu, 5);
+        assert_eq!(vm.memory_mb, 12288);
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_legacy_compat_supports_out_of_pool_vm_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000003";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap-3'\nPIKA_VM_CPU='6'\nPIKA_VM_MEMORY_MB='16384'\n",
+        )
+        .unwrap();
+        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.42'\n").unwrap();
+
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+
+        assert_eq!(vm.id, vm_id);
+        assert_eq!(vm.tap_name, "legacy-tap-3");
+        assert_eq!(vm.mac_address, "02:00:c0:a8:53:2a");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 42));
+        assert_eq!(vm.cpu, 6);
+        assert_eq!(vm.memory_mb, 16384);
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_prefers_persisted_legacy_metadata_for_in_pool_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
+        )
+        .unwrap();
+        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
+
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+
+        assert_eq!(vm.id, vm_id);
+        assert_eq!(vm.tap_name, "legacy-tap");
+        assert_eq!(vm.mac_address, "02:00:c0:a8:53:0a");
+        assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 10));
+        assert_eq!(vm.cpu, 5);
+        assert_eq!(vm.memory_mb, 12288);
+    }
+
+    #[tokio::test]
+    async fn rewrite_runtime_metadata_for_recreate_repairs_missing_runtime_env() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_state_dir = cfg.state_dir.join("vm-test");
+        fs::create_dir_all(&vm_state_dir).unwrap();
+        fs::write(
+            vm_state_dir.join("vm.json"),
+            r#"{
+  "ip": "192.168.83.11",
+  "tap_name": "legacy-tap",
+  "mac_address": "02:00:00:00:00:02",
+  "cpu": 3,
+  "memory_mb": 8192
+}"#,
+        )
+        .unwrap();
+
+        let vm = manager.load_vm_disk_state("vm-test").unwrap();
+        manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
+
+        let runtime_env = fs::read_to_string(vm_state_dir.join("metadata/runtime.env")).unwrap();
+        assert!(!runtime_env.contains("PIKA_VM_LAYOUT='deterministic-v1'"));
+        assert!(runtime_env.contains("MICROVM_TAP='legacy-tap'"));
+        assert!(runtime_env.contains("MICROVM_MAC='02:00:00:00:00:02'"));
+    }
+
+    #[tokio::test]
+    async fn rewrite_runtime_metadata_for_recreate_preserves_legacy_layout_for_in_pool_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='5'\nPIKA_VM_MEMORY_MB='12288'\n",
+        )
+        .unwrap();
+        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
+
+        let vm = manager.load_vm_disk_state(vm_id).unwrap();
+        manager.rewrite_runtime_metadata_for_recreate(&vm).unwrap();
+
+        let runtime_env = fs::read_to_string(vm_dir.join("metadata/runtime.env")).unwrap();
+        assert!(!runtime_env.contains("PIKA_VM_LAYOUT='deterministic-v1'"));
+
+        let reloaded = manager.load_vm_disk_state(vm_id).unwrap();
+        assert_eq!(reloaded.tap_name, "legacy-tap");
+        assert_eq!(reloaded.ip, Ipv4Addr::new(192, 168, 83, 10));
+        assert_eq!(reloaded.mac_address, "02:00:c0:a8:53:0a");
+    }
+
+    #[tokio::test]
+    async fn recover_rewrites_dns_metadata_before_successful_reboot() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ip_script = scripts_dir.join("ip");
+        fs::write(&ip_script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&ip_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.dns_ip = Ipv4Addr::new(1, 1, 1, 1);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let vm_state_dir = cfg.state_dir.join("vm-test");
+        fs::create_dir_all(vm_state_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_state_dir.join("vm.json"),
+            r#"{
+  "ip": "192.168.83.11",
+  "tap_name": "legacy-tap",
+  "mac_address": "02:00:00:00:00:02",
+  "cpu": 3,
+  "memory_mb": 8192
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            vm_state_dir.join("metadata/env"),
+            "PIKA_VM_IP='192.168.83.11'\nPIKA_GATEWAY_IP='192.168.83.1'\nPIKA_DNS_IP='192.168.83.1'\n",
+        )
+        .unwrap();
+
+        let recovered = manager.recover("vm-test").await.unwrap();
+        assert_eq!(recovered.id, "vm-test");
+
+        let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
+        assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
+    }
+
+    #[tokio::test]
+    async fn destroy_tolerates_legacy_state_dirs_missing_ip_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-legacy-bad";
+        let vm_dir = cfg.state_dir.join(vm_id);
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
+        )
+        .unwrap();
+
+        manager.destroy(vm_id).await.unwrap();
+
+        assert!(!vm_dir.exists());
+    }
+
+    #[test]
+    fn prebuilt_flake_mounts_durable_home_at_root() {
+        let root = tempfile::tempdir().unwrap();
+        write_prebuilt_base_flake(
+            root.path(),
+            2,
+            4096,
+            Path::new("/var/lib/vm-artifacts"),
+            Path::new("/opt/runtime-artifacts"),
+        )
+        .unwrap();
+        let flake = fs::read_to_string(root.path().join("flake.nix")).unwrap();
+
+        assert!(flake.contains("tag = \"agent-home\";"));
+        assert!(flake.contains("source = \"./home\";"));
+        assert!(flake.contains("mountPoint = \"/root\";"));
+        assert!(flake.contains("readOnly = false;"));
+    }
+
+    #[test]
+    fn prebuilt_flake_requires_runtime_tap_and_mac_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        write_prebuilt_base_flake(
+            root.path(),
+            2,
+            4096,
+            Path::new("/var/lib/vm-artifacts"),
+            Path::new("/opt/runtime-artifacts"),
+        )
+        .unwrap();
+        let flake = fs::read_to_string(root.path().join("flake.nix")).unwrap();
+
+        assert!(flake.contains("MICROVM_TAP"));
+        assert!(flake.contains("MICROVM_MAC"));
+        assert!(flake.contains("tap=''${MICROVM_TAP}"));
+        assert!(flake.contains("mac=''${MICROVM_MAC}"));
+    }
+
+    #[test]
+    fn prebuilt_flake_omits_guest_ssh_service() {
+        let root = tempfile::tempdir().unwrap();
+        write_prebuilt_base_flake(
+            root.path(),
+            2,
+            4096,
+            Path::new("/var/lib/vm-artifacts"),
+            Path::new("/opt/runtime-artifacts"),
+        )
+        .unwrap();
+        let flake = fs::read_to_string(root.path().join("flake.nix")).unwrap();
+
+        assert!(!flake.contains("services.openssh"));
+        assert!(!flake.contains("sshd.service"));
+    }
+
+    #[tokio::test]
+    async fn allocate_ip_locked_uses_direct_slot_ids_and_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        fs::create_dir_all(cfg.state_dir.join("vm-00000000")).unwrap();
+
+        let reserved = HashSet::from([1]);
+        let identity = manager.allocate_vm_identity_locked(&reserved).unwrap();
+
+        assert_eq!(identity.id, "vm-00000002");
+        assert_eq!(identity.ip, Ipv4Addr::new(192, 168, 83, 12));
+        assert_eq!(identity.tap_name, identity.id);
+    }
+
+    #[tokio::test]
+    async fn single_slot_pool_blocks_duplicate_inflight_allocations() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(&root);
+        cfg.ip_start = Ipv4Addr::new(192, 168, 83, 10);
+        cfg.ip_end = Ipv4Addr::new(192, 168, 83, 10);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let first = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap();
+        assert_eq!(first.id, "vm-00000000");
+        assert_eq!(first.ip, Ipv4Addr::new(192, 168, 83, 10));
+
+        let mut reserved = HashSet::new();
+        reserved.insert(first.slot);
+        let err = manager.allocate_vm_identity_locked(&reserved).unwrap_err();
+        assert!(err.to_string().contains("no free IP addresses in pool"));
+    }
+
+    #[tokio::test]
+    async fn single_slot_pool_reuses_identity_after_release() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(&root);
+        cfg.ip_start = Ipv4Addr::new(192, 168, 83, 10);
+        cfg.ip_end = Ipv4Addr::new(192, 168, 83, 10);
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        let first = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap();
+        let mut reserved = HashSet::new();
+        reserved.insert(first.slot);
+        reserved.remove(&first.slot);
+        let second = manager.allocate_vm_identity_locked(&reserved).unwrap();
+
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.ip, first.ip);
+        assert_eq!(second.slot, first.slot);
+    }
+
+    #[tokio::test]
+    async fn allocator_skips_pool_slots_occupied_by_legacy_vm_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_dir = cfg.state_dir.join("vm-legacy-old");
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
+        )
+        .unwrap();
+        fs::write(vm_dir.join("metadata/env"), "PIKA_VM_IP='192.168.83.10'\n").unwrap();
+
+        let allocated = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap();
+
+        assert_eq!(allocated.id, "vm-00000001");
+        assert_eq!(allocated.ip, Ipv4Addr::new(192, 168, 83, 11));
+        assert_eq!(allocated.slot, 1);
+    }
+
+    #[tokio::test]
+    async fn allocator_blocks_on_legacy_state_dirs_missing_ip_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_dir = cfg.state_dir.join("vm-legacy-bad");
+        fs::create_dir_all(vm_dir.join("metadata")).unwrap();
+        fs::write(
+            vm_dir.join("metadata/runtime.env"),
+            "MICROVM_TAP='legacy-tap'\nPIKA_VM_CPU='2'\nPIKA_VM_MEMORY_MB='4096'\n",
+        )
+        .unwrap();
+
+        let err = manager
+            .allocate_vm_identity_locked(&HashSet::new())
+            .unwrap_err();
+
+        let message = err.to_string();
         assert!(
-            second.is_err(),
-            "second allocation should fail while IP is reserved"
+            message.contains("scan occupied slot for existing vm vm-legacy-bad")
+                || message
+                    .contains("vm metadata missing IP address while scanning allocator state")
         );
+    }
 
-        manager.release_layout(&first).await;
-        let third = manager.allocate_layout().await.expect("third layout");
-        assert_eq!(third.ip, first.ip);
+    #[tokio::test]
+    async fn deterministic_host_layout_comes_from_vm_id() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        let paths = manager.vm_paths(vm_id);
 
-        let _ = fs::remove_dir_all(state_dir);
-        let _ = fs::remove_dir_all(run_dir);
-        let _ = fs::remove_dir_all(artifacts_dir);
+        assert_eq!(
+            manager.microvm_unit_name(vm_id),
+            "microvm@vm-00000002.service"
+        );
+        assert_eq!(paths.microvm_state_dir, cfg.state_dir.join(vm_id));
+        assert_eq!(
+            manager.gcroot_current_path(vm_id),
+            PathBuf::from("/nix/var/nix/gcroots/microvm/vm-00000002")
+        );
+        assert_eq!(
+            manager.gcroot_booted_path(vm_id),
+            PathBuf::from("/nix/var/nix/gcroots/microvm/booted-vm-00000002")
+        );
+        assert_eq!(
+            manager.production_ip_for_vm_id(vm_id),
+            Some(Ipv4Addr::new(192, 168, 83, 12))
+        );
+        assert_eq!(
+            manager.production_mac_for_vm_id(vm_id).as_deref(),
+            Some("02:00:c0:a8:53:0c")
+        );
+    }
+
+    #[tokio::test]
+    async fn production_slot_rejects_out_of_pool_vm_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        assert_eq!(manager.production_slot_for_vm_id("vm-00000003"), None);
+        assert_eq!(manager.production_ip_for_vm_id("vm-00000003"), None);
+        assert_eq!(manager.production_mac_for_vm_id("vm-00000003"), None);
+    }
+
+    #[test]
+    fn write_runtime_metadata_keeps_only_boot_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let vm_state_dir = root.path().join("vm-00000000");
+        let guest_autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+        };
+
+        write_runtime_metadata(
+            &vm_state_dir,
+            "vm-00000000",
+            "02:00:00:00:00:01",
+            Ipv4Addr::new(192, 168, 83, 10),
+            Ipv4Addr::new(192, 168, 83, 1),
+            Ipv4Addr::new(192, 168, 83, 1),
+            2,
+            4096,
+            Path::new("/opt/runtime-artifacts"),
+            None,
+            true,
+            Some(&guest_autostart),
+        )
+        .unwrap();
+
+        let mut root_entries = fs::read_dir(&vm_state_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        root_entries.sort();
+
+        assert_eq!(root_entries, vec!["metadata"]);
+        assert!(!vm_state_dir.join("vm.json").exists());
+
+        let metadata_dir = vm_state_dir.join("metadata");
+        let mut files = fs::read_dir(&metadata_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![
+                "autostart.command",
+                "autostart.env",
+                "autostart.files",
+                "env",
+                "runtime.env",
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_path_if_exists_removes_broken_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let link = root.path().join("dangling");
+        symlink(root.path().join("missing-target"), &link).unwrap();
+
+        remove_path_if_exists(&link).unwrap();
+
+        let err = fs::symlink_metadata(&link).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotFound);
     }
 }

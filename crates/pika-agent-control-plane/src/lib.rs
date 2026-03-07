@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -46,6 +48,25 @@ pub struct MicrovmProvisionParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerCreateVmRequest {
+    pub guest_autostart: SpawnerGuestAutostartRequest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerGuestAutostartRequest {
+    pub command: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerVmResponse {
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProvisionCommand {
     pub provider: ProviderKind,
     pub protocol: ProtocolKind,
@@ -55,8 +76,6 @@ pub struct ProvisionCommand {
     pub runtime_class: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_urls: Vec<String>,
-    #[serde(default)]
-    pub keep: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_secret_key_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,7 +275,6 @@ mod tests {
                 name: Some("agent".to_string()),
                 runtime_class: Some("microvm-us-east".to_string()),
                 relay_urls: vec!["wss://relay.example.com".to_string()],
-                keep: false,
                 bot_secret_key_hex: None,
                 microvm: None,
             }),
@@ -286,7 +304,6 @@ mod tests {
                 name: None,
                 runtime_class: None,
                 relay_urls: vec![],
-                keep: true,
                 bot_secret_key_hex: Some("deadbeef".to_string()),
                 microvm: Some(MicrovmProvisionParams {
                     spawner_url: Some("http://127.0.0.1:8080".to_string()),
@@ -435,9 +452,14 @@ mod tests {
         assert_eq!(cmd.name, None);
         assert_eq!(cmd.runtime_class, None);
         assert!(cmd.relay_urls.is_empty());
-        assert!(!cmd.keep);
         assert_eq!(cmd.bot_secret_key_hex, None);
         assert_eq!(cmd.microvm, None);
+    }
+
+    #[test]
+    fn spawner_create_vm_request_requires_guest_autostart() {
+        let json = json!({});
+        assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
     }
 
     #[test]

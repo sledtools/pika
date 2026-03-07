@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use nostr_sdk::prelude::PublicKey;
-use pika_agent_control_plane::MicrovmProvisionParams;
-use serde::{Deserialize, Serialize};
+use pika_agent_control_plane::{
+    MicrovmProvisionParams, SpawnerCreateVmRequest as CreateVmRequest,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+};
 use serde_json::json;
 
 pub const DEFAULT_SPAWNER_URL: &str = "http://127.0.0.1:8080";
@@ -17,38 +19,12 @@ pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.j
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
-const GET_VM_TIMEOUT: Duration = Duration::from_secs(15);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
     pub spawner_url: String,
-    pub keep: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateVmRequest {
-    pub guest_autostart: Option<GuestAutostartRequest>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct GuestAutostartRequest {
-    pub command: String,
-    pub env: BTreeMap<String, String>,
-    pub files: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VmResponse {
-    pub id: String,
-    pub status: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VmStatusResponse {
-    pub id: String,
-    pub status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -114,39 +90,22 @@ impl MicrovmSpawnerClient {
     }
 
     pub async fn delete_vm(&self, vm_id: &str) -> anyhow::Result<()> {
-        let url = format!("{}/vms/{vm_id}", self.base_url);
-        let resp = self
-            .client
-            .delete(&url)
-            .timeout(DELETE_VM_TIMEOUT)
-            .send()
-            .await
-            .context("send delete vm request")?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "{}",
-                upstream_error_message("delete vm", Some(vm_id), status, None, &text)
-            );
-        }
-        Ok(())
+        self.delete_vm_with_request_id(vm_id, None).await
     }
 
-    pub async fn get_vm(&self, vm_id: &str) -> anyhow::Result<VmStatusResponse> {
-        self.get_vm_with_request_id(vm_id, None).await
-    }
-
-    pub async fn get_vm_with_request_id(
+    pub async fn delete_vm_with_request_id(
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<VmStatusResponse> {
+    ) -> anyhow::Result<()> {
         let url = format!("{}/vms/{vm_id}", self.base_url);
-        let resp = with_request_id(self.client.get(&url).timeout(GET_VM_TIMEOUT), request_id)
-            .send()
-            .await
-            .context("send get vm request")?;
+        let resp = with_request_id(
+            self.client.delete(&url).timeout(DELETE_VM_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send delete vm request")?;
         let status = resp.status();
         if !status.is_success() {
             let upstream_request_id = response_request_id(resp.headers());
@@ -154,7 +113,7 @@ impl MicrovmSpawnerClient {
             anyhow::bail!(
                 "{}",
                 upstream_error_message(
-                    "get vm",
+                    "delete vm",
                     Some(vm_id),
                     status,
                     upstream_request_id.as_deref(),
@@ -162,7 +121,7 @@ impl MicrovmSpawnerClient {
                 )
             );
         }
-        resp.json().await.context("decode get vm response")
+        Ok(())
     }
 
     pub async fn recover_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
@@ -268,7 +227,7 @@ pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
     params.spawner_url.is_some()
 }
 
-pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMicrovmParams {
+pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams {
     ResolvedMicrovmParams {
         spawner_url: params
             .spawner_url
@@ -277,12 +236,10 @@ pub fn resolve_params(params: &MicrovmProvisionParams, keep: bool) -> ResolvedMi
             .filter(|s| !s.is_empty())
             .unwrap_or(DEFAULT_SPAWNER_URL)
             .to_string(),
-        keep,
     }
 }
 
 pub fn build_create_vm_request(
-    _resolved: &ResolvedMicrovmParams,
     owner_pubkey: &PublicKey,
     relay_urls: &[String],
     bot_secret_hex: &str,
@@ -316,11 +273,11 @@ pub fn build_create_vm_request(
     );
 
     CreateVmRequest {
-        guest_autostart: Some(GuestAutostartRequest {
+        guest_autostart: GuestAutostartRequest {
             command: AUTOSTART_COMMAND.to_string(),
             env,
             files,
-        }),
+        },
     }
 }
 
@@ -778,27 +735,20 @@ mod tests {
 
     #[test]
     fn resolve_params_applies_defaults_and_overrides() {
-        let defaults = resolve_params(&MicrovmProvisionParams::default(), false);
+        let defaults = resolve_params(&MicrovmProvisionParams::default());
         assert_eq!(defaults.spawner_url, DEFAULT_SPAWNER_URL);
-        assert!(!defaults.keep);
 
-        let overridden = resolve_params(
-            &MicrovmProvisionParams {
-                spawner_url: Some("http://10.0.0.5:8080".to_string()),
-            },
-            true,
-        );
+        let overridden = resolve_params(&MicrovmProvisionParams {
+            spawner_url: Some("http://10.0.0.5:8080".to_string()),
+        });
         assert_eq!(overridden.spawner_url, "http://10.0.0.5:8080");
-        assert!(overridden.keep);
     }
 
     #[test]
     fn build_create_vm_request_serializes_guest_autostart() {
-        let resolved = resolve_params(&MicrovmProvisionParams::default(), false);
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
-            &resolved,
             &keys.public_key(),
             &[
                 "wss://relay-a.example.com".to_string(),
@@ -860,21 +810,20 @@ mod tests {
     fn microvm_params_provided_detects_presence() {
         assert!(!microvm_params_provided(&MicrovmProvisionParams::default()));
         assert!(microvm_params_provided(&MicrovmProvisionParams {
-            spawner_url: Some("http://127.0.0.1:8081".to_string()),
+            spawner_url: Some("http://127.0.0.1:8080".to_string()),
         }));
     }
 
     #[tokio::test]
     async fn create_vm_contract_request_shape() {
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", r#"{"id":"vm-123","status":"starting"}"#);
+        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"id":"vm-123"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
-            guest_autostart: Some(GuestAutostartRequest {
+            guest_autostart: GuestAutostartRequest {
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "pubkey123".to_string())]),
                 files: BTreeMap::new(),
-            }),
+            },
         };
 
         let vm = client
@@ -882,7 +831,6 @@ mod tests {
             .await
             .expect("create vm succeeds");
         assert_eq!(vm.id, "vm-123");
-        assert_eq!(vm.status, "starting");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -912,7 +860,7 @@ mod tests {
         let client = MicrovmSpawnerClient::new(base_url);
 
         client
-            .delete_vm("vm-delete-1")
+            .delete_vm_with_request_id("vm-delete-1", Some("req-delete-123"))
             .await
             .expect("delete vm succeeds");
 
@@ -921,46 +869,23 @@ mod tests {
             .expect("captured request");
         assert_eq!(captured.method, "DELETE");
         assert_eq!(captured.path, "/vms/vm-delete-1");
-        assert!(captured.body.is_empty());
-    }
-
-    #[tokio::test]
-    async fn get_vm_contract_request_shape() {
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", r#"{"id":"vm-get-1","status":"running"}"#);
-        let client = MicrovmSpawnerClient::new(base_url);
-
-        let vm = client
-            .get_vm_with_request_id("vm-get-1", Some("req-get-789"))
-            .await
-            .expect("get vm succeeds");
-        assert_eq!(vm.id, "vm-get-1");
-        assert_eq!(vm.status, "running");
-
-        let captured = rx
-            .recv_timeout(StdDuration::from_secs(2))
-            .expect("captured request");
-        assert_eq!(captured.method, "GET");
-        assert_eq!(captured.path, "/vms/vm-get-1");
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
-            Some("req-get-789")
+            Some("req-delete-123")
         );
         assert!(captured.body.is_empty());
     }
 
     #[tokio::test]
     async fn recover_vm_contract_request_shape() {
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1","status":"running"}"#);
+        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"id":"vm-recover-1"}"#);
         let client = MicrovmSpawnerClient::new(base_url);
 
         let recovered = client
-            .recover_vm_with_request_id("vm-recover-1", Some("req-recover-456"))
+            .recover_vm_with_request_id("vm-recover-1", Some("req-recover-123"))
             .await
             .expect("recover vm succeeds");
         assert_eq!(recovered.id, "vm-recover-1");
-        assert_eq!(recovered.status, "running");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))
@@ -969,18 +894,21 @@ mod tests {
         assert_eq!(captured.path, "/vms/vm-recover-1/recover");
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
-            Some("req-recover-456")
+            Some("req-recover-123")
         );
         assert!(captured.body.is_empty());
     }
 
     #[tokio::test]
     async fn create_vm_surfaces_error_body() {
-        let (base_url, _rx) =
-            spawn_one_shot_server("503 Service Unavailable", "spawner down\nwith extra detail");
+        let (base_url, _rx) = spawn_one_shot_server("503 Service Unavailable", "spawner down");
         let client = MicrovmSpawnerClient::new(base_url);
         let req = CreateVmRequest {
-            guest_autostart: None,
+            guest_autostart: GuestAutostartRequest {
+                command: "/workspace/pika-agent/start-agent.sh".to_string(),
+                env: BTreeMap::new(),
+                files: BTreeMap::new(),
+            },
         };
 
         let err = client
@@ -990,7 +918,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("failed to create vm"));
         assert!(msg.contains("503 Service Unavailable"));
-        assert!(msg.contains("body=spawner down with extra detail"));
+        assert!(msg.contains("spawner down"));
     }
 
     #[tokio::test]
@@ -1006,7 +934,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("failed to delete vm vm-stuck"));
         assert!(msg.contains("500 Internal Server Error"));
-        assert!(msg.contains("body=vm stuck in cleanup"));
+        assert!(msg.contains("vm stuck in cleanup"));
     }
 
     #[tokio::test]
@@ -1021,27 +949,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("failed to recover vm vm-bad"));
         assert!(msg.contains("503 Service Unavailable"));
-        assert!(msg.contains("body=vm reboot failed"));
-    }
-
-    #[test]
-    fn sanitize_upstream_body_trims_whitespace_and_truncates() {
-        assert_eq!(
-            sanitize_upstream_body("  some\n spaced\ttext  "),
-            Some("some spaced text".to_string())
-        );
-        let long = "a".repeat(300);
-        let sanitized = sanitize_upstream_body(&long).expect("sanitized body");
-        assert_eq!(sanitized.len(), 243);
-        assert!(sanitized.ends_with("..."));
-    }
-
-    #[test]
-    fn sanitize_upstream_body_truncates_on_utf8_boundaries() {
-        let body = "é".repeat(200);
-        let sanitized = sanitize_upstream_body(&body).expect("sanitized body");
-        assert!(sanitized.ends_with("..."));
-        assert!(std::str::from_utf8(sanitized.as_bytes()).is_ok());
+        assert!(msg.contains("vm reboot failed"));
     }
 
     #[test]
@@ -1049,7 +957,7 @@ mod tests {
         let params = MicrovmProvisionParams {
             spawner_url: Some("  ".to_string()),
         };
-        let resolved = resolve_params(&params, false);
+        let resolved = resolve_params(&params);
         assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);
     }
 

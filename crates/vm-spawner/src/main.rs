@@ -1,21 +1,24 @@
 mod config;
 mod manager;
-mod models;
 
-use axum::extract::{Path, State};
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
 use chrono::Utc;
-use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use config::Config;
-use manager::{InvalidVmIdError, VmManager, VmNotFoundError};
-use models::{CreateVmRequest, VmResponse};
+use manager::{VmManager, VmNotFound};
+use pika_agent_control_plane::{
+    SpawnerCreateVmRequest as CreateVmRequest, SpawnerVmResponse as VmResponse,
+};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -54,8 +57,8 @@ async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Respon
 
     let started_at = std::time::Instant::now();
     let mut response = next.run(request).await;
-    let status = response.status();
     let latency_ms = started_at.elapsed().as_millis() as u64;
+    let status = response.status();
     response
         .headers_mut()
         .insert(request_id_header, request_id_value);
@@ -85,10 +88,20 @@ async fn main() -> anyhow::Result<()> {
         error!(error = %err, "vm-spawner prewarm failed");
     }
 
+    let health_manager = manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let count = health_manager.vm_count().await;
+            info!(vm_count = count, "vm-spawner health tick");
+        }
+    });
+
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/vms", post(create_vm))
-        .route("/vms/:id", get(get_vm).delete(delete_vm))
+        .route("/vms/:id", delete(delete_vm))
         .route("/vms/:id/recover", post(recover_vm))
         .layer(middleware::from_fn(trace_http_request))
         .with_state(manager.clone());
@@ -106,12 +119,14 @@ async fn main() -> anyhow::Result<()> {
 struct HealthResponse {
     ok: bool,
     now: chrono::DateTime<Utc>,
+    vm_count: usize,
 }
 
-async fn health(State(_manager): State<Arc<VmManager>>) -> Result<Json<HealthResponse>, ApiError> {
+async fn health(State(manager): State<Arc<VmManager>>) -> Result<Json<HealthResponse>, ApiError> {
     Ok(Json(HealthResponse {
         ok: true,
         now: Utc::now(),
+        vm_count: manager.vm_count().await,
     }))
 }
 
@@ -123,19 +138,7 @@ async fn create_vm(
     let vm = manager
         .create(payload)
         .await
-        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
-    Ok(Json(vm))
-}
-
-async fn get_vm(
-    State(manager): State<Arc<VmManager>>,
-    Extension(request_context): Extension<RequestContext>,
-    Path(id): Path<String>,
-) -> Result<Json<VmResponse>, ApiError> {
-    let vm = manager
-        .get(&id)
-        .await
-        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
+        .map_err(|err| ApiError::from(err).with_request_id(request_context.request_id))?;
     Ok(Json(vm))
 }
 
@@ -144,10 +147,12 @@ async fn delete_vm(
     Extension(request_context): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     manager
         .destroy(&id)
         .await
-        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
+        .map_err(map_manager_error_to_api)
+        .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -156,10 +161,12 @@ async fn recover_vm(
     Extension(request_context): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Result<Json<VmResponse>, ApiError> {
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     let vm = manager
         .recover(&id)
         .await
-        .map_err(|err| ApiError::from_anyhow(&request_context, err))?;
+        .map_err(map_manager_error_to_api)
+        .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(vm))
 }
 
@@ -167,51 +174,123 @@ async fn recover_vm(
 struct ApiError {
     status: StatusCode,
     message: String,
-    request_id: String,
+    request_id: Option<String>,
 }
 
 impl ApiError {
-    fn new(status: StatusCode, request_id: impl Into<String>, message: impl Into<String>) -> Self {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
-            request_id: request_id.into(),
+            request_id: None,
         }
     }
 
-    fn from_anyhow(request_context: &RequestContext, err: anyhow::Error) -> Self {
-        let status = if err.downcast_ref::<InvalidVmIdError>().is_some() {
-            StatusCode::BAD_REQUEST
-        } else if err.downcast_ref::<VmNotFoundError>().is_some() {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        Self::new(status, request_context.request_id.clone(), err.to_string())
+    fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
+        self
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, value.to_string())
     }
 }
 
 impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        if self.status.is_server_error() {
-            error!(
-                request_id = %self.request_id,
-                status = self.status.as_u16(),
-                error = %self.message,
-                "vm-spawner request failed"
-            );
-        } else {
-            warn!(
-                request_id = %self.request_id,
-                status = self.status.as_u16(),
-                error = %self.message,
-                "vm-spawner request failed"
-            );
+        if let Some(request_id) = self.request_id.as_deref() {
+            if self.status.is_server_error() {
+                error!(
+                    request_id,
+                    status = self.status.as_u16(),
+                    error = %self.message,
+                    "vm-spawner request failed"
+                );
+            } else {
+                warn!(
+                    request_id,
+                    status = self.status.as_u16(),
+                    error = %self.message,
+                    "vm-spawner request failed"
+                );
+            }
         }
         let body = Json(serde_json::json!({
             "error": self.message,
             "request_id": self.request_id,
         }));
         (self.status, body).into_response()
+    }
+}
+
+fn validate_vm_id(id: &str) -> Result<(), ApiError> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        && !id.contains("..");
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid vm_id: {id}"),
+        ))
+    }
+}
+
+fn map_manager_error_to_api(err: anyhow::Error) -> ApiError {
+    if let Some(not_found) = err.downcast_ref::<VmNotFound>() {
+        return ApiError::new(StatusCode::NOT_FOUND, not_found.to_string());
+    }
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::HttpBody;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn validate_vm_id_rejects_malformed_values() {
+        let err = validate_vm_id("../escape").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+
+        let err = validate_vm_id("vm with space").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_manager_error_maps_not_found_to_404() {
+        let err = map_manager_error_to_api(anyhow::Error::new(VmNotFound {
+            id: "vm-123".to_string(),
+        }));
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn map_manager_error_keeps_internal_failures_as_500() {
+        let err = map_manager_error_to_api(anyhow::anyhow!("restart microvm service failed"));
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn api_error_response_includes_request_id() {
+        let response = ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            .with_request_id("req-123")
+            .into_response();
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk_result) = body.data().await {
+            let chunk = chunk_result.expect("read response chunk");
+            bytes.extend_from_slice(chunk.as_ref());
+        }
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
+        assert_eq!(json["error"], "boom");
+        assert_eq!(json["request_id"], "req-123");
     }
 }

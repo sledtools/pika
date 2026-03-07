@@ -273,8 +273,6 @@ pre-merge-agent-contracts:
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_chat_reply_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_chat_no_reply_timeout_local -- --ignored --nocapture
     @echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.

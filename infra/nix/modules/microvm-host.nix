@@ -1,6 +1,7 @@
 { config, lib, pkgs, vmSpawnerPkg, piAgentPkg, pikachatPkg, ... }:
 
 let
+  cfg = config.pika.microvmHost;
   microvmBridge = "microbr";
   microvmCidr = "192.168.83.0/24";
   microvmHostIp = "192.168.83.1";
@@ -11,6 +12,16 @@ let
   spawnerStateBackingDir = "/data/microvms";
 in
 {
+  options.pika.microvmHost.dnsIp = lib.mkOption {
+    type = lib.types.str;
+    default = "1.1.1.1";
+    example = "10.0.0.53";
+    description = ''
+      IPv4 DNS resolver advertised to guest VMs.
+      Set this to a private or split-horizon resolver when guest workloads need internal name resolution.
+    '';
+  };
+
   boot.kernelModules = [ "kvm-amd" "tun" "bridge" "vhost_net" ];
   boot.kernel.sysctl = {
     "net.ipv4.ip_forward" = 1;
@@ -33,10 +44,6 @@ in
     internalInterfaces = [ microvmBridge ];
   };
 
-  networking.firewall.interfaces.${microvmBridge} = {
-    allowedTCPPorts = [ 53 ];
-    allowedUDPPorts = [ 53 67 ];
-  };
   # vm-spawner control plane is only exposed on the WireGuard/Tailscale interface.
   networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 8080 ];
 
@@ -53,22 +60,8 @@ in
     iptables -D FORWARD -i eth0 -o ${microvmBridge} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
   '';
 
-  services.dnsmasq = {
-    enable = true;
-    settings = {
-      interface = microvmBridge;
-      bind-interfaces = true;
-      listen-address = microvmHostIp;
-      no-hosts = true;
-      no-resolv = true;
-      server = [ "1.1.1.1" "8.8.8.8" ];
-      log-queries = false;
-    };
-  };
-
   environment.systemPackages = with pkgs; [
     cloud-hypervisor
-    dnsmasq
     e2fsprogs
     iproute2
     iptables
@@ -94,7 +87,6 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [
       "network-online.target"
-      "dnsmasq.service"
       "microvms.target"
     ];
     wants = [ "network-online.target" ];
@@ -123,7 +115,7 @@ in
         "VM_IP_POOL_START=192.168.83.10"
         "VM_IP_POOL_END=192.168.83.254"
         "VM_GATEWAY_IP=${microvmHostIp}"
-        "VM_DNS_IP=${microvmHostIp}"
+        "VM_DNS_IP=${cfg.dnsIp}"
       ];
       ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${spawnerStateDir} ${spawnerRunDir} ${spawnerRunDir}/cache ${spawnerRunDir}/runner-cache ${spawnerRunDir}/runner-flakes /data/microvm-shared/artifacts";
       ExecStart = "${vmSpawnerPkg}/bin/vm-spawner";
@@ -158,7 +150,13 @@ in
          ANTHROPIC_API_KEY=...
          PI_MODEL=claude-sonnet-4-6
 
+    4. Guest DNS resolver:
+       pika.microvmHost.dnsIp = "${cfg.dnsIp}"
+       Override in Nix config when VMs need private or split-horizon DNS.
+
     Bridge network: ${microvmCidr}
     microvm.nix state dir: ${spawnerStateDir} -> ${spawnerStateBackingDir}
+    Durable VM asset: ${spawnerStateDir}/<vm-id>/home
+    Backup/restore focuses on durable home; metadata and host wiring are reconstructed on recover.
   '';
 }

@@ -397,6 +397,14 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::ShellCommandAsRoot {
                     command: concat!(
                         "set -euo pipefail; ",
+                        "test -n \"${ANDROID_HOME:-}\" || { ",
+                        "echo 'error: Android SDK is unavailable in this guest; the current flake does not export androidSdk for aarch64-linux.'; ",
+                        "exit 2; ",
+                        "}; ",
+                        "test -n \"${JAVA_HOME:-}\" || { ",
+                        "echo 'error: JAVA_HOME is unavailable in this guest because the Android toolchain bundle is missing.'; ",
+                        "exit 2; ",
+                        "}; ",
                         "echo ANDROID_HOME=$ANDROID_HOME; ",
                         "echo JAVA_HOME=$JAVA_HOME; ",
                         "command -v java; ",
@@ -424,6 +432,14 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::ShellCommandAsRoot {
                     command: concat!(
                         "set -euo pipefail; ",
+                        "test -n \"${ANDROID_HOME:-}\" || { ",
+                        "echo 'error: Android SDK is unavailable in this guest; the current flake does not export androidSdk for aarch64-linux.'; ",
+                        "exit 2; ",
+                        "}; ",
+                        "test -n \"${JAVA_HOME:-}\" || { ",
+                        "echo 'error: JAVA_HOME is unavailable in this guest because the Android toolchain bundle is missing.'; ",
+                        "exit 2; ",
+                        "}; ",
                         "export PIKA_RUST_PROFILE=debug; ",
                         "export PIKA_ANDROID_ABI=arm64-v8a; ",
                         "export PIKA_ANDROID_TEST_CLASS=com.pika.app.NostrConnectIntentTest; ",

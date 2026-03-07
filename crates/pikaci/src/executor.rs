@@ -358,167 +358,16 @@ fn render_guest_flake(
       system = "aarch64-linux";
       modules = [
         microvm.nixosModules.microvm
-        ({{
-          lib,
-          pkgs,
-          ...
-        }}:
-        let
+        (pika.lib.pikaci.mkGuestModule {{
           hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;
-          alsaDev = lib.getDev pkgs.alsa-lib;
-          alsaLib = lib.getLib pkgs.alsa-lib;
-          opensslDev = lib.getDev pkgs.openssl;
-          opensslLib = lib.getLib pkgs.openssl;
-          postgresqlDev = lib.getDev pkgs.postgresql;
-          postgresqlLib = lib.getLib pkgs.postgresql;
-        in {{
-          system.stateVersion = "24.11";
-          boot.initrd.systemd.enable = lib.mkForce false;
-
-          services.getty.autologinUser = "root";
-          nix.settings.experimental-features = [ "nix-command" "flakes" ];
-          environment.systemPackages = with pkgs; [
-            alsa-lib
-            bash
-            cargo
-            cacert
-            coreutils
-            findutils
-            gcc
-            gnugrep
-            gnused
-            git
-            nix
-            openssl
-            pkg-config
-            postgresql
-            rustc
-          ];
-
-          systemd.services.pikaci-job = {{
-            description = "Run pikaci wave1 guest job";
-            wantedBy = [ "multi-user.target" ];
-            after = [ "network-online.target" ];
-            wants = [ "network-online.target" ];
-            path = with pkgs; [
-              alsa-lib
-              bash
-              cargo
-              cacert
-              coreutils
-              findutils
-              gcc
-              gnugrep
-              gnused
-              git
-              nix
-              pkg-config
-              rustc
-            ];
-            serviceConfig = {{
-              Type = "oneshot";
-            }};
-            script = ''
-              set -euo pipefail
-              mkdir -p /artifacts
-              exec > >(tee -a /artifacts/guest.log) 2>&1
-
-              echo "[pikaci] guest booted at $(date -Iseconds)"
-              cd /workspace/snapshot
-              export HOME=/root
-              export CARGO_TERM_COLOR=never
-              export CARGO_HOME=/cargo-home
-              export CARGO_TARGET_DIR=/cargo-target
-              export CARGO_INCREMENTAL=0
-              export OPENSSL_DIR="${{opensslDev}}"
-              export OPENSSL_LIB_DIR="${{opensslLib}}/lib"
-              export OPENSSL_INCLUDE_DIR="${{opensslDev}}/include"
-              export PKG_CONFIG_PATH="${{alsaDev}}/lib/pkgconfig:${{opensslDev}}/lib/pkgconfig:${{postgresqlDev}}/lib/pkgconfig"
-              export LIBRARY_PATH="${{alsaLib}}/lib:${{opensslLib}}/lib:${{postgresqlLib}}/lib"
-              export RUSTFLAGS="''${{RUSTFLAGS-}} -C debuginfo=0 -L native=${{alsaLib}}/lib -L native=${{postgresqlLib}}/lib"
-              export SSL_CERT_FILE="{cacert_bundle}"
-              export NIX_SSL_CERT_FILE="{cacert_bundle}"
-              mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
-
-              set +e
-              timeout {timeout_secs}s {cargo_test_args}
-              code=$?
-              set -e
-
-              status="passed"
-              message="test passed"
-              if [ "$code" -ne 0 ]; then
-                status="failed"
-                message="test command exited with $code"
-              fi
-
-              cat > /artifacts/result.json <<EOF
-              {{
-                "status": "$status",
-                "exit_code": $code,
-                "finished_at": "$(date -Iseconds)",
-                "message": "$message"
-              }}
-EOF
-
-              sync || true
-              systemctl poweroff --force --force || poweroff -f || true
-            '';
-          }};
-
-          microvm = {{
-            hypervisor = "vfkit";
-            vcpu = 2;
-            mem = 4096;
-            vmHostPackages = hostPkgs;
-            virtiofsd.package = hostPkgs.writeShellScriptBin "virtiofsd-unused" ''
-              echo "vfkit uses built-in virtiofs on macOS" >&2
-              exit 1
-            '';
-            socket = "{socket_path}";
-            interfaces = [ {{
-              type = "user";
-              id = "pikaci";
-              mac = "02:00:00:01:02:03";
-            }} ];
-            shares = [
-              {{
-                proto = "virtiofs";
-                tag = "ro-store";
-                source = "/nix/store";
-                mountPoint = "/nix/.ro-store";
-                readOnly = true;
-              }}
-              {{
-                proto = "virtiofs";
-                tag = "snapshot";
-                source = "{snapshot_dir}";
-                mountPoint = "/workspace/snapshot";
-                readOnly = true;
-              }}
-              {{
-                proto = "virtiofs";
-                tag = "artifacts";
-                source = "{artifacts_dir}";
-                mountPoint = "/artifacts";
-                readOnly = false;
-              }}
-              {{
-                proto = "virtiofs";
-                tag = "cargo-home";
-                source = "{cargo_home_dir}";
-                mountPoint = "/cargo-home";
-                readOnly = false;
-              }}
-              {{
-                proto = "virtiofs";
-                tag = "cargo-target";
-                source = "{target_dir}";
-                mountPoint = "/cargo-target";
-                readOnly = false;
-              }}
-            ];
-          }};
+          snapshotDir = "{snapshot_dir}";
+          artifactsDir = "{artifacts_dir}";
+          cargoHomeDir = "{cargo_home_dir}";
+          cargoTargetDir = "{target_dir}";
+          socketPath = "{socket_path}";
+          guestCommand = "{cargo_test_args}";
+          timeoutSecs = {timeout_secs};
+          cacertBundle = "{cacert_bundle}";
         }})
       ];
     }};
@@ -578,16 +427,15 @@ mod tests {
         )
         .expect("render flake");
 
-        assert!(flake.contains("hypervisor = \"vfkit\";"));
         assert!(flake.contains("system = \"aarch64-linux\";"));
+        assert!(flake.contains("pika.lib.pikaci.mkGuestModule"));
         assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;"));
-        assert!(flake.contains("vmHostPackages = hostPkgs;"));
-        assert!(flake.contains("cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture"));
-        assert!(flake.contains("source = \"/tmp/pikaci/snapshot\";"));
-        assert!(flake.contains("source = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
-        assert!(flake.contains("source = \"/tmp/pikaci/cache/cargo-home\";"));
-        assert!(flake.contains("source = \"/tmp/pikaci/cache/target\";"));
-        assert!(flake.contains("socket = \"/tmp/pikaci-beachhead.sock\";"));
+        assert!(flake.contains("guestCommand = \"cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture\";"));
+        assert!(flake.contains("snapshotDir = \"/tmp/pikaci/snapshot\";"));
+        assert!(flake.contains("artifactsDir = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
+        assert!(flake.contains("cargoHomeDir = \"/tmp/pikaci/cache/cargo-home\";"));
+        assert!(flake.contains("cargoTargetDir = \"/tmp/pikaci/cache/target\";"));
+        assert!(flake.contains("socketPath = \"/tmp/pikaci-beachhead.sock\";"));
     }
 
     #[test]
@@ -640,7 +488,9 @@ mod tests {
         )
         .expect("render flake");
 
-        assert!(flake.contains("cargo test -p 'pika-agent-control-plane' --lib -- --nocapture"));
+        assert!(flake.contains(
+            "guestCommand = \"cargo test -p 'pika-agent-control-plane' --lib -- --nocapture\";"
+        ));
     }
 
     #[test]
@@ -662,7 +512,10 @@ mod tests {
             Path::new("/tmp/pikaci-agent-microvm-tests.sock"),
         )
         .expect("render flake");
-        assert!(package_flake.contains("cargo test -p 'pika-agent-microvm' -- --nocapture"));
+        assert!(
+            package_flake
+                .contains("guestCommand = \"cargo test -p 'pika-agent-microvm' -- --nocapture\";")
+        );
 
         let filtered_spec = JobSpec {
             id: "server-agent-api-tests",
@@ -682,9 +535,8 @@ mod tests {
             Path::new("/tmp/pikaci-server-agent-api-tests.sock"),
         )
         .expect("render flake");
-        assert!(
-            filtered_flake
-                .contains("cargo test -p 'pika-server' -- 'agent_api::tests' --nocapture")
-        );
+        assert!(filtered_flake.contains(
+            "guestCommand = \"cargo test -p 'pika-server' -- 'agent_api::tests' --nocapture\";"
+        ));
     }
 }

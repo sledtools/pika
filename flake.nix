@@ -566,6 +566,12 @@ EOF
         };
       }
     ) // {
+      lib = {
+        pikaci = {
+          mkGuestModule = import ./nix/pikaci/guest-module.nix;
+        };
+      };
+
       packages."x86_64-linux" = {
         vm-spawner = vmSpawnerPkg;
         pi-agent-runtime = piAgentPkg;

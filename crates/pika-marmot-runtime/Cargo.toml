@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
 hex = { workspace = true }
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }

@@ -353,7 +353,9 @@ fn default_group_name() -> String {
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
+use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
+use pika_marmot_runtime::relay::fetch_latest_key_package;
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -3918,26 +3920,28 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        // Fetch latest peer key package from configured relays.
-                        let kp_filter = Filter::new()
-                            .author(peer_pubkey)
-                            .kind(Kind::MlsKeyPackage)
-                            .limit(1);
-                        let kp_events = match client
-                            .fetch_events_from(relay_urls.clone(), kp_filter, Duration::from_secs(10))
-                            .await
+                        let peer_kp = match fetch_latest_key_package(
+                            &client,
+                            &peer_pubkey,
+                            &relay_urls,
+                            Duration::from_secs(10),
+                        )
+                        .await
                         {
-                            Ok(evs) => evs,
+                            Ok(ev) => normalize_peer_key_package_event_for_mdk(&ev),
                             Err(e) => {
-                                reply_tx.send(out_error(request_id, "fetch_failed", format!("fetch key package: {e:#}"))).ok();
-                                continue;
-                            }
-                        };
-
-                        let peer_kp = match kp_events.into_iter().next() {
-                            Some(ev) => ev,
-                            None => {
-                                reply_tx.send(out_error(request_id, "no_key_packages", "no key package found for peer")).ok();
+                                let (code, message) = if e
+                                    .chain()
+                                    .any(|cause| cause.to_string().contains("no keypackage found for"))
+                                {
+                                    (
+                                        "no_key_packages",
+                                        "no key package found for peer".to_string(),
+                                    )
+                                } else {
+                                    ("fetch_failed", format!("fetch key package: {e:#}"))
+                                };
+                                reply_tx.send(out_error(request_id, code, message)).ok();
                                 continue;
                             }
                         };

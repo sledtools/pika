@@ -6084,6 +6084,7 @@ name = "pika-marmot-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "hex",
  "mdk-core",
  "mdk-sqlite-storage",
@@ -6250,6 +6251,7 @@ dependencies = [
  "nostr-connect",
  "nostr-sdk",
  "paranoid-android",
+ "pika-marmot-runtime",
  "pika-media",
  "pika-relay-profiles",
  "pika-tls",

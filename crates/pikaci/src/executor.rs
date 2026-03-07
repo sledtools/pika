@@ -59,34 +59,10 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
     ensure_supported_host()?;
     ensure_linux_builder()?;
 
+    let installable = materialize_vfkit_runner_flake(job, ctx)?;
     let vm_dir = ctx.job_dir.join("vm");
-    let artifacts_dir = ctx.job_dir.join("artifacts");
-    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
-    fs::create_dir_all(&artifacts_dir)
-        .with_context(|| format!("create {}", artifacts_dir.display()))?;
-    ensure_file(&ctx.host_log_path)?;
-    ensure_file(&ctx.guest_log_path)?;
-
-    let flake_dir = vm_dir.join("flake");
-    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
-    let socket_path = vfkit_socket_path(job, &artifacts_dir);
-    if socket_path.exists() {
-        fs::remove_file(&socket_path)
-            .with_context(|| format!("remove stale {}", socket_path.display()))?;
-    }
-    let flake_nix = render_guest_flake(
-        job,
-        &ctx.workspace_snapshot_dir,
-        ctx.workspace_read_only,
-        &artifacts_dir,
-        &ctx.shared_cargo_home_dir,
-        &ctx.shared_target_dir,
-        &socket_path,
-    )?;
-    fs::write(flake_dir.join("flake.nix"), flake_nix)
-        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
-
     let runner_link = vm_dir.join("runner");
+
     if runner_link.exists() {
         let _ = fs::remove_file(&runner_link);
     }
@@ -97,7 +73,7 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
             .arg("--accept-flake-config")
             .arg("-o")
             .arg(&runner_link)
-            .arg(vfkit_runner_installable(&flake_dir)),
+            .arg(installable),
         &ctx.host_log_path,
         "[pikaci] build runner",
     )?;
@@ -185,7 +161,7 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
         ),
     )?;
 
-    let result_path = artifacts_dir.join("result.json");
+    let result_path = ctx.job_dir.join("artifacts/result.json");
     let guest_result = load_guest_result(&result_path)?;
     let status = match guest_result.status.as_str() {
         "passed" => RunStatus::Passed,
@@ -198,6 +174,39 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
             .message
             .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
     })
+}
+
+pub(crate) fn materialize_vfkit_runner_flake(
+    job: &JobSpec,
+    ctx: &HostContext,
+) -> anyhow::Result<String> {
+    let vm_dir = ctx.job_dir.join("vm");
+    let artifacts_dir = ctx.job_dir.join("artifacts");
+    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
+    fs::create_dir_all(&artifacts_dir)
+        .with_context(|| format!("create {}", artifacts_dir.display()))?;
+    ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    let flake_dir = vm_dir.join("flake");
+    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
+    let socket_path = vfkit_socket_path(job, &artifacts_dir);
+    if socket_path.exists() {
+        fs::remove_file(&socket_path)
+            .with_context(|| format!("remove stale {}", socket_path.display()))?;
+    }
+    let flake_nix = render_guest_flake(
+        job,
+        &ctx.workspace_snapshot_dir,
+        ctx.workspace_read_only,
+        &artifacts_dir,
+        &ctx.shared_cargo_home_dir,
+        &ctx.shared_target_dir,
+        &socket_path,
+    )?;
+    fs::write(flake_dir.join("flake.nix"), flake_nix)
+        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
+    Ok(vfkit_runner_installable(&flake_dir))
 }
 
 fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {

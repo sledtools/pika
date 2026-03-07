@@ -3,7 +3,9 @@ mod model;
 mod run;
 mod snapshot;
 
-pub use model::{ExecuteNode, PlanExecutorKind, PlanNodeRecord, PrepareNode, RunPlanRecord};
+pub use model::{
+    ExecuteNode, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode, RunPlanRecord,
+};
 pub use model::{GuestCommand, JobOutcome, JobRecord, JobSpec, RunRecord, RunStatus, RunnerKind};
 pub use run::{
     LogKind, Logs, RunMetadata, RunOptions, gc_runs, list_runs, load_logs, load_run_record,

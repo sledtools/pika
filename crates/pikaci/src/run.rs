@@ -8,11 +8,11 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, run_job_on_runner, vfkit_runner_installable,
+    HostContext, compiled_guest_command, materialize_vfkit_runner_flake, run_job_on_runner,
 };
 use crate::model::{
-    ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PrepareNode, RunPlanRecord,
-    RunRecord, RunStatus, RunnerKind,
+    ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
+    RunPlanRecord, RunRecord, RunStatus, RunnerKind,
 };
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
@@ -110,7 +110,7 @@ fn run_jobs_against_snapshot(
     snapshot: &SnapshotSource,
     metadata: RunMetadata,
 ) -> anyhow::Result<RunRecord> {
-    let plan = build_run_plan(jobs, prepared, &metadata);
+    let plan = build_run_plan(jobs, prepared, snapshot, &metadata)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let mut run_record = RunRecord {
         run_id: prepared.run_id.clone(),
@@ -137,10 +137,7 @@ fn run_jobs_against_snapshot(
         let job_record = run_one_job(
             &planned_job.job,
             &planned_job.execute_node_id,
-            &snapshot.snapshot_dir,
-            &prepared.jobs_dir,
-            &prepared.shared_cargo_home_dir,
-            &prepared.run_target_dir,
+            &planned_job.ctx,
         )?;
         if job_record.status == RunStatus::Failed {
             run_failed = true;
@@ -197,17 +194,10 @@ pub fn record_skipped_run(
     Ok(run_record)
 }
 
-fn run_one_job(
-    job: &JobSpec,
-    plan_node_id: &str,
-    snapshot_dir: &Path,
-    jobs_dir: &Path,
-    shared_cargo_home_dir: &Path,
-    shared_target_dir: &Path,
-) -> anyhow::Result<JobRecord> {
-    let job_dir = jobs_dir.join(job.id);
-    let host_log_path = job_dir.join("host.log");
-    let guest_log_path = job_dir.join("artifacts/guest.log");
+fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::Result<JobRecord> {
+    let job_dir = ctx.job_dir.clone();
+    let host_log_path = ctx.host_log_path.clone();
+    let guest_log_path = ctx.guest_log_path.clone();
     fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
 
     let started_at = Utc::now().to_rfc3339();
@@ -227,16 +217,7 @@ fn run_one_job(
     };
     write_job_record(&job_dir, &job_record)?;
 
-    let ctx = HostContext {
-        workspace_snapshot_dir: prepare_job_workspace(job, snapshot_dir, &job_dir)?,
-        workspace_read_only: !job.writable_workspace,
-        job_dir: job_dir.clone(),
-        host_log_path,
-        guest_log_path,
-        shared_cargo_home_dir: shared_cargo_home_dir.to_path_buf(),
-        shared_target_dir: shared_target_dir.to_path_buf(),
-    };
-    let outcome = run_job_on_runner(job, &ctx);
+    let outcome = run_job_on_runner(job, ctx);
 
     let finished_at = Utc::now().to_rfc3339();
     match outcome {
@@ -266,6 +247,9 @@ fn prepare_job_workspace(
     }
 
     let workspace_dir = job_dir.join("workspace");
+    if workspace_dir.exists() {
+        return Ok(workspace_dir);
+    }
     materialize_workspace(snapshot_dir, &workspace_dir)?;
     Ok(workspace_dir)
 }
@@ -403,6 +387,7 @@ fn new_run_id() -> String {
 struct PlannedJob {
     job: JobSpec,
     execute_node_id: String,
+    ctx: HostContext,
 }
 
 struct RunPlan {
@@ -427,22 +412,37 @@ struct SnapshotSource {
     git_dirty: Option<bool>,
 }
 
-fn build_run_plan(jobs: &[JobSpec], prepared: &PreparedRun, metadata: &RunMetadata) -> RunPlan {
+fn build_run_plan(
+    jobs: &[JobSpec],
+    prepared: &PreparedRun,
+    snapshot: &SnapshotSource,
+    metadata: &RunMetadata,
+) -> anyhow::Result<RunPlan> {
     let mut nodes = Vec::new();
     let mut planned_jobs = Vec::new();
 
     for job in jobs {
+        let job_dir = prepared.jobs_dir.join(job.id);
+        let ctx = HostContext {
+            workspace_snapshot_dir: prepare_job_workspace(job, &snapshot.snapshot_dir, &job_dir)?,
+            workspace_read_only: !job.writable_workspace,
+            job_dir: job_dir.clone(),
+            host_log_path: job_dir.join("host.log"),
+            guest_log_path: job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: prepared.shared_cargo_home_dir.clone(),
+            shared_target_dir: prepared.run_target_dir.clone(),
+        };
         let mut depends_on = Vec::new();
         if job.runner_kind() == RunnerKind::VfkitLocal {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
-            let flake_dir = prepared.jobs_dir.join(job.id).join("vm").join("flake");
+            let installable = materialize_vfkit_runner_flake(job, &ctx)?;
             nodes.push(PlanNodeRecord::Prepare {
                 id: prepare_node_id.clone(),
                 description: format!("Build vfkit runner for `{}`", job.id),
                 executor: PlanExecutorKind::HostLocal,
                 depends_on: Vec::new(),
                 prepare: PrepareNode::NixBuild {
-                    installable: vfkit_runner_installable(&flake_dir),
+                    installable,
                     output_name: "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         .to_string(),
                 },
@@ -467,20 +467,26 @@ fn build_run_plan(jobs: &[JobSpec], prepared: &PreparedRun, metadata: &RunMetada
         planned_jobs.push(PlannedJob {
             job: job.clone(),
             execute_node_id,
+            ctx,
         });
     }
 
-    RunPlan {
+    Ok(RunPlan {
         record: RunPlanRecord {
             schema_version: 1,
             run_id: prepared.run_id.clone(),
             target_id: metadata.target_id.clone(),
             target_description: metadata.target_description.clone(),
             created_at: prepared.created_at.clone(),
+            scope: PlanScope::PostHostSetupAndSnapshot,
+            preconditions: vec![
+                "host_setup_complete".to_string(),
+                "workspace_snapshot_created".to_string(),
+            ],
             nodes,
         },
         jobs: planned_jobs,
-    }
+    })
 }
 
 fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
@@ -568,10 +574,12 @@ fn run_host_setup_commands(
 mod tests {
     use std::fs;
 
-    use super::{PreparedRun, RunMetadata, build_run_plan, gc_runs, write_run_plan_record};
+    use super::{
+        PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs, write_run_plan_record,
+    };
     use crate::model::{
-        ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PrepareNode,
-        RunPlanRecord,
+        ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
+        PrepareNode, RunPlanRecord,
     };
 
     #[test]
@@ -622,9 +630,18 @@ mod tests {
             },
         }];
 
-        let plan = build_run_plan(&jobs, &prepared, &metadata);
+        let snapshot = sample_snapshot_source(&prepared);
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
 
         assert_eq!(plan.record.schema_version, 1);
+        assert_eq!(plan.record.scope, PlanScope::PostHostSetupAndSnapshot);
+        assert_eq!(
+            plan.record.preconditions,
+            vec![
+                "host_setup_complete".to_string(),
+                "workspace_snapshot_created".to_string()
+            ]
+        );
         assert_eq!(plan.record.nodes.len(), 2);
         match &plan.record.nodes[0] {
             PlanNodeRecord::Prepare {
@@ -689,6 +706,12 @@ mod tests {
 
         assert_eq!(plan.jobs.len(), 1);
         assert_eq!(plan.jobs[0].execute_node_id, "execute-pika-core-lib-tests");
+        assert!(
+            prepared
+                .run_dir
+                .join("jobs/pika-core-lib-tests/vm/flake/flake.nix")
+                .exists()
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -704,6 +727,11 @@ mod tests {
             target_id: Some("beachhead".to_string()),
             target_description: Some("Run one tiny exact unit test".to_string()),
             created_at: "2026-03-07T00:00:00Z".to_string(),
+            scope: PlanScope::PostHostSetupAndSnapshot,
+            preconditions: vec![
+                "host_setup_complete".to_string(),
+                "workspace_snapshot_created".to_string(),
+            ],
             nodes: vec![PlanNodeRecord::Execute {
                 id: "execute-beachhead".to_string(),
                 description: "Run one tiny exact unit test in a vfkit guest".to_string(),
@@ -723,6 +751,7 @@ mod tests {
         let decoded: RunPlanRecord = serde_json::from_slice(&bytes).expect("decode plan");
 
         assert_eq!(decoded.run_id, "run-1");
+        assert_eq!(decoded.scope, PlanScope::PostHostSetupAndSnapshot);
         assert_eq!(decoded.nodes.len(), 1);
         assert!(path.ends_with("plan.json"));
 
@@ -733,6 +762,8 @@ mod tests {
         let run_dir = root.join("runs").join("run-1");
         let jobs_dir = run_dir.join("jobs");
         fs::create_dir_all(&jobs_dir).expect("create jobs dir");
+        fs::create_dir_all(root.join("cache").join("cargo-home")).expect("create cargo home");
+        fs::create_dir_all(run_dir.join("cargo-target")).expect("create cargo target");
         PreparedRun {
             run_id: "run-1".to_string(),
             created_at: "2026-03-07T00:00:00Z".to_string(),
@@ -740,6 +771,18 @@ mod tests {
             jobs_dir,
             shared_cargo_home_dir: root.join("cache").join("cargo-home"),
             run_target_dir: root.join("runs").join("run-1").join("cargo-target"),
+        }
+    }
+
+    fn sample_snapshot_source(prepared: &PreparedRun) -> SnapshotSource {
+        let snapshot_dir = prepared.run_dir.join("snapshot");
+        fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
+        SnapshotSource {
+            source_root: "/tmp/source".to_string(),
+            snapshot_dir: snapshot_dir.clone(),
+            snapshot_dir_string: snapshot_dir.display().to_string(),
+            git_head: Some("deadbeef".to_string()),
+            git_dirty: Some(false),
         }
     }
 }

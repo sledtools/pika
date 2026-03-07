@@ -152,8 +152,17 @@ pub struct RunPlanRecord {
     #[serde(default)]
     pub target_description: Option<String>,
     pub created_at: String,
+    pub scope: PlanScope,
+    #[serde(default)]
+    pub preconditions: Vec<String>,
     #[serde(default)]
     pub nodes: Vec<PlanNodeRecord>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanScope {
+    PostHostSetupAndSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]

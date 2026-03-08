@@ -1,9 +1,11 @@
 pub mod call;
+pub mod conversation;
 pub mod group;
 pub mod key_package;
 pub mod media;
 pub mod message;
 pub mod relay;
+pub mod runtime;
 pub mod welcome;
 
 use std::collections::HashSet;
@@ -11,10 +13,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use mdk_core::MDK;
-use mdk_core::prelude::MessageProcessingResult;
 use mdk_sqlite_storage::MdkSqliteStorage;
-use nostr_sdk::prelude::{Event, EventId, Keys, Kind};
+use nostr_sdk::prelude::{Event, EventId, Keys};
 use serde::{Deserialize, Serialize};
+
+use crate::conversation::{ConversationEvent, ConversationRuntime};
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
 
@@ -107,14 +110,8 @@ pub fn ingest_application_message(
     mdk: &PikaMdk,
     event: &Event,
 ) -> Result<Option<mdk_storage_traits::messages::types::Message>> {
-    if event.kind != Kind::MlsGroupMessage {
-        return Ok(None);
-    }
-    match mdk
-        .process_message(event)
-        .context("process group message")?
-    {
-        MessageProcessingResult::ApplicationMessage(msg) => Ok(Some(msg)),
+    match ConversationRuntime::new(mdk).process_event(event)? {
+        Some(ConversationEvent::Application(message)) => Ok(Some(message.message)),
         _ => Ok(None),
     }
 }
@@ -133,32 +130,9 @@ pub async fn ingest_group_backlog(
     seen: &mut HashSet<EventId>,
     limit: usize,
 ) -> Result<Vec<mdk_storage_traits::messages::types::Message>> {
-    use nostr_sdk::prelude::{Alphabet, Filter, SingleLetterTag};
-
-    let filter = Filter::new()
-        .kind(Kind::MlsGroupMessage)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
-        .limit(limit);
-
-    let events = client
-        .fetch_events_from(
-            relay_urls.to_vec(),
-            filter,
-            std::time::Duration::from_secs(10),
-        )
+    ConversationRuntime::new(mdk)
+        .ingest_backlog_messages(client, relay_urls, nostr_group_id_hex, seen, limit)
         .await
-        .context("fetch group backlog")?;
-
-    let mut messages = Vec::new();
-    for ev in events.iter() {
-        if !seen.insert(ev.id) {
-            continue;
-        }
-        if let Ok(Some(msg)) = ingest_application_message(mdk, ev) {
-            messages.push(msg);
-        }
-    }
-    Ok(messages)
 }
 
 #[cfg(test)]

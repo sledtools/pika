@@ -20,10 +20,15 @@ use pika_marmot_runtime::call::{
     parse_call_signal as parse_shared_call_signal,
     validate_relay_auth_token as validate_shared_relay_auth_token,
 };
+use pika_marmot_runtime::conversation::{ConversationEvent, ConversationRuntime};
 use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes};
 use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, MessageClassification, TYPING_INDICATOR_KIND,
     classify_message as classify_shared_message,
+};
+use pika_marmot_runtime::runtime::{
+    BootstrappedRuntimeSession, bootstrap_runtime_session, subscribe_group_messages_individual,
+    subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, take_pending_welcome,
@@ -56,6 +61,16 @@ use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 const PROTOCOL_VERSION: u32 = 1;
 const ACCEPT_WELCOME_BACKLOG_LIMIT: usize = 200;
 const INIT_GROUP_WELCOME_EXPIRATION_SECS: u64 = 30 * 24 * 60 * 60;
+
+fn bootstrap_runtime_for_daemon(
+    state_dir: &Path,
+    keys: &Keys,
+) -> anyhow::Result<BootstrappedRuntimeSession> {
+    let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+    bootstrap_runtime_session(keys.public_key(), signer, || {
+        crate::new_mdk(state_dir, "daemon")
+    })
+}
 
 async fn accept_welcome_with_backfill<F, Fut>(
     mdk: &MDK<MdkSqliteStorage>,
@@ -732,17 +747,7 @@ fn out_ok(request_id: Option<String>, result: Option<serde_json::Value>) -> OutM
 
 /// Decode a hex nostr_group_id, validate it, and return the matching MLS group ID.
 fn resolve_group(mdk: &MDK<MdkSqliteStorage>, nostr_group_id: &str) -> anyhow::Result<GroupId> {
-    let group_id_bytes =
-        hex::decode(nostr_group_id).map_err(|_| anyhow!("nostr_group_id must be hex"))?;
-    if group_id_bytes.len() != 32 {
-        anyhow::bail!("nostr_group_id must be 32 bytes hex");
-    }
-    let groups = mdk.get_groups().context("get_groups")?;
-    let g = groups
-        .iter()
-        .find(|g| g.nostr_group_id.as_slice() == group_id_bytes.as_slice())
-        .ok_or_else(|| anyhow!("group not found"))?;
-    Ok(g.mls_group_id.clone())
+    ConversationRuntime::new(mdk).mls_group_id_for_nostr_group_id(nostr_group_id)
 }
 
 /// Create an MLS message from a rumor, strip protected tags, sign, and publish.
@@ -2176,18 +2181,6 @@ fn classify_daemon_message(
     classify_shared_message(msg.kind, &msg.content, msg.tags.iter())
 }
 
-fn event_h_tag_hex(ev: &Event) -> Option<String> {
-    for t in ev.tags.iter() {
-        if t.kind() == TagKind::h()
-            && let Some(v) = t.content()
-            && !v.is_empty()
-        {
-            return Some(v.to_string());
-        }
-    }
-    None
-}
-
 pub async fn daemon_main(
     relays_arg: &[String],
     state_dir: &Path,
@@ -2284,55 +2277,43 @@ pub async fn daemon_main(
         relay_urls
             .push(RelayUrl::parse("ws://127.0.0.1:18080").context("parse default relay url")?);
     }
-    // Connect to the primary relay first, then add the rest.
-    let client = crate::connect_client(&keys, primary_relay).await?;
+    let bootstrapped = bootstrap_runtime_for_daemon(state_dir, &keys)?;
+    let client = bootstrapped.session.client.clone();
+    let mdk = bootstrapped.session.mdk;
+
+    // Daemon keeps its primary-relay-first connect policy local.
+    client
+        .add_relay(primary_relay)
+        .await
+        .with_context(|| format!("add primary relay {primary_relay}"))?;
     for r in relay_urls.iter().skip(1) {
         let _ = client.add_relay(r.clone()).await;
     }
     client.connect().await;
-    let mdk = crate::new_mdk(state_dir, "daemon")?;
 
     let mut rx = client.notifications();
 
-    // Subscribe to welcomes (GiftWrap kind 1059) addressed to us.
-    // NOTE: `pubkey()` filter matches the event author, not the recipient.
-    // GiftWraps can be authored by anyone, so we must filter by the recipient `p` tag.
-    let since = Timestamp::now() - Duration::from_secs(giftwrap_lookback_sec);
-    let gift_filter = Filter::new()
-        .kind(Kind::GiftWrap)
-        .custom_tag(SingleLetterTag::lowercase(Alphabet::P), pubkey_hex.clone())
-        .since(since)
-        .limit(200);
-    let gift_sub = client.subscribe(gift_filter, None).await?;
+    let gift_sub = subscribe_welcome_inbox(
+        &client,
+        keys.public_key(),
+        Some(Duration::from_secs(giftwrap_lookback_sec)),
+        Some(200),
+    )
+    .await?;
 
     // Track which wrapper events and group message wrapper events we've already processed.
-    let mut seen_welcomes: HashSet<EventId> = HashSet::new();
-    let mut seen_group_events: HashSet<EventId> = HashSet::new();
+    let mut seen_welcomes: HashSet<EventId> = bootstrapped.startup.seen_welcomes;
+    let mut seen_group_events: HashSet<EventId> = bootstrapped.startup.seen_group_events;
 
     // Track group subscriptions.
-    let mut group_subs: HashMap<SubscriptionId, String> = HashMap::new();
+    let mut group_subs: HashMap<SubscriptionId, String> =
+        subscribe_group_messages_individual(&client, &bootstrapped.startup.existing_group_ids)
+            .await?;
     let mut pending_call_invites: HashMap<String, PendingCallInvite> = HashMap::new();
     let mut pending_outgoing_call_invites: HashMap<String, PendingOutgoingCallInvite> =
         HashMap::new();
     let mut active_call: Option<ActiveCall> = None;
     let (call_evt_tx, mut call_evt_rx) = mpsc::unbounded_channel::<CallWorkerEvent>();
-
-    // On startup, subscribe to any groups already present in state, so the daemon is restart-safe.
-    if let Ok(groups) = mdk.get_groups() {
-        for g in groups.iter() {
-            let nostr_group_id_hex = hex::encode(g.nostr_group_id);
-            match crate::subscribe_group_msgs(&client, &nostr_group_id_hex).await {
-                Ok(sid) => {
-                    group_subs.insert(sid.clone(), nostr_group_id_hex.clone());
-                }
-                Err(err) => {
-                    warn!(
-                        "[pikachat] subscribe existing group failed nostr_group_id={nostr_group_id_hex} err={err:#}"
-                    );
-                }
-            }
-        }
-    }
 
     // command reader (stdin or child process stdout)
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<DaemonCmd>();
@@ -2717,35 +2698,34 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::ListGroups { request_id } => {
-                        match mdk.get_groups() {
-                            Ok(gs) => {
-                                let out = gs.iter().map(|g| {
-                                    let member_count = mdk.get_members(&g.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
-                                    json!({
-                                        "nostr_group_id": hex::encode(g.nostr_group_id),
-                                        "mls_group_id": hex::encode(g.mls_group_id.as_slice()),
-                                        "name": g.name,
-                                        "description": g.description,
-                                        "member_count": member_count,
+                        match ConversationRuntime::new(&mdk).list_groups() {
+                            Ok(groups) => {
+                                let out = groups
+                                    .iter()
+                                    .map(|group| {
+                                        json!({
+                                            "nostr_group_id": group.nostr_group_id_hex,
+                                            "mls_group_id": group.mls_group_id_hex,
+                                            "name": group.name,
+                                            "description": group.description,
+                                            "member_count": group.member_count,
+                                        })
                                     })
-                                }).collect::<Vec<_>>();
-                                let _ = reply_tx.send(out_ok(request_id, Some(json!({"groups": out}))));
+                                    .collect::<Vec<_>>();
+                                let _ =
+                                    reply_tx.send(out_ok(request_id, Some(json!({"groups": out}))));
                             }
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx
+                                    .send(out_error(request_id, "mdk_error", format!("{e:#}")));
                             }
                         }
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
-                                continue;
-                            }
-                        };
                         let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
-                        match mdk.get_messages(&mls_group_id, Some(pagination)) {
+                        match ConversationRuntime::new(&mdk)
+                            .get_messages(&nostr_group_id, Some(pagination))
+                        {
                             Ok(msgs) => {
                                 let out: Vec<serde_json::Value> = msgs.iter().map(|m| {
                                     json!({
@@ -4046,7 +4026,7 @@ pub async fn daemon_main(
                 };
                 let event = *event;
 
-                if subscription_id == gift_sub.val {
+                if subscription_id == gift_sub {
                     if event.kind != Kind::GiftWrap {
                         continue;
                     }
@@ -4104,9 +4084,11 @@ pub async fn daemon_main(
                         continue;
                     }
 
-                    let nostr_group_id = event_h_tag_hex(&event).unwrap_or_else(|| group_subs.get(&subscription_id).cloned().unwrap_or_default());
-                    match crate::ingest_application_message(&mdk, &event) {
-                        Ok(Some(msg)) => {
+                    match ConversationRuntime::new(&mdk).process_event(&event) {
+                        Ok(Some(ConversationEvent::Application(runtime_msg))) => {
+                            let classification = runtime_msg.classification;
+                            let nostr_group_id = runtime_msg.nostr_group_id_hex;
+                            let msg = runtime_msg.message;
                             let sender_hex = msg.pubkey.to_hex().to_lowercase();
                             if !sender_allowed(&sender_hex) {
                                 warn!("[pikachat] drop message (sender not allowed) from={sender_hex}");
@@ -4312,9 +4294,7 @@ pub async fn daemon_main(
                                 }
                                 continue;
                             }
-                            if classify_daemon_message(&msg)
-                                == Some(MessageClassification::TypingIndicator)
-                            {
+                            if classification == MessageClassification::TypingIndicator {
                                 continue;
                             }
                             let mut media: Vec<MediaAttachmentOut> = Vec::new();
@@ -4344,6 +4324,7 @@ pub async fn daemon_main(
                                 media,
                             }).ok();
                         }
+                        Ok(Some(_)) => {}
                         Ok(None) => {}
                         Err(e) => {
                             warn!("[pikachat] process_message failed id={} err={e:#}", event.id.to_hex());
@@ -4358,7 +4339,7 @@ pub async fn daemon_main(
     if let Some(current) = active_call.take() {
         current.worker.stop().await;
     }
-    let _ = client.unsubscribe(&gift_sub.val).await;
+    let _ = client.unsubscribe(&gift_sub).await;
     client.unsubscribe_all().await;
     client.shutdown().await;
     // Clean up Unix socket
@@ -4468,6 +4449,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn daemon_group_lookup_uses_shared_conversation_runtime() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon conversation lookup".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let resolved = resolve_group(&inviter_mdk, &hex::encode(created.group.nostr_group_id))
+            .expect("resolve group");
+        assert_eq!(resolved, created.group.mls_group_id);
+    }
+
     #[tokio::test]
     async fn accept_welcome_with_backfill_uses_shared_runtime_helper() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
@@ -4537,6 +4546,39 @@ mod tests {
                 .expect("get pending welcomes")
                 .is_empty(),
             "shared daemon helper should clear the pending welcome"
+        );
+    }
+
+    #[test]
+    fn daemon_runtime_bootstrap_uses_shared_session_service() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon runtime bootstrap".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let bootstrapped =
+            bootstrap_runtime_for_daemon(inviter_dir.path(), &inviter_keys).expect("bootstrap");
+
+        assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
+        assert_eq!(
+            bootstrapped.startup.existing_group_ids,
+            vec![hex::encode(created.group.nostr_group_id)]
         );
     }
 

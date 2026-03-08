@@ -47,6 +47,10 @@ use mdk_core::encrypted_media::types::{
 };
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
+use pika_marmot_runtime::conversation::{
+    ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupUpdate,
+    RuntimeGroupUpdateKind,
+};
 use pika_marmot_runtime::message::{
     classify_message as classify_shared_message, MessageClassification as AppMessageKind,
 };
@@ -4413,13 +4417,13 @@ impl AppCore {
     }
 
     pub(crate) fn handle_group_message(&mut self, event: Event) {
-        let result = {
+        let outcome = {
             let Some(sess) = self.session.as_mut() else {
                 tracing::warn!("group_message but no session");
                 return;
             };
-            match sess.mdk.process_message(&event) {
-                Ok(r) => r,
+            match ConversationRuntime::new(&sess.mdk).process_event(&event) {
+                Ok(outcome) => outcome,
                 Err(e) => {
                     tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
                     self.toast(format!("Message decrypt failed: {e}"));
@@ -4427,106 +4431,88 @@ impl AppCore {
                 }
             }
         };
-        self.handle_message_processing_result(result);
+        self.handle_conversation_event(outcome);
     }
 
+    #[allow(dead_code)]
     fn handle_message_processing_result(&mut self, result: MessageProcessingResult) {
-        // Phase 1: Extract mls_group_id and optional app message.
-        let (mls_group_id, app_msg) = match result {
-            MessageProcessingResult::ApplicationMessage(msg) => {
-                if classify_app_message(&msg).is_none() {
-                    return;
-                }
-                (Some(msg.mls_group_id.clone()), Some(msg))
-            }
-            MessageProcessingResult::Proposal(update) => (Some(update.mls_group_id.clone()), None),
-            MessageProcessingResult::PendingProposal { mls_group_id } => (Some(mls_group_id), None),
-            MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
-                (Some(mls_group_id), None)
-            }
-            MessageProcessingResult::ExternalJoinProposal { mls_group_id } => {
-                (Some(mls_group_id), None)
-            }
-            MessageProcessingResult::Commit { ref mls_group_id } => {
-                // Re-publish our own group profile on membership changes so
-                // new members receive it.
-                if let Some(chat_id) = self.resolve_chat_id(mls_group_id) {
-                    self.maybe_rebroadcast_my_group_profile(&chat_id, mls_group_id);
-                }
-                (Some(mls_group_id.clone()), None)
-            }
-            MessageProcessingResult::Unprocessable { mls_group_id } => (Some(mls_group_id), None),
-            MessageProcessingResult::PreviouslyFailed => (None, None),
+        let outcome = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            ConversationRuntime::new(&sess.mdk).interpret_processing_result(result)
         };
+        self.handle_conversation_event(outcome);
+    }
 
-        // Phase 2: Resolve group_id → chat_id, early-return on failure.
-        let Some(group_id) = mls_group_id else {
-            self.refresh_all_from_storage();
-            return;
-        };
-        let Some(chat_id) = self.resolve_chat_id(&group_id) else {
-            self.refresh_all_from_storage();
-            return;
-        };
-
-        // Phase 3: Dispatch app message or refresh chat.
-        if let Some(msg) = app_msg {
-            self.handle_app_message(&chat_id, msg);
-        } else {
-            self.refresh_chat_list_from_storage();
-            self.refresh_current_chat_if_open(&chat_id);
+    fn handle_conversation_event(&mut self, event: Option<ConversationEvent>) {
+        match event {
+            Some(ConversationEvent::Application(message)) => {
+                self.handle_runtime_application_message(*message);
+            }
+            Some(ConversationEvent::GroupUpdate(update)) => {
+                self.handle_runtime_group_update(update);
+            }
+            Some(
+                ConversationEvent::UnresolvedGroup { .. } | ConversationEvent::PreviouslyFailed,
+            ) => {
+                self.refresh_all_from_storage();
+            }
+            None => {}
         }
     }
 
-    fn resolve_chat_id(&mut self, group_id: &GroupId) -> Option<String> {
-        let sess = self.session.as_mut()?;
-        match sess.mdk.get_group(group_id) {
-            Ok(Some(group)) => Some(hex::encode(group.nostr_group_id)),
-            _ => None,
+    fn handle_runtime_group_update(&mut self, update: RuntimeGroupUpdate) {
+        if matches!(update.kind, RuntimeGroupUpdateKind::Commit) {
+            self.maybe_rebroadcast_my_group_profile(
+                &update.nostr_group_id_hex,
+                &update.mls_group_id,
+            );
         }
+        self.refresh_chat_list_from_storage();
+        self.refresh_current_chat_if_open(&update.nostr_group_id_hex);
     }
 
-    fn handle_app_message(&mut self, chat_id: &str, msg: message_types::Message) {
-        let Some(kind) = classify_app_message(&msg) else {
-            return;
-        };
-
+    fn handle_runtime_application_message(&mut self, runtime_msg: RuntimeApplicationMessage) {
+        let chat_id = runtime_msg.nostr_group_id_hex;
+        let kind = runtime_msg.classification;
+        let msg = runtime_msg.message;
         match kind {
             AppMessageKind::TypingIndicator => {
                 let sender_hex = msg.pubkey.to_hex();
                 let my_hex = self.session.as_ref().map(|s| s.pubkey.to_hex());
                 if my_hex.as_deref() != Some(sender_hex.as_str()) {
-                    self.update_typing(chat_id, &sender_hex, msg.created_at.as_secs() as i64 + 10);
-                    self.refresh_typing_if_open(chat_id);
+                    self.update_typing(&chat_id, &sender_hex, msg.created_at.as_secs() as i64 + 10);
+                    self.refresh_typing_if_open(&chat_id);
                 }
             }
             AppMessageKind::CallSignal => {
                 if let Some(signal) = self.maybe_parse_call_signal(&msg.pubkey, &msg.content) {
-                    self.handle_incoming_call_signal(chat_id, &msg.pubkey, signal);
+                    self.handle_incoming_call_signal(&chat_id, &msg.pubkey, signal);
                 }
                 self.refresh_chat_list_from_storage();
-                self.refresh_current_chat_if_open(chat_id);
+                self.refresh_current_chat_if_open(&chat_id);
             }
             kind @ (AppMessageKind::Chat
             | AppMessageKind::Reaction
             | AppMessageKind::Hypernote
             | AppMessageKind::HypernoteResponse) => {
                 if matches!(kind, AppMessageKind::Chat) {
-                    self.update_typing(chat_id, &msg.pubkey.to_hex(), 0);
+                    self.update_typing(&chat_id, &msg.pubkey.to_hex(), 0);
                 }
 
                 let current = self.state.current_chat.as_ref().map(|c| c.chat_id.as_str());
-                if current != Some(chat_id) && kind.increments_unread() {
-                    *self.unread_counts.entry(chat_id.to_string()).or_insert(0) += 1;
+                if current != Some(chat_id.as_str()) && kind.increments_unread() {
+                    *self.unread_counts.entry(chat_id.clone()).or_insert(0) += 1;
                 } else if kind.increments_loaded() {
                     self.loaded_count
-                        .entry(chat_id.to_string())
+                        .entry(chat_id.clone())
                         .and_modify(|n| *n += 1)
                         .or_insert(51);
                 }
 
                 self.refresh_chat_list_from_storage();
-                self.refresh_current_chat_if_open(chat_id);
+                self.refresh_current_chat_if_open(&chat_id);
             }
             AppMessageKind::GroupProfile => {
                 // Determine profile owner: if the rumor has a `p` tag, this is
@@ -4549,7 +4535,7 @@ impl AppCore {
                 let encrypted_pic_info = self
                     .session
                     .as_ref()
-                    .and_then(|sess| sess.groups.get(chat_id))
+                    .and_then(|sess| sess.groups.get(&chat_id))
                     .and_then(|group| {
                         let manager = self
                             .session
@@ -4569,11 +4555,24 @@ impl AppCore {
                         )
                     });
 
-                self.upsert_group_profile(chat_id, owner_hex, cache, encrypted_pic_info);
+                self.upsert_group_profile(&chat_id, owner_hex, cache, encrypted_pic_info);
                 self.refresh_chat_list_from_storage();
-                self.refresh_current_chat_if_open(chat_id);
+                self.refresh_current_chat_if_open(&chat_id);
             }
         }
+    }
+
+    #[allow(dead_code)]
+    fn handle_app_message(&mut self, chat_id: &str, msg: message_types::Message) {
+        let Some(classification) = classify_app_message(&msg) else {
+            return;
+        };
+        self.handle_runtime_application_message(RuntimeApplicationMessage {
+            mls_group_id: msg.mls_group_id.clone(),
+            nostr_group_id_hex: chat_id.to_string(),
+            classification,
+            message: msg,
+        });
     }
 
     fn handle_action(&mut self, action: AppAction) {
@@ -6692,6 +6691,27 @@ mod tests {
                 core.unread_counts.get(&chat_id).copied().unwrap_or(0),
                 1,
                 "unread count should be 1"
+            );
+        }
+
+        #[test]
+        fn app_message_processing_uses_shared_conversation_runtime() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let other = Keys::generate();
+            let msg = make_test_message(
+                &other.public_key(),
+                Kind::ChatMessage,
+                "hello through shared runtime",
+                &group_id,
+                Tags::new(),
+            );
+
+            core.handle_message_processing_result(MessageProcessingResult::ApplicationMessage(msg));
+
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                1,
+                "shared conversation runtime should still drive unread updates"
             );
         }
 

@@ -779,13 +779,10 @@ fn find_group(
     mdk: &mdk_util::PikaMdk,
     nostr_group_id_hex: &str,
 ) -> anyhow::Result<mdk_storage_traits::groups::types::Group> {
-    let gid_bytes = hex::decode(nostr_group_id_hex).context("decode group id hex")?;
-    let groups = mdk.get_groups().context("get_groups")?;
-    groups
-        .into_iter()
-        .find(|g| g.nostr_group_id.as_slice() == gid_bytes.as_slice())
-        .ok_or_else(|| {
-            anyhow!(
+    pika_marmot_runtime::conversation::ConversationRuntime::new(mdk)
+        .find_group(nostr_group_id_hex)
+        .with_context(|| {
+            format!(
                 "no group with ID {nostr_group_id_hex}. Run 'pikachat groups' to list your groups."
             )
         })
@@ -1195,13 +1192,15 @@ fn pending_welcome_json(
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let groups = mdk.get_groups().context("get groups")?;
+    let groups = pika_marmot_runtime::conversation::ConversationRuntime::new(&mdk)
+        .list_groups()
+        .context("get groups")?;
     let out: Vec<serde_json::Value> = groups
         .iter()
         .map(|g| {
             json!({
-                "nostr_group_id": hex::encode(g.nostr_group_id),
-                "mls_group_id": hex::encode(g.mls_group_id.as_slice()),
+                "nostr_group_id": g.nostr_group_id_hex,
+                "mls_group_id": g.mls_group_id_hex,
                 "name": g.name,
                 "description": g.description,
             })
@@ -2194,8 +2193,8 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     let group = find_group(&mdk, nostr_group_id_hex)?;
 
     let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
-    let msgs = mdk
-        .get_messages(&group.mls_group_id, Some(pagination))
+    let msgs = pika_marmot_runtime::conversation::ConversationRuntime::new(&mdk)
+        .get_messages(nostr_group_id_hex, Some(pagination))
         .context("get messages")?;
 
     let out: Vec<serde_json::Value> = msgs

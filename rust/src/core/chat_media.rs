@@ -1746,7 +1746,7 @@ impl AppCore {
             self.last_outgoing_ts
         };
 
-        let (client, wrapper, relays, rumor_id_hex) = {
+        let (client, relays, rumor, rumor_id_hex) = {
             let Some(sess) = self.session.as_mut() else {
                 return;
             };
@@ -1788,6 +1788,149 @@ impl AppCore {
                     },
                 );
 
+            let relays: Vec<RelayUrl> = if network_enabled {
+                sess.mdk
+                    .get_relays(&group.mls_group_id)
+                    .ok()
+                    .map(|s| s.into_iter().collect())
+                    .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                    .unwrap_or_else(|| fallback_relays.clone())
+            } else {
+                vec![]
+            };
+
+            (sess.client.clone(), relays, rumor, rumor_id_hex)
+        };
+
+        self.prune_local_outbox(&chat_id);
+        self.refresh_chat_list_from_storage();
+        self.refresh_current_chat_if_open(&chat_id);
+
+        if !network_enabled {
+            let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
+                InternalEvent::PublishMessageResult {
+                    chat_id,
+                    rumor_id: rumor_id_hex,
+                    ok: false,
+                    error: Some("offline".into()),
+                },
+            )));
+            return;
+        }
+
+        let tx = self.core_sender.clone();
+        let mut seen_ids = self.processed_group_event_ids.clone();
+        let chat_id_for_task = chat_id.clone();
+        self.runtime.spawn(async move {
+            let filter = Filter::new()
+                .kind(Kind::MlsGroupMessage)
+                .custom_tags(
+                    SingleLetterTag::lowercase(Alphabet::H),
+                    vec![chat_id_for_task.clone()],
+                )
+                .limit(200);
+            let (mut backlog_events, error) = match client
+                .fetch_events_from(relays.clone(), filter, std::time::Duration::from_secs(8))
+                .await
+            {
+                Ok(evts) => (evts.into_iter().collect::<Vec<Event>>(), None),
+                Err(e) => (Vec::new(), Some(format!("group backlog fetch failed: {e}"))),
+            };
+            backlog_events.retain(|ev| seen_ids.insert(ev.id));
+            backlog_events.sort_by_key(|ev| ev.created_at.as_secs());
+
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::GroupSendCatchupCompleted {
+                    chat_id: chat_id_for_task,
+                    rumor,
+                    backlog_events,
+                    error,
+                },
+            )));
+        });
+    }
+
+    pub(super) fn handle_group_send_catchup_completed(
+        &mut self,
+        chat_id: String,
+        rumor: UnsignedEvent,
+        backlog_events: Vec<Event>,
+        error: Option<String>,
+    ) {
+        if let Some(err) = error {
+            tracing::warn!(%chat_id, %err, "group send backlog fetch failed");
+        }
+        self.ingest_group_backlog_events(backlog_events);
+        self.publish_prepared_group_rumor(chat_id, rumor);
+    }
+
+    fn ingest_group_backlog_events(&mut self, backlog_events: Vec<Event>) {
+        let mut remaining = backlog_events;
+        let mut processed_any = false;
+        for _ in 0..3 {
+            if remaining.is_empty() {
+                break;
+            }
+            let current = std::mem::take(&mut remaining);
+            let mut next = Vec::new();
+            for event in current.into_iter() {
+                let event_id = event.id;
+                let result = {
+                    let Some(sess) = self.session.as_mut() else {
+                        return;
+                    };
+                    sess.mdk.process_message(&event)
+                };
+                match result {
+                    Ok(r) => {
+                        self.note_processed_group_event_id_in_memory(event_id);
+                        processed_any = true;
+                        self.handle_message_processing_result(r);
+                    }
+                    Err(e) => {
+                        tracing::debug!(event_id = %event.id.to_hex(), %e, "deferred backlog message");
+                        next.push(event);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            remaining = next;
+        }
+        if !remaining.is_empty() {
+            tracing::warn!(remaining = remaining.len(), "failed to ingest some backlog events");
+        }
+        if processed_any {
+            self.persist_processed_group_event_ids_cache();
+        }
+    }
+
+    fn publish_prepared_group_rumor(&mut self, chat_id: String, mut rumor: UnsignedEvent) {
+        let network_enabled = self.network_enabled();
+        let fallback_relays = self.default_relays();
+        let rumor_id_hex = rumor.id().to_hex();
+
+        let mark_publish_failed = |core: &mut Self, reason: &str| {
+            core.handle_publish_message_result(
+                chat_id.clone(),
+                rumor_id_hex.clone(),
+                false,
+                Some(reason.to_string()),
+            );
+        };
+
+        let (client, wrapper, relays) = {
+            let Some(sess) = self.session.as_mut() else {
+                mark_publish_failed(self, "session lost");
+                return;
+            };
+            let Some(group) = sess.groups.get(&chat_id).cloned() else {
+                self.toast("Chat not found");
+                mark_publish_failed(self, "chat not found");
+                return;
+            };
+
             let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
                 Ok(e) => e,
                 Err(e) => {
@@ -1821,12 +1964,8 @@ impl AppCore {
                 vec![]
             };
 
-            (sess.client.clone(), wrapper, relays, rumor_id_hex)
+            (sess.client.clone(), wrapper, relays)
         };
-
-        self.prune_local_outbox(&chat_id);
-        self.refresh_chat_list_from_storage();
-        self.refresh_current_chat_if_open(&chat_id);
 
         if !network_enabled {
             let _ = self.core_sender.send(CoreMsg::Internal(Box::new(

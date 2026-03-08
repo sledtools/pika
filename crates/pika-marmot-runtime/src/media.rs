@@ -538,56 +538,28 @@ mod tests {
 
     #[test]
     fn decrypt_downloaded_media_rejects_ciphertext_hash_mismatch() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_mdk(dir.path()).expect("open mdk");
-        let keys = Keys::generate();
-        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let (content, tags, _hash_ref) = mdk
-            .create_key_package_for_event(&keys.public_key(), vec![relay])
-            .expect("create key package");
-        let event = EventBuilder::new(Kind::MlsKeyPackage, content)
-            .tags(tags)
-            .sign_with_keys(&keys)
-            .expect("sign event");
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
         let config = mdk_core::prelude::NostrGroupConfigData::new(
-            "solo".to_string(),
+            "runtime decrypt".to_string(),
             String::new(),
             None,
             None,
             None,
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
-            vec![keys.public_key()],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = mdk
-            .create_group(&keys.public_key(), vec![event], config)
-            .expect_err("self invite should fail");
-        let _ = created;
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let mls_group_id = created.group.mls_group_id;
 
-        let groups = mdk.get_groups().expect("get groups");
-        let mls_group_id = groups
-            .first()
-            .map(|group| group.mls_group_id.clone())
-            .unwrap_or_else(|| {
-                let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
-                let invitee_keys = Keys::generate();
-                let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
-                let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-                let config = mdk_core::prelude::NostrGroupConfigData::new(
-                    "runtime decrypt".to_string(),
-                    String::new(),
-                    None,
-                    None,
-                    None,
-                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
-                    vec![keys.public_key(), invitee_keys.public_key()],
-                );
-                mdk.create_group(&keys.public_key(), vec![invitee_kp], config)
-                    .expect("create group")
-                    .group
-                    .mls_group_id
-            });
-
-        let runtime = MediaRuntime::new(&mdk);
+        let runtime = MediaRuntime::new(&inviter_mdk);
         let prepared = runtime
             .prepare_upload(
                 &mls_group_id,

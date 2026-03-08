@@ -104,6 +104,8 @@ pub async fn create_group_and_publish_welcomes(
 
     let mls_group_id = result.group.mls_group_id.clone();
     let nostr_group_id_hex = hex::encode(result.group.nostr_group_id);
+    // Agent create mirrors CLI invite semantics: create locally, then wait for
+    // welcome delivery, with no extra subscribe/merge workflow at this layer.
     let mut published_welcomes = Vec::new();
     for rumor in result.welcome_rumors {
         let rumor_json = rumor.as_json();

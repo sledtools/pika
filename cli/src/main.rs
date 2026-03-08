@@ -1063,7 +1063,8 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
 
     let ngid = hex::encode(result.group.nostr_group_id);
 
-    // Send welcome giftwraps.
+    // CLI invite waits for welcome delivery before returning, but it does not
+    // subscribe or backfill here; later commands do catch-up on demand.
     for rumor in result.welcome_rumors {
         let giftwrap = EventBuilder::gift_wrap(&keys, &peer_pubkey, rumor, [])
             .await

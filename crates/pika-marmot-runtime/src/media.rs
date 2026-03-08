@@ -313,7 +313,7 @@ pub fn is_imeta_tag(tag: &Tag) -> bool {
 
 pub fn mime_from_extension(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(mime_from_extension_str(&ext))
+    mime_from_extension_str(&ext)
 }
 
 pub fn resolve_upload_metadata(
@@ -371,32 +371,32 @@ fn normalize_mime_type(mime_type: &str) -> String {
     mime_type.trim().to_ascii_lowercase()
 }
 
-fn mime_from_extension_str(ext: &str) -> &'static str {
+fn mime_from_extension_str(ext: &str) -> Option<&'static str> {
     match ext {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "ico" => "image/x-icon",
-        "tiff" | "tif" => "image/tiff",
-        "avif" => "image/avif",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        "mkv" => "video/x-matroska",
-        "webm" => "video/webm",
-        "avi" => "video/x-msvideo",
-        "ogg" => "audio/ogg",
-        "flac" => "audio/flac",
-        "aac" => "audio/aac",
-        "m4a" => "audio/mp4",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "heic" => "image/heic",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        _ => "application/octet-stream",
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "ico" => Some("image/x-icon"),
+        "tiff" | "tif" => Some("image/tiff"),
+        "avif" => Some("image/avif"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "mkv" => Some("video/x-matroska"),
+        "webm" => Some("video/webm"),
+        "avi" => Some("video/x-msvideo"),
+        "ogg" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        "aac" => Some("audio/aac"),
+        "m4a" => Some("audio/mp4"),
+        "mp3" => Some("audio/mpeg"),
+        "wav" => Some("audio/wav"),
+        "heic" => Some("image/heic"),
+        "svg" => Some("image/svg+xml"),
+        "pdf" => Some("application/pdf"),
+        "txt" | "md" => Some("text/plain"),
+        _ => None,
     }
 }
 

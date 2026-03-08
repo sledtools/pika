@@ -295,6 +295,8 @@ pub struct RealizedPreparedOutputRecord {
     pub consumer_request_path: Option<String>,
     #[serde(default)]
     pub exposures: Vec<PreparedOutputExposure>,
+    #[serde(default)]
+    pub requested_exposures: Vec<PreparedOutputExposure>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

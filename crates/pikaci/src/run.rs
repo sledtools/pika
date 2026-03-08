@@ -119,6 +119,8 @@ fn run_jobs_against_snapshot(
     metadata: RunMetadata,
 ) -> anyhow::Result<RunRecord> {
     let plan = build_run_plan(jobs, prepared, snapshot, &metadata)?;
+    let prepared_output_consumer_kind = configured_prepared_output_consumer_kind()?;
+    validate_prepared_output_consumer_for_jobs(prepared_output_consumer_kind, &plan.jobs)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let prepared_outputs_path = write_prepared_outputs_record(
         &prepared.run_dir,
@@ -148,17 +150,21 @@ fn run_jobs_against_snapshot(
     };
     write_run_record(&prepared.run_dir, &run_record)?;
 
-    let prepared_node_ids =
-        match run_prepare_nodes(&prepared.run_dir, &plan.prepares, &prepared_outputs_path) {
-            Ok(node_ids) => node_ids,
-            Err(failure) => {
-                mark_prepare_failure(&mut run_record, &plan, &failure)?;
-                run_record.status = RunStatus::Failed;
-                run_record.finished_at = Some(Utc::now().to_rfc3339());
-                write_run_record(&prepared.run_dir, &run_record)?;
-                return Ok(run_record);
-            }
-        };
+    let prepared_node_ids = match run_prepare_nodes(
+        &prepared.run_dir,
+        &plan.prepares,
+        &prepared_outputs_path,
+        prepared_output_consumer_kind,
+    ) {
+        Ok(node_ids) => node_ids,
+        Err(failure) => {
+            mark_prepare_failure(&mut run_record, &plan, &failure)?;
+            run_record.status = RunStatus::Failed;
+            run_record.finished_at = Some(Utc::now().to_rfc3339());
+            write_run_record(&prepared.run_dir, &run_record)?;
+            return Ok(run_record);
+        }
+    };
 
     let mut run_failed = false;
     let mut completed_node_ids: HashSet<String> = prepared_node_ids.into_iter().collect();
@@ -561,6 +567,7 @@ struct PreparedOutputMaterialization<'a> {
 struct PreparedOutputConsumerResult {
     kind: PreparedOutputConsumerKind,
     exposures: Vec<PreparedOutputExposure>,
+    requested_exposures: Vec<PreparedOutputExposure>,
     consumer_request_path: Option<String>,
 }
 
@@ -954,6 +961,7 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
         Ok(PreparedOutputConsumerResult {
             kind: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
             exposures,
+            requested_exposures: Vec::new(),
             consumer_request_path: None,
         })
     }
@@ -967,7 +975,7 @@ struct RemotePreparedOutputExposureRequest<'a> {
     output_name: &'a str,
     protocol: PreparedOutputHandoffProtocol,
     realized_path: String,
-    exposures: &'a [PreparedOutputExposure],
+    requested_exposures: &'a [PreparedOutputExposure],
 }
 
 impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
@@ -995,7 +1003,7 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
                 output_name: materialization.output_name,
                 protocol: materialization.protocol,
                 realized_path: materialization.realized_path.display().to_string(),
-                exposures: &handoff.exposures,
+                requested_exposures: &handoff.exposures,
             },
         )?;
         append_log_line_many(
@@ -1010,7 +1018,8 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         )?;
         Ok(PreparedOutputConsumerResult {
             kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
-            exposures: handoff.exposures.clone(),
+            exposures: Vec::new(),
+            requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
         })
     }
@@ -1103,22 +1112,56 @@ fn upsert_prepared_output_record(
     write_json(prepared_outputs_path.to_path_buf(), &updated)
 }
 
-fn selected_prepared_output_consumer() -> Box<dyn PreparedOutputConsumer> {
+fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputConsumerKind> {
     match std::env::var("PIKACI_PREPARED_OUTPUT_CONSUMER")
         .ok()
         .as_deref()
     {
-        Some("remote_request_v1") => Box::new(RemoteExposureRequestPreparedOutputConsumer),
-        _ => Box::new(HostLocalSymlinkPreparedOutputConsumer),
+        None => Ok(PreparedOutputConsumerKind::HostLocalSymlinkMountsV1),
+        Some("remote_request_v1") => Ok(PreparedOutputConsumerKind::RemoteExposureRequestV1),
+        Some(value) => Err(anyhow!(
+            "unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `{value}`; expected `remote_request_v1`"
+        )),
     }
+}
+
+fn selected_prepared_output_consumer(
+    kind: PreparedOutputConsumerKind,
+) -> Box<dyn PreparedOutputConsumer> {
+    match kind {
+        PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 => {
+            Box::new(HostLocalSymlinkPreparedOutputConsumer)
+        }
+        PreparedOutputConsumerKind::RemoteExposureRequestV1 => {
+            Box::new(RemoteExposureRequestPreparedOutputConsumer)
+        }
+    }
+}
+
+fn validate_prepared_output_consumer_for_jobs(
+    kind: PreparedOutputConsumerKind,
+    jobs: &[PlannedJob],
+) -> anyhow::Result<()> {
+    if kind == PreparedOutputConsumerKind::RemoteExposureRequestV1
+        && jobs.iter().any(|planned_job| {
+            planned_job.job.runner_kind() == RunnerKind::VfkitLocal
+                && planned_job.job.staged_linux_rust_lane().is_some()
+        })
+    {
+        return Err(anyhow!(
+            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust vfkit jobs still require local prepared-output mounts"
+        ));
+    }
+    Ok(())
 }
 
 fn run_prepare_nodes(
     run_dir: &Path,
     prepares: &[PlannedPrepare],
     prepared_outputs_path: &Path,
+    consumer_kind: PreparedOutputConsumerKind,
 ) -> Result<Vec<String>, PrepareFailure> {
-    let prepared_output_consumer = selected_prepared_output_consumer();
+    let prepared_output_consumer = selected_prepared_output_consumer(consumer_kind);
     let mut completed = HashSet::new();
     let mut completed_order = Vec::new();
     let mut pending: Vec<_> = prepares.iter().collect();
@@ -1189,6 +1232,7 @@ fn run_prepare_nodes(
                             realized_path: output_path.display().to_string(),
                             consumer_request_path: consumer_result.consumer_request_path,
                             exposures: consumer_result.exposures,
+                            requested_exposures: consumer_result.requested_exposures,
                         },
                     )
                     .map_err(|err| PrepareFailure {
@@ -1477,9 +1521,10 @@ mod tests {
     use super::{
         HostLocalSymlinkPreparedOutputConsumer, PrepareFailure, PreparedOutputMaterialization,
         PreparedRun, RemoteExposureRequestPreparedOutputConsumer, RunMetadata, SnapshotSource,
-        build_run_plan, consume_prepared_output_handoff, gc_runs, mark_prepare_failure,
-        parallel_execute_cap_for_jobs, ready_execute_job_positions,
-        selected_prepared_output_consumer, upsert_prepared_output_record, write_run_plan_record,
+        build_run_plan, configured_prepared_output_consumer_kind, consume_prepared_output_handoff,
+        gc_runs, mark_prepare_failure, parallel_execute_cap_for_jobs, ready_execute_job_positions,
+        selected_prepared_output_consumer, upsert_prepared_output_record,
+        validate_prepared_output_consumer_for_jobs, write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
@@ -1906,6 +1951,7 @@ mod tests {
                         .to_string(),
                     access: PreparedOutputExposureAccess::ReadOnly,
                 }],
+                requested_exposures: Vec::new(),
             },
         )
         .expect("write prepared output record");
@@ -1928,6 +1974,7 @@ mod tests {
             decoded.outputs[0].exposures[0].path,
             "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
         );
+        assert!(decoded.outputs[0].requested_exposures.is_empty());
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1975,6 +2022,7 @@ mod tests {
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
         );
         assert_eq!(result.exposures, handoff.exposures);
+        assert!(result.requested_exposures.is_empty());
         assert!(result.consumer_request_path.is_none());
         assert_eq!(
             fs::read_link(&mount_path).expect("read symlink"),
@@ -2029,7 +2077,8 @@ mod tests {
             result.kind,
             PreparedOutputConsumerKind::RemoteExposureRequestV1
         );
-        assert_eq!(result.exposures, handoff.exposures);
+        assert!(result.exposures.is_empty());
+        assert_eq!(result.requested_exposures, handoff.exposures);
         let request_path = result
             .consumer_request_path
             .as_deref()
@@ -2041,6 +2090,7 @@ mod tests {
         let request_body = fs::read_to_string(request_path).expect("read request");
         assert!(request_body.contains("\"schema_version\": 1"));
         assert!(request_body.contains("\"output_name\": \"ci.aarch64-linux.workspaceBuild\""));
+        assert!(request_body.contains("\"requested_exposures\""));
         assert!(request_body.contains(&mount_path.display().to_string()));
         assert!(fs::read_to_string(&log_path).expect("read log").contains(
             "prepared output consumer=remote_exposure_request_v1 wrote remote exposure request"
@@ -2052,16 +2102,61 @@ mod tests {
     #[test]
     fn selected_prepared_output_consumer_defaults_local_and_can_switch_to_remote_request() {
         let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", None);
+        let kind = configured_prepared_output_consumer_kind().expect("default consumer kind");
         assert_eq!(
-            selected_prepared_output_consumer().kind(),
+            selected_prepared_output_consumer(kind).kind(),
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
         );
 
         let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", Some("remote_request_v1"));
+        let kind = configured_prepared_output_consumer_kind().expect("remote consumer kind");
         assert_eq!(
-            selected_prepared_output_consumer().kind(),
+            selected_prepared_output_consumer(kind).kind(),
             PreparedOutputConsumerKind::RemoteExposureRequestV1
         );
+    }
+
+    #[test]
+    fn configured_prepared_output_consumer_kind_rejects_invalid_values() {
+        let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", Some("typo"));
+        let err = configured_prepared_output_consumer_kind().expect_err("invalid consumer");
+        assert!(
+            err.to_string()
+                .contains("unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `typo`")
+        );
+    }
+
+    #[test]
+    fn remote_request_consumer_is_rejected_for_real_staged_vfkit_jobs() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-remote-consumer-guard-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+        }];
+
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build plan");
+        let err = validate_prepared_output_consumer_for_jobs(
+            PreparedOutputConsumerKind::RemoteExposureRequestV1,
+            &plan.jobs,
+        )
+        .expect_err("remote request guard");
+        assert!(
+            err.to_string()
+                .contains("PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only")
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -361,6 +361,8 @@ Phase 6 non-local-consumer slice notes:
 - The prototype consumes the same staged Linux Rust handoff contract but writes machine-readable remote exposure requests instead of mutating host mountpoints.
 - The local symlink consumer remains the default real path; the new prototype only makes the future remote boundary concrete in logs and persisted state.
 - What this slice proves: a future remote executor/builder boundary can be modeled as a consumer of the existing Nix handoff contract, and `prepared-outputs.json` can capture both the consumer choice and its request metadata without introducing a generic artifact system.
+- Review follow-up: the remote-request consumer is explicitly prototype-only for real staged vfkit runs until there is a non-local mount/execution boundary that can actually consume its request file.
+- Review follow-up: persisted state now distinguishes realized exposures from requested remote exposures so `prepared-outputs.json` does not claim that remote-request paths are already live.
 - What still remains next: a narrow slice that decides where and how this remote-request prototype is actually exercised outside tests or threaded into one real non-local-capable boundary.
 
 ## Deferred Until Proven Necessary
@@ -401,4 +403,4 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, and third narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for where the non-local prepared-output consumer prototype should be exercised while keeping Rust execute inputs Nix-backed.
+- Current recommended slice is one narrow non-local boundary step that can actually consume the remote exposure request prototype while keeping Rust execute inputs Nix-backed.

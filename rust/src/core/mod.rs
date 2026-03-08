@@ -50,6 +50,9 @@ use pika_marmot_runtime::conversation::{
     ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupUpdate,
     RuntimeGroupUpdateKind,
 };
+use pika_marmot_runtime::membership::{
+    EvolutionPublishStatus, MembershipRuntime, PreparedMembershipEvolution,
+};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 use pika_marmot_runtime::message::{
@@ -1041,6 +1044,21 @@ impl AppCore {
             chat_id.to_string(),
             action,
         )
+    }
+
+    fn prepare_membership_evolution_for_chat(
+        &self,
+        chat_id: &str,
+        key_package_events: &[Event],
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        let sess = self.session.as_ref().context("not logged in")?;
+        let group = sess
+            .groups
+            .get(chat_id)
+            .cloned()
+            .context("chat not found")?;
+        MembershipRuntime::new(&sess.mdk)
+            .prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
     fn prune_local_outbox(&mut self, chat_id: &str) {
@@ -3371,19 +3389,10 @@ impl AppCore {
             ),
             InternalEvent::GroupEvolutionPublished {
                 chat_id,
-                mls_group_id,
-                welcome_rumors,
-                added_pubkeys,
+                prepared,
                 ok,
                 error,
-            } => self.handle_group_evolution_published(
-                chat_id,
-                mls_group_id,
-                welcome_rumors,
-                added_pubkeys,
-                ok,
-                error,
-            ),
+            } => self.handle_group_evolution_published(chat_id, prepared, ok, error),
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
@@ -4055,46 +4064,35 @@ impl AppCore {
         }
 
         if let Some(chat_id) = existing_chat_id {
-            let Some(sess) = self.session.as_mut() else {
+            let Some(sess) = self.session.as_ref() else {
                 self.set_busy(|b| b.creating_chat = false);
                 return;
             };
-            let Some(entry) = sess.groups.get(&chat_id).cloned() else {
+            if !sess.groups.contains_key(&chat_id) {
                 self.set_busy(|b| b.creating_chat = false);
                 self.toast("Chat not found");
                 return;
-            };
+            }
 
             let kp_events: Vec<Event> = key_package_events
                 .iter()
                 .map(normalize_peer_key_package_event_for_mdk)
                 .collect();
 
-            for ev in &kp_events {
-                if let Err(e) = sess.mdk.parse_key_package(ev) {
-                    self.set_busy(|b| b.creating_chat = false);
-                    self.toast(format!("Invalid key package: {e}"));
-                    return;
-                }
-            }
-
-            let result = match sess.mdk.add_members(&entry.mls_group_id, &kp_events) {
-                Ok(r) => r,
+            let prepared = match self.prepare_membership_evolution_for_chat(&chat_id, &kp_events) {
+                Ok(prepared) => prepared,
                 Err(e) => {
                     self.set_busy(|b| b.creating_chat = false);
-                    self.toast(format!("Add members failed: {e}"));
+                    if e.to_string().contains("parse key package") {
+                        self.toast(format!("Invalid key package: {}", e.root_cause()));
+                    } else {
+                        self.toast(format!("Add members failed: {e}"));
+                    }
                     return;
                 }
             };
 
-            let added: Vec<PublicKey> = kp_events.iter().map(|e| e.pubkey).collect();
-            self.publish_evolution_event(
-                &chat_id,
-                entry.mls_group_id,
-                result.evolution_event,
-                result.welcome_rumors,
-                added,
-            );
+            self.publish_prepared_evolution(&chat_id, prepared);
             // Clear busy immediately — relay confirmation, merge, and
             // welcome delivery continue in the background via
             // GroupEvolutionPublished handler.
@@ -4191,9 +4189,7 @@ impl AppCore {
     fn handle_group_evolution_published(
         &mut self,
         chat_id: String,
-        mls_group_id: GroupId,
-        welcome_rumors: Option<Vec<UnsignedEvent>>,
-        added_pubkeys: Vec<PublicKey>,
+        prepared: PreparedMembershipEvolution,
         ok: bool,
         error: Option<String>,
     ) {
@@ -4207,33 +4203,33 @@ impl AppCore {
             return;
         }
 
-        // Merge the pending commit now that relay confirmed.
-        if let Some(sess) = self.session.as_mut() {
-            if let Err(e) = sess.mdk.merge_pending_commit(&mls_group_id) {
-                tracing::error!(%e, "merge_pending_commit failed");
-            }
+        let Some(sess) = self.session.as_ref() else {
+            return;
+        };
+        let finalized = MembershipRuntime::new(&sess.mdk).finalize_published_evolution(prepared);
+        if let Some(ref merge_error) = finalized.merge_error {
+            tracing::error!(error = %merge_error, "merge_pending_commit failed");
         }
 
-        let has_added = !added_pubkeys.is_empty();
+        let has_added = !finalized.added_pubkeys.is_empty();
 
-        // Send welcomes to newly added members.
-        if let Some(rumors) = welcome_rumors {
-            if !rumors.is_empty() && self.network_enabled() {
+        if let Some(plan) = finalized.welcome_delivery.clone() {
+            if self.network_enabled() {
                 let fallback_relays = self.default_relays();
-                let relays: Vec<RelayUrl> = self
-                    .session
-                    .as_ref()
-                    .and_then(|s| s.mdk.get_relays(&mls_group_id).ok())
+                let relays: Vec<RelayUrl> = sess
+                    .mdk
+                    .get_relays(&finalized.mls_group_id)
+                    .ok()
                     .map(|s| s.into_iter().collect())
                     .filter(|v: &Vec<RelayUrl>| !v.is_empty())
                     .unwrap_or(fallback_relays);
-                self.publish_welcomes_to_peers(added_pubkeys, rumors.clone(), relays.clone());
+                self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays);
             }
         }
 
         // Rebroadcast per-group profiles to newly added members.
         if has_added {
-            self.rebroadcast_group_profiles(&chat_id, &mls_group_id);
+            self.rebroadcast_group_profiles(&chat_id, &finalized.mls_group_id);
         }
 
         self.refresh_all_from_storage();
@@ -5862,13 +5858,20 @@ impl AppCore {
                     }
                 };
 
-                self.publish_evolution_event(
-                    &chat_id,
+                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
                     entry.mls_group_id.clone(),
                     result.evolution_event,
                     None,
                     vec![],
-                );
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        self.toast(format!("Remove members failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_prepared_evolution(&chat_id, prepared);
             }
             AppAction::LeaveGroup { chat_id } => {
                 if !self.is_logged_in() {
@@ -5891,13 +5894,20 @@ impl AppCore {
                     }
                 };
 
-                self.publish_evolution_event(
-                    &chat_id,
+                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
                     entry.mls_group_id.clone(),
                     result.evolution_event,
                     None,
                     vec![],
-                );
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        self.toast(format!("Leave group failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_prepared_evolution(&chat_id, prepared);
 
                 // Clean up per-group profiles.
                 self.group_profiles.remove(&chat_id);
@@ -5936,13 +5946,20 @@ impl AppCore {
                     }
                 };
 
-                self.publish_evolution_event(
-                    &chat_id,
+                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
                     entry.mls_group_id.clone(),
                     result.evolution_event,
                     None,
                     vec![],
-                );
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        self.toast(format!("Rename failed: {e}"));
+                        return;
+                    }
+                };
+
+                self.publish_prepared_evolution(&chat_id, prepared);
             }
             AppAction::SaveGroupProfile {
                 chat_id,
@@ -5961,7 +5978,7 @@ impl AppCore {
         }
     }
 
-    /// Publish a group evolution event (commit) to relays in the background.
+    /// Publish a prepared group evolution event (commit) to relays in the background.
     ///
     /// Returns immediately after spawning — callers should clear any busy/loading
     /// state right after calling this. Relay confirmation, `merge_pending_commit`,
@@ -5973,14 +5990,7 @@ impl AppCore {
     ///   2. `merge_pending_commit` (only after relay ack)
     ///   3. Welcome delivery (only after merge)
     ///
-    fn publish_evolution_event(
-        &mut self,
-        chat_id: &str,
-        mls_group_id: GroupId,
-        event: Event,
-        welcome_rumors: Option<Vec<UnsignedEvent>>,
-        added_pubkeys: Vec<PublicKey>,
-    ) {
+    fn publish_prepared_evolution(&mut self, chat_id: &str, prepared: PreparedMembershipEvolution) {
         if self.pending_group_ops.contains(chat_id) {
             self.toast("A group update is already in progress, please wait".to_string());
             return;
@@ -5993,7 +6003,7 @@ impl AppCore {
         };
         let relays: Vec<RelayUrl> = sess
             .mdk
-            .get_relays(&mls_group_id)
+            .get_relays(&prepared.mls_group_id)
             .ok()
             .map(|s| s.into_iter().collect())
             .filter(|v: &Vec<RelayUrl>| !v.is_empty())
@@ -6002,21 +6012,28 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         let chat_id = chat_id.to_string();
-        let mls_group_id_clone = mls_group_id.clone();
 
         self.runtime.spawn(async move {
-            let outcome = relay_publish::publish_event_with_retry(
-                &client,
-                &relays,
-                &event,
-                5,
-                "group evolution",
-                false,
-            )
-            .await;
-            let (ok, error) = match outcome {
-                relay_publish::PublishOutcome::Ok => (true, None),
-                relay_publish::PublishOutcome::Err(err) => {
+            let (ok, error) = match prepared
+                .publish_with(|event| {
+                    let client = client.clone();
+                    let relays = relays.clone();
+                    async move {
+                        relay_publish::publish_event_with_retry(
+                            &client,
+                            &relays,
+                            &event,
+                            5,
+                            "group evolution",
+                            false,
+                        )
+                        .await
+                    }
+                })
+                .await
+            {
+                EvolutionPublishStatus::Published => (true, None),
+                EvolutionPublishStatus::PublishFailed(err) => {
                     tracing::warn!(
                         error = err,
                         chat_id,
@@ -6028,9 +6045,7 @@ impl AppCore {
             let _ = tx.send(CoreMsg::Internal(Box::new(
                 InternalEvent::GroupEvolutionPublished {
                     chat_id,
-                    mls_group_id: mls_group_id_clone,
-                    welcome_rumors,
-                    added_pubkeys,
+                    prepared,
                     ok,
                     error,
                 },
@@ -7143,6 +7158,7 @@ mod tests {
         use crate::updates::InternalEvent;
         use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
+        use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
         /// Creates a core with a real MDK session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.
@@ -7318,6 +7334,22 @@ mod tests {
         }
 
         #[test]
+        fn app_add_members_preparation_uses_shared_membership_runtime() {
+            let (core, chat_id, _keys, _gid) = make_core_with_group();
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            let prepared = core
+                .prepare_membership_evolution_for_chat(&chat_id, &[kp_event])
+                .expect("prepare membership evolution");
+
+            assert_eq!(prepared.nostr_group_id_hex, chat_id);
+            assert_eq!(prepared.added_pubkeys, vec![peer.public_key()]);
+            assert_eq!(prepared.welcome_rumors.len(), 1);
+            assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
+        }
+
+        #[test]
         fn add_members_does_not_merge_until_evolution_publish_succeeds() {
             let (mut core, chat_id, _keys, gid) = make_core_with_group();
             let peer = Keys::generate();
@@ -7354,7 +7386,18 @@ mod tests {
                 "app add-members should leave the pending commit unmerged until publish confirmation"
             );
 
-            core.handle_group_evolution_published(chat_id, gid.clone(), None, vec![], true, None);
+            let keys = nostr_sdk::Keys::generate();
+            let prepared = PreparedMembershipEvolution {
+                mls_group_id: gid.clone(),
+                nostr_group_id_hex: chat_id.clone(),
+                evolution_event: nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "ok")
+                    .sign_with_keys(&keys)
+                    .expect("dummy event"),
+                added_pubkeys: vec![],
+                welcome_rumors: vec![],
+            };
+
+            core.handle_group_evolution_published(chat_id, prepared, true, None);
 
             let after_merge = core
                 .session
@@ -7395,11 +7438,23 @@ mod tests {
                 candidate_kp_relays: vec![],
             });
 
+            let keys = nostr_sdk::Keys::generate();
+            let prepared = PreparedMembershipEvolution {
+                mls_group_id: gid.clone(),
+                nostr_group_id_hex: chat_id.clone(),
+                evolution_event: nostr_sdk::EventBuilder::new(
+                    nostr_sdk::Kind::Custom(444),
+                    "failed",
+                )
+                .sign_with_keys(&keys)
+                .expect("dummy event"),
+                added_pubkeys: vec![],
+                welcome_rumors: vec![],
+            };
+
             core.handle_group_evolution_published(
                 chat_id,
-                gid.clone(),
-                None,
-                vec![],
+                prepared,
                 false,
                 Some("relay error".to_string()),
             );
@@ -7758,6 +7813,7 @@ mod tests {
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
         use nostr_sdk::{Keys, ToBech32};
+        use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
         /// Create a core with a minimal session (logged in, no groups registered).
         fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
@@ -8154,8 +8210,16 @@ mod tests {
                 .sign_with_keys(&keys)
                 .unwrap();
 
-            // A second publish_evolution_event on the same chat should be rejected.
-            core.publish_evolution_event("chat1", group_id, dummy_event, None, vec![]);
+            let prepared = PreparedMembershipEvolution {
+                mls_group_id: group_id,
+                nostr_group_id_hex: "chat1".to_string(),
+                evolution_event: dummy_event,
+                added_pubkeys: vec![],
+                welcome_rumors: vec![],
+            };
+
+            // A second publish_prepared_evolution on the same chat should be rejected.
+            core.publish_prepared_evolution("chat1", prepared);
 
             assert_eq!(
                 core.state.toast.as_deref(),
@@ -8171,14 +8235,18 @@ mod tests {
             assert!(core.pending_group_ops.contains("chat1"));
 
             // Simulate the background publish completing.
-            core.handle_group_evolution_published(
-                "chat1".to_string(),
-                mdk_core::prelude::GroupId::from_slice(&[1]),
-                None,
-                vec![],
-                true,
-                None,
-            );
+            let keys = nostr_sdk::Keys::generate();
+            let prepared = PreparedMembershipEvolution {
+                mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                nostr_group_id_hex: "chat1".to_string(),
+                evolution_event: nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "ok")
+                    .sign_with_keys(&keys)
+                    .expect("dummy event"),
+                added_pubkeys: vec![],
+                welcome_rumors: vec![],
+            };
+
+            core.handle_group_evolution_published("chat1".to_string(), prepared, true, None);
 
             assert!(!core.pending_group_ops.contains("chat1"));
         }
@@ -8189,11 +8257,23 @@ mod tests {
 
             core.pending_group_ops.insert("chat1".to_string());
 
+            let keys = nostr_sdk::Keys::generate();
+            let prepared = PreparedMembershipEvolution {
+                mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                nostr_group_id_hex: "chat1".to_string(),
+                evolution_event: nostr_sdk::EventBuilder::new(
+                    nostr_sdk::Kind::Custom(444),
+                    "failed",
+                )
+                .sign_with_keys(&keys)
+                .expect("dummy event"),
+                added_pubkeys: vec![],
+                welcome_rumors: vec![],
+            };
+
             core.handle_group_evolution_published(
                 "chat1".to_string(),
-                mdk_core::prelude::GroupId::from_slice(&[1]),
-                None,
-                vec![],
+                prepared,
                 false,
                 Some("relay error".to_string()),
             );

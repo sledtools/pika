@@ -3,6 +3,7 @@ pub mod conversation;
 pub mod group;
 pub mod key_package;
 pub mod media;
+pub mod membership;
 pub mod message;
 pub mod outbound;
 pub mod relay;

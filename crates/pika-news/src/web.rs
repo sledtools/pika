@@ -93,7 +93,7 @@ pub async fn serve(
     bind_addr: String,
     max_prs: usize,
 ) -> anyhow::Result<()> {
-    let auth = Arc::new(AuthState::new(&config.allowed_npubs));
+    let auth = Arc::new(AuthState::new(&config.allowed_npubs, store.clone()));
     let state = Arc::new(AppState {
         store,
         config: config.clone(),

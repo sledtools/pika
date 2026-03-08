@@ -39,7 +39,6 @@ struct AppState {
 struct FeedTemplate {
     open_items: Vec<FeedItemView>,
     merged_items: Vec<FeedItemView>,
-    chat_enabled: bool,
 }
 
 #[derive(Template)]
@@ -57,15 +56,12 @@ struct DetailTemplate {
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
-    chat_enabled: bool,
     review_mode: bool,
 }
 
 #[derive(Template)]
 #[template(path = "inbox.html")]
-struct InboxTemplate {
-    chat_enabled: bool,
-}
+struct InboxTemplate {}
 
 #[derive(Clone)]
 struct FeedItemView {
@@ -191,11 +187,8 @@ pub async fn serve(
             "/news/api/inbox/neighbors/:pr_id",
             get(api_inbox_neighbors_handler),
         )
-        .route(
-            "/news/pr/:pr_id/auth/challenge",
-            post(auth_challenge_handler),
-        )
-        .route("/news/pr/:pr_id/auth/verify", post(auth_verify_handler))
+        .route("/news/auth/challenge", post(auth_challenge_handler))
+        .route("/news/auth/verify", post(auth_verify_handler))
         .route(
             "/news/pr/:pr_id/chat",
             get(chat_history_handler).post(chat_send_handler),
@@ -251,7 +244,6 @@ async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let template = FeedTemplate {
         open_items,
         merged_items,
-        chat_enabled: state.auth.chat_enabled(),
     };
 
     match template.render() {
@@ -305,8 +297,7 @@ async fn detail_page(
         }
     };
 
-    let chat_enabled = state.auth.chat_enabled();
-    match render_detail_template(detail, chat_enabled, review_mode) {
+    match render_detail_template(detail, review_mode) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -338,7 +329,6 @@ fn map_feed_item(item: FeedItem) -> FeedItemView {
 
 fn render_detail_template(
     record: PrDetailRecord,
-    chat_enabled: bool,
     review_mode: bool,
 ) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
@@ -398,17 +388,13 @@ fn render_detail_template(
                 .unwrap_or_default()
                 .replace("</", r"<\/")
         }),
-        chat_enabled,
         review_mode,
     })
 }
 
 // --- Auth handlers ---
 
-async fn auth_challenge_handler(
-    State(state): State<Arc<AppState>>,
-    Path(_pr_id): Path<i64>,
-) -> impl IntoResponse {
+async fn auth_challenge_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if !state.auth.chat_enabled() {
         return (
             StatusCode::FORBIDDEN,
@@ -427,7 +413,6 @@ struct VerifyRequest {
 
 async fn auth_verify_handler(
     State(state): State<Arc<AppState>>,
-    Path(_pr_id): Path<i64>,
     Json(body): Json<VerifyRequest>,
 ) -> impl IntoResponse {
     if !state.auth.chat_enabled() {
@@ -827,10 +812,8 @@ fn verify_github_signature(secret: &str, payload: &[u8], signature_header: &str)
 
 // --- Inbox handlers ---
 
-async fn inbox_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let template = InboxTemplate {
-        chat_enabled: state.auth.chat_enabled(),
-    };
+async fn inbox_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    let template = InboxTemplate {};
     match template.render() {
         Ok(rendered) => Html(rendered).into_response(),
         Err(err) => (

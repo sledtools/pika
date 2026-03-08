@@ -76,6 +76,9 @@ tools/agent-pty/__pycache__/
 third_party/pikachat-openclaw/target/
 AGENTS.private.md
 
+# pika-news local config
+crates/pika-news/pika-news.toml
+
 # pika-relay local dev data
 .pika-relay/
 cmd/pika-relay/pika-relay

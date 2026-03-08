@@ -10,11 +10,10 @@
 {% endblock %}
 
 {% block styles %}
-      .shell { margin: 0 auto; padding: 2rem 1rem; }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
       .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; max-width: 900px; }
-      .diff-panel { max-width: none; }
+      .diff-panel { max-width: none; overflow-x: auto; }
       .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
       button { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.45rem 0.8rem; cursor: pointer; }
       .step { display: none; }
@@ -31,13 +30,16 @@
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
 
-      /* Page-level file list sidebar + main content */
+      /* Main content area (left of chat sidebar) */
+      .main-content { flex: 1; min-width: 0; padding: 2rem 1rem; overflow-x: hidden; }
+
+      /* Top section: file list sidebar + panels side-by-side */
       .content-with-files { display: flex; gap: 1rem; }
+      .panels-column { flex: 1; min-width: 0; }
       .file-list-sidebar { display: none; }
       @media (min-width: 1024px) {
         .file-list-sidebar { display: block; flex-shrink: 0; width: 280px; position: sticky; top: 4rem; max-height: calc(100vh - 5rem); overflow-y: auto; }
         .file-list-sidebar .d2h-file-list-wrapper { border-radius: 10px; }
-        .content-with-files .shell { flex: 1; min-width: 0; }
       }
       @media (max-width: 1023px) {
         .content-with-files { display: block; }
@@ -61,7 +63,6 @@
 
       /* Chat sidebar */
       .page-layout { display: flex; gap: 1.5rem; }
-      .page-layout .shell { flex: 1; min-width: 0; }
       .chat-sidebar { width: 360px; flex-shrink: 0; position: sticky; top: 4rem; height: calc(100vh - 5rem); display: flex; flex-direction: column; background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: width 0.15s ease; }
       .chat-sidebar.hidden { display: none; }
       .chat-resize-handle { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 10; border-radius: 3px; }
@@ -121,12 +122,8 @@
       </div>
     </div>
     {% endif %}
-    {% if chat_enabled %}
-    <div class="page-layout" style="margin:0 auto;padding:2rem 1rem;">
-    {% endif %}
-    <div class="content-with-files">
-    <aside id="file-list-sidebar" class="file-list-sidebar"></aside>
-    <main class="shell">
+    <div class="page-layout">
+    <div class="main-content">
       <p><a href="/news">Back to feed</a></p>
       <h1>{{ page_title }}</h1>
       <p class="meta">{{ repo }} #{{ pr_number }} · Updated {{ updated_at }}</p>
@@ -144,6 +141,9 @@
       </section>
       {% when None %}{% endmatch %}
 
+      <div class="content-with-files">
+      <aside id="file-list-sidebar" class="file-list-sidebar"></aside>
+      <div class="panels-column">
       {% match executive_html %}
       {% when Some with (summary_html) %}
       <section class="panel">
@@ -194,6 +194,8 @@
         </ul>
       </section>
       {% endif %}
+      </div>
+      </div>
 
       {% match diff_json %}
       {% when Some with (json_str) %}
@@ -207,10 +209,8 @@
         <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
       </section>
       {% when None %}{% endmatch %}
-    </main>
     </div>
 
-    {% if chat_enabled %}
     <aside class="chat-sidebar" id="chat-sidebar">
       <div class="chat-resize-handle" id="chat-resize-handle"></div>
       <h3 id="chat-header">Chat with Tutorial</h3>
@@ -229,7 +229,6 @@
       <div id="chat-status" class="chat-status" style="display:none;"></div>
     </aside>
     </div>
-    {% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -306,7 +305,7 @@
         const sidebar = document.getElementById('chat-sidebar');
         if (!sidebar) return;
 
-        const prId = window.location.pathname.match(/\/news\/pr\/(\d+)/)?.[1];
+        const prId = (window.location.pathname.match(/\/news\/pr\/(\d+)/) || window.location.pathname.match(/\/news\/inbox\/review\/(\d+)/))?.[1];
         if (!prId) return;
 
         const regenBtn = document.getElementById('regen-btn');

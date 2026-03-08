@@ -483,9 +483,10 @@ Phase 6 launcher-transport slice notes:
   - `pikaci status` prints those fields,
   - helper logs show launcher transport mode plus transport-request path,
   - and prepared-output state records the transport-request file path when that path is used.
+- The transport request now explicitly records that this prototype still assumes same-host absolute paths for the launcher binary and launcher-request file.
 - What this slice proves: the staged `pre-merge-pika-rust` helper path can cross one more real command boundary without changing the Nix-backed prepared-output contract or pretending full remote execution already exists.
-- What is still missing: there is still no actual remote host, no transport result protocol beyond process exit plus helper result file, and no executor/builder orchestration around this launcher transport.
-- Next recommended slice: decide whether the current launcher transport request plus existing helper result file is already sufficient for a first real `ssh`-style launcher experiment, or add one tiny launcher-transport result/report contract first.
+- What is still missing: there is still no actual remote host, no transport result protocol beyond process exit plus helper result file, no executor/builder orchestration around this launcher transport, and no path/install translation layer beyond the explicit same-host absolute-path assumption.
+- Next recommended slice: add one tiny portability tweak or explicit translation step above the transport request before the first real `ssh`-style launcher experiment, or, if that portability story is already acceptable, add one tiny launcher-transport result/report contract first.
 
 ## Deferred Until Proven Necessary
 
@@ -525,4 +526,4 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, and twelfth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up that decides whether the launcher transport seam is ready for a first real `ssh`-style experiment as-is, or needs one tiny launcher-transport result contract first, while keeping Rust execute inputs Nix-backed.
+- Current recommended slice is one narrow follow-up that makes the launcher transport seam portable enough for a first real `ssh`-style experiment, or explicitly codifies the required path/install translation step, while keeping Rust execute inputs Nix-backed.

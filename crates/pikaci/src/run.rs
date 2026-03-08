@@ -20,8 +20,8 @@ use crate::model::{
     PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
     PreparedOutputExposureKind, PreparedOutputFulfillmentLaunchRequest,
     PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
-    PreparedOutputFulfillmentTransportRequest, PreparedOutputHandoff,
-    PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
+    PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
+    PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
     PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
     PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
     RunnerKind, StagedLinuxRustLane,
@@ -1629,6 +1629,8 @@ fn fulfill_prepared_output_request_via_subprocess(
             transport_request_path,
             &PreparedOutputFulfillmentTransportRequest {
                 schema_version: 1,
+                path_contract:
+                    PreparedOutputFulfillmentTransportPathContract::SameHostAbsolutePathsV1,
                 launcher_program: launcher_program.display().to_string(),
                 launcher_request_path: subprocess
                     .launch_request_path
@@ -2771,10 +2773,10 @@ mod tests {
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
         PrepareNode, PreparedOutputConsumerKind, PreparedOutputExposure,
         PreparedOutputExposureAccess, PreparedOutputExposureKind, PreparedOutputFulfillmentResult,
-        PreparedOutputFulfillmentStatus, PreparedOutputHandoff, PreparedOutputHandoffProtocol,
-        PreparedOutputInvocationMode, PreparedOutputLauncherTransportMode,
-        PreparedOutputRemoteExposureRequest, PreparedOutputsRecord, RealizedPreparedOutputRecord,
-        RunPlanRecord, RunRecord, RunStatus,
+        PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
+        PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
+        PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
+        PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
     };
 
     #[test]
@@ -4180,6 +4182,10 @@ EOF
         assert_eq!(
             transport_request.launcher_program,
             launcher_path.display().to_string()
+        );
+        assert_eq!(
+            transport_request.path_contract,
+            PreparedOutputFulfillmentTransportPathContract::SameHostAbsolutePathsV1
         );
         assert_eq!(transport_request.launcher_request_path, launch_request_path);
         let launcher_log = fs::read_to_string(&launcher_log_path).expect("read launcher log");

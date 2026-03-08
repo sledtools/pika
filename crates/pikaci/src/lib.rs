@@ -7,8 +7,9 @@ pub use model::{
     ExecuteNode, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
     PreparedOutputConsumerKind, PreparedOutputFulfillmentLaunchRequest,
     PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
-    PreparedOutputFulfillmentTransportRequest, PreparedOutputInvocationMode,
-    PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest, RunPlanRecord,
+    PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
+    PreparedOutputInvocationMode, PreparedOutputLauncherTransportMode,
+    PreparedOutputRemoteExposureRequest, RunPlanRecord,
 };
 pub use model::{GuestCommand, JobOutcome, JobRecord, JobSpec, RunRecord, RunStatus, RunnerKind};
 pub use run::{

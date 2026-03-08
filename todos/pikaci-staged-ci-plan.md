@@ -522,9 +522,17 @@ Phase 6 first real `pika-build` remote-fulfillment notes:
   - the remote work dir defaults to `/var/tmp/pikaci-prepared-output`,
   - the remote host defaults to `pika-build`,
   - and the local invocation builds the host-side `pikaci` binaries first so the launcher/helper contract stays symmetric across the boundary.
+- A real `pika-build` attempt was run from the new dev entrypoint:
+  - deploying `pika-build` with `pikaci` in `environment.systemPackages` succeeded,
+  - `ssh pika-build` confirmed both remote helper binaries at the documented `/run/current-system/sw/bin/...` paths,
+  - and `just pikaci-remote-fulfill-pre-merge-pika-rust` produced a real `run.json` with `ssh_launcher_transport_v1` plus the expected remote host/path fields.
+- The first real failure did **not** come from the ssh fulfillment layer:
+  - the run died earlier in the shared `workspaceDeps` host prepare,
+  - the local host delegated that Linux staged build to the existing `linux-builder`,
+  - and that builder hit cargo vendor/source hash mismatches while importing crates such as `tracing-log-0.2.0` and `tracing-subscriber-0.3.22`.
 - What this slice proves: the ssh-style launcher transport is no longer just unit-tested; there is now one repeatable developer command path intended to exercise it against the real `pika-build` host with the existing local execute path unchanged.
-- What is still missing: the run is still remote-fulfillment-only, not remote execute orchestration, and the first real host attempts may still reveal launcher/result diagnostics or remote environment assumptions worth tightening.
-- Next recommended slice: run the entrypoint enough times to lock down any missing `pika-build` assumptions, then add only the smallest follow-up needed for any real host failure that appears.
+- What is still missing: the run is still remote-fulfillment-only, not remote execute orchestration, and the host-side staged Linux Rust prepare must succeed before the ssh fulfillment path can be exercised end-to-end on a real run.
+- Next recommended slice: fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure first, then rerun the new `pika-build` entrypoint before adding any more remote-launcher abstraction.
 
 ## Deferred Until Proven Necessary
 
@@ -564,4 +572,4 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up driven by the first real `pika-build` experiments: keep the new dev entrypoint, preserve the Nix-backed contract, and only fix the smallest concrete remote-host assumption or diagnostic gap that shows up in practice.
+- Current recommended slice is one narrow follow-up driven by the first real `pika-build` experiment: keep the new dev entrypoint, preserve the Nix-backed contract, and fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure before doing more remote-fulfillment work.

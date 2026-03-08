@@ -53,6 +53,7 @@ use pika_marmot_runtime::message::{
 pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND, TYPING_INDICATOR_KIND,
 };
+use pika_marmot_runtime::{accept_welcome_and_catch_up, find_pending_welcome};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
 pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowListEntry> {
@@ -3912,7 +3913,37 @@ impl AppCore {
             "welcome_accepted"
         );
 
-        if let Err(e) = sess.mdk.accept_welcome(&welcome) {
+        let staged_welcome = match sess.mdk.get_pending_welcomes(None) {
+            Ok(pending) => find_pending_welcome(&pending, &wrapper.id)
+                .cloned()
+                .unwrap_or(welcome),
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    nostr_group_id = %nostr_group_hex,
+                    "get_pending_welcomes failed after process_welcome; falling back to direct welcome"
+                );
+                welcome
+            }
+        };
+        let client = sess.client.clone();
+        let mut seen = HashSet::new();
+        // Keep app policy unchanged here: eager accept, no subscription work,
+        // and no backlog catch-up in this path.
+        let accept_result = self.runtime.block_on(async {
+            accept_welcome_and_catch_up(
+                &sess.mdk,
+                &client,
+                &[],
+                &staged_welcome,
+                &mut seen,
+                0,
+                |_| async { Ok(()) },
+            )
+            .await
+        });
+
+        if let Err(e) = accept_result {
             tracing::error!(%e, "accept_welcome failed");
             self.toast(format!("Welcome accept failed: {e}"));
             return;

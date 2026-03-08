@@ -94,9 +94,10 @@ where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
+    const INIT_GROUP_BUILD_WELCOME_MARKER: &str = "init_group_build_welcome";
     let expires =
         Timestamp::from_secs(Timestamp::now().as_secs() + INIT_GROUP_WELCOME_EXPIRATION_SECS);
-    create_group_and_publish_welcomes(
+    let result = create_group_and_publish_welcomes(
         keys,
         mdk,
         vec![peer_kp],
@@ -105,8 +106,14 @@ where
         vec![Tag::expiration(expires)],
         publish_giftwrap,
     )
-    .await
-    .context("init_group")
+    .await;
+    match result {
+        Ok(created) => Ok(created),
+        Err(err) if chain_has_message(&err, "build welcome giftwrap") => {
+            Err(err.context(INIT_GROUP_BUILD_WELCOME_MARKER))
+        }
+        Err(err) => Err(err.context("init_group")),
+    }
 }
 
 async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
@@ -118,6 +125,7 @@ async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
 ) -> anyhow::Result<CreatedGroup> {
+    const INIT_GROUP_PUBLISH_WELCOME_MARKER: &str = "init_group_publish_welcome";
     create_group_and_publish_welcomes_for_init_group(
         keys,
         mdk,
@@ -128,28 +136,29 @@ async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
             publish_and_confirm_multi(client, relay_urls, &giftwrap, "init_group_welcome")
                 .await
                 .map(|_| ())
+                .context(INIT_GROUP_PUBLISH_WELCOME_MARKER)
         },
     )
     .await
 }
 
 fn map_init_group_error(err: &anyhow::Error) -> (&'static str, String) {
-    if err
-        .chain()
-        .any(|cause| cause.to_string().contains("build welcome giftwrap"))
+    if chain_has_message(err, "init_group_build_welcome")
+        || chain_has_message(err, "build welcome giftwrap")
     {
         ("gift_wrap_failed", format!("{err:#}"))
-    } else if err
-        .chain()
-        .any(|cause| cause.to_string().contains("publish welcome to"))
-        || err
-            .chain()
-            .any(|cause| cause.to_string().contains("init_group_welcome"))
+    } else if chain_has_message(err, "init_group_publish_welcome")
+        || chain_has_message(err, "publish welcome to")
+        || chain_has_message(err, "init_group_welcome")
     {
         ("publish_failed", format!("{err:#}"))
     } else {
         ("mdk_error", format!("create_group: {err:#}"))
     }
+}
+
+fn chain_has_message(err: &anyhow::Error, needle: &str) -> bool {
+    err.chain().any(|cause| cause.to_string().contains(needle))
 }
 
 #[derive(Debug, Deserialize)]
@@ -4563,6 +4572,14 @@ mod tests {
             published[0].1.tags.expiration().is_some(),
             "daemon init_group should keep its expiration-tag policy local"
         );
+    }
+
+    #[test]
+    fn init_group_error_mapping_uses_daemon_publish_marker() {
+        let err = anyhow::anyhow!("relay confirm failed").context("init_group_publish_welcome");
+        let (code, message) = map_init_group_error(&err);
+        assert_eq!(code, "publish_failed");
+        assert!(message.contains("init_group_publish_welcome"));
     }
 
     #[test]

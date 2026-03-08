@@ -7,10 +7,8 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use hypernote_protocol as hn;
-use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
-use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::call::{
     CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
@@ -494,32 +492,36 @@ fn default_group_name() -> String {
     "DM".to_string()
 }
 
-const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
-
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
-use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
+use pika_marmot_runtime::media::{
+    MAX_CHAT_MEDIA_BYTES, MediaRuntime, ParsedMediaAttachment, RuntimeMediaAttachment,
+    resolve_upload_metadata, upload_encrypted_blob,
+};
 use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
 }
 
-fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
-    let (width, height) = reference
-        .dimensions
-        .map(|(w, h)| (Some(w), Some(h)))
-        .unwrap_or((None, None));
+fn media_attachment_to_out(attachment: RuntimeMediaAttachment) -> MediaAttachmentOut {
     MediaAttachmentOut {
-        url: reference.url,
-        mime_type: reference.mime_type,
-        filename: reference.filename,
-        original_hash_hex: hex::encode(reference.original_hash),
-        nonce_hex: hex::encode(reference.nonce),
-        scheme_version: reference.scheme_version,
-        width,
-        height,
+        url: attachment.url,
+        mime_type: attachment.mime_type,
+        filename: attachment.filename,
+        original_hash_hex: attachment.original_hash_hex,
+        nonce_hex: attachment.nonce_hex,
+        scheme_version: attachment.scheme_version,
+        width: attachment.width,
+        height: attachment.height,
         local_path: None,
     }
+}
+
+fn parse_daemon_message_media_attachments(
+    mdk: &crate::PikaMdk,
+    message: &mdk_storage_traits::messages::types::Message,
+) -> Vec<ParsedMediaAttachment> {
+    MediaRuntime::new(mdk).parse_message_attachments(message)
 }
 
 /// Download encrypted media from Blossom, decrypt it, and write to a temp file.
@@ -527,38 +529,27 @@ fn media_ref_to_attachment(reference: MediaReference) -> MediaAttachmentOut {
 async fn download_and_decrypt_media(
     mdk: &MDK<MdkSqliteStorage>,
     mls_group_id: &GroupId,
-    reference: &MediaReference,
+    attachment: &ParsedMediaAttachment,
     state_dir: &Path,
 ) -> anyhow::Result<String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&reference.url)
-        .send()
-        .await
-        .with_context(|| format!("download encrypted media from {}", reference.url))?;
-    if !response.status().is_success() {
-        anyhow::bail!("download failed: HTTP {}", response.status());
-    }
-    let encrypted_data = response.bytes().await.context("read media body")?;
-    let manager = mdk.media_manager(mls_group_id.clone());
-    let decrypted = manager
-        .decrypt_from_download(&encrypted_data, reference)
-        .context("decrypt media")?;
+    let downloaded = MediaRuntime::new(mdk)
+        .download_media(mls_group_id, &attachment.reference, None)
+        .await?;
 
     // Write to a temp directory under the state dir
     let media_dir = state_dir.join("media-tmp");
     std::fs::create_dir_all(&media_dir).context("create media-tmp dir")?;
-    let filename = if reference.filename.is_empty() {
+    let filename = if attachment.attachment.filename.is_empty() {
         "download.bin"
     } else {
-        &reference.filename
+        &attachment.attachment.filename
     };
     let dest = media_dir.join(format!(
         "{}-{}",
-        hex::encode(&reference.original_hash[..8]),
+        &attachment.attachment.original_hash_hex[..16],
         filename,
     ));
-    std::fs::write(&dest, &decrypted)
+    std::fs::write(&dest, &downloaded.decrypted_data)
         .with_context(|| format!("write decrypted media to {}", dest.display()))?;
     Ok(dest.to_string_lossy().into_owned())
 }
@@ -2655,11 +2646,9 @@ pub async fn daemon_main(
                                                 continue;
                                             }
                                             let media: Vec<MediaAttachmentOut> = {
-                                                let mgr = mdk.media_manager(msg.mls_group_id.clone());
-                                                msg.tags.iter()
-                                                    .filter(|t| is_imeta_tag(t))
-                                                    .filter_map(|t| mgr.parse_imeta_tag(t).ok())
-                                                    .map(media_ref_to_attachment)
+                                                parse_daemon_message_media_attachments(&mdk, &msg)
+                                                    .into_iter()
+                                                    .map(|attachment| media_attachment_to_out(attachment.attachment))
                                                     .collect()
                                             };
                                             out_tx.send(OutMsg::MessageReceived{
@@ -2969,105 +2958,62 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        // Resolve mime type and filename
-                        let resolved_filename = filename
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(ToOwned::to_owned)
-                            .or_else(|| {
-                                path.file_name()
-                                    .and_then(|f| f.to_str())
-                                    .map(ToOwned::to_owned)
-                            })
-                            .unwrap_or_else(|| "file.bin".to_string());
-                        let resolved_mime = mime_type
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .or_else(|| mime_from_extension(path))
-                            .unwrap_or("application/octet-stream")
-                            .to_string();
-
-                        // Encrypt
-                        let manager = mdk.media_manager(mls_group_id.clone());
-                        let mut upload = match manager.encrypt_for_upload_with_options(
+                        let resolved = resolve_upload_metadata(path, mime_type.as_deref(), filename.as_deref());
+                        let runtime = MediaRuntime::new(&mdk);
+                        let prepared = match runtime.prepare_upload(
+                            &mls_group_id,
                             &bytes,
-                            &resolved_mime,
-                            &resolved_filename,
-                            &MediaProcessingOptions::default(),
+                            Some(&resolved.mime_type),
+                            Some(&resolved.filename),
                         ) {
-                            Ok(u) => u,
+                            Ok(prepared) => prepared,
                             Err(e) => {
                                 reply_tx.send(out_error(request_id, "encrypt_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
-                        let encrypted_data = std::mem::take(&mut upload.encrypted_data);
-                        let expected_hash_hex = hex::encode(upload.encrypted_hash);
-
-                        // Upload to Blossom
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
-                        let mut uploaded_url: Option<String> = None;
-                        let mut last_error: Option<String> = None;
-                        for server in &upload_servers {
-                            let base_url = match Url::parse(server) {
-                                Ok(url) => url,
-                                Err(e) => {
-                                    last_error = Some(format!("{server}: {e}"));
-                                    continue;
-                                }
-                            };
-                            let blossom = BlossomClient::new(base_url);
-                            let descriptor = match blossom
-                                .upload_blob(
-                                    encrypted_data.clone(),
-                                    Some(upload.mime_type.clone()),
-                                    None,
-                                    Some(&keys),
-                                )
-                                .await
-                            {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    last_error = Some(format!("{server}: {e}"));
-                                    continue;
-                                }
-                            };
-                            let descriptor_hash_hex = descriptor.sha256.to_string();
-                            if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
-                                last_error = Some(format!(
-                                    "{server}: hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
-                                ));
+                        let uploaded = match upload_encrypted_blob(
+                            &keys,
+                            prepared.encrypted_data,
+                            &prepared.upload.mime_type,
+                            &hex::encode(prepared.upload.encrypted_hash),
+                            &upload_servers,
+                        )
+                        .await
+                        {
+                            Ok(uploaded) => uploaded,
+                            Err(e) => {
+                                reply_tx.send(out_error(
+                                    request_id,
+                                    "upload_failed",
+                                    format!("{e:#}"),
+                                )).ok();
                                 continue;
                             }
-                            uploaded_url = Some(descriptor.url.to_string());
-                            break;
-                        }
-                        let Some(uploaded_url) = uploaded_url else {
-                            reply_tx.send(out_error(
-                                request_id,
-                                "upload_failed",
-                                format!("blossom upload failed: {}", last_error.unwrap_or_else(|| "unknown".into())),
-                            )).ok();
-                            continue;
                         };
 
+                        let result =
+                            runtime.finish_upload(&mls_group_id, &prepared.upload, uploaded.clone());
+
                         // Build imeta tag and message
-                        let imeta_tag = manager.create_imeta_tag(&upload, &uploaded_url);
                         let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
-                            .tag(imeta_tag)
+                            .tag(result.imeta_tag.clone())
                             .build(keys.public_key());
                         match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media").await {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
-                                    "uploaded_url": uploaded_url,
-                                    "original_hash_hex": hex::encode(upload.original_hash),
+                                    "uploaded_url": uploaded.uploaded_url,
+                                    "original_hash_hex": result.attachment.original_hash_hex,
                                 }))));
                             }
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "publish_failed",
+                                    format!("{e:#}"),
+                                ));
                             }
                         }
                     }
@@ -3095,8 +3041,8 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        let manager = mdk.media_manager(mls_group_id.clone());
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
+                        let runtime = MediaRuntime::new(&mdk);
 
                         // Process all files: read, encrypt, upload sequentially.
                         #[allow(clippy::type_complexity)]
@@ -3123,79 +3069,56 @@ pub async fn daemon_main(
                                     return Err(());
                                 }
 
-                                let resolved_filename = path
-                                    .file_name()
-                                    .and_then(|f| f.to_str())
-                                    .map(ToOwned::to_owned)
-                                    .unwrap_or_else(|| "file.bin".to_string());
-                                let resolved_mime = mime_from_extension(path)
-                                    .unwrap_or("application/octet-stream")
-                                    .to_string();
-
-                                let mut upload = match manager.encrypt_for_upload_with_options(
+                                let resolved = resolve_upload_metadata(path, None, None);
+                                let prepared = match runtime.prepare_upload(
+                                    &mls_group_id,
                                     &bytes,
-                                    &resolved_mime,
-                                    &resolved_filename,
-                                    &MediaProcessingOptions::default(),
+                                    Some(&resolved.mime_type),
+                                    Some(&resolved.filename),
                                 ) {
-                                    Ok(u) => u,
+                                    Ok(prepared) => prepared,
                                     Err(e) => {
                                         reply_tx.send(out_error(request_id.clone(), "encrypt_error", format!("{e:#}"))).ok();
                                         return Err(());
                                     }
                                 };
-                                let encrypted_data = std::mem::take(&mut upload.encrypted_data);
-                                let expected_hash_hex = hex::encode(upload.encrypted_hash);
-
-                                let mut uploaded_url: Option<String> = None;
-                                let mut last_error: Option<String> = None;
-                                for server in &upload_servers {
-                                    let base_url = match Url::parse(server) {
-                                        Ok(url) => url,
-                                        Err(e) => {
-                                            last_error = Some(format!("{server}: {e}"));
-                                            continue;
-                                        }
-                                    };
-                                    let blossom = BlossomClient::new(base_url);
-                                    let descriptor = match blossom
-                                        .upload_blob(
-                                            encrypted_data.clone(),
-                                            Some(upload.mime_type.clone()),
-                                            None,
-                                            Some(&keys),
-                                        )
-                                        .await
-                                    {
-                                        Ok(d) => d,
-                                        Err(e) => {
-                                            last_error = Some(format!("{server}: {e}"));
-                                            continue;
-                                        }
-                                    };
-                                    let descriptor_hash_hex = descriptor.sha256.to_string();
-                                    if !descriptor_hash_hex.eq_ignore_ascii_case(&expected_hash_hex) {
-                                        last_error = Some(format!(
-                                            "{server}: hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
-                                        ));
-                                        continue;
+                                let uploaded = match upload_encrypted_blob(
+                                    &keys,
+                                    prepared.encrypted_data,
+                                    &prepared.upload.mime_type,
+                                    &hex::encode(prepared.upload.encrypted_hash),
+                                    &upload_servers,
+                                )
+                                .await
+                                {
+                                    Ok(uploaded) => uploaded,
+                                    Err(e) => {
+                                        reply_tx.send(out_error(
+                                            request_id.clone(),
+                                            "upload_failed",
+                                            format!("upload {file_path}: {e:#}"),
+                                        )).ok();
+                                        return Err(());
                                     }
-                                    uploaded_url = Some(descriptor.url.to_string());
-                                    break;
-                                }
-                                let Some(url) = uploaded_url else {
+                                };
+                                let result = runtime.finish_upload(
+                                    &mls_group_id,
+                                    &prepared.upload,
+                                    uploaded.clone(),
+                                );
+
+                                if result.uploaded_blob.uploaded_url.is_empty() {
                                     reply_tx.send(out_error(
                                         request_id.clone(),
                                         "upload_failed",
-                                        format!("blossom upload failed for {file_path}: {}", last_error.unwrap_or_else(|| "unknown".into())),
+                                        format!("upload {file_path}: missing upload URL"),
                                     )).ok();
                                     return Err(());
-                                };
+                                }
 
-                                let imeta_tag = manager.create_imeta_tag(&upload, &url);
-                                original_hashes.push(hex::encode(upload.original_hash));
-                                uploaded_urls.push(url);
-                                imeta_tags.push(imeta_tag);
+                                original_hashes.push(result.attachment.original_hash_hex);
+                                uploaded_urls.push(result.uploaded_blob.uploaded_url);
+                                imeta_tags.push(result.imeta_tag);
                             }
 
                             Ok((imeta_tags, original_hashes, uploaded_urls))
@@ -4299,16 +4222,12 @@ pub async fn daemon_main(
                             }
                             let mut media: Vec<MediaAttachmentOut> = Vec::new();
                             {
-                                let mgr = mdk.media_manager(msg.mls_group_id.clone());
-                                let refs: Vec<MediaReference> = msg.tags.iter()
-                                    .filter(|t| is_imeta_tag(t))
-                                    .filter_map(|t| mgr.parse_imeta_tag(t).ok())
-                                    .collect();
-                                for r in refs {
-                                    let mut att = media_ref_to_attachment(r.clone());
-                                    match download_and_decrypt_media(&mdk, &msg.mls_group_id, &r, state_dir).await {
+                                let attachments = parse_daemon_message_media_attachments(&mdk, &msg);
+                                for attachment in attachments {
+                                    let mut att = media_attachment_to_out(attachment.attachment.clone());
+                                    match download_and_decrypt_media(&mdk, &msg.mls_group_id, &attachment, state_dir).await {
                                         Ok(path) => att.local_path = Some(path),
-                                        Err(e) => warn!("[pikachat] media download failed url={}: {e:#}", r.url),
+                                        Err(e) => warn!("[pikachat] media download failed url={}: {e:#}", attachment.attachment.url),
                                     }
                                     media.push(att);
                                 }
@@ -4351,6 +4270,7 @@ pub async fn daemon_main(
 mod tests {
     use super::*;
     use mdk_core::prelude::NostrGroupConfigData;
+    use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
 
     fn event_id(hex: &str) -> EventId {
         EventId::from_hex(hex).expect("valid event id")
@@ -5016,6 +4936,58 @@ mod tests {
         use std::path::Path;
         assert_eq!(mime_from_extension(Path::new("archive.xyz")), None);
         assert_eq!(mime_from_extension(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn daemon_media_parsing_uses_shared_runtime_service() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon media".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let runtime = MediaRuntime::new(&inviter_mdk);
+        let prepared = runtime
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"daemon attachment",
+                Some("text/plain"),
+                Some("daemon.txt"),
+            )
+            .expect("prepare upload");
+        let completed = runtime.finish_upload(
+            &created.group.mls_group_id,
+            &prepared.upload,
+            pika_marmot_runtime::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
+                uploaded_url: "https://example.com/blob".to_string(),
+                descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+            },
+        );
+        let message = make_test_message(
+            Kind::ChatMessage,
+            "hi",
+            Tags::from_list(vec![completed.imeta_tag]),
+        );
+
+        let attachments = parse_daemon_message_media_attachments(&inviter_mdk, &message);
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].attachment.filename, "daemon.txt");
+        assert_eq!(attachments[0].attachment.mime_type, "text/plain");
     }
 
     #[test]

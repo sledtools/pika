@@ -10,10 +10,13 @@ hex = { workspace = true }
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
+nostr-blossom = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip44", "nip59"] }
 pika-media = { path = "../pika-media", features = ["network"] }
+reqwest = { workspace = true, features = ["json", "native-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 hypernote-protocol = { workspace = true }

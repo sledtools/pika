@@ -1,4 +1,5 @@
 use base64::Engine;
+use pika_marmot_runtime::media::{upload_encrypted_blob, MediaRuntime};
 
 use super::*;
 
@@ -93,21 +94,21 @@ impl AppCore {
         let my_hex = sess.pubkey.to_hex();
 
         // Encrypt the image using MLS group media encryption.
-        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
-        let mut upload = match manager.encrypt_for_upload_with_options(
+        let prepared = match MediaRuntime::new(&sess.mdk).prepare_upload(
+            &group.mls_group_id,
             &image_bytes,
-            &mime_type,
-            "profile.jpg",
-            &MediaProcessingOptions::default(),
+            Some(&mime_type),
+            Some("profile.jpg"),
         ) {
-            Ok(u) => u,
+            Ok(prepared) => prepared,
             Err(e) => {
                 self.toast(format!("Profile image encryption failed: {e}"));
                 return;
             }
         };
+        let upload = prepared.upload;
 
-        let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+        let encrypted_data = prepared.encrypted_data;
         let expected_hash_hex = hex::encode(upload.encrypted_hash);
 
         // Build metadata preserving existing name/about.
@@ -132,18 +133,18 @@ impl AppCore {
 
         // Upload encrypted data to Blossom async.
         self.runtime.spawn(async move {
-            let result = chat_media::upload_to_blossom(
-                &blossom_servers,
+            let result = upload_encrypted_blob(
+                &local_keys,
                 encrypted_data,
                 "application/octet-stream",
                 &expected_hash_hex,
-                &local_keys,
+                &blossom_servers,
             )
             .await;
 
             match result {
-                Ok((uploaded_url, _)) => {
-                    metadata.picture = Some(uploaded_url.clone());
+                Ok(uploaded) => {
+                    metadata.picture = Some(uploaded.uploaded_url.clone());
                     let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupProfileImageUploaded {
@@ -151,12 +152,14 @@ impl AppCore {
                             metadata_json,
                             image_bytes,
                             upload,
-                            uploaded_url,
+                            uploaded_url: uploaded.uploaded_url,
                         },
                     )));
                 }
                 Err(e) => {
-                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(e))));
+                    let _ = tx.send(CoreMsg::Internal(Box::new(InternalEvent::Toast(
+                        e.to_string(),
+                    ))));
                 }
             }
         });

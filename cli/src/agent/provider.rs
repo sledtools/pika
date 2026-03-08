@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use pika_agent_protocol::projection::ProjectionMode;

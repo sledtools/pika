@@ -205,7 +205,6 @@ Phase 3 review notes:
 - The migrated `pika-core-lib-tests` path is broader than its name suggests: `cargo test -p pika_core --lib --tests -- --nocapture` also runs the non-ignored `rust/tests` integration suites (`app_flows`, messaging, group profiles).
 - The strongest signal in this lane is end-to-end state-machine, persistence, and local relay behavior. The weakest slice is small helper coverage in `rust/src/lib.rs` and similar utility-only tests, which should stay tight and low-maintenance rather than grow.
 - Phase 4 can still be scheduler/fanout preparation, but it should optimize around the high-value integration-heavy consumers in this lane rather than treating every helper test as an equally important fanout target.
-
 ## Phase 4: Scheduler And Fanout Preparation
 
 Goal:
@@ -323,6 +322,6 @@ We have at least one important Linux Rust lane where:
 - Phase 0 is complete.
 - Phase 1 is complete and landed.
 - Phase 2a is complete and landed.
-- Phase 2b is complete and ready to land once the branch is rebased onto current `origin/master` and re-verified.
-- Current recommended slice is Phase 3.
-- After Phase 3, re-evaluate whether Phase 4 should remain scheduler/fanout preparation or whether another smaller cleanup/refinement phase should come first.
+- Phase 2b is complete and landed.
+- Phase 3 is complete on this branch and ready to land.
+- Current recommended slice is still Phase 4, but only after explicitly confirming that scheduler/fanout work should target the integration-heavy parts of `pre-merge-pika-rust` rather than its helper-test tail.

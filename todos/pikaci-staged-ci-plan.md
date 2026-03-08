@@ -334,6 +334,26 @@ Phase 6 implementation notes:
 - The boundary lives with prepare-node modeling and prepare execution, not in the guest-command or lane-authoring surfaces. That should remain the containment line for later remote work.
 - Next recommended slice: one narrow non-local realization/mount prototype that consumes the staged Linux Rust prepared-output handoff contract, still without broadening to Apple/Android or adding `nextest` archive.
 
+Phase 6 review notes:
+
+- Phase 6 is complete and landed in its first narrow form.
+- The prepared-output handoff contract now exists in machine-readable plan and run state.
+- The consumer is still local-only today; the only real implementation is host-local symlink mounting.
+- The next step is to consume that handoff through one narrow non-local-capable realization/mount boundary rather than adding full remote execution.
+
+Next narrow remote-prep slice:
+
+- Introduce a prepared-output consumer abstraction that takes a staged Linux Rust handoff plus realized output metadata and exposes it behind a non-local-capable seam.
+- Keep the current host-local symlink-mount path as the only real implementation for now.
+- Persist which consumer handled each prepared output so later remote work can swap implementations without changing lane authoring.
+
+Phase 6 consumer-slice notes:
+
+- This follow-up slice is now complete and landed.
+- `pikaci` has a narrow prepared-output consumer seam for staged Linux Rust Nix outputs.
+- The existing host-local symlink-mount path now runs through that seam and records which consumer handled the exposure in `prepared-outputs.json`.
+- What still remains next is one narrow non-local consumer implementation or prototype that uses the same handoff contract without widening into a full remote executor system.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -371,5 +391,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first narrow remote-prep form.
-- Current recommended slice is the next narrow remote step: consume the staged Linux Rust prepared-output handoff contract from a non-local realization/mount boundary while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first and second narrow remote-prep forms.
+- Current recommended slice is one narrow non-local consumer prototype for staged Linux Rust prepared-output handoffs while keeping Rust execute inputs Nix-backed.

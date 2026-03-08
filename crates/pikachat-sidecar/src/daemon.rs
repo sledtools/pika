@@ -161,6 +161,24 @@ fn chain_has_message(err: &anyhow::Error, needle: &str) -> bool {
     err.chain().any(|cause| cause.to_string().contains(needle))
 }
 
+fn accept_welcome_event_id_hint() -> &'static str {
+    "use wrapper_event_id or welcome_event_id from list_pending_welcomes"
+}
+
+fn accept_welcome_bad_event_id_message() -> String {
+    format!(
+        "wrapper_event_id must be hex; {}",
+        accept_welcome_event_id_hint()
+    )
+}
+
+fn accept_welcome_not_found_message() -> String {
+    format!(
+        "pending welcome not found; {}",
+        accept_welcome_event_id_hint()
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum InCmd {
@@ -2576,7 +2594,13 @@ pub async fn daemon_main(
                         let wrapper = match EventId::from_hex(&wrapper_event_id) {
                             Ok(id) => id,
                             Err(_) => {
-                                reply_tx.send(out_error(request_id, "bad_event_id", "wrapper_event_id must be hex")).ok();
+                                reply_tx
+                                    .send(out_error(
+                                        request_id,
+                                        "bad_event_id",
+                                        accept_welcome_bad_event_id_message(),
+                                    ))
+                                    .ok();
                                 continue;
                             }
                         };
@@ -2588,7 +2612,7 @@ pub async fn daemon_main(
                                         .send(out_error(
                                             request_id,
                                             "not_found",
-                                            "pending welcome not found",
+                                            accept_welcome_not_found_message(),
                                         ))
                                         .ok();
                                     continue;
@@ -4580,6 +4604,17 @@ mod tests {
         let (code, message) = map_init_group_error(&err);
         assert_eq!(code, "publish_failed");
         assert!(message.contains("init_group_publish_welcome"));
+    }
+
+    #[test]
+    fn accept_welcome_error_messages_mention_both_event_ids() {
+        assert!(
+            accept_welcome_bad_event_id_message().contains("wrapper_event_id or welcome_event_id")
+        );
+        assert!(
+            accept_welcome_not_found_message().contains("wrapper_event_id or welcome_event_id")
+        );
+        assert!(accept_welcome_not_found_message().contains("list_pending_welcomes"));
     }
 
     #[test]

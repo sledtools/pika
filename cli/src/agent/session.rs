@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashSet;
 use std::io::Write;
 use std::time::Duration;
@@ -6,6 +8,7 @@ use anyhow::Context;
 use mdk_core::prelude::*;
 use nostr_sdk::JsonUtil;
 use nostr_sdk::prelude::*;
+use pika_marmot_runtime::welcome::create_group_and_publish_welcomes as create_group_and_publish_shared_welcomes;
 use tokio::io::AsyncBufReadExt;
 
 use pika_agent_protocol::projection::{ProjectedContent, project_message};
@@ -57,7 +60,8 @@ pub async fn wait_for_latest_key_package(
             relays,
             plan.fetch_timeout,
         )
-        .await {
+        .await
+        {
             Ok(kp) => {
                 eprintln!(" done");
                 return Ok(kp);
@@ -89,6 +93,46 @@ pub async fn create_group_and_publish_welcomes(
     eprint!("{}", plan.progress_message);
     std::io::stderr().flush().ok();
 
+    let created = create_group_and_publish_welcomes_with_publisher(
+        keys,
+        mdk,
+        relays,
+        bot_key_package,
+        bot_pubkey,
+        plan,
+        |_, giftwrap| {
+            let client = client.clone();
+            let relays = relays.to_vec();
+            async move {
+                relay_util::publish_and_confirm(
+                    &client,
+                    &relays,
+                    &giftwrap,
+                    plan.welcome_publish_label,
+                )
+                .await
+            }
+        },
+    )
+    .await?;
+
+    eprintln!(" done");
+    Ok(created)
+}
+
+async fn create_group_and_publish_welcomes_with_publisher<F, Fut>(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    relays: &[RelayUrl],
+    bot_key_package: Event,
+    bot_pubkey: PublicKey,
+    plan: GroupCreatePlan,
+    publish_giftwrap: F,
+) -> anyhow::Result<CreatedChatGroup>
+where
+    F: FnMut(PublicKey, Event) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
     let config = NostrGroupConfigData::new(
         "Agent Chat".to_string(),
         String::new(),
@@ -98,34 +142,51 @@ pub async fn create_group_and_publish_welcomes(
         relays.to_vec(),
         vec![keys.public_key(), bot_pubkey],
     );
-    let result = mdk
-        .create_group(&keys.public_key(), vec![bot_key_package], config)
-        .context(plan.create_group_context)?;
+    let created = match create_group_and_publish_shared_welcomes(
+        keys,
+        mdk,
+        vec![bot_key_package],
+        config,
+        &[bot_pubkey],
+        vec![],
+        publish_giftwrap,
+    )
+    .await
+    {
+        Ok(created) => created,
+        Err(err) => return Err(map_group_create_error(err, plan)),
+    };
 
-    let mls_group_id = result.group.mls_group_id.clone();
-    let nostr_group_id_hex = hex::encode(result.group.nostr_group_id);
     // Agent create mirrors CLI invite semantics: create locally, then wait for
     // welcome delivery, with no extra subscribe/merge workflow at this layer.
-    let mut published_welcomes = Vec::new();
-    for rumor in result.welcome_rumors {
-        let rumor_json = rumor.as_json();
-        let giftwrap = EventBuilder::gift_wrap(keys, &bot_pubkey, rumor, [])
-            .await
-            .context(plan.build_welcome_context)?;
-        relay_util::publish_and_confirm(client, relays, &giftwrap, plan.welcome_publish_label)
-            .await?;
-        published_welcomes.push(PublishedWelcome {
-            wrapper_event_id_hex: giftwrap.id.to_hex(),
-            rumor_json,
-        });
-    }
-
-    eprintln!(" done");
     Ok(CreatedChatGroup {
-        mls_group_id,
-        nostr_group_id_hex,
-        published_welcomes,
+        mls_group_id: created.group.mls_group_id.clone(),
+        nostr_group_id_hex: hex::encode(created.group.nostr_group_id),
+        published_welcomes: created
+            .published_welcomes
+            .into_iter()
+            .map(|welcome| PublishedWelcome {
+                wrapper_event_id_hex: welcome.wrapper_event_id.to_hex(),
+                rumor_json: welcome.rumor.as_json(),
+            })
+            .collect(),
     })
+}
+
+fn map_group_create_error(err: anyhow::Error, plan: GroupCreatePlan) -> anyhow::Error {
+    if err
+        .chain()
+        .any(|cause| cause.to_string().contains("build welcome giftwrap"))
+    {
+        err.context(plan.build_welcome_context)
+    } else if err
+        .chain()
+        .any(|cause| cause.to_string().contains("create group"))
+    {
+        err.context(plan.create_group_context)
+    } else {
+        err
+    }
 }
 
 pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::Result<()> {
@@ -250,4 +311,77 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_key_package_event(mdk: &mdk_util::PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
+
+    fn group_create_plan() -> GroupCreatePlan {
+        GroupCreatePlan {
+            progress_message: "",
+            create_group_context: "agent create group",
+            build_welcome_context: "agent build welcome",
+            welcome_publish_label: "agent_welcome",
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_create_group_uses_shared_runtime_helper() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let bot_dir = tempfile::tempdir().expect("bot tempdir");
+        let inviter_keys = Keys::generate();
+        let bot_keys = Keys::generate();
+        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let bot_mdk = mdk_util::open_mdk(bot_dir.path()).expect("open bot mdk");
+        let bot_kp = make_key_package_event(&bot_mdk, &bot_keys);
+        let relays = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
+        let published_capture = std::sync::Arc::clone(&published);
+
+        let created = create_group_and_publish_welcomes_with_publisher(
+            &inviter_keys,
+            &inviter_mdk,
+            &relays,
+            bot_kp,
+            bot_keys.public_key(),
+            group_create_plan(),
+            move |_receiver, giftwrap| {
+                let published_capture = std::sync::Arc::clone(&published_capture);
+                async move {
+                    published_capture
+                        .lock()
+                        .expect("published lock")
+                        .push(giftwrap);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("agent create group");
+
+        assert_eq!(created.published_welcomes.len(), 1);
+        assert_eq!(
+            created.published_welcomes[0].wrapper_event_id_hex,
+            published.lock().expect("published lock")[0].id.to_hex()
+        );
+        assert!(
+            created.published_welcomes[0]
+                .rumor_json
+                .contains("\"kind\":444"),
+            "agent helper should still surface the welcome rumor json"
+        );
+        assert!(!created.nostr_group_id_hex.is_empty());
+    }
 }

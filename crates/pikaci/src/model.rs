@@ -201,6 +201,7 @@ pub enum PreparedOutputInvocationMode {
 pub enum PreparedOutputLauncherTransportMode {
     DirectLauncherExecV1,
     CommandTransportV1,
+    SshLauncherTransportV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -275,6 +276,22 @@ pub struct PreparedOutputFulfillmentTransportRequest {
     pub launcher_program: String,
     pub launcher_request_path: String,
     #[serde(default)]
+    pub local_run_dir: Option<String>,
+    #[serde(default)]
+    pub remote_host: Option<String>,
+    #[serde(default)]
+    pub remote_work_dir: Option<String>,
+    #[serde(default)]
+    pub remote_launcher_program: Option<String>,
+    #[serde(default)]
+    pub remote_helper_program: Option<String>,
+    #[serde(default)]
+    pub remote_launcher_request_path: Option<String>,
+    #[serde(default)]
+    pub remote_helper_request_path: Option<String>,
+    #[serde(default)]
+    pub remote_helper_result_path: Option<String>,
+    #[serde(default)]
     pub node_id: Option<String>,
     #[serde(default)]
     pub output_name: Option<String>,
@@ -285,6 +302,7 @@ pub struct PreparedOutputFulfillmentTransportRequest {
 pub enum PreparedOutputFulfillmentTransportPathContract {
     #[default]
     SameHostAbsolutePathsV1,
+    SshRemoteWorkDirTranslationV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -446,6 +464,14 @@ pub struct RunRecord {
     pub prepared_output_launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
     #[serde(default)]
     pub prepared_output_launcher_transport_program: Option<String>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_host: Option<String>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_remote_launcher_program: Option<String>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_remote_helper_program: Option<String>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_remote_work_dir: Option<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]

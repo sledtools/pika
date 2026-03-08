@@ -489,6 +489,27 @@ Phase 6 launcher-transport slice notes:
 - What is still missing: there is still no actual remote host, no transport result protocol beyond process exit plus helper result file, no executor/builder orchestration around this launcher transport, and no path/install translation layer beyond the explicit same-host absolute-path assumption.
 - Next recommended slice: add one tiny portability tweak or explicit translation step above the transport request before the first real `ssh`-style launcher experiment, or, if that portability story is already acceptable, add one tiny launcher-transport result/report contract first.
 
+Phase 6 ssh launcher-transport prototype notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has a first dev-only, opt-in `ssh_launcher_transport_v1` mode above the launcher contract for prepared-output fulfillment only:
+  - it targets a configured remote host, initially expected to be `pika-build`,
+  - it keeps the helper request/result and launcher request contracts stable,
+  - and it crosses a real `ssh` command boundary instead of only same-host launcher exec.
+- The portability/copy assumptions are explicit:
+  - the transport request now records `ssh_remote_work_dir_translation_v1`,
+  - paths under the local run dir are translated into a configured remote work dir,
+  - the realized `/nix/store/...` path is copied with `nix copy --to ssh://<host>`,
+  - and remote launcher/helper binaries are required at configured remote paths.
+- Observability is clearer:
+  - `run.json` records launcher transport mode plus the remote host, remote launcher path, remote helper path, and remote work dir,
+  - `pikaci status` prints those fields,
+  - helper logs show transport mode plus the remote request/result paths,
+  - and the prepared-output transport-request file records the remote launch/helper request/result paths used for the prototype.
+- What this slice proves: the staged `pre-merge-pika-rust` helper path can drive a real one-shot ssh-style launcher transport without changing the Nix-backed prepared-output contracts or broadening into remote execute scheduling.
+- What is still missing: execute orchestration is still local, the remote transport still relies on explicit path/install assumptions, and there is still no remote launcher-result/report contract beyond transport exit plus helper result validation.
+- Next recommended slice: either add one tiny launcher-transport result/report contract for the ssh path, or do one explicit `pika-build` integration check and document the exact remote installation assumptions that held up in practice.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -526,5 +547,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, and twelfth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up that makes the launcher transport seam portable enough for a first real `ssh`-style experiment, or explicitly codifies the required path/install translation step, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, and thirteenth narrow remote-prep forms.
+- Current recommended slice is one narrow follow-up that either adds a tiny launcher-transport result/report contract for the ssh path or exercises the new ssh-style prototype against `pika-build` explicitly enough to lock down the remote installation assumptions, while keeping Rust execute inputs Nix-backed.

@@ -313,7 +313,7 @@ pub fn is_imeta_tag(tag: &Tag) -> bool {
 
 pub fn mime_from_extension(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(mime_from_extension_str(&ext))
+    mime_from_extension_str(&ext)
 }
 
 pub fn resolve_upload_metadata(
@@ -371,8 +371,8 @@ fn normalize_mime_type(mime_type: &str) -> String {
     mime_type.trim().to_ascii_lowercase()
 }
 
-fn mime_from_extension_str(ext: &str) -> &'static str {
-    match ext {
+fn mime_from_extension_str(ext: &str) -> Option<&'static str> {
+    Some(match ext {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "gif" => "image/gif",
@@ -396,8 +396,8 @@ fn mime_from_extension_str(ext: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
         "txt" | "md" => "text/plain",
-        _ => "application/octet-stream",
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -440,11 +440,8 @@ mod tests {
     }
 
     #[test]
-    fn mime_unknown_extension_defaults_to_octet_stream() {
-        assert_eq!(
-            mime_from_extension(Path::new("file.xyz")),
-            Some("application/octet-stream")
-        );
+    fn mime_unknown_extension_returns_none() {
+        assert_eq!(mime_from_extension(Path::new("file.xyz")), None);
     }
 
     #[test]

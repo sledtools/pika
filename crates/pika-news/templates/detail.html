@@ -13,7 +13,8 @@
       .shell { margin: 0 auto; padding: 2rem 1rem; }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
-      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; }
+      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; max-width: 900px; }
+      .diff-panel { max-width: none; }
       .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
       button { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.45rem 0.8rem; cursor: pointer; }
       .step { display: none; }
@@ -29,6 +30,13 @@
       .d2h-wrapper { border-radius: 10px; overflow-x: auto; }
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
+
+      /* Diff layout: file list sidebar + diffs */
+      @media (min-width: 1024px) {
+        #diff-container { display: flex; gap: 1rem; align-items: flex-start; }
+        #diff-container .d2h-file-list-wrapper { flex-shrink: 0; width: 280px; position: sticky; top: 4rem; max-height: calc(100vh - 5rem); overflow-y: auto; border-radius: 10px; }
+        #diff-container .d2h-wrapper { flex: 1; min-width: 0; }
+      }
 
       /* Diff2html dark mode overrides */
       @media (prefers-color-scheme: dark) {
@@ -75,8 +83,15 @@
       .chat-msg p:first-child { margin-top: 0; }
       .chat-msg p:last-child { margin-bottom: 0; }
       .chat-msg ul, .chat-msg ol { margin: 0.3rem 0; padding-left: 1.2rem; }
-      @media (max-width: 900px) { .chat-sidebar { width: 300px; } }
-      @media (max-width: 640px) { .page-layout { flex-direction: column; } .chat-sidebar { width: 100%; position: static; height: 400px; } }
+      /* Responsive breakpoints */
+      @media (max-width: 1024px) {
+        .chat-sidebar { width: 300px; }
+        .panel { max-width: none; }
+      }
+      @media (max-width: 640px) {
+        .page-layout { flex-direction: column; }
+        .chat-sidebar { width: 100%; position: static; height: 400px; }
+      }
 {% endblock %}
 
 {% block body %}
@@ -154,7 +169,7 @@
 
       {% match diff_json %}
       {% when Some with (json_str) %}
-      <section class="panel">
+      <section class="panel diff-panel">
         <h2>Diff</h2>
         <div class="diff-view-toggle">
           <button type="button" class="diff-toggle active" data-style="side">Side by side</button>

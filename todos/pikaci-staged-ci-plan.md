@@ -470,6 +470,25 @@ Phase 6 fulfillment-launcher slice notes:
 - What is still missing: the launcher is still same-host, with no transport, no remote lifecycle, and no remote result collection.
 - Next recommended slice: keep the contracts stable and prototype one tiny off-host launcher implementation behind this dedicated launcher request path.
 
+Phase 6 launcher-transport slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has a first off-host-shaped launcher transport seam above the dedicated launcher contract:
+  - `external_wrapper_command_v1` still means “use the launcher boundary,”
+  - but launcher invocation can now ride either direct launcher exec or a separate command-transport mode,
+  - and the command-transport path consumes its own tiny transport request file instead of reusing ad hoc argv flags.
+- The helper request/result JSON and launcher request JSON stay unchanged.
+- Observability is clearer:
+  - `run.json` records launcher transport mode and, when relevant, the transport program,
+  - `pikaci status` prints those fields,
+  - helper logs show launcher transport mode plus transport-request path,
+  - and prepared-output state records the transport-request file path when that path is used.
+- The transport request now explicitly records that this prototype still assumes same-host absolute paths for the launcher binary and launcher-request file.
+- That same-host path assumption stays backward-compatible within schema version 1 so recently written transport requests do not become unreadable just because the assumption was made explicit.
+- What this slice proves: the staged `pre-merge-pika-rust` helper path can cross one more real command boundary without changing the Nix-backed prepared-output contract or pretending full remote execution already exists.
+- What is still missing: there is still no actual remote host, no transport result protocol beyond process exit plus helper result file, no executor/builder orchestration around this launcher transport, and no path/install translation layer beyond the explicit same-host absolute-path assumption.
+- Next recommended slice: add one tiny portability tweak or explicit translation step above the transport request before the first real `ssh`-style launcher experiment, or, if that portability story is already acceptable, add one tiny launcher-transport result/report contract first.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -507,5 +526,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, and eleventh narrow remote-prep forms.
-- Current recommended slice is one narrow off-host launcher prototype that keeps the helper request/result contracts stable and swaps only the launcher implementation behind the dedicated launcher request path, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, and twelfth narrow remote-prep forms.
+- Current recommended slice is one narrow follow-up that makes the launcher transport seam portable enough for a first real `ssh`-style experiment, or explicitly codifies the required path/install translation step, while keeping Rust execute inputs Nix-backed.

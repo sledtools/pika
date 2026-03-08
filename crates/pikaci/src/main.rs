@@ -635,6 +635,21 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
             "prepared_output_invocation_launcher_program={prepared_output_invocation_wrapper_program}"
         ));
     }
+    if let Some(prepared_output_launcher_transport_mode) =
+        run.prepared_output_launcher_transport_mode
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_mode={}",
+            prepared_output_launcher_transport_mode_label(prepared_output_launcher_transport_mode)
+        ));
+    }
+    if let Some(prepared_output_launcher_transport_program) =
+        &run.prepared_output_launcher_transport_program
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_program={prepared_output_launcher_transport_program}"
+        ));
+    }
     if let Some(message) = &run.message {
         lines.push(message.clone());
     }
@@ -665,6 +680,17 @@ fn prepared_output_invocation_mode_label(
         pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1 => {
             "external_wrapper_command_v1"
         }
+    }
+}
+
+fn prepared_output_launcher_transport_mode_label(
+    mode: pikaci::PreparedOutputLauncherTransportMode,
+) -> &'static str {
+    match mode {
+        pikaci::PreparedOutputLauncherTransportMode::DirectLauncherExecV1 => {
+            "direct_launcher_exec_v1"
+        }
+        pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1 => "command_transport_v1",
     }
 }
 
@@ -1112,6 +1138,8 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         prepared_output_mode: None,
         prepared_output_invocation_mode: None,
         prepared_output_invocation_wrapper_program: None,
+        prepared_output_launcher_transport_mode: None,
+        prepared_output_launcher_transport_program: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1176,6 +1204,10 @@ fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetad
         prepared_output_invocation_mode: previous.prepared_output_invocation_mode,
         prepared_output_invocation_wrapper_program: previous
             .prepared_output_invocation_wrapper_program
+            .clone(),
+        prepared_output_launcher_transport_mode: previous.prepared_output_launcher_transport_mode,
+        prepared_output_launcher_transport_program: previous
+            .prepared_output_launcher_transport_program
             .clone(),
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
@@ -1284,6 +1316,11 @@ mod tests {
                 .iter()
                 .any(|line| { line.starts_with("prepared_output_invocation_wrapper_program=") })
         );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| { line.starts_with("prepared_output_launcher_transport_mode=") })
+        );
     }
 
     #[test]
@@ -1304,6 +1341,8 @@ mod tests {
             Some(pikaci::PreparedOutputInvocationMode::DirectHelperExecV1)
         );
         assert_eq!(metadata.prepared_output_invocation_wrapper_program, None);
+        assert_eq!(metadata.prepared_output_launcher_transport_mode, None);
+        assert_eq!(metadata.prepared_output_launcher_transport_program, None);
     }
 
     #[test]
@@ -1328,6 +1367,58 @@ mod tests {
                 .as_deref(),
             Some("/tmp/bin/pikaci-wrapper")
         );
+        assert_eq!(metadata.prepared_output_launcher_transport_mode, None);
+    }
+
+    #[test]
+    fn rerun_metadata_preserves_launcher_transport_program() {
+        let mut run = sample_run_record();
+        run.target_id = Some("pre-merge-pika-rust".to_string());
+        run.prepared_output_invocation_mode =
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+        run.prepared_output_invocation_wrapper_program =
+            Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_mode =
+            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1);
+        run.prepared_output_launcher_transport_program = Some("/tmp/bin/fake-ssh".to_string());
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        let metadata = rerun_metadata(&run, &target);
+
+        assert_eq!(
+            metadata.prepared_output_launcher_transport_mode,
+            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1)
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_program
+                .as_deref(),
+            Some("/tmp/bin/fake-ssh")
+        );
+    }
+
+    #[test]
+    fn status_lines_include_launcher_transport_observability() {
+        let mut run = sample_run_record();
+        run.prepared_output_invocation_mode =
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+        run.prepared_output_invocation_wrapper_program =
+            Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_mode =
+            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1);
+        run.prepared_output_launcher_transport_program = Some("/tmp/bin/fake-ssh".to_string());
+
+        let lines = format_status_lines(&run);
+        assert!(
+            lines.contains(
+                &"prepared_output_launcher_transport_mode=command_transport_v1".to_string()
+            )
+        );
+        assert!(
+            lines.contains(
+                &"prepared_output_launcher_transport_program=/tmp/bin/fake-ssh".to_string()
+            )
+        );
     }
 
     fn sample_run_record() -> RunRecord {
@@ -1351,6 +1442,8 @@ mod tests {
                 pikaci::PreparedOutputInvocationMode::DirectHelperExecV1,
             ),
             prepared_output_invocation_wrapper_program: None,
+            prepared_output_launcher_transport_mode: None,
+            prepared_output_launcher_transport_program: None,
             changed_files: vec![],
             filters: vec![],
             message: None,

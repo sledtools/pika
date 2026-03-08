@@ -196,6 +196,13 @@ pub enum PreparedOutputInvocationMode {
     ExternalWrapperCommandV1,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputLauncherTransportMode {
+    DirectLauncherExecV1,
+    CommandTransportV1,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PreparedOutputExposure {
     pub kind: PreparedOutputExposureKind,
@@ -258,6 +265,26 @@ pub struct PreparedOutputFulfillmentLaunchRequest {
     pub node_id: Option<String>,
     #[serde(default)]
     pub output_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputFulfillmentTransportRequest {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub path_contract: PreparedOutputFulfillmentTransportPathContract,
+    pub launcher_program: String,
+    pub launcher_request_path: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub output_name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputFulfillmentTransportPathContract {
+    #[default]
+    SameHostAbsolutePathsV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -356,6 +383,8 @@ pub struct RealizedPreparedOutputRecord {
     #[serde(default)]
     pub consumer_launch_request_path: Option<String>,
     #[serde(default)]
+    pub consumer_transport_request_path: Option<String>,
+    #[serde(default)]
     pub exposures: Vec<PreparedOutputExposure>,
     #[serde(default)]
     pub requested_exposures: Vec<PreparedOutputExposure>,
@@ -413,6 +442,10 @@ pub struct RunRecord {
     pub prepared_output_invocation_mode: Option<PreparedOutputInvocationMode>,
     #[serde(default)]
     pub prepared_output_invocation_wrapper_program: Option<String>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    #[serde(default)]
+    pub prepared_output_launcher_transport_program: Option<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]

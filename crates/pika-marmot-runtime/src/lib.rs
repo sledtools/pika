@@ -4,6 +4,7 @@ pub mod key_package;
 pub mod media;
 pub mod message;
 pub mod relay;
+pub mod runtime;
 pub mod welcome;
 
 use std::collections::HashSet;

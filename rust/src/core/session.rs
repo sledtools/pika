@@ -3,7 +3,22 @@
 use std::future::Future;
 
 use super::*;
+use pika_marmot_runtime::runtime::{
+    bootstrap_runtime_session, connect_runtime_relays, subscribe_group_messages_combined,
+    subscribe_welcome_inbox, BootstrappedRuntimeSession,
+};
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
+
+fn bootstrap_runtime_for_app(
+    data_dir: &str,
+    keychain_group: &str,
+    pubkey: PublicKey,
+    signer: Arc<dyn NostrSigner>,
+) -> anyhow::Result<BootstrappedRuntimeSession> {
+    bootstrap_runtime_session(pubkey, signer, || {
+        open_mdk(data_dir, &pubkey, keychain_group)
+    })
+}
 
 impl AppCore {
     pub(super) fn start_session(&mut self, keys: Keys) -> anyhow::Result<()> {
@@ -34,30 +49,25 @@ impl AppCore {
 
         tracing::info!(pubkey = %pubkey_hex, npub = %npub, "start_session");
 
-        // MDK per-identity encrypted sqlite DB.
-        let mdk = open_mdk(&self.data_dir, &pubkey, &self.keychain_group)?;
+        let bootstrapped =
+            bootstrap_runtime_for_app(&self.data_dir, &self.keychain_group, pubkey, signer)?;
         tracing::info!("mdk opened");
-
-        let client = Client::new(signer);
 
         if self.network_enabled() {
             let relays = self.all_session_relays();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
-            let c = client.clone();
+            let client = bootstrapped.session.client.clone();
             self.runtime.spawn(async move {
-                for r in relays {
-                    let _ = c.add_relay(r).await;
-                }
-                c.connect().await;
+                connect_runtime_relays(&client, &relays, false, None).await;
             });
             tracing::info!("relays connect scheduled");
         }
 
         let sess = Session {
-            pubkey,
+            pubkey: bootstrapped.session.pubkey,
             local_keys,
-            mdk,
-            client: client.clone(),
+            mdk: bootstrapped.session.mdk,
+            client: bootstrapped.session.client,
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
             group_sub: None,
@@ -366,7 +376,7 @@ impl AppCore {
 
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
-        let my_hex = sess.pubkey.to_hex();
+        let pubkey = sess.pubkey;
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
         let h_values: Vec<String> = sess.groups.keys().cloned().collect();
@@ -378,19 +388,17 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            for r in needed_relays {
-                let _ = client.add_relay(r).await;
-            }
+            let needed_relays: Vec<RelayUrl> = needed_relays.into_iter().collect();
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            // After returning from background, WebSocket connections may be stale.
-            // Disconnect first so connect() re-establishes fresh sockets.
-            if force_reconnect {
-                client.disconnect().await;
-            }
-            client.connect().await;
-            client.wait_for_connection(Duration::from_secs(4)).await;
+            connect_runtime_relays(
+                &client,
+                &needed_relays,
+                force_reconnect,
+                Some(Duration::from_secs(4)),
+            )
+            .await;
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
@@ -412,31 +420,18 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let gift_filter = Filter::new()
-                .kind(Kind::GiftWrap)
-                .custom_tags(SingleLetterTag::lowercase(Alphabet::P), vec![my_hex]);
-            let giftwrap_sub = client
-                .subscribe(gift_filter, None)
+            let giftwrap_sub = subscribe_welcome_inbox(&client, pubkey, None, None)
                 .await
-                .ok()
-                .map(|o| o.val);
+                .ok();
 
             // Group subscription: kind 445 filtered by #h for all joined groups.
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let group_sub = if h_values.is_empty() {
-                None
-            } else {
-                let group_filter = Filter::new()
-                    .kind(Kind::MlsGroupMessage)
-                    .custom_tags(SingleLetterTag::lowercase(Alphabet::H), h_values);
-                client
-                    .subscribe(group_filter, None)
-                    .await
-                    .ok()
-                    .map(|o| o.val)
-            };
+            let group_sub = subscribe_group_messages_combined(&client, &h_values)
+                .await
+                .ok()
+                .flatten();
 
             if !alive.load(Ordering::SeqCst) {
                 return;
@@ -992,6 +987,44 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    #[test]
+    fn app_runtime_bootstrap_uses_shared_session_service() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData {
+            name: "App runtime bootstrap".to_string(),
+            description: String::new(),
+            image_hash: None,
+            image_key: None,
+            image_nonce: None,
+            relays: vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            admins: vec![inviter_keys.public_key()],
+        };
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let bootstrapped = bootstrap_runtime_for_app(
+            inviter_dir.path().to_str().expect("tempdir path"),
+            "test.keychain.group",
+            inviter_keys.public_key(),
+            Arc::new(inviter_keys.clone()),
+        )
+        .expect("bootstrap app runtime");
+
+        assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
+        assert_eq!(
+            bootstrapped.startup.existing_group_ids,
+            vec![hex::encode(created.group.nostr_group_id)]
+        );
     }
 
     #[tokio::test]

@@ -34,6 +34,7 @@ pub struct UpsertOutcome {
 #[derive(Debug, Clone)]
 pub struct GenerationJob {
     pub artifact_id: i64,
+    pub pr_id: i64,
     pub repo: String,
     pub pr_number: i64,
     pub title: String,
@@ -156,7 +157,7 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT ga.id, r.repo, pr.pr_number, pr.title, pr.head_sha, pr.base_ref
+                        "SELECT ga.id, r.repo, pr.pr_number, pr.title, pr.head_sha, pr.base_ref, pr.id
                          FROM generated_artifacts ga
                          JOIN pull_requests pr ON pr.id = ga.pr_id
                          JOIN repos r ON r.id = pr.repo_id
@@ -176,6 +177,7 @@ impl Store {
                             title: row.get(3)?,
                             head_sha: row.get(4)?,
                             base_ref: row.get(5)?,
+                            pr_id: row.get(6)?,
                         })
                     })
                     .context("query pending generation jobs")?;
@@ -544,6 +546,158 @@ impl Store {
             Ok(())
         })
     }
+
+    // --- Inbox methods ---
+
+    pub fn populate_inbox(&self, pr_id: i64, npubs: &[String]) -> anyhow::Result<usize> {
+        if npubs.is_empty() {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let mut count = 0;
+            for npub in npubs {
+                let rows = conn
+                    .execute(
+                        "INSERT OR IGNORE INTO inbox(npub, pr_id) VALUES (?1, ?2)",
+                        params![npub, pr_id],
+                    )
+                    .context("populate inbox")?;
+                count += rows;
+            }
+            Ok(count)
+        })
+    }
+
+    pub fn list_inbox(
+        &self,
+        npub: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<InboxItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT i.pr_id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at,
+                            COALESCE(ga.status, 'pending'), i.reason, i.created_at
+                     FROM inbox i
+                     JOIN pull_requests pr ON pr.id = i.pr_id
+                     JOIN repos r ON r.id = pr.repo_id
+                     LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                     WHERE i.npub = ?1
+                     ORDER BY i.created_at DESC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .context("prepare inbox query")?;
+
+            let rows = stmt
+                .query_map(params![npub, limit, offset], |row| {
+                    Ok(InboxItem {
+                        pr_id: row.get(0)?,
+                        repo: row.get(1)?,
+                        pr_number: row.get(2)?,
+                        title: row.get(3)?,
+                        url: row.get(4)?,
+                        state: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        generation_status: row
+                            .get::<_, Option<String>>(7)?
+                            .unwrap_or_else(|| "pending".to_string()),
+                        reason: row.get(8)?,
+                        inbox_created_at: row.get(9)?,
+                    })
+                })
+                .context("query inbox")?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.context("read inbox row")?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn inbox_count(&self, npub: &str) -> anyhow::Result<i64> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM inbox WHERE npub = ?1",
+                params![npub],
+                |row| row.get(0),
+            )
+            .context("count inbox")
+        })
+    }
+
+    pub fn dismiss_inbox_items(&self, npub: &str, pr_ids: &[i64]) -> anyhow::Result<usize> {
+        if pr_ids.is_empty() {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let placeholders: Vec<String> = pr_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 2))
+                .collect();
+            let sql = format!(
+                "DELETE FROM inbox WHERE npub = ?1 AND pr_id IN ({})",
+                placeholders.join(", ")
+            );
+            let mut stmt = conn.prepare(&sql).context("prepare dismiss query")?;
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            param_values.push(Box::new(npub.to_string()));
+            for id in pr_ids {
+                param_values.push(Box::new(*id));
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt
+                .execute(param_refs.as_slice())
+                .context("dismiss inbox items")?;
+            Ok(rows)
+        })
+    }
+
+    pub fn dismiss_all_inbox(&self, npub: &str) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let rows = conn
+                .execute("DELETE FROM inbox WHERE npub = ?1", params![npub])
+                .context("dismiss all inbox")?;
+            Ok(rows)
+        })
+    }
+
+    pub fn inbox_neighbors(
+        &self,
+        npub: &str,
+        pr_id: i64,
+    ) -> anyhow::Result<(Option<i64>, Option<i64>)> {
+        self.with_connection(|conn| {
+            // Items ordered created_at DESC (newest first).
+            // "prev" = newer item (higher created_at), "next" = older item (lower created_at).
+            let prev: Option<i64> = conn
+                .query_row(
+                    "SELECT pr_id FROM inbox
+                     WHERE npub = ?1 AND created_at > (SELECT created_at FROM inbox WHERE npub = ?1 AND pr_id = ?2)
+                     ORDER BY created_at ASC LIMIT 1",
+                    params![npub, pr_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("inbox prev neighbor")?;
+
+            let next: Option<i64> = conn
+                .query_row(
+                    "SELECT pr_id FROM inbox
+                     WHERE npub = ?1 AND created_at < (SELECT created_at FROM inbox WHERE npub = ?1 AND pr_id = ?2)
+                     ORDER BY created_at DESC LIMIT 1",
+                    params![npub, pr_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("inbox next neighbor")?;
+
+            Ok((prev, next))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -551,6 +705,20 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InboxItem {
+    pub pr_id: i64,
+    pub repo: String,
+    pub pr_number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub updated_at: String,
+    pub generation_status: String,
+    pub reason: String,
+    pub inbox_created_at: String,
 }
 
 fn ensure_repo(conn: &Connection, repo: &str) -> anyhow::Result<i64> {
@@ -747,12 +915,19 @@ fn migrations() -> Vec<Migration> {
             name: "0003_chat_sessions",
             sql: include_str!("../migrations/0003_chat_sessions.sql"),
         },
+        Migration {
+            version: 4,
+            name: "0004_inbox",
+            sql: include_str!("../migrations/0004_inbox.sql"),
+        },
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use rusqlite::params;
 
     use super::{PrUpsertInput, Store};
 
@@ -1054,5 +1229,91 @@ mod tests {
         assert_eq!(feed.len(), 1);
         assert_eq!(feed[0].pr_number, 2);
         assert_eq!(feed[0].state, "merged");
+    }
+
+    #[test]
+    fn inbox_populate_list_dismiss_and_neighbors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        // Insert two PRs
+        let make_pr = |number: i64| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: number,
+            title: format!("PR #{}", number),
+            url: format!("https://github.com/sledtools/pika/pull/{}", number),
+            state: "open".to_string(),
+            head_sha: format!("sha-{}", number),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+
+        store.upsert_pull_request(&make_pr(1)).unwrap();
+        store.upsert_pull_request(&make_pr(2)).unwrap();
+
+        // Get pr_ids
+        let feed = store.list_feed_items().unwrap();
+        let pr_id_1 = feed.iter().find(|f| f.pr_number == 1).unwrap().pr_id;
+        let pr_id_2 = feed.iter().find(|f| f.pr_number == 2).unwrap().pr_id;
+
+        let npub = "npub1test".to_string();
+        let npubs = vec![npub.clone(), "npub2other".to_string()];
+
+        // Populate inbox for both npubs
+        let count = store.populate_inbox(pr_id_1, &npubs).unwrap();
+        assert_eq!(count, 2); // 2 users got an item
+
+        // Populate second PR with a later timestamp (CURRENT_TIMESTAMP has 1s resolution)
+        store
+            .with_connection(|conn| {
+                for n in &npubs {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO inbox(npub, pr_id, created_at) VALUES (?1, ?2, datetime('now', '+1 second'))",
+                        params![n, pr_id_2],
+                    )
+                    .expect("insert inbox item with offset");
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // Duplicate populate should be ignored
+        let dup = store.populate_inbox(pr_id_1, &npubs).unwrap();
+        assert_eq!(dup, 0);
+
+        // Count
+        let count = store.inbox_count(&npub).unwrap();
+        assert_eq!(count, 2);
+
+        // List (newest first)
+        let items = store.list_inbox(&npub, 50, 0).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].pr_id, pr_id_2); // newest first
+        assert_eq!(items[1].pr_id, pr_id_1);
+
+        // Neighbors: pr_id_2 is first (newest), pr_id_1 is second
+        let (prev, next) = store.inbox_neighbors(&npub, pr_id_2).unwrap();
+        assert_eq!(prev, None); // no newer item
+        assert_eq!(next, Some(pr_id_1)); // older item
+
+        let (prev, next) = store.inbox_neighbors(&npub, pr_id_1).unwrap();
+        assert_eq!(prev, Some(pr_id_2)); // newer item
+        assert_eq!(next, None); // no older item
+
+        // Dismiss one item
+        let dismissed = store.dismiss_inbox_items(&npub, &[pr_id_1]).unwrap();
+        assert_eq!(dismissed, 1);
+        assert_eq!(store.inbox_count(&npub).unwrap(), 1);
+
+        // Dismiss all
+        let dismissed = store.dismiss_all_inbox(&npub).unwrap();
+        assert_eq!(dismissed, 1);
+        assert_eq!(store.inbox_count(&npub).unwrap(), 0);
+
+        // Other user still has their items
+        assert_eq!(store.inbox_count("npub2other").unwrap(), 2);
     }
 }

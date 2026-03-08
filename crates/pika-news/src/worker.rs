@@ -40,6 +40,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
         let model = config.model.clone();
         let api_key_env = config.api_key_env.clone();
         let retry_backoff_secs = config.retry_backoff_secs;
+        let allowed_npubs = config.allowed_npubs.clone();
 
         handles.push(thread::spawn(move || {
             process_job(
@@ -49,6 +50,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
                 &model,
                 &api_key_env,
                 retry_backoff_secs,
+                &allowed_npubs,
             )
         }));
     }
@@ -90,6 +92,7 @@ fn process_job(
     model_name: &str,
     api_key_env: &str,
     retry_backoff_secs: u64,
+    allowed_npubs: &[String],
 ) -> anyhow::Result<JobOutcome> {
     let diff = github
         .fetch_pull_diff(&job.repo, job.pr_number)
@@ -182,6 +185,15 @@ fn process_job(
             gen_output.session_id.as_deref(),
         )
         .with_context(|| format!("mark artifact {} ready", job.artifact_id))?;
+
+    if !allowed_npubs.is_empty() {
+        if let Err(err) = store.populate_inbox(job.pr_id, allowed_npubs) {
+            eprintln!(
+                "warning: failed to populate inbox for pr_id {}: {}",
+                job.pr_id, err
+            );
+        }
+    }
 
     Ok(JobOutcome::Ready)
 }

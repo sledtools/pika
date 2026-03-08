@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
@@ -50,6 +50,13 @@ struct DetailTemplate {
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
+    chat_enabled: bool,
+    review_mode: bool,
+}
+
+#[derive(Template)]
+#[template(path = "inbox.html")]
+struct InboxTemplate {
     chat_enabled: bool,
 }
 
@@ -152,6 +159,15 @@ pub async fn serve(
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
         .route("/news/pr/:pr_id", get(detail_handler))
+        .route("/news/inbox", get(inbox_handler))
+        .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
+        .route("/news/api/inbox", get(api_inbox_list_handler))
+        .route("/news/api/inbox/count", get(api_inbox_count_handler))
+        .route("/news/api/inbox/dismiss", post(api_inbox_dismiss_handler))
+        .route(
+            "/news/api/inbox/neighbors/:pr_id",
+            get(api_inbox_neighbors_handler),
+        )
         .route(
             "/news/pr/:pr_id/auth/challenge",
             post(auth_challenge_handler),
@@ -228,6 +244,21 @@ async fn detail_handler(
     State(state): State<Arc<AppState>>,
     Path(pr_id): Path<i64>,
 ) -> impl IntoResponse {
+    detail_page(state, pr_id, false).await
+}
+
+async fn inbox_review_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+) -> impl IntoResponse {
+    detail_page(state, pr_id, true).await
+}
+
+async fn detail_page(
+    state: Arc<AppState>,
+    pr_id: i64,
+    review_mode: bool,
+) -> axum::response::Response {
     let store = state.store.clone();
     let detail = match tokio::task::spawn_blocking(move || store.get_pr_detail(pr_id)).await {
         Ok(Ok(Some(record))) => record,
@@ -251,7 +282,7 @@ async fn detail_handler(
     };
 
     let chat_enabled = state.auth.chat_enabled();
-    match render_detail_template(detail, chat_enabled) {
+    match render_detail_template(detail, chat_enabled, review_mode) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -284,6 +315,7 @@ fn map_feed_item(item: FeedItem) -> FeedItemView {
 fn render_detail_template(
     record: PrDetailRecord,
     chat_enabled: bool,
+    review_mode: bool,
 ) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
     let mut executive_html = None;
@@ -343,6 +375,7 @@ fn render_detail_template(
                 .replace("</", r"<\/")
         }),
         chat_enabled,
+        review_mode,
     })
 }
 
@@ -688,6 +721,171 @@ async fn regenerate_handler(
             Json(serde_json::json!({"error": "no artifact found for this PR"})),
         )
             .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// --- Inbox handlers ---
+
+async fn inbox_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let template = InboxTemplate {
+        chat_enabled: state.auth.chat_enabled(),
+    };
+    match template.render() {
+        Ok(rendered) => Html(rendered).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to render inbox template: {}", err),
+        )
+            .into_response(),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn require_auth(
+    auth: &AuthState,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, axum::response::Response> {
+    let token = extract_token(headers).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "missing auth token"})),
+        )
+            .into_response()
+    })?;
+    auth.validate_token(&token).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid or expired token"})),
+        )
+            .into_response()
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct InboxListParams {
+    page: Option<i64>,
+}
+
+async fn api_inbox_list_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<InboxListParams>,
+) -> impl IntoResponse {
+    let npub = match require_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let page = params.page.unwrap_or(1).max(1);
+    let offset = (page - 1) * 50;
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || {
+        let items = store.list_inbox(&npub, 50, offset)?;
+        let count = store.inbox_count(&npub)?;
+        Ok::<_, anyhow::Error>((items, count))
+    })
+    .await
+    {
+        Ok(Ok((items, total))) => {
+            Json(serde_json::json!({"items": items, "total": total, "page": page})).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_inbox_count_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.inbox_count(&npub)).await {
+        Ok(Ok(count)) => Json(serde_json::json!({"count": count})).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct InboxDismissRequest {
+    pr_ids: Option<Vec<i64>>,
+    all: Option<bool>,
+}
+
+async fn api_inbox_dismiss_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<InboxDismissRequest>,
+) -> impl IntoResponse {
+    let npub = match require_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let store = state.store.clone();
+    let dismissed = if body.all.unwrap_or(false) {
+        tokio::task::spawn_blocking(move || store.dismiss_all_inbox(&npub)).await
+    } else {
+        let pr_ids = body.pr_ids.unwrap_or_default();
+        tokio::task::spawn_blocking(move || store.dismiss_inbox_items(&npub, &pr_ids)).await
+    };
+    match dismissed {
+        Ok(Ok(count)) => Json(serde_json::json!({"dismissed": count})).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_inbox_neighbors_handler(
+    State(state): State<Arc<AppState>>,
+    Path(pr_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.inbox_neighbors(&npub, pr_id)).await {
+        Ok(Ok((prev, next))) => {
+            Json(serde_json::json!({"prev": prev, "next": next})).into_response()
+        }
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

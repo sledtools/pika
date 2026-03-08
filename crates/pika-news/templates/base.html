@@ -54,6 +54,9 @@
       .nav-user .npub-display { font-family: monospace; font-size: 0.8rem; background: var(--badge-bg); padding: 0.2rem 0.5rem; border-radius: 6px; }
       .regen-btn { background: var(--btn-bg-hover); border: 1px solid var(--input-border); color: var(--text-secondary); font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
       .regen-btn:hover { background: var(--btn-bg-active); }
+      .inbox-link { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-secondary); text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 8px; background: var(--btn-bg); border: 1px solid var(--border); }
+      .inbox-link:hover { background: var(--btn-bg-hover); text-decoration: none; }
+      .inbox-badge { background: var(--accent); color: #fff; font-size: 0.72rem; padding: 0.05rem 0.45rem; border-radius: 999px; font-weight: 600; min-width: 1.2rem; text-align: center; }
 
       {% block styles %}{% endblock %}
     </style>
@@ -68,6 +71,7 @@
         </span>
         <span id="user-actions" style="display:none;">
           <span class="nav-user">
+            <a href="/news/inbox" class="inbox-link" id="inbox-link">Inbox <span id="inbox-badge" class="inbox-badge" style="display:none;">0</span></a>
             <span class="npub-display" id="user-npub"></span>
             <button id="regen-btn" class="regen-btn" type="button" style="display:none;">Regenerate</button>
           </span>
@@ -109,6 +113,27 @@
           npubDisplay.title = npub || '';
           // Dispatch event so page-specific JS can react
           window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub } }));
+          // Fetch inbox count for badge
+          fetchInboxCount();
+        }
+
+        function fetchInboxCount() {
+          var token = sessionStorage.getItem('pika_news_token');
+          if (!token) return;
+          var badge = document.getElementById('inbox-badge');
+          if (!badge) return;
+          fetch('/news/api/inbox/count', { headers: { 'Authorization': 'Bearer ' + token } })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (!data) return;
+              if (data.count > 0) {
+                badge.textContent = data.count > 99 ? '99+' : data.count;
+                badge.style.display = '';
+              } else {
+                badge.style.display = 'none';
+              }
+            })
+            .catch(function () {});
         }
 
         // We need a pr_id for the challenge endpoint; use any PR or a dedicated auth route

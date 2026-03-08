@@ -510,6 +510,22 @@ Phase 6 ssh launcher-transport prototype notes:
 - What is still missing: execute orchestration is still local, the remote transport still relies on explicit path/install assumptions, and there is still no remote launcher-result/report contract beyond transport exit plus helper result validation.
 - Next recommended slice: either add one tiny launcher-transport result/report contract for the ssh path, or do one explicit `pika-build` integration check and document the exact remote installation assumptions that held up in practice.
 
+Phase 6 first real `pika-build` remote-fulfillment notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has one explicit dev-only entrypoint for the real remote fulfillment experiment:
+  - `just pikaci-remote-fulfill-deploy` deploys the `pikaci` package onto `pika-build`,
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` runs the staged `pre-merge-pika-rust` lane with remote prepared-output fulfillment over `ssh`.
+- The `pika-build` assumptions are now locked down in code instead of implied:
+  - `pikaci-launch-fulfill-prepared-output` must exist at `/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output`,
+  - `pikaci-fulfill-prepared-output` must exist at `/run/current-system/sw/bin/pikaci-fulfill-prepared-output`,
+  - the remote work dir defaults to `/var/tmp/pikaci-prepared-output`,
+  - the remote host defaults to `pika-build`,
+  - and the local invocation builds the host-side `pikaci` binaries first so the launcher/helper contract stays symmetric across the boundary.
+- What this slice proves: the ssh-style launcher transport is no longer just unit-tested; there is now one repeatable developer command path intended to exercise it against the real `pika-build` host with the existing local execute path unchanged.
+- What is still missing: the run is still remote-fulfillment-only, not remote execute orchestration, and the first real host attempts may still reveal launcher/result diagnostics or remote environment assumptions worth tightening.
+- Next recommended slice: run the entrypoint enough times to lock down any missing `pika-build` assumptions, then add only the smallest follow-up needed for any real host failure that appears.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -547,5 +563,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, and thirteenth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up that either adds a tiny launcher-transport result/report contract for the ssh path or exercises the new ssh-style prototype against `pika-build` explicitly enough to lock down the remote installation assumptions, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
+- Current recommended slice is one narrow follow-up driven by the first real `pika-build` experiments: keep the new dev entrypoint, preserve the Nix-backed contract, and only fix the smallest concrete remote-host assumption or diagnostic gap that shows up in practice.

@@ -147,6 +147,25 @@
         buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];
       };
 
+      pikaciServerPkg = serverPkgs.rustPlatform.buildRustPackage {
+        pname = "pikaci";
+        version = "0.1.0";
+        src = rustWorkspaceSrc;
+        cargoLock = {
+          lockFile = ./Cargo.lock;
+          outputHashes = {
+            "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+            "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+          };
+        };
+        cargoBuildFlags = [ "-p" "pikaci" ];
+        doCheck = false;
+        meta = {
+          mainProgram = "pikaci";
+        };
+      };
+
       piAgentPkg = serverPkgs.buildNpmPackage rec {
         pname = "pi-coding-agent-runtime";
         version = "0.54.2";
@@ -673,6 +692,7 @@ EOF
         vm-spawner = vmSpawnerPkg;
         pi-agent-runtime = piAgentPkg;
         pikachat = pikachatPkg;
+        pikaci = pikaciServerPkg;
       };
 
       nixosConfigurations = {
@@ -693,7 +713,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikachatPkg; };
+          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops

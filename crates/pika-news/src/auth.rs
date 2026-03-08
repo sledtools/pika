@@ -7,25 +7,32 @@ use nostr::key::PublicKey;
 use nostr::nips::nip19::ToBech32;
 use rand::Rng;
 
+use crate::storage::Store;
+
 const CHALLENGE_TTL: Duration = Duration::from_secs(120);
-const TOKEN_TTL: Duration = Duration::from_secs(3600 * 24);
+const TOKEN_TTL_DAYS: i64 = 90;
 
 pub struct AuthState {
     challenges: Mutex<HashMap<String, (String, Instant)>>,
-    tokens: Mutex<HashMap<String, (String, Instant)>>,
+    store: Store,
     allowed_npubs_hex: Vec<String>,
 }
 
 impl AuthState {
-    pub fn new(allowed_npubs: &[String]) -> Self {
+    pub fn new(allowed_npubs: &[String], store: Store) -> Self {
         let allowed_npubs_hex = allowed_npubs
             .iter()
             .filter_map(|npub| PublicKey::parse(npub).ok().map(|pk| pk.to_hex()))
             .collect();
 
+        // Clean up expired tokens on startup
+        if let Err(e) = store.cleanup_expired_tokens(TOKEN_TTL_DAYS) {
+            eprintln!("warning: failed to cleanup expired tokens: {}", e);
+        }
+
         Self {
             challenges: Mutex::new(HashMap::new()),
-            tokens: Mutex::new(HashMap::new()),
+            store,
             allowed_npubs_hex,
         }
     }
@@ -69,30 +76,25 @@ impl AuthState {
             }
         }
 
-        // Issue token
+        // Issue token and persist to SQLite
         let token = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
         let npub = PublicKey::from_hex(&pubkey_hex)
             .ok()
             .and_then(|pk| pk.to_bech32().ok())
             .unwrap_or(pubkey_hex.clone());
-        {
-            let mut tokens = self.tokens.lock().unwrap();
-            tokens.retain(|_, (_, created)| created.elapsed() < TOKEN_TTL);
-            tokens.insert(token.clone(), (npub.clone(), Instant::now()));
-        }
+
+        self.store
+            .insert_auth_token(&token, &npub)
+            .map_err(|e| format!("failed to persist token: {}", e))?;
 
         Ok((token, npub))
     }
 
     pub fn validate_token(&self, token: &str) -> Option<String> {
-        let tokens = self.tokens.lock().unwrap();
-        tokens.get(token).and_then(|(npub, created)| {
-            if created.elapsed() < TOKEN_TTL {
-                Some(npub.clone())
-            } else {
-                None
-            }
-        })
+        self.store
+            .validate_auth_token(token, TOKEN_TTL_DAYS)
+            .ok()
+            .flatten()
     }
 
     pub fn chat_enabled(&self) -> bool {

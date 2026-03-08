@@ -3837,7 +3837,9 @@ impl AppCore {
             group_result
         };
 
-        // Deliver welcomes (gift-wrapped kind 444) to the peer.
+        // App create is intentionally eager/local here: the group is refreshed
+        // into local state immediately, while welcome delivery continues in the
+        // background as a best-effort side effect.
         if network_enabled {
             self.publish_welcomes_to_peer(
                 peer_pubkey,
@@ -7251,6 +7253,107 @@ mod tests {
             assert!(!core.state.busy.creating_chat);
             // No error toast — success path.
             assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn add_members_does_not_merge_until_evolution_publish_succeeds() {
+            let (mut core, chat_id, _keys, gid) = make_core_with_group();
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            let initial_members = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get initial members")
+                .len();
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some(chat_id.clone()),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            let before_merge = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get members before merge")
+                .len();
+            assert_eq!(
+                before_merge, initial_members,
+                "app add-members should leave the pending commit unmerged until publish confirmation"
+            );
+
+            core.handle_group_evolution_published(chat_id, gid.clone(), None, vec![], true, None);
+
+            let after_merge = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get members after merge")
+                .len();
+            assert_eq!(
+                after_merge,
+                initial_members + 1,
+                "successful evolution publish should merge the pending commit"
+            );
+        }
+
+        #[test]
+        fn add_members_publish_failure_leaves_pending_commit_unmerged() {
+            let (mut core, chat_id, _keys, gid) = make_core_with_group();
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+
+            let initial_members = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get initial members")
+                .len();
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: String::new(),
+                existing_chat_id: Some(chat_id.clone()),
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![],
+            });
+
+            core.handle_group_evolution_published(
+                chat_id,
+                gid.clone(),
+                None,
+                vec![],
+                false,
+                Some("relay error".to_string()),
+            );
+
+            let members_after_failure = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get members after failed publish")
+                .len();
+            assert_eq!(
+                members_after_failure, initial_members,
+                "failed evolution publish should not merge the pending commit"
+            );
         }
     }
 

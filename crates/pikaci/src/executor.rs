@@ -70,24 +70,12 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
     ensure_supported_host()?;
     ensure_linux_builder()?;
 
-    let installable = materialize_vfkit_runner_flake(job, ctx)?;
     let vm_dir = ctx.job_dir.join("vm");
     let runner_link = vm_dir.join("runner");
-
-    if runner_link.exists() {
-        let _ = fs::remove_file(&runner_link);
+    if !runner_link.exists() {
+        let installable = materialize_vfkit_runner_flake(job, ctx)?;
+        prepare_vfkit_runner_link(&installable, &runner_link, &ctx.host_log_path)?;
     }
-
-    run_command_to_log(
-        Command::new("nix")
-            .arg("build")
-            .arg("--accept-flake-config")
-            .arg("-o")
-            .arg(&runner_link)
-            .arg(installable),
-        &ctx.host_log_path,
-        "[pikaci] build runner",
-    )?;
 
     let runner_dir = fs::read_link(&runner_link)
         .with_context(|| format!("resolve {}", runner_link.display()))?;
@@ -185,6 +173,32 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
             .message
             .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
     })
+}
+
+pub(crate) fn prepare_vfkit_runner_link(
+    installable: &str,
+    runner_link: &Path,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    if runner_link.exists() || runner_link.is_symlink() {
+        fs::remove_file(runner_link)
+            .or_else(|_| fs::remove_dir_all(runner_link))
+            .with_context(|| format!("remove stale {}", runner_link.display()))?;
+    }
+    if let Some(parent) = runner_link.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
+    run_command_to_log(
+        Command::new("nix")
+            .arg("build")
+            .arg("--accept-flake-config")
+            .arg("-o")
+            .arg(runner_link)
+            .arg(installable),
+        log_path,
+        "[pikaci] build runner",
+    )
 }
 
 pub(crate) fn materialize_vfkit_runner_flake(
@@ -1339,12 +1353,12 @@ mod tests {
     #[test]
     fn guest_flake_mounts_staged_linux_rust_outputs_for_pika_core_lane() {
         let spec = JobSpec {
-            id: "pika-core-lib-tests",
+            id: "pika-core-lib-app-flows-tests",
             description: "test",
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
-                command: "cargo test -p pika_core --lib --tests -- --nocapture",
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
         };
         let flake = render_guest_flake(
@@ -1352,20 +1366,22 @@ mod tests {
             Path::new("/tmp/pikaci/snapshot"),
             true,
             &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/pika-core-lib-tests/artifacts"),
+                artifacts_dir: Path::new(
+                    "/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/artifacts",
+                ),
                 cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: Some(Path::new("/nix/store/workspace-deps")),
                 staged_linux_rust_workspace_build_dir: Some(Path::new(
                     "/nix/store/workspace-build",
                 )),
-                socket_path: Path::new("/tmp/pikaci-pika-core-lib-tests.sock"),
+                socket_path: Path::new("/tmp/pikaci-pika-core-lib-app-flows-tests.sock"),
             },
         )
         .expect("render flake");
 
         assert!(flake.contains(
-            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests\";"
+            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests\";"
         ));
         assert!(flake.contains("stagedLinuxRustWorkspaceDepsDir = \"/nix/store/workspace-deps\";"));
         assert!(

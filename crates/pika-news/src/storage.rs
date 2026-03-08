@@ -698,6 +698,49 @@ impl Store {
             Ok((prev, next))
         })
     }
+
+    // --- Auth token methods ---
+
+    pub fn insert_auth_token(&self, token: &str, npub: &str) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO auth_tokens(token, npub) VALUES (?1, ?2)",
+                params![token, npub],
+            )
+            .context("insert auth token")?;
+            Ok(())
+        })
+    }
+
+    pub fn validate_auth_token(
+        &self,
+        token: &str,
+        ttl_days: i64,
+    ) -> anyhow::Result<Option<String>> {
+        self.with_connection(|conn| {
+            let modifier = format!("-{} days", ttl_days);
+            conn.query_row(
+                "SELECT npub FROM auth_tokens WHERE token = ?1 AND created_at > datetime('now', ?2)",
+                params![token, modifier],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("validate auth token")
+        })
+    }
+
+    pub fn cleanup_expired_tokens(&self, ttl_days: i64) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let modifier = format!("-{} days", ttl_days);
+            let rows = conn
+                .execute(
+                    "DELETE FROM auth_tokens WHERE created_at <= datetime('now', ?1)",
+                    params![modifier],
+                )
+                .context("cleanup expired tokens")?;
+            Ok(rows)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -919,6 +962,11 @@ fn migrations() -> Vec<Migration> {
             version: 4,
             name: "0004_inbox",
             sql: include_str!("../migrations/0004_inbox.sql"),
+        },
+        Migration {
+            version: 5,
+            name: "0005_auth_tokens",
+            sql: include_str!("../migrations/0005_auth_tokens.sql"),
         },
     ]
 }

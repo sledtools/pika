@@ -100,7 +100,7 @@ pub async fn serve(
     bind_addr: String,
     max_prs: usize,
 ) -> anyhow::Result<()> {
-    let auth = Arc::new(AuthState::new(&config.allowed_npubs));
+    let auth = Arc::new(AuthState::new(&config.allowed_npubs, store.clone()));
     let poll_notify = Arc::new(Notify::new());
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
     if webhook_secret.is_some() {

@@ -1,15 +1,19 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, anyhow};
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_vfkit_runner_flake, run_job_on_runner,
+    HostContext, compiled_guest_command, materialize_vfkit_runner_flake, prepare_vfkit_runner_link,
+    run_job_on_runner,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -133,28 +137,112 @@ fn run_jobs_against_snapshot(
     };
     write_run_record(&prepared.run_dir, &run_record)?;
 
+    let prepared_node_ids = match run_prepare_nodes(&plan.prepares) {
+        Ok(node_ids) => node_ids,
+        Err(failure) => {
+            mark_prepare_failure(&mut run_record, &plan, &failure)?;
+            run_record.status = RunStatus::Failed;
+            run_record.finished_at = Some(Utc::now().to_rfc3339());
+            write_run_record(&prepared.run_dir, &run_record)?;
+            return Ok(run_record);
+        }
+    };
+
     let mut run_failed = false;
-    for planned_job in &plan.jobs {
-        let job_record = run_one_job(
-            &planned_job.job,
-            &planned_job.execute_node_id,
-            &planned_job.ctx,
-            planned_job.staged_linux_rust_prepare.as_ref(),
-        )?;
+    let mut completed_node_ids: HashSet<String> = prepared_node_ids.into_iter().collect();
+    let mut pending: Vec<usize> = (0..plan.jobs.len()).collect();
+    let mut active: HashMap<usize, PlannedJob> = HashMap::new();
+    let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<JobRecord>)>();
+    let max_parallel = max_parallel_execute_jobs(&plan.jobs);
+    let mut stop_scheduling = false;
+
+    while !pending.is_empty() || !active.is_empty() {
+        while !stop_scheduling && active.len() < max_parallel {
+            let Some(next_ready_pos) =
+                ready_execute_job_positions(&pending, &plan.jobs, &completed_node_ids)
+                    .into_iter()
+                    .next()
+            else {
+                break;
+            };
+            let planned_job_index = pending.remove(next_ready_pos);
+            let planned_job = plan.jobs[planned_job_index].clone();
+            let running_record = running_job_record(
+                &planned_job.job,
+                &planned_job.execute_node_id,
+                &planned_job.ctx,
+            );
+            write_job_record(&planned_job.ctx.job_dir, &running_record)?;
+            upsert_run_job_record(&mut run_record, running_record);
+            write_run_record(&prepared.run_dir, &run_record)?;
+
+            let tx = tx.clone();
+            let planned_job_for_thread = planned_job.clone();
+            thread::spawn(move || {
+                let result = run_one_job(
+                    &planned_job_for_thread.job,
+                    &planned_job_for_thread.execute_node_id,
+                    &planned_job_for_thread.ctx,
+                );
+                let _ = tx.send((planned_job_index, result));
+            });
+            active.insert(planned_job_index, planned_job);
+        }
+
+        if active.is_empty() {
+            if pending.is_empty() || stop_scheduling {
+                break;
+            }
+            return Err(anyhow!(
+                "no ready execute nodes for run `{}`; unresolved dependencies in plan",
+                prepared.run_id
+            ));
+        }
+
+        let (planned_job_index, result) = rx
+            .recv()
+            .map_err(|err| anyhow!("wait for scheduled execute node: {err}"))?;
+        let planned_job = active.remove(&planned_job_index).ok_or_else(|| {
+            anyhow!("missing active job for scheduler slot `{planned_job_index}`")
+        })?;
+        let job_record = match result {
+            Ok(record) => record,
+            Err(err) => failed_job_record(
+                &planned_job.job,
+                &planned_job.execute_node_id,
+                &planned_job.ctx,
+                format!("{err:#}"),
+                None,
+            ),
+        };
         if job_record.status == RunStatus::Failed {
             run_failed = true;
+            stop_scheduling = true;
         }
-        run_record.jobs.push(job_record);
+        completed_node_ids.insert(planned_job.execute_node_id.clone());
+        upsert_run_job_record(&mut run_record, job_record);
         run_record.status = if run_failed {
             RunStatus::Failed
         } else {
             RunStatus::Running
         };
         write_run_record(&prepared.run_dir, &run_record)?;
-        if run_failed {
-            break;
+    }
+
+    if run_failed {
+        for index in pending {
+            let planned_job = &plan.jobs[index];
+            let skipped = skipped_job_record(
+                &planned_job.job,
+                &planned_job.execute_node_id,
+                &planned_job.ctx,
+                "not run because an earlier execute node failed".to_string(),
+            );
+            write_job_record(&planned_job.ctx.job_dir, &skipped)?;
+            upsert_run_job_record(&mut run_record, skipped);
         }
     }
+
     run_record.status = if run_failed {
         RunStatus::Failed
     } else {
@@ -196,40 +284,9 @@ pub fn record_skipped_run(
     Ok(run_record)
 }
 
-fn run_one_job(
-    job: &JobSpec,
-    plan_node_id: &str,
-    ctx: &HostContext,
-    staged_linux_rust_prepare: Option<&StagedLinuxRustPrepare>,
-) -> anyhow::Result<JobRecord> {
-    let job_dir = ctx.job_dir.clone();
-    let host_log_path = ctx.host_log_path.clone();
-    let guest_log_path = ctx.guest_log_path.clone();
-    fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
-
-    let started_at = Utc::now().to_rfc3339();
-    let mut job_record = JobRecord {
-        id: job.id.to_string(),
-        description: job.description.to_string(),
-        status: RunStatus::Running,
-        executor: job.runner_kind().as_str().to_string(),
-        plan_node_id: Some(plan_node_id.to_string()),
-        timeout_secs: job.timeout_secs,
-        host_log_path: host_log_path.display().to_string(),
-        guest_log_path: guest_log_path.display().to_string(),
-        started_at,
-        finished_at: None,
-        exit_code: None,
-        message: None,
-    };
-    write_job_record(&job_dir, &job_record)?;
-
-    let mut ctx = ctx.clone();
-    if let Some(staged_linux_rust_prepare) = staged_linux_rust_prepare {
-        prepare_staged_linux_rust_host_context(&mut ctx, staged_linux_rust_prepare)?;
-    }
-
-    let outcome = run_job_on_runner(job, &ctx);
+fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::Result<JobRecord> {
+    let mut job_record = running_job_record(job, plan_node_id, ctx);
+    let outcome = run_job_on_runner(job, ctx);
 
     let finished_at = Utc::now().to_rfc3339();
     match outcome {
@@ -245,8 +302,55 @@ fn run_one_job(
             job_record.message = Some(format!("{err:#}"));
         }
     }
-    write_job_record(&job_dir, &job_record)?;
+    write_job_record(&ctx.job_dir, &job_record)?;
     Ok(job_record)
+}
+
+fn running_job_record(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> JobRecord {
+    JobRecord {
+        id: job.id.to_string(),
+        description: job.description.to_string(),
+        status: RunStatus::Running,
+        executor: job.runner_kind().as_str().to_string(),
+        plan_node_id: Some(plan_node_id.to_string()),
+        timeout_secs: job.timeout_secs,
+        host_log_path: ctx.host_log_path.display().to_string(),
+        guest_log_path: ctx.guest_log_path.display().to_string(),
+        started_at: Utc::now().to_rfc3339(),
+        finished_at: None,
+        exit_code: None,
+        message: None,
+    }
+}
+
+fn failed_job_record(
+    job: &JobSpec,
+    plan_node_id: &str,
+    ctx: &HostContext,
+    message: String,
+    exit_code: Option<i32>,
+) -> JobRecord {
+    JobRecord {
+        status: RunStatus::Failed,
+        finished_at: Some(Utc::now().to_rfc3339()),
+        exit_code,
+        message: Some(message),
+        ..running_job_record(job, plan_node_id, ctx)
+    }
+}
+
+fn skipped_job_record(
+    job: &JobSpec,
+    plan_node_id: &str,
+    ctx: &HostContext,
+    message: String,
+) -> JobRecord {
+    JobRecord {
+        status: RunStatus::Skipped,
+        finished_at: Some(Utc::now().to_rfc3339()),
+        message: Some(message),
+        ..running_job_record(job, plan_node_id, ctx)
+    }
 }
 
 fn prepare_job_workspace(
@@ -396,21 +500,45 @@ fn new_run_id() -> String {
     )
 }
 
+#[derive(Clone)]
+enum PrepareAction {
+    NixBuildOutput {
+        installable: String,
+        output_name: &'static str,
+        mount_paths: Vec<PathBuf>,
+        log_paths: Vec<PathBuf>,
+    },
+    VfkitRunner {
+        installable: String,
+        runner_link: PathBuf,
+        log_paths: Vec<PathBuf>,
+    },
+}
+
+#[derive(Clone)]
+struct PlannedPrepare {
+    node_id: String,
+    depends_on: Vec<String>,
+    action: PrepareAction,
+}
+
+struct PrepareFailure {
+    node_id: String,
+    message: String,
+}
+
+#[derive(Clone)]
 struct PlannedJob {
     job: JobSpec,
     execute_node_id: String,
+    depends_on: Vec<String>,
     ctx: HostContext,
-    staged_linux_rust_prepare: Option<StagedLinuxRustPrepare>,
 }
 
 struct RunPlan {
     record: RunPlanRecord,
+    prepares: Vec<PlannedPrepare>,
     jobs: Vec<PlannedJob>,
-}
-
-struct StagedLinuxRustPrepare {
-    workspace_deps_installable: String,
-    workspace_build_installable: String,
 }
 
 struct PreparedRun {
@@ -436,7 +564,9 @@ fn build_run_plan(
     snapshot: &SnapshotSource,
     metadata: &RunMetadata,
 ) -> anyhow::Result<RunPlan> {
-    let mut nodes = Vec::new();
+    let mut prepare_nodes = HashMap::new();
+    let mut planned_prepares = Vec::new();
+    let mut execute_nodes = Vec::new();
     let mut planned_jobs = Vec::new();
 
     for job in jobs {
@@ -457,65 +587,132 @@ fn build_run_plan(
                 .staged_linux_rust_lane()
                 .map(|_| job_dir.join("staged-linux-rust").join("workspace-build")),
         };
+        ensure_log_file(&ctx.host_log_path)?;
+        ensure_log_file(&ctx.guest_log_path)?;
+
         let mut depends_on = Vec::new();
-        let staged_linux_rust_prepare = job.staged_linux_rust_lane().map(|lane| {
-            let deps_node_id = format!("prepare-{}-workspace-deps", job.id);
-            let build_node_id = format!("prepare-{}-workspace-build", job.id);
+        if let Some(lane) = job.staged_linux_rust_lane() {
+            let prefix = lane.shared_prepare_node_prefix();
+            let deps_node_id = format!("prepare-{prefix}-workspace-deps");
+            let build_node_id = format!("prepare-{prefix}-workspace-build");
             let workspace_deps_installable =
                 staged_linux_rust_installable(&snapshot.snapshot_dir, lane, true);
             let workspace_build_installable =
                 staged_linux_rust_installable(&snapshot.snapshot_dir, lane, false);
-            nodes.push(PlanNodeRecord::Prepare {
-                id: deps_node_id.clone(),
-                description: format!("Build staged Linux Rust dependencies for `{}`", job.id),
-                executor: PlanExecutorKind::HostLocal,
-                depends_on: Vec::new(),
-                prepare: PrepareNode::NixBuild {
-                    installable: workspace_deps_installable.clone(),
-                    output_name: lane.workspace_deps_output_name().to_string(),
-                },
-            });
-            nodes.push(PlanNodeRecord::Prepare {
-                id: build_node_id.clone(),
-                description: format!("Build staged Linux Rust test artifacts for `{}`", job.id),
-                executor: PlanExecutorKind::HostLocal,
-                depends_on: vec![deps_node_id.clone()],
-                prepare: PrepareNode::NixBuild {
-                    installable: workspace_build_installable.clone(),
-                    output_name: lane.workspace_build_output_name().to_string(),
-                },
-            });
+
+            prepare_nodes
+                .entry(deps_node_id.clone())
+                .or_insert_with(|| {
+                    planned_prepares.push(PlannedPrepare {
+                        node_id: deps_node_id.clone(),
+                        depends_on: Vec::new(),
+                        action: PrepareAction::NixBuildOutput {
+                            installable: workspace_deps_installable.clone(),
+                            output_name: lane.workspace_deps_output_name(),
+                            mount_paths: Vec::new(),
+                            log_paths: Vec::new(),
+                        },
+                    });
+                    PlanNodeRecord::Prepare {
+                        id: deps_node_id.clone(),
+                        description: format!(
+                            "Build staged Linux Rust dependencies for {}",
+                            lane.shared_prepare_description()
+                        ),
+                        executor: PlanExecutorKind::HostLocal,
+                        depends_on: Vec::new(),
+                        prepare: PrepareNode::NixBuild {
+                            installable: workspace_deps_installable.clone(),
+                            output_name: lane.workspace_deps_output_name().to_string(),
+                        },
+                    }
+                });
+            prepare_nodes
+                .entry(build_node_id.clone())
+                .or_insert_with(|| {
+                    planned_prepares.push(PlannedPrepare {
+                        node_id: build_node_id.clone(),
+                        depends_on: vec![deps_node_id.clone()],
+                        action: PrepareAction::NixBuildOutput {
+                            installable: workspace_build_installable.clone(),
+                            output_name: lane.workspace_build_output_name(),
+                            mount_paths: Vec::new(),
+                            log_paths: Vec::new(),
+                        },
+                    });
+                    PlanNodeRecord::Prepare {
+                        id: build_node_id.clone(),
+                        description: format!(
+                            "Build staged Linux Rust test artifacts for {}",
+                            lane.shared_prepare_description()
+                        ),
+                        executor: PlanExecutorKind::HostLocal,
+                        depends_on: vec![deps_node_id.clone()],
+                        prepare: PrepareNode::NixBuild {
+                            installable: workspace_build_installable.clone(),
+                            output_name: lane.workspace_build_output_name().to_string(),
+                        },
+                    }
+                });
+
+            add_staged_mount_consumer(
+                &mut planned_prepares,
+                &deps_node_id,
+                ctx.staged_linux_rust_workspace_deps_dir
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceDeps mount path"))?,
+                &ctx.host_log_path,
+            );
+            add_staged_mount_consumer(
+                &mut planned_prepares,
+                &build_node_id,
+                ctx.staged_linux_rust_workspace_build_dir
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow!("missing staged Linux Rust workspaceBuild mount path")
+                    })?,
+                &ctx.host_log_path,
+            );
             depends_on.push(deps_node_id);
             depends_on.push(build_node_id);
-            StagedLinuxRustPrepare {
-                workspace_deps_installable,
-                workspace_build_installable,
-            }
-        });
+        }
         if job.runner_kind() == RunnerKind::VfkitLocal {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let installable = materialize_vfkit_runner_flake(job, &ctx)?;
-            nodes.push(PlanNodeRecord::Prepare {
-                id: prepare_node_id.clone(),
-                description: format!("Build vfkit runner for `{}`", job.id),
-                executor: PlanExecutorKind::HostLocal,
+            planned_prepares.push(PlannedPrepare {
+                node_id: prepare_node_id.clone(),
                 depends_on: Vec::new(),
-                prepare: PrepareNode::NixBuild {
-                    installable,
-                    output_name: "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                        .to_string(),
+                action: PrepareAction::VfkitRunner {
+                    installable: installable.clone(),
+                    runner_link: ctx.job_dir.join("vm").join("runner"),
+                    log_paths: vec![ctx.host_log_path.clone()],
                 },
             });
+            prepare_nodes.insert(
+                prepare_node_id.clone(),
+                PlanNodeRecord::Prepare {
+                    id: prepare_node_id.clone(),
+                    description: format!("Build vfkit runner for `{}`", job.id),
+                    executor: PlanExecutorKind::HostLocal,
+                    depends_on: Vec::new(),
+                    prepare: PrepareNode::NixBuild {
+                        installable,
+                        output_name:
+                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                                .to_string(),
+                    },
+                },
+            );
             depends_on.push(prepare_node_id);
         }
 
         let execute_node_id = format!("execute-{}", job.id);
         let (command, run_as_root) = compiled_guest_command(job);
-        nodes.push(PlanNodeRecord::Execute {
+        execute_nodes.push(PlanNodeRecord::Execute {
             id: execute_node_id.clone(),
             description: job.description.to_string(),
             executor: job.runner_kind().into(),
-            depends_on,
+            depends_on: depends_on.clone(),
             execute: ExecuteNode::VmCommand {
                 command,
                 run_as_root,
@@ -526,11 +723,21 @@ fn build_run_plan(
         planned_jobs.push(PlannedJob {
             job: job.clone(),
             execute_node_id,
+            depends_on,
             ctx,
-            staged_linux_rust_prepare,
         });
     }
 
+    let mut nodes: Vec<PlanNodeRecord> = planned_prepares
+        .iter()
+        .map(|prepare| {
+            prepare_nodes
+                .get(&prepare.node_id)
+                .cloned()
+                .expect("missing prepare node record")
+        })
+        .collect();
+    nodes.extend(execute_nodes);
     Ok(RunPlan {
         record: RunPlanRecord {
             schema_version: 1,
@@ -545,6 +752,7 @@ fn build_run_plan(
             ],
             nodes,
         },
+        prepares: planned_prepares,
         jobs: planned_jobs,
     })
 }
@@ -562,39 +770,32 @@ fn staged_linux_rust_installable(
     format!("path:{}#{output_name}", snapshot_dir.display())
 }
 
-fn prepare_staged_linux_rust_host_context(
-    ctx: &mut HostContext,
-    staged_linux_rust_prepare: &StagedLinuxRustPrepare,
-) -> anyhow::Result<()> {
-    let workspace_deps_output = realize_nix_build_output(
-        &staged_linux_rust_prepare.workspace_deps_installable,
-        "workspaceDeps",
-        &ctx.host_log_path,
-    )?;
-    let workspace_build_output = realize_nix_build_output(
-        &staged_linux_rust_prepare.workspace_build_installable,
-        "workspaceBuild",
-        &ctx.host_log_path,
-    )?;
-    let workspace_deps_dir = ctx
-        .staged_linux_rust_workspace_deps_dir
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceDeps mount path"))?;
-    let workspace_build_dir = ctx
-        .staged_linux_rust_workspace_build_dir
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceBuild mount path"))?;
-    repoint_prepare_mount(workspace_deps_dir, &workspace_deps_output)?;
-    repoint_prepare_mount(workspace_build_dir, &workspace_build_output)?;
-    append_log_line(
-        &ctx.host_log_path,
-        &format!(
-            "[pikaci] staged Linux Rust outputs ready: workspaceDeps={} workspaceBuild={}",
-            workspace_deps_dir.display(),
-            workspace_build_dir.display()
-        ),
-    )?;
-    Ok(())
+fn add_staged_mount_consumer(
+    prepares: &mut [PlannedPrepare],
+    node_id: &str,
+    mount_path: &Path,
+    log_path: &Path,
+) {
+    let Some(prepare) = prepares
+        .iter_mut()
+        .find(|prepare| prepare.node_id == node_id)
+    else {
+        return;
+    };
+    let PrepareAction::NixBuildOutput {
+        mount_paths,
+        log_paths,
+        ..
+    } = &mut prepare.action
+    else {
+        return;
+    };
+    if !mount_paths.iter().any(|path| path == mount_path) {
+        mount_paths.push(mount_path.to_path_buf());
+    }
+    if !log_paths.iter().any(|path| path == log_path) {
+        log_paths.push(log_path.to_path_buf());
+    }
 }
 
 fn repoint_prepare_mount(mount_path: &Path, output_path: &Path) -> anyhow::Result<()> {
@@ -618,10 +819,10 @@ fn repoint_prepare_mount(mount_path: &Path, output_path: &Path) -> anyhow::Resul
 fn realize_nix_build_output(
     installable: &str,
     output_name: &str,
-    log_path: &Path,
+    log_paths: &[PathBuf],
 ) -> anyhow::Result<PathBuf> {
-    append_log_line(
-        log_path,
+    append_log_line_many(
+        log_paths,
         &format!(
             "[pikaci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
         ),
@@ -634,12 +835,15 @@ fn realize_nix_build_output(
         .arg(installable)
         .output()
         .with_context(|| format!("run staged prepare `{output_name}`"))?;
-    append_command_output(log_path, &output.stdout, &output.stderr)?;
+    append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
     if !output.status.success() {
         return Err(anyhow!(
             "staged prepare `{output_name}` failed with {:?}; see {}",
             output.status.code(),
-            log_path.display()
+            log_paths
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<no log>".to_string())
         ));
     }
 
@@ -652,6 +856,186 @@ fn realize_nix_build_output(
     Ok(PathBuf::from(path.trim()))
 }
 
+fn run_prepare_nodes(prepares: &[PlannedPrepare]) -> Result<Vec<String>, PrepareFailure> {
+    let mut completed = HashSet::new();
+    let mut completed_order = Vec::new();
+    let mut pending: Vec<_> = prepares.iter().collect();
+
+    while !pending.is_empty() {
+        let Some(next_ready_pos) = pending
+            .iter()
+            .position(|prepare| prepare.depends_on.iter().all(|dep| completed.contains(dep)))
+        else {
+            return Err(PrepareFailure {
+                node_id: "prepare-scheduler".to_string(),
+                message: "no ready prepare nodes; unresolved dependencies in run plan".to_string(),
+            });
+        };
+        let prepare = pending.remove(next_ready_pos);
+        match &prepare.action {
+            PrepareAction::NixBuildOutput {
+                installable,
+                output_name,
+                mount_paths,
+                log_paths,
+            } => {
+                let output_path = realize_nix_build_output(installable, output_name, log_paths)
+                    .map_err(|err| PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    })?;
+                for mount_path in mount_paths {
+                    repoint_prepare_mount(mount_path, &output_path).map_err(|err| {
+                        PrepareFailure {
+                            node_id: prepare.node_id.clone(),
+                            message: format!("{err:#}"),
+                        }
+                    })?;
+                }
+                append_log_line_many(
+                    log_paths,
+                    &format!(
+                        "[pikaci] staged Linux Rust output ready: {} -> {}",
+                        output_name,
+                        output_path.display()
+                    ),
+                )
+                .map_err(|err| PrepareFailure {
+                    node_id: prepare.node_id.clone(),
+                    message: format!("{err:#}"),
+                })?;
+            }
+            PrepareAction::VfkitRunner {
+                installable,
+                runner_link,
+                log_paths,
+            } => {
+                let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
+                    node_id: prepare.node_id.clone(),
+                    message: "missing vfkit runner prepare log path".to_string(),
+                })?;
+                prepare_vfkit_runner_link(installable, runner_link, log_path).map_err(|err| {
+                    PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    }
+                })?;
+            }
+        }
+        completed.insert(prepare.node_id.clone());
+        completed_order.push(prepare.node_id.clone());
+    }
+
+    Ok(completed_order)
+}
+
+fn mark_prepare_failure(
+    run_record: &mut RunRecord,
+    plan: &RunPlan,
+    failure: &PrepareFailure,
+) -> anyhow::Result<()> {
+    for planned_job in &plan.jobs {
+        let directly_blocked = planned_job
+            .depends_on
+            .iter()
+            .any(|dep| dep == &failure.node_id);
+        let (status_message, record) = if directly_blocked {
+            let message = format!(
+                "prepare node `{}` failed before execute: {}",
+                failure.node_id, failure.message
+            );
+            (
+                message.clone(),
+                failed_job_record(
+                    &planned_job.job,
+                    &planned_job.execute_node_id,
+                    &planned_job.ctx,
+                    message,
+                    None,
+                ),
+            )
+        } else {
+            let message = format!(
+                "not run because prepare phase stopped after `{}` failed: {}",
+                failure.node_id, failure.message
+            );
+            (
+                message.clone(),
+                skipped_job_record(
+                    &planned_job.job,
+                    &planned_job.execute_node_id,
+                    &planned_job.ctx,
+                    message,
+                ),
+            )
+        };
+        append_log_line(
+            &planned_job.ctx.host_log_path,
+            &format!("[pikaci] {status_message}"),
+        )?;
+        write_job_record(&planned_job.ctx.job_dir, &record)?;
+        upsert_run_job_record(run_record, record);
+    }
+    Ok(())
+}
+
+fn upsert_run_job_record(run_record: &mut RunRecord, record: JobRecord) {
+    if let Some(existing) = run_record.jobs.iter_mut().find(|job| job.id == record.id) {
+        *existing = record;
+    } else {
+        run_record.jobs.push(record);
+    }
+}
+
+fn max_parallel_execute_jobs(jobs: &[PlannedJob]) -> usize {
+    let configured_cap = std::env::var("PIKACI_MAX_CONCURRENT_EXECUTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2);
+    parallel_execute_cap_for_jobs(jobs, configured_cap)
+}
+
+fn parallel_execute_cap_for_jobs(jobs: &[PlannedJob], configured_cap: usize) -> usize {
+    if !jobs
+        .iter()
+        .all(|planned_job| planned_job.job.supports_parallel_execute())
+    {
+        return 1;
+    }
+    configured_cap
+}
+
+fn ready_execute_job_positions(
+    pending: &[usize],
+    jobs: &[PlannedJob],
+    completed_node_ids: &HashSet<String>,
+) -> Vec<usize> {
+    pending
+        .iter()
+        .enumerate()
+        .filter_map(|(position, index)| {
+            jobs[*index]
+                .depends_on
+                .iter()
+                .all(|dep| completed_node_ids.contains(dep))
+                .then_some(position)
+        })
+        .collect()
+}
+
+fn ensure_log_file(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    Ok(())
+}
+
 fn append_log_line(path: &Path, line: &str) -> anyhow::Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -659,6 +1043,13 @@ fn append_log_line(path: &Path, line: &str) -> anyhow::Result<()> {
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
     writeln!(file, "{line}").with_context(|| format!("write {}", path.display()))
+}
+
+fn append_log_line_many(paths: &[PathBuf], line: &str) -> anyhow::Result<()> {
+    for path in paths {
+        append_log_line(path, line)?;
+    }
+    Ok(())
 }
 
 fn append_command_output(log_path: &Path, stdout: &[u8], stderr: &[u8]) -> anyhow::Result<()> {
@@ -671,6 +1062,17 @@ fn append_command_output(log_path: &Path, stdout: &[u8], stderr: &[u8]) -> anyho
         .with_context(|| format!("write stdout to {}", log_path.display()))?;
     file.write_all(stderr)
         .with_context(|| format!("write stderr to {}", log_path.display()))
+}
+
+fn append_command_output_many(
+    log_paths: &[PathBuf],
+    stdout: &[u8],
+    stderr: &[u8],
+) -> anyhow::Result<()> {
+    for log_path in log_paths {
+        append_command_output(log_path, stdout, stderr)?;
+    }
+    Ok(())
 }
 
 fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
@@ -759,11 +1161,13 @@ mod tests {
     use std::fs;
 
     use super::{
-        PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs, write_run_plan_record,
+        PrepareFailure, PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, ready_execute_job_positions,
+        write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-        PrepareNode, RunPlanRecord,
+        PrepareNode, RunPlanRecord, RunRecord, RunStatus,
     };
 
     #[test]
@@ -796,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn build_run_plan_records_prepare_and_execute_nodes_for_vfkit_jobs() {
+    fn build_run_plan_shares_prepare_nodes_across_staged_linux_rust_jobs() {
         let root = std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
         let prepared = sample_prepared_run(&root);
         let metadata = RunMetadata {
@@ -804,15 +1208,26 @@ mod tests {
             target_description: Some("Run pika rust lane".to_string()),
             ..RunMetadata::default()
         };
-        let jobs = vec![JobSpec {
-            id: "pika-core-lib-tests",
-            description: "Run pika_core lib and test targets in a vfkit guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "cargo test -p pika_core --lib --tests -- --nocapture",
+        let jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
             },
-        }];
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
 
         let snapshot = sample_snapshot_source(&prepared);
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
@@ -826,7 +1241,7 @@ mod tests {
                 "workspace_snapshot_created".to_string()
             ]
         );
-        assert_eq!(plan.record.nodes.len(), 4);
+        assert_eq!(plan.record.nodes.len(), 6);
         match &plan.record.nodes[0] {
             PlanNodeRecord::Prepare {
                 id,
@@ -834,7 +1249,7 @@ mod tests {
                 prepare,
                 ..
             } => {
-                assert_eq!(id, "prepare-pika-core-lib-tests-workspace-deps");
+                assert_eq!(id, "prepare-pika-core-linux-rust-workspace-deps");
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
                     PrepareNode::NixBuild {
@@ -860,11 +1275,11 @@ mod tests {
                 prepare,
                 ..
             } => {
-                assert_eq!(id, "prepare-pika-core-lib-tests-workspace-build");
+                assert_eq!(id, "prepare-pika-core-linux-rust-workspace-build");
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 assert_eq!(
                     depends_on,
-                    &vec!["prepare-pika-core-lib-tests-workspace-deps".to_string()]
+                    &vec!["prepare-pika-core-linux-rust-workspace-deps".to_string()]
                 );
                 match prepare {
                     PrepareNode::NixBuild {
@@ -889,7 +1304,7 @@ mod tests {
                 prepare,
                 ..
             } => {
-                assert_eq!(id, "prepare-pika-core-lib-tests-runner");
+                assert_eq!(id, "prepare-pika-core-lib-app-flows-tests-runner");
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
                     PrepareNode::NixBuild {
@@ -897,7 +1312,7 @@ mod tests {
                         output_name,
                     } => {
                         assert!(installable.contains(
-                            "jobs/pika-core-lib-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                            "jobs/pika-core-lib-app-flows-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         ));
                         assert_eq!(
                             output_name,
@@ -910,6 +1325,33 @@ mod tests {
         }
 
         match &plan.record.nodes[3] {
+            PlanNodeRecord::Prepare {
+                id,
+                executor,
+                prepare,
+                ..
+            } => {
+                assert_eq!(id, "prepare-pika-core-messaging-e2e-tests-runner");
+                assert_eq!(*executor, PlanExecutorKind::HostLocal);
+                match prepare {
+                    PrepareNode::NixBuild {
+                        installable,
+                        output_name,
+                    } => {
+                        assert!(installable.contains(
+                            "jobs/pika-core-messaging-e2e-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                        ));
+                        assert_eq!(
+                            output_name,
+                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                        );
+                    }
+                }
+            }
+            other => panic!("expected runner prepare node, got {other:?}"),
+        }
+
+        match &plan.record.nodes[4] {
             PlanNodeRecord::Execute {
                 id,
                 executor,
@@ -917,14 +1359,14 @@ mod tests {
                 execute,
                 ..
             } => {
-                assert_eq!(id, "execute-pika-core-lib-tests");
+                assert_eq!(id, "execute-pika-core-lib-app-flows-tests");
                 assert_eq!(*executor, PlanExecutorKind::VfkitLocal);
                 assert_eq!(
                     depends_on,
                     &vec![
-                        "prepare-pika-core-lib-tests-workspace-deps".to_string(),
-                        "prepare-pika-core-lib-tests-workspace-build".to_string(),
-                        "prepare-pika-core-lib-tests-runner".to_string()
+                        "prepare-pika-core-linux-rust-workspace-deps".to_string(),
+                        "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                        "prepare-pika-core-lib-app-flows-tests-runner".to_string()
                     ]
                 );
                 match execute {
@@ -936,7 +1378,7 @@ mod tests {
                     } => {
                         assert_eq!(
                             command,
-                            "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests"
+                            "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests"
                         );
                         assert!(!run_as_root);
                         assert_eq!(*timeout_secs, 1800);
@@ -947,27 +1389,100 @@ mod tests {
             other => panic!("expected execute node, got {other:?}"),
         }
 
-        assert_eq!(plan.jobs.len(), 1);
-        assert_eq!(plan.jobs[0].execute_node_id, "execute-pika-core-lib-tests");
-        let staged_linux_rust_prepare = plan.jobs[0]
-            .staged_linux_rust_prepare
-            .as_ref()
-            .expect("staged linux rust prepare");
+        match &plan.record.nodes[5] {
+            PlanNodeRecord::Execute {
+                id,
+                depends_on,
+                execute,
+                ..
+            } => {
+                assert_eq!(id, "execute-pika-core-messaging-e2e-tests");
+                assert_eq!(
+                    depends_on,
+                    &vec![
+                        "prepare-pika-core-linux-rust-workspace-deps".to_string(),
+                        "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                        "prepare-pika-core-messaging-e2e-tests-runner".to_string()
+                    ]
+                );
+                match execute {
+                    ExecuteNode::VmCommand { command, .. } => {
+                        assert_eq!(
+                            command,
+                            "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
+                        );
+                    }
+                }
+            }
+            other => panic!("expected execute node, got {other:?}"),
+        }
+
+        assert_eq!(plan.jobs.len(), 2);
         assert!(
-            staged_linux_rust_prepare
-                .workspace_deps_installable
-                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceDeps")
-        );
-        assert!(
-            staged_linux_rust_prepare
-                .workspace_build_installable
-                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceBuild")
+            prepared
+                .run_dir
+                .join("jobs/pika-core-lib-app-flows-tests/vm/flake/flake.nix")
+                .exists()
         );
         assert!(
             prepared
                 .run_dir
-                .join("jobs/pika-core-lib-tests/vm/flake/flake.nix")
+                .join("jobs/pika-core-messaging-e2e-tests/vm/flake/flake.nix")
                 .exists()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ready_execute_positions_require_shared_and_job_specific_prepare_nodes() {
+        let root = std::env::temp_dir().join(format!("pikaci-ready-test-{}", uuid::Uuid::new_v4()));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
+            },
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
+
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build plan");
+        let pending = vec![0usize, 1usize];
+        let mut completed = std::collections::HashSet::from([
+            "prepare-pika-core-linux-rust-workspace-deps".to_string(),
+            "prepare-pika-core-linux-rust-workspace-build".to_string(),
+        ]);
+
+        assert_eq!(
+            ready_execute_job_positions(&pending, &plan.jobs, &completed),
+            Vec::<usize>::new()
+        );
+
+        completed.insert("prepare-pika-core-lib-app-flows-tests-runner".to_string());
+        assert_eq!(
+            ready_execute_job_positions(&pending, &plan.jobs, &completed),
+            vec![0]
+        );
+
+        completed.insert("prepare-pika-core-messaging-e2e-tests-runner".to_string());
+        assert_eq!(
+            ready_execute_job_positions(&pending, &plan.jobs, &completed),
+            vec![0, 1]
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1011,6 +1526,143 @@ mod tests {
         assert_eq!(decoded.scope, PlanScope::PostHostSetupAndSnapshot);
         assert_eq!(decoded.nodes.len(), 1);
         assert!(path.ends_with("plan.json"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn max_parallel_execute_jobs_is_narrowed_to_staged_wrapper_lane() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-parallel-test-{}", uuid::Uuid::new_v4()));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let staged_jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
+            },
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
+        let mixed_jobs = vec![
+            staged_jobs[0].clone(),
+            JobSpec {
+                id: "agent-control-plane-unit",
+                description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::PackageUnitTests {
+                    package: "pika-agent-control-plane",
+                },
+            },
+        ];
+
+        let staged_plan =
+            build_run_plan(&staged_jobs, &prepared, &snapshot, &RunMetadata::default())
+                .expect("build staged plan");
+        let mixed_plan = build_run_plan(&mixed_jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build mixed plan");
+
+        assert_eq!(parallel_execute_cap_for_jobs(&staged_plan.jobs, 2), 2);
+        assert_eq!(parallel_execute_cap_for_jobs(&mixed_plan.jobs, 2), 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mark_prepare_failure_records_sibling_jobs_as_skipped_when_prepare_phase_aborts() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-prepare-failure-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
+            },
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build plan");
+        let mut run_record = RunRecord {
+            run_id: "run-1".to_string(),
+            status: RunStatus::Running,
+            rerun_of: None,
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            target_description: Some("Run pika rust lane".to_string()),
+            source_root: snapshot.source_root.clone(),
+            snapshot_dir: snapshot.snapshot_dir_string.clone(),
+            git_head: snapshot.git_head.clone(),
+            git_dirty: snapshot.git_dirty,
+            created_at: prepared.created_at.clone(),
+            finished_at: None,
+            plan_path: Some(prepared.run_dir.join("plan.json").display().to_string()),
+            changed_files: Vec::new(),
+            filters: Vec::new(),
+            message: None,
+            jobs: Vec::new(),
+        };
+
+        mark_prepare_failure(
+            &mut run_record,
+            &plan,
+            &PrepareFailure {
+                node_id: "prepare-pika-core-lib-app-flows-tests-runner".to_string(),
+                message: "runner build failed".to_string(),
+            },
+        )
+        .expect("record prepare failure");
+
+        assert_eq!(run_record.jobs.len(), 2);
+        let app_flows = run_record
+            .jobs
+            .iter()
+            .find(|job| job.id == "pika-core-lib-app-flows-tests")
+            .expect("app flows job record");
+        assert_eq!(app_flows.status, RunStatus::Failed);
+        assert!(
+            app_flows
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("prepare node `prepare-pika-core-lib-app-flows-tests-runner` failed")
+        );
+        let messaging = run_record
+            .jobs
+            .iter()
+            .find(|job| job.id == "pika-core-messaging-e2e-tests")
+            .expect("messaging job record");
+        assert_eq!(messaging.status, RunStatus::Skipped);
+        assert!(messaging.message.as_deref().unwrap_or_default().contains(
+            "prepare phase stopped after `prepare-pika-core-lib-app-flows-tests-runner` failed"
+        ));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -3805,7 +3805,9 @@ pub async fn daemon_main(
                         let nostr_group_id_hex = hex::encode(group_result.group.nostr_group_id);
                         let mls_group_id_hex = hex::encode(group_result.group.mls_group_id.as_slice());
 
-                        // Send welcome giftwraps to the peer.
+                        // Daemon init_group is stricter than app create: it
+                        // waits for welcome delivery and subscribes before
+                        // reporting success to the host protocol.
                         let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
                         let mut publish_failed = false;
                         for rumor in group_result.welcome_rumors {

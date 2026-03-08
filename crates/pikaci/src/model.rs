@@ -87,9 +87,14 @@ impl JobSpec {
 
     pub fn staged_linux_rust_lane(&self) -> Option<StagedLinuxRustLane> {
         match self.id {
-            "pika-core-lib-tests" => Some(StagedLinuxRustLane::PikaCoreLibTests),
+            "pika-core-lib-app-flows-tests" => Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            "pika-core-messaging-e2e-tests" => Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             _ => None,
         }
+    }
+
+    pub fn supports_parallel_execute(&self) -> bool {
+        self.staged_linux_rust_lane().is_some()
     }
 
     pub fn host_setup_command(&self) -> Option<&'static str> {
@@ -111,26 +116,48 @@ impl JobSpec {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StagedLinuxRustLane {
-    PikaCoreLibTests,
+    PikaCoreLibAppFlows,
+    PikaCoreMessagingE2e,
 }
 
 impl StagedLinuxRustLane {
+    pub fn shared_prepare_node_prefix(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => "pika-core-linux-rust",
+        }
+    }
+
+    pub fn shared_prepare_description(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
+                "pika_core staged Linux Rust lane"
+            }
+        }
+    }
+
     pub fn workspace_deps_output_name(self) -> &'static str {
         match self {
-            Self::PikaCoreLibTests => "ci.aarch64-linux.workspaceDeps",
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
+                "ci.aarch64-linux.workspaceDeps"
+            }
         }
     }
 
     pub fn workspace_build_output_name(self) -> &'static str {
         match self {
-            Self::PikaCoreLibTests => "ci.aarch64-linux.workspaceBuild",
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
+                "ci.aarch64-linux.workspaceBuild"
+            }
         }
     }
 
     pub fn execute_wrapper_command(self) -> &'static str {
         match self {
-            Self::PikaCoreLibTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests"
+            Self::PikaCoreLibAppFlows => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests"
+            }
+            Self::PikaCoreMessagingE2e => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
             }
         }
     }

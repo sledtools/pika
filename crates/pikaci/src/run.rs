@@ -18,8 +18,9 @@ use crate::executor::{
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
     PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
-    PreparedOutputExposureKind, PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
-    PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
+    PreparedOutputExposureKind, PreparedOutputFulfillmentLaunchRequest,
+    PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus, PreparedOutputHandoff,
+    PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
     PreparedOutputRemoteExposureRequest, PreparedOutputsRecord, RealizedPreparedOutputRecord,
     RunPlanRecord, RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
 };
@@ -61,8 +62,11 @@ const STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV: &str = "PIKACI_PRE_MERGE_PIKA_RUST_
 const STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME: &str =
     "pre_merge_pika_rust_subprocess_fulfillment_v1";
 const PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME: &str = "pikaci-fulfill-prepared-output";
+const PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME: &str = "pikaci-launch-fulfill-prepared-output";
 const PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION";
+const PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_WRAPPER_BINARY";
 
@@ -610,6 +614,7 @@ struct PreparedOutputConsumerResult {
     requested_exposures: Vec<PreparedOutputExposure>,
     consumer_request_path: Option<String>,
     consumer_result_path: Option<String>,
+    consumer_launch_request_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -619,6 +624,7 @@ struct PreparedOutputConsumerFailure {
     requested_exposures: Vec<PreparedOutputExposure>,
     consumer_request_path: Option<String>,
     consumer_result_path: Option<String>,
+    consumer_launch_request_path: Option<String>,
 }
 
 trait PreparedOutputConsumer {
@@ -632,7 +638,7 @@ trait PreparedOutputConsumer {
         log_paths: &[PathBuf],
         invocation_mode: Option<PreparedOutputInvocationMode>,
         invocation_wrapper_program: Option<&Path>,
-    ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure>;
+    ) -> Result<PreparedOutputConsumerResult, Box<PreparedOutputConsumerFailure>>;
 }
 
 trait PreparedOutputFulfillmentInvoker {
@@ -644,6 +650,7 @@ trait PreparedOutputFulfillmentInvoker {
         wrapper_program: Option<&Path>,
         request_path: &Path,
         result_path: &Path,
+        launch_request_path: Option<&Path>,
         log_paths: &[PathBuf],
     ) -> anyhow::Result<std::process::Output>;
 }
@@ -1120,6 +1127,24 @@ fn load_prepared_output_fulfillment_result(
     serde_json::from_slice(&bytes).with_context(|| format!("decode {}", result_path.display()))
 }
 
+pub fn write_prepared_output_fulfillment_launch_request(
+    request_path: &Path,
+    request: &PreparedOutputFulfillmentLaunchRequest,
+) -> anyhow::Result<()> {
+    if let Some(parent) = request_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    write_json(request_path.to_path_buf(), request)
+}
+
+pub fn load_prepared_output_fulfillment_launch_request(
+    request_path: &Path,
+) -> anyhow::Result<PreparedOutputFulfillmentLaunchRequest> {
+    let bytes =
+        fs::read(request_path).with_context(|| format!("read {}", request_path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", request_path.display()))
+}
+
 fn prepared_output_fulfillment_helper_file_name(current_exe: &Path) -> String {
     match current_exe.extension().and_then(|ext| ext.to_str()) {
         Some(ext) if !ext.is_empty() => {
@@ -1160,6 +1185,44 @@ fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
     resolve_prepared_output_fulfillment_program(explicit_program, current_exe)
 }
 
+fn resolve_prepared_output_fulfillment_launcher_file_name(current_exe: &Path) -> String {
+    match current_exe
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) if !extension.is_empty() => {
+            format!("{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME}.{extension}")
+        }
+        _ => PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME.to_string(),
+    }
+}
+
+fn prepared_output_fulfillment_launcher_program() -> anyhow::Result<PathBuf> {
+    if let Ok(explicit_program) = std::env::var(PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV) {
+        return Ok(PathBuf::from(explicit_program));
+    }
+    if let Ok(explicit_program) = std::env::var(PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV) {
+        return Ok(PathBuf::from(explicit_program));
+    }
+    let current_exe = std::env::current_exe()
+        .context("resolve host executable for prepared-output fulfillment launcher")?;
+    let current_stem = current_exe.file_stem().and_then(|name| name.to_str());
+    if current_stem.is_some_and(|name| name == PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME) {
+        return Ok(current_exe);
+    }
+    if current_stem.is_some_and(|name| name == "pikaci")
+        || current_stem.is_some_and(|name| name == PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME)
+    {
+        return Ok(current_exe.with_file_name(
+            resolve_prepared_output_fulfillment_launcher_file_name(&current_exe),
+        ));
+    }
+    Err(anyhow!(
+        "{PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV}=external_wrapper_command_v1 requires {PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV} when the host executable is neither `pikaci`, `{PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME}`, nor `{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME}`; current executable is {}",
+        current_exe.display()
+    ))
+}
+
 fn configured_prepared_output_invocation_mode() -> anyhow::Result<PreparedOutputInvocationMode> {
     match std::env::var(PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV)
         .ok()
@@ -1176,16 +1239,6 @@ fn configured_prepared_output_invocation_mode() -> anyhow::Result<PreparedOutput
     }
 }
 
-fn resolve_prepared_output_fulfillment_wrapper_program() -> anyhow::Result<PathBuf> {
-    std::env::var(PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV)
-        .map(PathBuf::from)
-        .map_err(|_| {
-            anyhow!(
-                "{PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV}=external_wrapper_command_v1 requires {PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV}"
-            )
-        })
-}
-
 fn resolve_run_prepared_output_invocation_wrapper_program(
     invocation_mode: Option<PreparedOutputInvocationMode>,
     recorded_wrapper_program: Option<&str>,
@@ -1196,7 +1249,7 @@ fn resolve_run_prepared_output_invocation_wrapper_program(
                 return Ok(Some(recorded_wrapper_program.to_string()));
             }
             Ok(Some(
-                resolve_prepared_output_fulfillment_wrapper_program()?
+                prepared_output_fulfillment_launcher_program()?
                     .display()
                     .to_string(),
             ))
@@ -1236,6 +1289,7 @@ impl PreparedOutputFulfillmentInvoker for DirectHelperExecPreparedOutputFulfillm
         _wrapper_program: Option<&Path>,
         request_path: &Path,
         result_path: &Path,
+        _launch_request_path: Option<&Path>,
         _log_paths: &[PathBuf],
     ) -> anyhow::Result<std::process::Output> {
         Command::new(helper_program)
@@ -1262,8 +1316,9 @@ impl PreparedOutputFulfillmentInvoker for ExternalWrapperPreparedOutputFulfillme
         &self,
         helper_program: &Path,
         wrapper_program: Option<&Path>,
-        request_path: &Path,
-        result_path: &Path,
+        _request_path: &Path,
+        _result_path: &Path,
+        launch_request_path: Option<&Path>,
         _log_paths: &[PathBuf],
     ) -> anyhow::Result<std::process::Output> {
         let wrapper_program = wrapper_program.ok_or_else(|| {
@@ -1274,20 +1329,23 @@ impl PreparedOutputFulfillmentInvoker for ExternalWrapperPreparedOutputFulfillme
                 )
             )
         })?;
+        let launch_request_path = launch_request_path.ok_or_else(|| {
+            anyhow!(
+                "missing launch request path for {}",
+                prepared_output_invocation_mode_text(
+                    PreparedOutputInvocationMode::ExternalWrapperCommandV1
+                )
+            )
+        })?;
         Command::new(wrapper_program)
-            .arg("--helper")
-            .arg(helper_program)
-            .arg("--request")
-            .arg(request_path)
-            .arg("--result")
-            .arg(result_path)
+            .arg(launch_request_path)
             .output()
             .with_context(|| {
                 format!(
-                    "run prepared-output fulfillment wrapper `{}` with helper `{}` for {}",
+                    "run prepared-output fulfillment launcher `{}` with helper `{}` via {}",
                     wrapper_program.display(),
                     helper_program.display(),
-                    request_path.display()
+                    launch_request_path.display()
                 )
             })
     }
@@ -1296,6 +1354,7 @@ impl PreparedOutputFulfillmentInvoker for ExternalWrapperPreparedOutputFulfillme
 fn fulfill_prepared_output_request_via_subprocess(
     invocation_mode: PreparedOutputInvocationMode,
     wrapper_program: Option<&Path>,
+    launch_request_path: Option<&Path>,
     request_path: &Path,
     result_path: &Path,
     log_paths: &[PathBuf],
@@ -1308,12 +1367,28 @@ fn fulfill_prepared_output_request_via_subprocess(
     })?;
     let program = prepared_output_fulfillment_program()?;
     let invoker = selected_prepared_output_fulfillment_invoker(invocation_mode);
+    if let Some(launch_request_path) = launch_request_path {
+        write_prepared_output_fulfillment_launch_request(
+            launch_request_path,
+            &PreparedOutputFulfillmentLaunchRequest {
+                schema_version: 1,
+                helper_program: program.display().to_string(),
+                helper_request_path: request_path.display().to_string(),
+                helper_result_path: result_path.display().to_string(),
+                node_id: Some(request.node_id.clone()),
+                output_name: Some(request.output_name.clone()),
+            },
+        )?;
+    }
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment invocation_mode={} wrapper={} helper={} request={} result={}",
+            "[pikaci] prepared output fulfillment invocation_mode={} launcher={} launch_request={} helper={} request={} result={}",
             prepared_output_invocation_mode_text(invoker.mode()),
             wrapper_program
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            launch_request_path
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "-".to_string()),
             program.display(),
@@ -1326,6 +1401,7 @@ fn fulfill_prepared_output_request_via_subprocess(
         wrapper_program,
         request_path,
         result_path,
+        launch_request_path,
         log_paths,
     )?;
     append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
@@ -1420,19 +1496,22 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
         log_paths: &[PathBuf],
         _invocation_mode: Option<PreparedOutputInvocationMode>,
         _invocation_wrapper_program: Option<&Path>,
-    ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
+    ) -> Result<PreparedOutputConsumerResult, Box<PreparedOutputConsumerFailure>> {
         let mut exposures = Vec::new();
         for exposure in &handoff.exposures {
             match exposure.kind {
                 PreparedOutputExposureKind::HostSymlinkMount => {
                     let mount_path = Path::new(&exposure.path);
                     repoint_prepare_mount(mount_path, materialization.realized_path).map_err(
-                        |err| PreparedOutputConsumerFailure {
-                            kind: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
-                            message: format!("{err:#}"),
-                            requested_exposures: Vec::new(),
-                            consumer_request_path: None,
-                            consumer_result_path: None,
+                        |err| {
+                            Box::new(PreparedOutputConsumerFailure {
+                                kind: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+                                message: format!("{err:#}"),
+                                requested_exposures: Vec::new(),
+                                consumer_request_path: None,
+                                consumer_result_path: None,
+                                consumer_launch_request_path: None,
+                            })
                         },
                     )?;
                     append_log_line_many(
@@ -1446,12 +1525,15 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
                             materialization.realized_path.display()
                         ),
                     )
-                    .map_err(|err| PreparedOutputConsumerFailure {
-                        kind: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
-                        message: format!("{err:#}"),
-                        requested_exposures: Vec::new(),
-                        consumer_request_path: None,
-                        consumer_result_path: None,
+                    .map_err(|err| {
+                        Box::new(PreparedOutputConsumerFailure {
+                            kind: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+                            message: format!("{err:#}"),
+                            requested_exposures: Vec::new(),
+                            consumer_request_path: None,
+                            consumer_result_path: None,
+                            consumer_launch_request_path: None,
+                        })
                     })?;
                     exposures.push(exposure.clone());
                 }
@@ -1463,6 +1545,7 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
             requested_exposures: Vec::new(),
             consumer_request_path: None,
             consumer_result_path: None,
+            consumer_launch_request_path: None,
         })
     }
 }
@@ -1480,15 +1563,18 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         log_paths: &[PathBuf],
         _invocation_mode: Option<PreparedOutputInvocationMode>,
         _invocation_wrapper_program: Option<&Path>,
-    ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
+    ) -> Result<PreparedOutputConsumerResult, Box<PreparedOutputConsumerFailure>> {
         let request_path =
             write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)
-                .map_err(|err| PreparedOutputConsumerFailure {
-                    kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
-                    message: format!("{err:#}"),
-                    requested_exposures: handoff.exposures.clone(),
-                    consumer_request_path: None,
-                    consumer_result_path: None,
+                .map_err(|err| {
+                    Box::new(PreparedOutputConsumerFailure {
+                        kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
+                        message: format!("{err:#}"),
+                        requested_exposures: handoff.exposures.clone(),
+                        consumer_request_path: None,
+                        consumer_result_path: None,
+                        consumer_launch_request_path: None,
+                    })
                 })?;
         append_log_line_many(
             log_paths,
@@ -1500,12 +1586,15 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
                 request_path.display()
             ),
         )
-        .map_err(|err| PreparedOutputConsumerFailure {
-            kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
-            message: format!("{err:#}"),
-            requested_exposures: handoff.exposures.clone(),
-            consumer_request_path: Some(request_path.display().to_string()),
-            consumer_result_path: None,
+        .map_err(|err| {
+            Box::new(PreparedOutputConsumerFailure {
+                kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
+                message: format!("{err:#}"),
+                requested_exposures: handoff.exposures.clone(),
+                consumer_request_path: Some(request_path.display().to_string()),
+                consumer_result_path: None,
+                consumer_launch_request_path: None,
+            })
         })?;
         Ok(PreparedOutputConsumerResult {
             kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
@@ -1513,6 +1602,7 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
             requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
             consumer_result_path: None,
+            consumer_launch_request_path: None,
         })
     }
 }
@@ -1530,27 +1620,40 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
         log_paths: &[PathBuf],
         invocation_mode: Option<PreparedOutputInvocationMode>,
         invocation_wrapper_program: Option<&Path>,
-    ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
+    ) -> Result<PreparedOutputConsumerResult, Box<PreparedOutputConsumerFailure>> {
         let request_path =
             write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)
-                .map_err(|err| PreparedOutputConsumerFailure {
-                    kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
-                    message: format!("{err:#}"),
-                    requested_exposures: handoff.exposures.clone(),
-                    consumer_request_path: None,
-                    consumer_result_path: None,
+                .map_err(|err| {
+                    Box::new(PreparedOutputConsumerFailure {
+                        kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+                        message: format!("{err:#}"),
+                        requested_exposures: handoff.exposures.clone(),
+                        consumer_request_path: None,
+                        consumer_result_path: None,
+                        consumer_launch_request_path: None,
+                    })
                 })?;
         let results_dir = run_dir.join("prepared-output-results");
         fs::create_dir_all(&results_dir)
             .with_context(|| format!("create {}", results_dir.display()))
-            .map_err(|err| PreparedOutputConsumerFailure {
-                kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
-                message: format!("{err:#}"),
-                requested_exposures: handoff.exposures.clone(),
-                consumer_request_path: Some(request_path.display().to_string()),
-                consumer_result_path: None,
+            .map_err(|err| {
+                Box::new(PreparedOutputConsumerFailure {
+                    kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+                    message: format!("{err:#}"),
+                    requested_exposures: handoff.exposures.clone(),
+                    consumer_request_path: Some(request_path.display().to_string()),
+                    consumer_result_path: None,
+                    consumer_launch_request_path: None,
+                })
             })?;
         let result_path = results_dir.join(format!("{}.json", materialization.node_id));
+        let launch_request_path = (invocation_mode
+            == Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1))
+        .then(|| {
+            run_dir
+                .join("prepared-output-launch-requests")
+                .join(format!("{}.json", materialization.node_id))
+        });
         append_log_line_many(
             log_paths,
             &format!(
@@ -1559,31 +1662,42 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 request_path.display()
             ),
         )
-        .map_err(|err| PreparedOutputConsumerFailure {
-            kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
-            message: format!("{err:#}"),
-            requested_exposures: handoff.exposures.clone(),
-            consumer_request_path: Some(request_path.display().to_string()),
-            consumer_result_path: Some(result_path.display().to_string()),
+        .map_err(|err| {
+            Box::new(PreparedOutputConsumerFailure {
+                kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+                message: format!("{err:#}"),
+                requested_exposures: handoff.exposures.clone(),
+                consumer_request_path: Some(request_path.display().to_string()),
+                consumer_result_path: Some(result_path.display().to_string()),
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            })
         })?;
         let invocation_mode =
             invocation_mode.unwrap_or(PreparedOutputInvocationMode::DirectHelperExecV1);
         let fulfillment_result = fulfill_prepared_output_request_via_subprocess(
             invocation_mode,
             invocation_wrapper_program,
+            launch_request_path.as_deref(),
             &request_path,
             &result_path,
             log_paths,
         )
-        .map_err(|err| PreparedOutputConsumerFailure {
-            kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
-            message: format!("{err:#}"),
-            requested_exposures: handoff.exposures.clone(),
-            consumer_request_path: Some(request_path.display().to_string()),
-            consumer_result_path: Some(result_path.display().to_string()),
+        .map_err(|err| {
+            Box::new(PreparedOutputConsumerFailure {
+                kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+                message: format!("{err:#}"),
+                requested_exposures: handoff.exposures.clone(),
+                consumer_request_path: Some(request_path.display().to_string()),
+                consumer_result_path: Some(result_path.display().to_string()),
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            })
         })?;
         if fulfillment_result.node_id.as_deref() != Some(materialization.node_id) {
-            return Err(PreparedOutputConsumerFailure {
+            return Err(Box::new(PreparedOutputConsumerFailure {
                 kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
                 message: format!(
                     "prepared-output fulfillment helper reported node_id={:?} but expected {}",
@@ -1592,10 +1706,13 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 requested_exposures: handoff.exposures.clone(),
                 consumer_request_path: Some(request_path.display().to_string()),
                 consumer_result_path: Some(result_path.display().to_string()),
-            });
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            }));
         }
         if fulfillment_result.output_name.as_deref() != Some(materialization.output_name) {
-            return Err(PreparedOutputConsumerFailure {
+            return Err(Box::new(PreparedOutputConsumerFailure {
                 kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
                 message: format!(
                     "prepared-output fulfillment helper reported output_name={:?} but expected {}",
@@ -1604,11 +1721,14 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 requested_exposures: handoff.exposures.clone(),
                 consumer_request_path: Some(request_path.display().to_string()),
                 consumer_result_path: Some(result_path.display().to_string()),
-            });
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            }));
         }
         let expected_realized_path = materialization.realized_path.display().to_string();
         if fulfillment_result.realized_path.as_deref() != Some(expected_realized_path.as_str()) {
-            return Err(PreparedOutputConsumerFailure {
+            return Err(Box::new(PreparedOutputConsumerFailure {
                 kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
                 message: format!(
                     "prepared-output fulfillment helper reported realized_path={:?} but expected {}",
@@ -1617,7 +1737,10 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 requested_exposures: handoff.exposures.clone(),
                 consumer_request_path: Some(request_path.display().to_string()),
                 consumer_result_path: Some(result_path.display().to_string()),
-            });
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            }));
         }
         append_log_line_many(
             log_paths,
@@ -1628,12 +1751,17 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 fulfillment_result.fulfilled_exposures_count
             ),
         )
-        .map_err(|err| PreparedOutputConsumerFailure {
-            kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
-            message: format!("{err:#}"),
-            requested_exposures: handoff.exposures.clone(),
-            consumer_request_path: Some(request_path.display().to_string()),
-            consumer_result_path: Some(result_path.display().to_string()),
+        .map_err(|err| {
+            Box::new(PreparedOutputConsumerFailure {
+                kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+                message: format!("{err:#}"),
+                requested_exposures: handoff.exposures.clone(),
+                consumer_request_path: Some(request_path.display().to_string()),
+                consumer_result_path: Some(result_path.display().to_string()),
+                consumer_launch_request_path: launch_request_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            })
         })?;
         Ok(PreparedOutputConsumerResult {
             kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
@@ -1641,6 +1769,9 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
             requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
             consumer_result_path: Some(result_path.display().to_string()),
+            consumer_launch_request_path: launch_request_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
         })
     }
 }
@@ -1653,7 +1784,7 @@ fn consume_prepared_output_handoff(
     log_paths: &[PathBuf],
     invocation_mode: Option<PreparedOutputInvocationMode>,
     invocation_wrapper_program: Option<&Path>,
-) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
+) -> Result<PreparedOutputConsumerResult, Box<PreparedOutputConsumerFailure>> {
     let result = consumer.consume(
         materialization,
         handoff,
@@ -1683,6 +1814,7 @@ fn record_failed_prepared_output_handoff(
             realized_path: materialization.realized_path.display().to_string(),
             consumer_request_path: failure.consumer_request_path.clone(),
             consumer_result_path: failure.consumer_result_path.clone(),
+            consumer_launch_request_path: failure.consumer_launch_request_path.clone(),
             exposures: Vec::new(),
             requested_exposures: failure.requested_exposures.clone(),
         },
@@ -1994,6 +2126,8 @@ fn run_prepare_nodes(
                             realized_path: output_path.display().to_string(),
                             consumer_request_path: consumer_result.consumer_request_path,
                             consumer_result_path: consumer_result.consumer_result_path,
+                            consumer_launch_request_path: consumer_result
+                                .consumer_launch_request_path,
                             exposures: consumer_result.exposures,
                             requested_exposures: consumer_result.requested_exposures,
                         },
@@ -2287,6 +2421,7 @@ mod tests {
     use super::{
         FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
         PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME, PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
         PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV, PrepareFailure,
         PreparedOutputConsumerFailure, PreparedOutputMaterialization, PreparedRun,
         RemoteExposureRequestPreparedOutputConsumer, RunMetadata,
@@ -2294,10 +2429,10 @@ mod tests {
         SnapshotSource, build_run_plan, configured_prepared_output_consumer_kind,
         configured_prepared_output_invocation_mode, consume_prepared_output_handoff,
         fulfill_prepared_output_request, fulfill_prepared_output_request_result, gc_runs,
-        load_prepared_output_fulfillment_result, mark_prepare_failure,
-        parallel_execute_cap_for_jobs, parse_bool_env_flag, ready_execute_job_positions,
+        load_prepared_output_fulfillment_launch_request, load_prepared_output_fulfillment_result,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag,
+        prepared_output_fulfillment_launcher_program, ready_execute_job_positions,
         record_failed_prepared_output_handoff, resolve_prepared_output_fulfillment_program,
-        resolve_prepared_output_fulfillment_wrapper_program,
         resolve_run_prepared_output_consumer_kind_for_mode,
         resolve_run_prepared_output_invocation_mode,
         resolve_run_prepared_output_invocation_wrapper_program, selected_prepared_output_consumer,
@@ -2725,6 +2860,7 @@ mod tests {
                 realized_path: "/nix/store/workspace-build".to_string(),
                 consumer_request_path: None,
                 consumer_result_path: None,
+                consumer_launch_request_path: None,
                 exposures: vec![PreparedOutputExposure {
                     kind: PreparedOutputExposureKind::HostSymlinkMount,
                     path: "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
@@ -2800,6 +2936,11 @@ mod tests {
                     .display()
                     .to_string(),
             ),
+            consumer_launch_request_path: Some(
+                root.join("prepared-output-launch-requests/request.json")
+                    .display()
+                    .to_string(),
+            ),
         };
 
         record_failed_prepared_output_handoff(
@@ -2833,6 +2974,13 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .ends_with("prepared-output-results/result.json")
+        );
+        assert!(
+            decoded.outputs[0]
+                .consumer_launch_request_path
+                .as_deref()
+                .unwrap_or_default()
+                .ends_with("prepared-output-launch-requests/request.json")
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -3038,12 +3186,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prepared_output_fulfillment_wrapper_program_requires_explicit_binary() {
-        let _guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV, None);
-        let err = resolve_prepared_output_fulfillment_wrapper_program()
-            .expect_err("wrapper binary should be required");
+    fn prepared_output_fulfillment_launcher_program_requires_explicit_binary() {
+        let _launcher_guard =
+            EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV, None);
+        let _wrapper_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV, None);
+        let err = prepared_output_fulfillment_launcher_program()
+            .expect_err("launcher binary should be required");
         assert!(err.to_string().contains(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_WRAPPER_BINARY"
+            "PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY"
         ));
     }
 
@@ -3391,8 +3541,8 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
         let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
         let log_path = root.join("job.log");
         let helper_path = root.join("fulfill-helper.sh");
-        let wrapper_path = root.join("fulfill-wrapper.sh");
-        let wrapper_log_path = root.join("wrapper.log");
+        let launcher_path = root.join("launch-fulfill.sh");
+        let launcher_log_path = root.join("launcher.log");
         fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
         fs::write(
             &helper_path,
@@ -3416,14 +3566,14 @@ EOF
         )
         .expect("write helper");
         fs::write(
-            &wrapper_path,
+            &launcher_path,
             format!(
-                "#!/bin/sh\nset -eu\nif [ \"$1\" != \"--helper\" ] || [ \"$3\" != \"--request\" ] || [ \"$5\" != \"--result\" ]; then\n  echo \"unexpected wrapper args: $*\" >&2\n  exit 23\nfi\necho \"$@\" > \"{}\"\nexec \"$2\" --result-path \"$6\" \"$4\"\n",
-                wrapper_log_path.display()
+                "#!/bin/sh\nset -eu\nif [ \"$#\" -ne 1 ]; then\n  echo \"unexpected launcher args: $*\" >&2\n  exit 23\nfi\nlaunch_request=\"$1\"\necho \"$launch_request\" > \"{}\"\nhelper=$(sed -n 's/.*\"helper_program\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_request=$(sed -n 's/.*\"helper_request_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_result=$(sed -n 's/.*\"helper_result_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nexec \"$helper\" --result-path \"$helper_result\" \"$helper_request\"\n",
+                launcher_log_path.display()
             ),
         )
-        .expect("write wrapper");
-        for path in [&helper_path, &wrapper_path] {
+        .expect("write launcher");
+        for path in [&helper_path, &launcher_path] {
             let mut permissions = fs::metadata(path).expect("script metadata").permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(path, permissions).expect("set script executable");
@@ -3447,9 +3597,9 @@ EOF
             "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
-        let _wrapper_guard = EnvVarGuard::set(
-            PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV,
-            Some(wrapper_path.to_str().expect("wrapper path utf8")),
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some(launcher_path.to_str().expect("launcher path utf8")),
         );
         let consumer = FulfillRequestCliPreparedOutputConsumer;
 
@@ -3460,7 +3610,7 @@ EOF
             &root,
             std::slice::from_ref(&log_path),
             Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
-            Some(&wrapper_path),
+            Some(&launcher_path),
         )
         .expect("consume handoff via wrapper");
 
@@ -3470,15 +3620,26 @@ EOF
             fs::read_link(&mount_path).expect("read symlink"),
             realized_path
         );
-        let wrapper_log = fs::read_to_string(&wrapper_log_path).expect("read wrapper log");
-        assert!(wrapper_log.contains("--helper"));
-        assert!(wrapper_log.contains(helper_path.to_str().expect("helper path utf8")));
+        let launch_request_path = result
+            .consumer_launch_request_path
+            .as_deref()
+            .expect("launch request path");
+        let launcher_request =
+            load_prepared_output_fulfillment_launch_request(Path::new(launch_request_path))
+                .expect("load launcher request");
+        assert_eq!(
+            launcher_request.helper_program,
+            helper_path.display().to_string()
+        );
+        let launcher_log = fs::read_to_string(&launcher_log_path).expect("read launcher log");
+        assert_eq!(launcher_log.trim(), launch_request_path);
         let log_body = fs::read_to_string(&log_path).expect("read log");
         assert!(
             log_body.contains(
                 "prepared output fulfillment invocation_mode=external_wrapper_command_v1"
             )
         );
+        assert!(log_body.contains("launch_request="));
 
         let _ = fs::remove_dir_all(&root);
     }

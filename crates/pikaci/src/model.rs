@@ -248,6 +248,18 @@ pub struct PreparedOutputFulfillmentResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputFulfillmentLaunchRequest {
+    pub schema_version: u32,
+    pub helper_program: String,
+    pub helper_request_path: String,
+    pub helper_result_path: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub output_name: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PrepareNode {
@@ -341,6 +353,8 @@ pub struct RealizedPreparedOutputRecord {
     pub consumer_request_path: Option<String>,
     #[serde(default)]
     pub consumer_result_path: Option<String>,
+    #[serde(default)]
+    pub consumer_launch_request_path: Option<String>,
     #[serde(default)]
     pub exposures: Vec<PreparedOutputExposure>,
     #[serde(default)]

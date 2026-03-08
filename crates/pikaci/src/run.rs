@@ -51,6 +51,7 @@ pub struct RunMetadata {
     pub target_description: Option<String>,
     pub prepared_output_mode: Option<String>,
     pub prepared_output_invocation_mode: Option<PreparedOutputInvocationMode>,
+    pub prepared_output_invocation_wrapper_program: Option<String>,
     pub changed_files: Vec<String>,
     pub filters: Vec<String>,
     pub message: Option<String>,
@@ -138,6 +139,13 @@ fn run_jobs_against_snapshot(
         prepared_output_consumer_kind,
         metadata.prepared_output_invocation_mode,
     )?;
+    let prepared_output_invocation_wrapper_program =
+        resolve_run_prepared_output_invocation_wrapper_program(
+            prepared_output_invocation_mode,
+            metadata
+                .prepared_output_invocation_wrapper_program
+                .as_deref(),
+        )?;
     validate_prepared_output_consumer_for_jobs(prepared_output_consumer_kind, &plan.jobs)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let prepared_outputs_path = write_prepared_outputs_record(
@@ -164,6 +172,8 @@ fn run_jobs_against_snapshot(
         prepared_output_consumer: Some(prepared_output_consumer_kind),
         prepared_output_mode: prepared_output_mode.map(str::to_string),
         prepared_output_invocation_mode,
+        prepared_output_invocation_wrapper_program: prepared_output_invocation_wrapper_program
+            .clone(),
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -177,6 +187,9 @@ fn run_jobs_against_snapshot(
         &prepared_outputs_path,
         prepared_output_consumer_kind,
         prepared_output_invocation_mode,
+        prepared_output_invocation_wrapper_program
+            .as_deref()
+            .map(Path::new),
     ) {
         Ok(node_ids) => node_ids,
         Err(failure) => {
@@ -319,6 +332,7 @@ pub fn record_skipped_run(
         prepared_output_consumer: None,
         prepared_output_mode: None,
         prepared_output_invocation_mode: None,
+        prepared_output_invocation_wrapper_program: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -617,6 +631,7 @@ trait PreparedOutputConsumer {
         run_dir: &Path,
         log_paths: &[PathBuf],
         invocation_mode: Option<PreparedOutputInvocationMode>,
+        invocation_wrapper_program: Option<&Path>,
     ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure>;
 }
 
@@ -626,6 +641,7 @@ trait PreparedOutputFulfillmentInvoker {
     fn invoke(
         &self,
         helper_program: &Path,
+        wrapper_program: Option<&Path>,
         request_path: &Path,
         result_path: &Path,
         log_paths: &[PathBuf],
@@ -1170,6 +1186,25 @@ fn resolve_prepared_output_fulfillment_wrapper_program() -> anyhow::Result<PathB
         })
 }
 
+fn resolve_run_prepared_output_invocation_wrapper_program(
+    invocation_mode: Option<PreparedOutputInvocationMode>,
+    recorded_wrapper_program: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    match invocation_mode {
+        Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1) => {
+            if let Some(recorded_wrapper_program) = recorded_wrapper_program {
+                return Ok(Some(recorded_wrapper_program.to_string()));
+            }
+            Ok(Some(
+                resolve_prepared_output_fulfillment_wrapper_program()?
+                    .display()
+                    .to_string(),
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn selected_prepared_output_fulfillment_invoker(
     mode: PreparedOutputInvocationMode,
 ) -> Box<dyn PreparedOutputFulfillmentInvoker> {
@@ -1198,6 +1233,7 @@ impl PreparedOutputFulfillmentInvoker for DirectHelperExecPreparedOutputFulfillm
     fn invoke(
         &self,
         helper_program: &Path,
+        _wrapper_program: Option<&Path>,
         request_path: &Path,
         result_path: &Path,
         _log_paths: &[PathBuf],
@@ -1225,12 +1261,20 @@ impl PreparedOutputFulfillmentInvoker for ExternalWrapperPreparedOutputFulfillme
     fn invoke(
         &self,
         helper_program: &Path,
+        wrapper_program: Option<&Path>,
         request_path: &Path,
         result_path: &Path,
         _log_paths: &[PathBuf],
     ) -> anyhow::Result<std::process::Output> {
-        let wrapper_program = resolve_prepared_output_fulfillment_wrapper_program()?;
-        Command::new(&wrapper_program)
+        let wrapper_program = wrapper_program.ok_or_else(|| {
+            anyhow!(
+                "missing wrapper program for {}",
+                prepared_output_invocation_mode_text(
+                    PreparedOutputInvocationMode::ExternalWrapperCommandV1
+                )
+            )
+        })?;
+        Command::new(wrapper_program)
             .arg("--helper")
             .arg(helper_program)
             .arg("--request")
@@ -1251,6 +1295,7 @@ impl PreparedOutputFulfillmentInvoker for ExternalWrapperPreparedOutputFulfillme
 
 fn fulfill_prepared_output_request_via_subprocess(
     invocation_mode: PreparedOutputInvocationMode,
+    wrapper_program: Option<&Path>,
     request_path: &Path,
     result_path: &Path,
     log_paths: &[PathBuf],
@@ -1266,14 +1311,23 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment invocation_mode={} helper={} request={} result={}",
+            "[pikaci] prepared output fulfillment invocation_mode={} wrapper={} helper={} request={} result={}",
             prepared_output_invocation_mode_text(invoker.mode()),
+            wrapper_program
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
             program.display(),
             request_path.display(),
             result_path.display()
         ),
     )?;
-    let output = invoker.invoke(&program, request_path, result_path, log_paths)?;
+    let output = invoker.invoke(
+        &program,
+        wrapper_program,
+        request_path,
+        result_path,
+        log_paths,
+    )?;
     append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
     let result = load_prepared_output_fulfillment_result(result_path).with_context(|| {
         format!(
@@ -1365,6 +1419,7 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
         _run_dir: &Path,
         log_paths: &[PathBuf],
         _invocation_mode: Option<PreparedOutputInvocationMode>,
+        _invocation_wrapper_program: Option<&Path>,
     ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
         let mut exposures = Vec::new();
         for exposure in &handoff.exposures {
@@ -1424,6 +1479,7 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         run_dir: &Path,
         log_paths: &[PathBuf],
         _invocation_mode: Option<PreparedOutputInvocationMode>,
+        _invocation_wrapper_program: Option<&Path>,
     ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
         let request_path =
             write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)
@@ -1473,6 +1529,7 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
         run_dir: &Path,
         log_paths: &[PathBuf],
         invocation_mode: Option<PreparedOutputInvocationMode>,
+        invocation_wrapper_program: Option<&Path>,
     ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
         let request_path =
             write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)
@@ -1513,6 +1570,7 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
             invocation_mode.unwrap_or(PreparedOutputInvocationMode::DirectHelperExecV1);
         let fulfillment_result = fulfill_prepared_output_request_via_subprocess(
             invocation_mode,
+            invocation_wrapper_program,
             &request_path,
             &result_path,
             log_paths,
@@ -1594,6 +1652,7 @@ fn consume_prepared_output_handoff(
     run_dir: &Path,
     log_paths: &[PathBuf],
     invocation_mode: Option<PreparedOutputInvocationMode>,
+    invocation_wrapper_program: Option<&Path>,
 ) -> Result<PreparedOutputConsumerResult, PreparedOutputConsumerFailure> {
     let result = consumer.consume(
         materialization,
@@ -1601,6 +1660,7 @@ fn consume_prepared_output_handoff(
         run_dir,
         log_paths,
         invocation_mode,
+        invocation_wrapper_program,
     )?;
     debug_assert_eq!(result.kind, consumer.kind());
     Ok(result)
@@ -1843,6 +1903,7 @@ fn run_prepare_nodes(
     prepared_outputs_path: &Path,
     consumer_kind: PreparedOutputConsumerKind,
     invocation_mode: Option<PreparedOutputInvocationMode>,
+    invocation_wrapper_program: Option<&Path>,
 ) -> Result<Vec<String>, PrepareFailure> {
     let prepared_output_consumer = selected_prepared_output_consumer(consumer_kind);
     let mut completed = HashSet::new();
@@ -1900,6 +1961,7 @@ fn run_prepare_nodes(
                         run_dir,
                         log_paths,
                         invocation_mode,
+                        invocation_wrapper_program,
                     )
                     .map_err(|err| {
                         let mut message = err.message.clone();
@@ -2237,7 +2299,8 @@ mod tests {
         record_failed_prepared_output_handoff, resolve_prepared_output_fulfillment_program,
         resolve_prepared_output_fulfillment_wrapper_program,
         resolve_run_prepared_output_consumer_kind_for_mode,
-        resolve_run_prepared_output_invocation_mode, selected_prepared_output_consumer,
+        resolve_run_prepared_output_invocation_mode,
+        resolve_run_prepared_output_invocation_wrapper_program, selected_prepared_output_consumer,
         upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
         write_prepared_output_fulfillment_result, write_run_plan_record,
     };
@@ -2811,6 +2874,7 @@ mod tests {
             &root,
             std::slice::from_ref(&log_path),
             None,
+            None,
         )
         .expect("consume handoff");
 
@@ -2867,6 +2931,7 @@ mod tests {
             &handoff,
             &root,
             std::slice::from_ref(&log_path),
+            None,
             None,
         )
         .expect("consume handoff");
@@ -3117,6 +3182,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_run_prepared_output_invocation_wrapper_program_uses_recorded_path_for_reruns() {
+        assert_eq!(
+            resolve_run_prepared_output_invocation_wrapper_program(
+                Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                Some("/tmp/bin/wrapper"),
+            )
+            .expect("use recorded wrapper path"),
+            Some("/tmp/bin/wrapper".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_invocation_wrapper_program(
+                Some(PreparedOutputInvocationMode::DirectHelperExecV1),
+                Some("/tmp/bin/wrapper"),
+            )
+            .expect("ignore wrapper path in direct mode"),
+            None
+        );
+    }
+
+    #[test]
     fn resolve_prepared_output_fulfillment_program_prefers_helper_sibling_for_pikaci_binary() {
         let resolved =
             resolve_prepared_output_fulfillment_program(None, PathBuf::from("/tmp/bin/pikaci"))
@@ -3251,6 +3336,7 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
             &root,
             std::slice::from_ref(&log_path),
             Some(PreparedOutputInvocationMode::DirectHelperExecV1),
+            None,
         )
         .expect("consume handoff");
 
@@ -3374,6 +3460,7 @@ EOF
             &root,
             std::slice::from_ref(&log_path),
             Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+            Some(&wrapper_path),
         )
         .expect("consume handoff via wrapper");
 
@@ -3464,6 +3551,7 @@ EOF
             &root,
             std::slice::from_ref(&log_path),
             Some(PreparedOutputInvocationMode::DirectHelperExecV1),
+            None,
         )
         .expect_err("helper result should fail");
 
@@ -3550,6 +3638,7 @@ EOF
             &root,
             std::slice::from_ref(&log_path),
             Some(PreparedOutputInvocationMode::DirectHelperExecV1),
+            None,
         )
         .expect_err("mismatched success result should fail");
 
@@ -3893,6 +3982,7 @@ EOF
             prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
             prepared_output_mode: Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME.to_string()),
             prepared_output_invocation_mode: Some(PreparedOutputInvocationMode::DirectHelperExecV1),
+            prepared_output_invocation_wrapper_program: None,
             changed_files: Vec::new(),
             filters: Vec::new(),
             message: None,

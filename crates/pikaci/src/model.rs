@@ -398,6 +398,8 @@ pub struct RunRecord {
     #[serde(default)]
     pub prepared_output_invocation_mode: Option<PreparedOutputInvocationMode>,
     #[serde(default)]
+    pub prepared_output_invocation_wrapper_program: Option<String>,
+    #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]
     pub filters: Vec<String>,

@@ -628,6 +628,13 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
             prepared_output_invocation_mode_label(prepared_output_invocation_mode)
         ));
     }
+    if let Some(prepared_output_invocation_wrapper_program) =
+        &run.prepared_output_invocation_wrapper_program
+    {
+        lines.push(format!(
+            "prepared_output_invocation_wrapper_program={prepared_output_invocation_wrapper_program}"
+        ));
+    }
     if let Some(message) = &run.message {
         lines.push(message.clone());
     }
@@ -1104,6 +1111,7 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         target_description: Some(target.description.to_string()),
         prepared_output_mode: None,
         prepared_output_invocation_mode: None,
+        prepared_output_invocation_wrapper_program: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1166,6 +1174,9 @@ fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetad
             .or_else(|| Some(target.description.to_string())),
         prepared_output_mode: previous.prepared_output_mode.clone(),
         prepared_output_invocation_mode: previous.prepared_output_invocation_mode,
+        prepared_output_invocation_wrapper_program: previous
+            .prepared_output_invocation_wrapper_program
+            .clone(),
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
         message: Some(format!("rerun of {}", previous.run_id)),
@@ -1268,6 +1279,11 @@ mod tests {
         assert!(
             lines.contains(&"prepared_output_invocation_mode=direct_helper_exec_v1".to_string())
         );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| { line.starts_with("prepared_output_invocation_wrapper_program=") })
+        );
     }
 
     #[test]
@@ -1286,6 +1302,31 @@ mod tests {
         assert_eq!(
             metadata.prepared_output_invocation_mode,
             Some(pikaci::PreparedOutputInvocationMode::DirectHelperExecV1)
+        );
+        assert_eq!(metadata.prepared_output_invocation_wrapper_program, None);
+    }
+
+    #[test]
+    fn rerun_metadata_preserves_wrapper_invocation_program() {
+        let mut run = sample_run_record();
+        run.target_id = Some("pre-merge-pika-rust".to_string());
+        run.prepared_output_invocation_mode =
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+        run.prepared_output_invocation_wrapper_program =
+            Some("/tmp/bin/pikaci-wrapper".to_string());
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        let metadata = rerun_metadata(&run, &target);
+
+        assert_eq!(
+            metadata.prepared_output_invocation_mode,
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1)
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_invocation_wrapper_program
+                .as_deref(),
+            Some("/tmp/bin/pikaci-wrapper")
         );
     }
 
@@ -1309,6 +1350,7 @@ mod tests {
             prepared_output_invocation_mode: Some(
                 pikaci::PreparedOutputInvocationMode::DirectHelperExecV1,
             ),
+            prepared_output_invocation_wrapper_program: None,
             changed_files: vec![],
             filters: vec![],
             message: None,

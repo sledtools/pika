@@ -932,7 +932,29 @@ pub fn fulfill_prepared_output_request(
         fs::read(request_path).with_context(|| format!("read {}", request_path.display()))?;
     let request: PreparedOutputRemoteExposureRequest = serde_json::from_slice(&bytes)
         .with_context(|| format!("decode {}", request_path.display()))?;
+    if request.schema_version != 1 {
+        return Err(anyhow!(
+            "prepared output request `{}` uses unsupported schema_version {}; expected 1",
+            request_path.display(),
+            request.schema_version
+        ));
+    }
+    if request.protocol != PreparedOutputHandoffProtocol::NixStorePathV1 {
+        return Err(anyhow!(
+            "prepared output request `{}` uses unsupported protocol {:?}",
+            request_path.display(),
+            request.protocol
+        ));
+    }
     let realized_path = Path::new(&request.realized_path);
+    let nix_store_root = Path::new("/nix/store");
+    if !realized_path.is_absolute() || !realized_path.starts_with(nix_store_root) {
+        return Err(anyhow!(
+            "prepared output request `{}` points at non-Nix-store realized path {}",
+            request_path.display(),
+            realized_path.display()
+        ));
+    }
     if !realized_path.exists() {
         return Err(anyhow!(
             "prepared output request `{}` points at missing realized path {}",
@@ -1531,6 +1553,7 @@ fn run_host_setup_commands(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::{
         HostLocalSymlinkPreparedOutputConsumer, PrepareFailure, PreparedOutputMaterialization,
@@ -2180,10 +2203,9 @@ mod tests {
             "pikaci-fulfill-request-test-{}",
             uuid::Uuid::new_v4()
         ));
-        let realized_path = root.join("nix-store-output");
+        let realized_path = first_test_nix_store_path();
         let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
-        fs::create_dir_all(&realized_path).expect("create realized path");
-        fs::write(realized_path.join("marker"), "ok").expect("write marker");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
 
         let request_path = root.join("request.json");
         write_json(
@@ -2233,7 +2255,7 @@ mod tests {
                 installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
                 output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
-                realized_path: root.join("missing-output").display().to_string(),
+                realized_path: Path::new("/nix/store/missing-output").display().to_string(),
                 requested_exposures: Vec::new(),
             },
         )
@@ -2244,6 +2266,75 @@ mod tests {
         assert!(err.to_string().contains("points at missing realized path"));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_prepared_output_request_rejects_non_nix_store_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-non-store-path-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = root.join("not-nix-store/output");
+        let request_path = root.join("request.json");
+        fs::create_dir_all(&realized_path).expect("create realized path");
+        write_json(
+            request_path.clone(),
+            &PreparedOutputRemoteExposureRequest {
+                schema_version: 1,
+                node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
+                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                realized_path: realized_path.display().to_string(),
+                requested_exposures: Vec::new(),
+            },
+        )
+        .expect("write request");
+
+        let err = fulfill_prepared_output_request(&request_path).expect_err("non nix store path");
+        assert!(err.to_string().contains("non-Nix-store realized path"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_prepared_output_request_rejects_unknown_schema_versions() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-schema-version-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let request_path = root.join("request.json");
+        fs::create_dir_all(&root).expect("create root");
+        write_json(
+            request_path.clone(),
+            &PreparedOutputRemoteExposureRequest {
+                schema_version: 99,
+                node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
+                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                realized_path: realized_path.display().to_string(),
+                requested_exposures: Vec::new(),
+            },
+        )
+        .expect("write request");
+
+        let err =
+            fulfill_prepared_output_request(&request_path).expect_err("unknown schema version");
+        assert!(err.to_string().contains("unsupported schema_version"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn first_test_nix_store_path() -> PathBuf {
+        fs::read_dir("/nix/store")
+            .expect("read /nix/store")
+            .find_map(|entry| {
+                let path = entry.ok()?.path();
+                path.exists().then_some(path)
+            })
+            .expect("find existing /nix/store path for tests")
     }
 
     #[test]

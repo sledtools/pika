@@ -481,6 +481,7 @@ fn default_group_name() -> String {
 
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
+use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
 use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
@@ -3887,6 +3888,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
+                        let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
 
                         // Create group.
                         let config = NostrGroupConfigData::new(

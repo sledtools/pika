@@ -997,11 +997,33 @@ fn write_prepared_output_remote_exposure_request(
     Ok(request_path)
 }
 
-fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
-    if let Ok(path) = std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_BINARY") {
-        return Ok(PathBuf::from(path));
+fn resolve_prepared_output_fulfillment_program(
+    explicit_program: Option<PathBuf>,
+    current_exe: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit_program {
+        return Ok(path);
     }
-    std::env::current_exe().context("resolve pikaci executable for prepared-output fulfillment")
+    if current_exe
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "pikaci")
+    {
+        return Ok(current_exe);
+    }
+    Err(anyhow!(
+        "PIKACI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`; current executable is {}",
+        current_exe.display()
+    ))
+}
+
+fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
+    let explicit_program = std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_BINARY")
+        .ok()
+        .map(PathBuf::from);
+    let current_exe = std::env::current_exe()
+        .context("resolve host executable for prepared-output fulfillment")?;
+    resolve_prepared_output_fulfillment_program(explicit_program, current_exe)
 }
 
 fn fulfill_prepared_output_request_via_subprocess(
@@ -1666,8 +1688,9 @@ mod tests {
         configured_prepared_output_consumer_kind, consume_prepared_output_handoff,
         fulfill_prepared_output_request, gc_runs, mark_prepare_failure,
         parallel_execute_cap_for_jobs, ready_execute_job_positions,
-        selected_prepared_output_consumer, upsert_prepared_output_record,
-        validate_prepared_output_consumer_for_jobs, write_json, write_run_plan_record,
+        resolve_prepared_output_fulfillment_program, selected_prepared_output_consumer,
+        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
+        write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
@@ -2277,6 +2300,26 @@ mod tests {
             err.to_string()
                 .contains("unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `typo`")
         );
+    }
+
+    #[test]
+    fn resolve_prepared_output_fulfillment_program_accepts_pikaci_binary_name() {
+        let resolved =
+            resolve_prepared_output_fulfillment_program(None, PathBuf::from("/tmp/bin/pikaci"))
+                .expect("resolve pikaci binary");
+        assert_eq!(resolved, PathBuf::from("/tmp/bin/pikaci"));
+    }
+
+    #[test]
+    fn resolve_prepared_output_fulfillment_program_rejects_non_pikaci_host_binary() {
+        let err = resolve_prepared_output_fulfillment_program(
+            None,
+            PathBuf::from("/tmp/bin/embedding-runner"),
+        )
+        .expect_err("reject embedding binary");
+        assert!(err.to_string().contains(
+            "requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`"
+        ));
     }
 
     #[test]

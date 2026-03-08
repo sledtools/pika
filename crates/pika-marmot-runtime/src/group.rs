@@ -24,6 +24,14 @@ where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    if recipients.len() != peer_key_packages.len() {
+        anyhow::bail!(
+            "recipient/keypackage mismatch: {} recipients for {} key packages",
+            recipients.len(),
+            peer_key_packages.len()
+        );
+    }
+
     let result = mdk
         .create_group(&keys.public_key(), peer_key_packages, config)
         .context("create group")?;
@@ -121,6 +129,45 @@ mod tests {
         assert_eq!(
             created.published_welcomes[0].wrapper_event_id,
             published[0].id
+        );
+    }
+
+    #[tokio::test]
+    async fn create_group_and_publish_welcomes_rejects_mismatch_before_create() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime create mismatch test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+
+        let err = create_group_and_publish_welcomes(
+            &inviter_keys,
+            &inviter_mdk,
+            vec![invitee_kp],
+            config,
+            &[],
+            vec![],
+            |_receiver, _giftwrap| async move { Ok(()) },
+        )
+        .await
+        .expect_err("recipient/keypackage mismatch should fail");
+
+        assert!(err.to_string().contains("recipient/keypackage mismatch"));
+        assert!(
+            inviter_mdk.get_groups().expect("get groups").is_empty(),
+            "helper should fail before creating a local group"
         );
     }
 }

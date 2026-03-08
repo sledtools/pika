@@ -167,10 +167,10 @@ Tip: 'pikachat send --to npub1...' does this automatically for 1:1 DMs.")]
     /// Accept a pending welcome and join the group
     #[command(after_help = "Example:
   pikachat welcomes   # find the wrapper_event_id or welcome_event_id
-  pikachat accept-welcome --wrapper-event-id abc123...")]
+  pikachat accept-welcome --event-id abc123...")]
     AcceptWelcome {
         /// Pending welcome event ID (wrapper_event_id or welcome_event_id hex) from the welcomes list
-        #[arg(long)]
+        #[arg(long = "event-id", alias = "wrapper-event-id")]
         wrapper_event_id: String,
     },
 
@@ -2825,6 +2825,45 @@ mod tests {
         let help = String::from_utf8(help).expect("utf8 help");
         assert!(help.contains("wrapper_event_id or welcome_event_id"));
         assert!(help.contains("pikachat welcomes"));
+        assert!(help.contains("--event-id"));
+        assert!(!help.contains("--wrapper-event-id <"));
+    }
+
+    #[test]
+    fn accept_welcome_parses_primary_and_compat_flag_names() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "accept-welcome",
+            "--event-id",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ])
+        .expect("parse primary flag");
+        match cli.cmd {
+            Command::AcceptWelcome { wrapper_event_id } => {
+                assert_eq!(
+                    wrapper_event_id,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                );
+            }
+            _ => panic!("expected accept-welcome command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "accept-welcome",
+            "--wrapper-event-id",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ])
+        .expect("parse compat alias");
+        match cli.cmd {
+            Command::AcceptWelcome { wrapper_event_id } => {
+                assert_eq!(
+                    wrapper_event_id,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                );
+            }
+            _ => panic!("expected accept-welcome command"),
+        }
     }
 
     #[tokio::test]

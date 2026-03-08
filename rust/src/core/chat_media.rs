@@ -1814,7 +1814,7 @@ impl AppCore {
                 sess.pubkey,
                 Timestamp::from(ts as u64),
                 kind,
-                tags,
+                tags.clone(),
                 content.clone(),
             );
             rumor.ensure_id();
@@ -1843,8 +1843,19 @@ impl AppCore {
                     },
                 );
 
-            let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
-                Ok(e) => e,
+            let prepared = match OutboundConversationRuntime::new(&sess.mdk)
+                .prepare_action_for_group_ids(
+                    sess.pubkey,
+                    group.mls_group_id.clone(),
+                    chat_id.clone(),
+                    OutboundConversationAction::Message {
+                        kind,
+                        content: content.clone(),
+                        tags,
+                        created_at: Timestamp::from(ts as u64),
+                    },
+                ) {
+                Ok(prepared) => prepared,
                 Err(e) => {
                     self.toast(format!("Encrypt failed: {e}"));
                     self.delivery_overrides
@@ -1861,6 +1872,7 @@ impl AppCore {
                     return;
                 }
             };
+            let wrapper = prepared.wrapper;
 
             self.pending_sends
                 .insert(&chat_id, &rumor_id_hex, &wrapper, self.profile_db.as_ref());

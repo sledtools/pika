@@ -15,6 +15,9 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
+use pika_marmot_runtime::outbound::{
+    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
+};
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -785,6 +788,15 @@ fn find_group(
         })
 }
 
+fn prepare_cli_outbound_action(
+    mdk: &mdk_util::PikaMdk,
+    sender: PublicKey,
+    group: mdk_storage_traits::groups::types::Group,
+    action: OutboundConversationAction,
+) -> anyhow::Result<PreparedConversationAction> {
+    OutboundConversationRuntime::new(mdk).prepare_action_for_group(sender, group, action)
+}
+
 fn print(v: serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(&v).expect("json encode"));
 }
@@ -1409,18 +1421,26 @@ async fn cmd_send(
     }
 
     // ── Build and send MLS message ──────────────────────────────────────
-    let rumor = EventBuilder::new(Kind::ChatMessage, content)
-        .tags(tags)
-        .build(keys.public_key());
-    let msg_event = mdk
-        .create_message(&resolved.group.mls_group_id, rumor)
-        .context("create message")?;
-    relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_message").await?;
+    let prepared = prepare_cli_outbound_action(
+        &mdk,
+        keys.public_key(),
+        resolved.group.clone(),
+        OutboundConversationAction::Message {
+            kind: Kind::ChatMessage,
+            content: content.to_string(),
+            tags,
+            created_at: Timestamp::now(),
+        },
+    )
+    .context("create message")?;
+    OutboundConversationRuntime::new(&mdk)
+        .publish_prepared_with_confirm(&client, &relays, &prepared, "send_message")
+        .await?;
     client.shutdown().await;
     mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     let mut out = json!({
-        "event_id": msg_event.id.to_hex(),
+        "event_id": prepared.wrapper.id.to_hex(),
         "nostr_group_id": ngid,
     });
     if resolved.auto_created {
@@ -1577,27 +1597,26 @@ async fn cmd_send_hypernote(
     ingest_group_backlog(&mdk, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
 
     // Build tags.
-    let mut tags: Vec<Tag> = Vec::new();
-    if let Some(t) = title {
-        tags.push(Tag::custom(TagKind::custom("title"), vec![t.to_string()]));
-    }
-    if let Some(s) = state {
-        tags.push(Tag::custom(TagKind::custom("state"), vec![s.to_string()]));
-    }
-
-    // Build and send MLS message with hypernote kind.
-    let rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
-        .tags(tags)
-        .build(keys.public_key());
-    let msg_event = mdk
-        .create_message(&group.mls_group_id, rumor)
-        .context("create message")?;
-    relay_util::publish_and_confirm(&client, &relays, &msg_event, "send_hypernote").await?;
+    let prepared = prepare_cli_outbound_action(
+        &mdk,
+        keys.public_key(),
+        group.clone(),
+        OutboundConversationAction::Hypernote {
+            content: content.to_string(),
+            title: title.map(str::to_string),
+            state: state.map(str::to_string),
+            created_at: Timestamp::now(),
+        },
+    )
+    .context("create message")?;
+    OutboundConversationRuntime::new(&mdk)
+        .publish_prepared_with_confirm(&client, &relays, &prepared, "send_hypernote")
+        .await?;
     client.shutdown().await;
     mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     print(json!({
-        "event_id": msg_event.id.to_hex(),
+        "event_id": prepared.wrapper.id.to_hex(),
         "nostr_group_id": ngid,
     }));
     Ok(())
@@ -2859,6 +2878,49 @@ mod tests {
             json.get("blossom_server").and_then(|v| v.as_str()),
             Some("https://fallback.example")
         );
+    }
+
+    #[test]
+    fn cli_send_preparation_uses_shared_outbound_runtime() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = mdk_util::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "CLI outbound".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let prepared = prepare_cli_outbound_action(
+            &inviter_mdk,
+            inviter_keys.public_key(),
+            created.group.clone(),
+            OutboundConversationAction::Hypernote {
+                content: "# Shared CLI".to_string(),
+                title: Some("Title".to_string()),
+                state: Some("{\"draft\":true}".to_string()),
+                created_at: Timestamp::from(123_u64),
+            },
+        )
+        .expect("prepare outbound action");
+
+        assert_eq!(
+            prepared.target.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(prepared.kind, Kind::Custom(hn::HYPERNOTE_KIND));
+        assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
     }
 
     #[tokio::test]

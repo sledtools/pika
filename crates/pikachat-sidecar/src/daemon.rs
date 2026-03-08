@@ -21,8 +21,10 @@ use pika_marmot_runtime::call::{
 use pika_marmot_runtime::conversation::{ConversationEvent, ConversationRuntime};
 use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes};
 use pika_marmot_runtime::message::{
-    CALL_SIGNAL_KIND, MessageClassification, TYPING_INDICATOR_KIND,
-    classify_message as classify_shared_message,
+    CALL_SIGNAL_KIND, MessageClassification, classify_message as classify_shared_message,
+};
+use pika_marmot_runtime::outbound::{
+    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
 };
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, bootstrap_runtime_session, subscribe_group_messages_individual,
@@ -741,6 +743,19 @@ fn resolve_group(mdk: &MDK<MdkSqliteStorage>, nostr_group_id: &str) -> anyhow::R
     ConversationRuntime::new(mdk).mls_group_id_for_nostr_group_id(nostr_group_id)
 }
 
+fn resign_wrapper_without_protected_tags(keys: &Keys, wrapper: &Event) -> anyhow::Result<Event> {
+    let msg_tags: Tags = wrapper
+        .tags
+        .clone()
+        .into_iter()
+        .filter(|t| !matches!(t.kind(), TagKind::Protected))
+        .collect();
+    EventBuilder::new(wrapper.kind, wrapper.content.clone())
+        .tags(msg_tags)
+        .sign_with_keys(keys)
+        .context("sign event")
+}
+
 /// Create an MLS message from a rumor, strip protected tags, sign, and publish.
 async fn sign_and_publish(
     client: &Client,
@@ -754,21 +769,48 @@ async fn sign_and_publish(
     let msg_event = mdk
         .create_message(mls_group_id, rumor)
         .context("create_message")?;
-    let msg_tags: Tags = msg_event
-        .tags
-        .clone()
-        .into_iter()
-        .filter(|t| !matches!(t.kind(), TagKind::Protected))
-        .collect();
-    let signed = EventBuilder::new(msg_event.kind, msg_event.content)
-        .tags(msg_tags)
-        .sign_with_keys(keys)
-        .context("sign event")?;
+    let signed = resign_wrapper_without_protected_tags(keys, &msg_event)?;
     if relay_urls.is_empty() {
         anyhow::bail!("no relays configured");
     }
     publish_and_confirm_multi(client, relay_urls, &signed, label).await?;
     Ok(signed)
+}
+
+async fn sign_and_publish_prepared(
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    keys: &Keys,
+    prepared: &PreparedConversationAction,
+    label: &str,
+) -> anyhow::Result<Event> {
+    let signed = resign_wrapper_without_protected_tags(keys, &prepared.wrapper)?;
+    if relay_urls.is_empty() {
+        anyhow::bail!("no relays configured");
+    }
+    publish_and_confirm_multi(client, relay_urls, &signed, label).await?;
+    Ok(signed)
+}
+
+fn prepare_daemon_outbound_action(
+    mdk: &MDK<MdkSqliteStorage>,
+    sender: PublicKey,
+    nostr_group_id: &str,
+    action: OutboundConversationAction,
+) -> Result<PreparedConversationAction, DaemonPrepareError> {
+    let runtime = OutboundConversationRuntime::new(mdk);
+    let target = runtime
+        .resolve_target(nostr_group_id)
+        .map_err(DaemonPrepareError::BadGroup)?;
+    runtime
+        .prepare_action_for_target(sender, target, action)
+        .map_err(DaemonPrepareError::Prepare)
+}
+
+#[derive(Debug)]
+enum DaemonPrepareError {
+    BadGroup(anyhow::Error),
+    Prepare(anyhow::Error),
 }
 
 #[derive(Debug, Deserialize)]
@@ -2737,16 +2779,29 @@ pub async fn daemon_main(
                         }))));
                     }
                     InCmd::SendMessage { request_id, nostr_group_id, content } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
+                        let prepared = match prepare_daemon_outbound_action(
+                            &mdk,
+                            keys.public_key(),
+                            &nostr_group_id,
+                            OutboundConversationAction::Message {
+                                kind: Kind::ChatMessage,
+                                content,
+                                tags: vec![],
+                                created_at: Timestamp::now(),
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(e)) => {
                                 reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
+                            Err(DaemonPrepareError::Prepare(e)) => {
+                                reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}"))).ok();
+                                continue;
+                            }
                         };
-                        let mut rumor = EventBuilder::new(Kind::ChatMessage, content).build(keys.public_key());
-                        let inner_id = rumor.id().to_hex();
-                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send").await {
+                        let inner_id = prepared.rumor_id.to_hex();
+                        match sign_and_publish_prepared(&client, &relay_urls, &keys, &prepared, "daemon_send").await {
                             Ok(_) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
@@ -2762,28 +2817,32 @@ pub async fn daemon_main(
                         title,
                         state,
                     } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
+                        let prepared = match prepare_daemon_outbound_action(
+                            &mdk,
+                            keys.public_key(),
+                            &nostr_group_id,
+                            OutboundConversationAction::Hypernote {
+                                content,
+                                title,
+                                state,
+                                created_at: Timestamp::now(),
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(e)) => {
                                 reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
+                            Err(DaemonPrepareError::Prepare(e)) => {
+                                reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}"))).ok();
+                                continue;
+                            }
                         };
-                        let mut tags = Vec::new();
-                        if let Some(ref t) = title {
-                            tags.push(Tag::custom(TagKind::custom("title"), vec![t.clone()]));
-                        }
-                        if let Some(ref s) = state {
-                            tags.push(Tag::custom(TagKind::custom("state"), vec![s.clone()]));
-                        }
-                        let mut rumor = EventBuilder::new(Kind::Custom(hn::HYPERNOTE_KIND), content)
-                            .tags(tags)
-                            .build(keys.public_key());
                         // Save the inner rumor ID before MLS wrapping — this is the ID
                         // that receivers see in message_received.event_id and that
                         // submit_hypernote_action must reference.
-                        let inner_id = rumor.id().to_hex();
-                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_hypernote").await {
+                        let inner_id = prepared.rumor_id.to_hex();
+                        match sign_and_publish_prepared(&client, &relay_urls, &keys, &prepared, "daemon_send_hypernote").await {
                             Ok(_) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
@@ -2798,15 +2857,6 @@ pub async fn daemon_main(
                         event_id,
                         emoji,
                     } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                out_tx
-                                    .send(out_error(request_id, "bad_group_id", format!("{e:#}")))
-                                    .ok();
-                                continue;
-                            }
-                        };
                         let target = match EventId::from_hex(event_id.trim()) {
                             Ok(id) => id,
                             Err(_) => {
@@ -2827,16 +2877,35 @@ pub async fn daemon_main(
                                 .ok();
                             continue;
                         }
-                        let rumor = EventBuilder::new(Kind::Reaction, emoji)
-                            .tags(vec![Tag::event(target)])
-                            .build(keys.public_key());
-                        match sign_and_publish(
+                        let prepared = match prepare_daemon_outbound_action(
+                            &mdk,
+                            keys.public_key(),
+                            &nostr_group_id,
+                            OutboundConversationAction::Reaction {
+                                target_event_id: target,
+                                emoji: emoji.to_string(),
+                                created_at: Timestamp::now(),
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(e)) => {
+                                out_tx
+                                    .send(out_error(request_id, "bad_group_id", format!("{e:#}")))
+                                    .ok();
+                                continue;
+                            }
+                            Err(DaemonPrepareError::Prepare(e)) => {
+                                out_tx
+                                    .send(out_error(request_id, "publish_failed", format!("{e:#}")))
+                                    .ok();
+                                continue;
+                            }
+                        };
+                        match sign_and_publish_prepared(
                             &client,
                             &relay_urls,
-                            &mdk,
                             &keys,
-                            &mls_group_id,
-                            rumor,
+                            &prepared,
                             "daemon_react",
                         )
                         .await
@@ -2860,15 +2929,6 @@ pub async fn daemon_main(
                         action,
                         form,
                     } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                out_tx
-                                    .send(out_error(request_id, "bad_group_id", format!("{e:#}")))
-                                    .ok();
-                                continue;
-                            }
-                        };
                         let target = match EventId::from_hex(event_id.trim()) {
                             Ok(id) => id,
                             Err(_) => {
@@ -2894,19 +2954,36 @@ pub async fn daemon_main(
                             continue;
                         }
                         let payload = hn::build_action_response_payload(action, &form).to_string();
-                        let rumor = EventBuilder::new(
-                            Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND),
-                            payload,
-                        )
-                        .tags(vec![Tag::event(target)])
-                        .build(keys.public_key());
-                        match sign_and_publish(
+                        let prepared = match prepare_daemon_outbound_action(
+                            &mdk,
+                            keys.public_key(),
+                            &nostr_group_id,
+                            OutboundConversationAction::Message {
+                                kind: Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND),
+                                content: payload,
+                                tags: vec![Tag::event(target)],
+                                created_at: Timestamp::now(),
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(e)) => {
+                                out_tx
+                                    .send(out_error(request_id, "bad_group_id", format!("{e:#}")))
+                                    .ok();
+                                continue;
+                            }
+                            Err(DaemonPrepareError::Prepare(e)) => {
+                                out_tx
+                                    .send(out_error(request_id, "publish_failed", format!("{e:#}")))
+                                    .ok();
+                                continue;
+                            }
+                        };
+                        match sign_and_publish_prepared(
                             &client,
                             &relay_urls,
-                            &mdk,
                             &keys,
-                            &mls_group_id,
-                            rumor,
+                            &prepared,
                             "daemon_submit_hypernote_action",
                         )
                         .await
@@ -3148,29 +3225,22 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::SendTyping { request_id, nostr_group_id } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
+                        let expires_at = Timestamp::from_secs(Timestamp::now().as_secs() + 10);
+                        let prepared = match prepare_daemon_outbound_action(
+                            &mdk,
+                            keys.public_key(),
+                            &nostr_group_id,
+                            OutboundConversationAction::Typing {
+                                created_at: Timestamp::now(),
+                                expires_at,
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(e)) => {
                                 reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
                                 continue;
                             }
-                        };
-
-                        let expires_at = Timestamp::now().as_secs() + 10;
-                        let rumor = UnsignedEvent::new(
-                            keys.public_key(),
-                            Timestamp::now(),
-                            TYPING_INDICATOR_KIND,
-                            [
-                                Tag::custom(TagKind::d(), ["pika"]),
-                                Tag::expiration(Timestamp::from_secs(expires_at)),
-                            ],
-                            "typing",
-                        );
-
-                        let wrapper = match mdk.create_message(&mls_group_id, rumor) {
-                            Ok(ev) => ev,
-                            Err(e) => {
+                            Err(DaemonPrepareError::Prepare(e)) => {
                                 reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
                                 continue;
                             }
@@ -3185,7 +3255,7 @@ pub async fn daemon_main(
                         let relay_urls_clone = relay_urls.clone();
                         let out_tx_clone = out_tx.clone();
                         tokio::spawn(async move {
-                            match publish_and_confirm_multi(&client_clone, &relay_urls_clone, &wrapper, "daemon_typing").await {
+                            match publish_and_confirm_multi(&client_clone, &relay_urls_clone, &prepared.wrapper, "daemon_typing").await {
                                 Ok(_) => {
                                     let _ = out_tx_clone.send(out_ok(request_id, None));
                                 }
@@ -4271,6 +4341,7 @@ mod tests {
     use super::*;
     use mdk_core::prelude::NostrGroupConfigData;
     use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
+    use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 
     fn event_id(hex: &str) -> EventId {
         EventId::from_hex(hex).expect("valid event id")
@@ -4395,6 +4466,49 @@ mod tests {
         let resolved = resolve_group(&inviter_mdk, &hex::encode(created.group.nostr_group_id))
             .expect("resolve group");
         assert_eq!(resolved, created.group.mls_group_id);
+    }
+
+    #[test]
+    fn daemon_outbound_prepare_uses_shared_runtime_service() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon outbound".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let prepared = prepare_daemon_outbound_action(
+            &inviter_mdk,
+            inviter_keys.public_key(),
+            &hex::encode(created.group.nostr_group_id),
+            OutboundConversationAction::Reaction {
+                target_event_id: EventId::all_zeros(),
+                emoji: "👍".to_string(),
+                created_at: Timestamp::from(123_u64),
+            },
+        )
+        .expect("prepare outbound action");
+
+        assert_eq!(
+            prepared.target.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(prepared.kind, Kind::Reaction);
+        assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
     }
 
     #[tokio::test]

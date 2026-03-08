@@ -372,7 +372,19 @@ Phase 6 request-fulfillment slice notes:
 - The fulfillment path stays explicitly narrow and Nix-backed: it only reads the staged Linux Rust request schema and materializes the requested host symlink mounts.
 - What this slice proves: the request file written under `prepared-output-requests/` contains enough information to fulfill the staged output exposure without any extra lane-specific context.
 - What is still missing: this fulfillment path is still local replay, not a true remote boundary, and it is not yet threaded into an end-to-end staged run outside manual or explicit invocation.
-- Next recommended slice: decide whether to exercise this request-fulfillment path via a dedicated process boundary, a narrow helper invocation, or one controlled end-to-end staged lane mode that still stops short of full remote execution.
+- Next recommended slice: exercise this request-fulfillment path via one real process boundary while still keeping it opt-in and local.
+
+Phase 6 subprocess-fulfillment slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has one opt-in prepared-output consumer mode that writes the machine-readable request file and then fulfills it by spawning a separate `pikaci fulfill-prepared-output-request <request>` process.
+- The mode stays narrow and Nix-backed:
+  - it reuses the existing staged Linux Rust request schema,
+  - it is enabled explicitly through the prepared-output consumer seam,
+  - and it leaves the default host-local inline exposure path unchanged.
+- What this slice proves: the recorded request file survives a real process boundary and still contains enough information to materialize the expected read-only staged mounts.
+- What is still missing: this is still same-host subprocess orchestration, not remote transport, not remote execution, and not a replacement for the blocked `remote_request_v1` prototype.
+- Next recommended slice: decide whether to exercise this subprocess-backed consumer in one controlled end-to-end staged Linux Rust run mode or extract a slightly more explicit helper boundary that could later live off-host.
 
 ## Deferred Until Proven Necessary
 
@@ -411,5 +423,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, and fourth narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for where the request-fulfillment path should be exercised as a real boundary while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, and fifth narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for whether the subprocess-backed request-fulfillment consumer should be exercised through a controlled end-to-end staged Linux Rust mode or replaced by a slightly more explicit helper boundary, while keeping Rust execute inputs Nix-backed.

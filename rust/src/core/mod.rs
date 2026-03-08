@@ -47,6 +47,12 @@ use mdk_core::encrypted_media::types::{
 };
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
+use pika_marmot_runtime::message::{
+    classify_message as classify_shared_message, MessageClassification as AppMessageKind,
+};
+pub(crate) use pika_marmot_runtime::message::{
+    CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND, TYPING_INDICATOR_KIND,
+};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
 pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowListEntry> {
@@ -109,14 +115,6 @@ use interop::{
 const DEFAULT_GROUP_NAME: &str = "DM";
 const DEFAULT_GROUP_DESCRIPTION: &str = "";
 const IOS_MIGRATION_SENTINEL: &str = ".migrated_to_app_group";
-
-pub(crate) const TYPING_INDICATOR_KIND_NUM: u16 = 20_067;
-pub(crate) const TYPING_INDICATOR_KIND: Kind = Kind::Custom(TYPING_INDICATOR_KIND_NUM);
-pub(crate) const CALL_SIGNAL_KIND_NUM: u16 = 10;
-pub(crate) const CALL_SIGNAL_KIND: Kind = Kind::Custom(CALL_SIGNAL_KIND_NUM);
-pub(crate) const HYPERNOTE_KIND: Kind = Kind::Custom(hn::HYPERNOTE_KIND);
-pub(crate) const HYPERNOTE_ACTION_RESPONSE_KIND: Kind =
-    Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND);
 
 const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
 const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
@@ -209,76 +207,9 @@ async fn fetch_key_packages_for_peers(
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum AppMessageKind {
-    TypingIndicator,
-    CallSignal,
-    Chat,
-    Reaction,
-    Hypernote,
-    HypernoteResponse,
-    GroupProfile,
-}
-
-impl AppMessageKind {
-    fn increments_unread(&self) -> bool {
-        match self {
-            Self::Chat | Self::Hypernote => true,
-            Self::TypingIndicator
-            | Self::CallSignal
-            | Self::Reaction
-            | Self::HypernoteResponse
-            | Self::GroupProfile => false,
-        }
-    }
-
-    fn increments_loaded(&self) -> bool {
-        match self {
-            Self::Chat | Self::Reaction | Self::Hypernote => true,
-            Self::TypingIndicator
-            | Self::CallSignal
-            | Self::HypernoteResponse
-            | Self::GroupProfile => false,
-        }
-    }
-
-    /// Whether this kind should be fetched for chat display (messages, reactions,
-    /// hypernotes, and their responses). Excludes ephemeral kinds like typing
-    /// indicators and call signals.
-    fn is_chat_visible(&self) -> bool {
-        match self {
-            Self::Chat | Self::Reaction | Self::Hypernote | Self::HypernoteResponse => true,
-            Self::TypingIndicator | Self::CallSignal | Self::GroupProfile => false,
-        }
-    }
-}
-
-fn is_pika_typing_indicator(msg: &message_types::Message) -> bool {
-    msg.content == "typing"
-        && msg
-            .tags
-            .iter()
-            .any(|t| t.kind() == TagKind::d() && t.content().map(|c| c == "pika").unwrap_or(false))
-}
-
 fn classify_app_message(msg: &message_types::Message) -> Option<AppMessageKind> {
     let kind = msg.kind;
-    let classified = match kind {
-        Kind::ChatMessage => Some(AppMessageKind::Chat),
-        Kind::Reaction => Some(AppMessageKind::Reaction),
-        Kind::Custom(TYPING_INDICATOR_KIND_NUM) => {
-            if is_pika_typing_indicator(msg) {
-                Some(AppMessageKind::TypingIndicator)
-            } else {
-                None
-            }
-        }
-        Kind::Custom(CALL_SIGNAL_KIND_NUM) => Some(AppMessageKind::CallSignal),
-        Kind::Custom(hn::HYPERNOTE_KIND) => Some(AppMessageKind::Hypernote),
-        Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND) => Some(AppMessageKind::HypernoteResponse),
-        Kind::Metadata => Some(AppMessageKind::GroupProfile),
-        _ => None,
-    };
+    let classified = classify_shared_message(kind, &msg.content, msg.tags.iter());
     classified.or_else(|| {
         tracing::warn!(?kind, "ignoring app message with unknown kind");
         None

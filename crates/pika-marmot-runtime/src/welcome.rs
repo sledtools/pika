@@ -185,24 +185,34 @@ where
         .create_group(&keys.public_key(), peer_key_packages, config)
         .context("create group")?;
 
+    if recipients.len() != result.welcome_rumors.len() {
+        anyhow::bail!(
+            "recipient/welcome mismatch: {} recipients for {} welcome rumors",
+            recipients.len(),
+            result.welcome_rumors.len()
+        );
+    }
+
     let mut published_welcomes = Vec::new();
-    for receiver in recipients.iter().copied() {
-        for mut rumor in result.welcome_rumors.iter().cloned() {
-            let welcome_event_id = rumor.id();
-            let giftwrap =
-                EventBuilder::gift_wrap(keys, &receiver, rumor.clone(), welcome_tags.clone())
-                    .await
-                    .context("build welcome giftwrap")?;
-            publish_giftwrap(receiver, giftwrap.clone())
+    for (receiver, mut rumor) in recipients
+        .iter()
+        .copied()
+        .zip(result.welcome_rumors.iter().cloned())
+    {
+        let welcome_event_id = rumor.id();
+        let giftwrap =
+            EventBuilder::gift_wrap(keys, &receiver, rumor.clone(), welcome_tags.clone())
                 .await
-                .with_context(|| format!("publish welcome to {}", receiver.to_hex()))?;
-            published_welcomes.push(PublishedWelcome {
-                receiver,
-                wrapper_event_id: giftwrap.id,
-                welcome_event_id,
-                rumor,
-            });
-        }
+                .context("build welcome giftwrap")?;
+        publish_giftwrap(receiver, giftwrap.clone())
+            .await
+            .with_context(|| format!("publish welcome to {}", receiver.to_hex()))?;
+        published_welcomes.push(PublishedWelcome {
+            receiver,
+            wrapper_event_id: giftwrap.id,
+            welcome_event_id,
+            rumor,
+        });
     }
 
     Ok(CreatedGroup {
@@ -533,5 +543,122 @@ mod tests {
             created.published_welcomes[0].wrapper_event_id,
             published[0].id
         );
+    }
+
+    #[tokio::test]
+    async fn create_group_and_publish_welcomes_pairs_each_recipient_with_one_welcome() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let bob_dir = tempfile::tempdir().expect("bob tempdir");
+        let charlie_dir = tempfile::tempdir().expect("charlie tempdir");
+        let inviter_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let charlie_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let bob_mdk = open_mdk(bob_dir.path()).expect("open bob mdk");
+        let charlie_mdk = open_mdk(charlie_dir.path()).expect("open charlie mdk");
+
+        let bob_kp = make_key_package_event(&bob_mdk, &bob_keys);
+        let charlie_kp = make_key_package_event(&charlie_mdk, &charlie_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime multi invite test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![
+                inviter_keys.public_key(),
+                bob_keys.public_key(),
+                charlie_keys.public_key(),
+            ],
+        );
+
+        let published =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<(PublicKey, Event)>::new()));
+        let published_capture = std::sync::Arc::clone(&published);
+        let created = create_group_and_publish_welcomes(
+            &inviter_keys,
+            &inviter_mdk,
+            vec![bob_kp, charlie_kp],
+            config,
+            &[bob_keys.public_key(), charlie_keys.public_key()],
+            vec![],
+            move |receiver, giftwrap| {
+                let published_capture = std::sync::Arc::clone(&published_capture);
+                async move {
+                    published_capture
+                        .lock()
+                        .expect("published lock")
+                        .push((receiver, giftwrap));
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("create group and publish welcomes");
+
+        assert_eq!(created.published_welcomes.len(), 2);
+        let published = published.lock().expect("published lock").clone();
+        assert_eq!(published.len(), 2);
+
+        for (receiver, wrapper) in published {
+            match receiver {
+                receiver if receiver == bob_keys.public_key() => {
+                    let ingested =
+                        ingest_welcome_from_giftwrap(&bob_mdk, &bob_keys, &wrapper, |_| true)
+                            .await
+                            .expect("ingest bob welcome");
+                    assert!(ingested.is_some(), "bob should ingest exactly one welcome");
+                }
+                receiver if receiver == charlie_keys.public_key() => {
+                    let ingested =
+                        ingest_welcome_from_giftwrap(&charlie_mdk, &charlie_keys, &wrapper, |_| {
+                            true
+                        })
+                        .await
+                        .expect("ingest charlie welcome");
+                    assert!(
+                        ingested.is_some(),
+                        "charlie should ingest exactly one welcome"
+                    );
+                }
+                other => panic!("unexpected receiver {}", other.to_hex()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn create_group_and_publish_welcomes_rejects_recipient_count_mismatch() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime mismatch test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+
+        let err = create_group_and_publish_welcomes(
+            &inviter_keys,
+            &inviter_mdk,
+            vec![invitee_kp],
+            config,
+            &[],
+            vec![],
+            |_receiver, _giftwrap| async move { Ok(()) },
+        )
+        .await
+        .expect_err("recipient mismatch should fail");
+
+        assert!(err.to_string().contains("recipient/welcome mismatch"));
     }
 }

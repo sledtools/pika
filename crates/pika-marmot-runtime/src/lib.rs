@@ -4,6 +4,7 @@ pub mod group;
 pub mod key_package;
 pub mod media;
 pub mod message;
+pub mod outbound;
 pub mod relay;
 pub mod runtime;
 pub mod welcome;

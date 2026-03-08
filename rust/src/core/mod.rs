@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use anyhow::Context;
 use flume::Sender;
 use hypernote_protocol as hn;
 
@@ -49,11 +50,16 @@ use pika_marmot_runtime::conversation::{
     ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupUpdate,
     RuntimeGroupUpdateKind,
 };
+#[cfg(test)]
+pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 use pika_marmot_runtime::message::{
     classify_message as classify_shared_message, MessageClassification as AppMessageKind,
 };
 pub(crate) use pika_marmot_runtime::message::{
-    CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND, TYPING_INDICATOR_KIND,
+    CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
+};
+use pika_marmot_runtime::outbound::{
+    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
 };
 use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
@@ -1016,6 +1022,25 @@ impl AppCore {
         } else {
             map.insert(sender_pubkey_hex.to_string(), expires_at);
         }
+    }
+
+    fn prepare_outbound_action_for_chat(
+        &self,
+        chat_id: &str,
+        action: OutboundConversationAction,
+    ) -> anyhow::Result<PreparedConversationAction> {
+        let sess = self.session.as_ref().context("not logged in")?;
+        let group = sess
+            .groups
+            .get(chat_id)
+            .cloned()
+            .context("chat not found")?;
+        OutboundConversationRuntime::new(&sess.mdk).prepare_action_for_group_ids(
+            sess.pubkey,
+            group.mls_group_id,
+            chat_id.to_string(),
+            action,
+        )
     }
 
     fn prune_local_outbox(&mut self, chat_id: &str) {
@@ -4770,28 +4795,20 @@ impl AppCore {
                 if !self.is_logged_in() {
                     return;
                 }
-                let Some(sess) = self.session.as_mut() else {
-                    return;
-                };
-                let Some(group) = sess.groups.get(&chat_id).cloned() else {
-                    return;
-                };
-
                 let msg_event_id = match nostr_sdk::prelude::EventId::parse(&message_id) {
                     Ok(id) => id,
                     Err(_) => return,
                 };
 
-                let rumor = UnsignedEvent::new(
-                    sess.pubkey,
-                    Timestamp::now(),
-                    Kind::Reaction,
-                    [Tag::event(msg_event_id)],
-                    emoji,
-                );
-
-                let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
-                    Ok(ev) => ev,
+                let prepared = match self.prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Reaction {
+                        target_event_id: msg_event_id,
+                        emoji,
+                        created_at: Timestamp::now(),
+                    },
+                ) {
+                    Ok(prepared) => prepared,
                     Err(e) => {
                         tracing::warn!(err = %e, "reaction create_message failed");
                         return;
@@ -4799,9 +4816,12 @@ impl AppCore {
                 };
 
                 // Fire-and-forget publish.
-                let client = sess.client.clone();
+                let client = match self.session.as_ref() {
+                    Some(sess) => sess.client.clone(),
+                    None => return,
+                };
                 self.runtime.spawn(async move {
-                    let _ = client.send_event(&wrapper).await;
+                    let _ = client.send_event(&prepared.wrapper).await;
                 });
 
                 // Refresh chat to pick up the reaction from storage.
@@ -4821,36 +4841,27 @@ impl AppCore {
                 }
                 self.last_typing_sent.insert(chat_id.clone(), now);
 
-                let Some(sess) = self.session.as_mut() else {
-                    return;
-                };
-                let Some(group) = sess.groups.get(&chat_id).cloned() else {
-                    return;
-                };
-
                 let expires_at = now as u64 + 10;
-                let rumor = UnsignedEvent::new(
-                    sess.pubkey,
-                    Timestamp::now(),
-                    TYPING_INDICATOR_KIND,
-                    [
-                        Tag::custom(TagKind::d(), ["pika"]),
-                        Tag::expiration(Timestamp::from_secs(expires_at)),
-                    ],
-                    "typing",
-                );
-
-                let wrapper = match sess.mdk.create_message(&group.mls_group_id, rumor) {
-                    Ok(ev) => ev,
+                let prepared = match self.prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Typing {
+                        created_at: Timestamp::now(),
+                        expires_at: Timestamp::from_secs(expires_at),
+                    },
+                ) {
+                    Ok(prepared) => prepared,
                     Err(e) => {
                         tracing::warn!(err = %e, "typing indicator create_message failed");
                         return;
                     }
                 };
 
-                let client = sess.client.clone();
+                let client = match self.session.as_ref() {
+                    Some(sess) => sess.client.clone(),
+                    None => return,
+                };
                 self.runtime.spawn(async move {
-                    let _ = client.send_event(&wrapper).await;
+                    let _ = client.send_event(&prepared.wrapper).await;
                 });
             }
             AppAction::ClearToast => {
@@ -6490,12 +6501,15 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
+        use crate::core::GroupIndexEntry;
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
         use mdk_core::prelude::{
             message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
         };
         use nostr_sdk::prelude::*;
+        use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
+        use pika_marmot_runtime::outbound::OutboundConversationAction;
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -6710,6 +6724,40 @@ mod tests {
                 core.unread_counts.get(&chat_id).copied().unwrap_or(0),
                 1,
                 "shared conversation runtime should still drive unread updates"
+            );
+        }
+
+        #[test]
+        fn app_send_preparation_uses_shared_outbound_runtime() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            core.session.as_mut().expect("session").groups.insert(
+                chat_id.clone(),
+                GroupIndexEntry {
+                    mls_group_id: group_id,
+                    is_group: false,
+                    group_name: Some("Test".to_string()),
+                    members: vec![],
+                    admin_pubkeys: vec![],
+                },
+            );
+
+            let prepared = core
+                .prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Typing {
+                        created_at: Timestamp::from(123_u64),
+                        expires_at: Timestamp::from(133_u64),
+                    },
+                )
+                .expect("prepare outbound action");
+
+            assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
+            assert_eq!(prepared.kind, TYPING_INDICATOR_KIND);
+            assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
+            assert_ne!(prepared.rumor_id, EventId::all_zeros());
+            assert_eq!(
+                keys.public_key(),
+                core.session.as_ref().expect("session").pubkey
             );
         }
 

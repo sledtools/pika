@@ -42,9 +42,7 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
-use mdk_core::encrypted_media::types::{
-    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
-};
+use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
 use pika_marmot_runtime::conversation::{

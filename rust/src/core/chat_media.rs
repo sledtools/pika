@@ -3,16 +3,16 @@ use std::path::{Path, PathBuf};
 
 use ::image::GenericImageView as _;
 use base64::Engine;
-use mdk_core::encrypted_media::types::{MediaProcessingOptions, MediaReference};
-use nostr_blossom::client::BlossomClient;
+use mdk_core::encrypted_media::types::MediaReference;
+use pika_marmot_runtime::media::{
+    upload_encrypted_blob, MediaRuntime, UploadedBlob, MAX_CHAT_MEDIA_BYTES,
+};
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
 
 use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
-
-const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
 const RESIZE_MAX_DIMENSION: u32 = 1600;
 
@@ -336,6 +336,48 @@ pub(super) fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
     } else {
         normalized_mime_type(mime_type)
     }
+}
+
+fn prepare_chat_media_upload(
+    mdk: &PikaMdk,
+    group_id: &GroupId,
+    bytes: &[u8],
+    mime_type: &str,
+    filename: &str,
+) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
+    MediaRuntime::new(mdk).prepare_upload(group_id, bytes, Some(mime_type), Some(filename))
+}
+
+fn finalize_chat_media_upload(
+    mdk: &PikaMdk,
+    group_id: &GroupId,
+    upload: &EncryptedMediaUpload,
+    uploaded_url: String,
+    descriptor_sha256_hex: String,
+) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
+    MediaRuntime::new(mdk).finish_upload(
+        group_id,
+        upload,
+        UploadedBlob {
+            uploaded_url,
+            descriptor_sha256_hex,
+        },
+    )
+}
+
+fn decrypt_chat_media_download(
+    mdk: &PikaMdk,
+    group_id: &GroupId,
+    reference: &MediaReference,
+    encrypted_data: &[u8],
+    expected_encrypted_hash_hex: Option<&str>,
+) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
+    MediaRuntime::new(mdk).decrypt_downloaded_media(
+        group_id,
+        reference,
+        encrypted_data,
+        expected_encrypted_hash_hex,
+    )
 }
 
 fn attachment_from_record(
@@ -773,20 +815,21 @@ impl AppCore {
         // --- Encrypt (still on main thread — needs MDK) ---
         let (request_id, encrypted_data, expected_hash_hex, upload_mime, blossom_servers) = {
             let sess = self.session.as_mut().unwrap();
-            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
-            let mut upload = match manager.encrypt_for_upload_with_options(
+            let prepared = match prepare_chat_media_upload(
+                &sess.mdk,
+                &group.mls_group_id,
                 &media_data,
                 &media_mime,
                 &local_filename,
-                &MediaProcessingOptions::default(),
             ) {
-                Ok(upload) => upload,
+                Ok(prepared) => prepared,
                 Err(e) => {
                     self.cleanup_outbox_entry(&chat_id, &temp_rumor_id, Some(&local_path));
                     self.toast(format!("Media encryption failed: {e}"));
                     return;
                 }
             };
+            let upload = prepared.upload;
 
             let original_hash_hex = hex::encode(upload.original_hash);
 
@@ -821,7 +864,7 @@ impl AppCore {
                 }
             }
 
-            let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+            let encrypted_data = prepared.encrypted_data;
             let expected_hash_hex = hex::encode(upload.encrypted_hash);
             let upload_mime = upload.mime_type.clone();
             let request_id = uuid::Uuid::new_v4().to_string();
@@ -1180,16 +1223,15 @@ impl AppCore {
                 return;
             };
 
-            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
-
             for (i, pp) in preprocessed.iter().enumerate() {
-                let mut upload = match manager.encrypt_for_upload_with_options(
+                let prepared = match prepare_chat_media_upload(
+                    &sess.mdk,
+                    &group.mls_group_id,
                     &pp.media_data,
                     &pp.media_mime,
                     &pp.local_filename,
-                    &MediaProcessingOptions::default(),
                 ) {
-                    Ok(upload) => upload,
+                    Ok(prepared) => prepared,
                     Err(e) => {
                         // Clean up outbox on encryption failure.
                         if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
@@ -1204,6 +1246,7 @@ impl AppCore {
                         return;
                     }
                 };
+                let upload = prepared.upload;
 
                 let original_hash_hex = hex::encode(upload.original_hash);
 
@@ -1234,7 +1277,7 @@ impl AppCore {
                     }
                 }
 
-                let encrypted_data = std::mem::take(&mut upload.encrypted_data);
+                let encrypted_data = prepared.encrypted_data;
                 let expected_hash_hex = hex::encode(upload.encrypted_hash);
                 let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -1307,26 +1350,26 @@ impl AppCore {
     ) {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            let result = upload_to_blossom(
-                &blossom_servers,
+            let result = upload_encrypted_blob(
+                &signer_keys,
                 encrypted_data,
                 &upload_mime,
                 &expected_hash_hex,
-                &signer_keys,
+                &blossom_servers,
             )
             .await;
             let event = match result {
-                Ok((url, hash)) => InternalEvent::ChatMediaUploadCompleted {
+                Ok(uploaded) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
-                    uploaded_url: Some(url),
-                    descriptor_sha256_hex: Some(hash),
+                    uploaded_url: Some(uploaded.uploaded_url),
+                    descriptor_sha256_hex: Some(uploaded.descriptor_sha256_hex),
                     error: None,
                 },
                 Err(e) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
                     uploaded_url: None,
                     descriptor_sha256_hex: None,
-                    error: Some(e),
+                    error: Some(e.to_string()),
                 },
             };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
@@ -1434,21 +1477,25 @@ impl AppCore {
             return;
         };
 
-        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
-        let imeta_tag = manager.create_imeta_tag(&pending.upload, &uploaded_url);
-        let reference = manager.create_media_reference(&pending.upload, uploaded_url.clone());
+        let completed = finalize_chat_media_upload(
+            &sess.mdk,
+            &group.mls_group_id,
+            &pending.upload,
+            uploaded_url,
+            descriptor_hash,
+        );
 
         if let Some(conn) = self.chat_media_db.as_ref() {
             let record = ChatMediaRecord {
                 account_pubkey: pending.account_pubkey.clone(),
                 chat_id: pending.chat_id.clone(),
-                original_hash_hex: hex::encode(pending.upload.original_hash),
+                original_hash_hex: completed.attachment.original_hash_hex.clone(),
                 encrypted_hash_hex: expected_hash_hex.clone(),
-                url: uploaded_url.clone(),
-                mime_type: pending.upload.mime_type.clone(),
-                filename: pending.upload.filename.clone(),
-                nonce_hex: hex::encode(pending.upload.nonce),
-                scheme_version: reference.scheme_version.clone(),
+                url: completed.attachment.url.clone(),
+                mime_type: completed.attachment.mime_type.clone(),
+                filename: completed.attachment.filename.clone(),
+                nonce_hex: completed.attachment.nonce_hex.clone(),
+                scheme_version: completed.attachment.scheme_version.clone(),
                 created_at: now_seconds(),
             };
             if let Err(e) = chat_media_db::upsert_chat_media(conn, &record) {
@@ -1464,7 +1511,7 @@ impl AppCore {
         let media = vec![self.attachment_from_reference(
             &pending.chat_id,
             &pending.account_pubkey,
-            &reference,
+            &completed.reference,
             Some(expected_hash_hex),
         )];
 
@@ -1472,7 +1519,7 @@ impl AppCore {
             pending.chat_id,
             pending.caption,
             Kind::ChatMessage,
-            vec![imeta_tag],
+            vec![completed.imeta_tag],
             None,
             media,
         );
@@ -1655,22 +1702,29 @@ impl AppCore {
                 return;
             };
 
-            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
             batch
                 .items
                 .iter()
                 .map(|item| {
-                    let url = item.uploaded_url.as_deref().unwrap();
-                    let imeta_tag = manager.create_imeta_tag(&item.upload, url);
-                    let reference = manager.create_media_reference(&item.upload, url.to_string());
+                    let completed = finalize_chat_media_upload(
+                        &sess.mdk,
+                        &group.mls_group_id,
+                        &item.upload,
+                        item.uploaded_url.as_deref().unwrap().to_string(),
+                        hex::encode(item.upload.encrypted_hash),
+                    );
                     UploadedMedia {
-                        imeta_tag,
-                        reference,
-                        encrypted_hash_hex: hex::encode(item.upload.encrypted_hash),
-                        original_hash_hex: hex::encode(item.upload.original_hash),
-                        mime_type: item.upload.mime_type.clone(),
-                        filename: item.upload.filename.clone(),
-                        nonce_hex: hex::encode(item.upload.nonce),
+                        imeta_tag: completed.imeta_tag,
+                        reference: completed.reference,
+                        encrypted_hash_hex: completed
+                            .attachment
+                            .encrypted_hash_hex
+                            .clone()
+                            .unwrap_or_else(|| hex::encode(item.upload.encrypted_hash)),
+                        original_hash_hex: completed.attachment.original_hash_hex,
+                        mime_type: completed.attachment.mime_type,
+                        filename: completed.attachment.filename,
+                        nonce_hex: completed.attachment.nonce_hex,
                     }
                 })
                 .collect()
@@ -2060,16 +2114,21 @@ impl AppCore {
             return;
         };
 
-        let manager = sess.mdk.media_manager(pending.group_id.clone());
-        let decrypted = match manager.decrypt_from_download(&encrypted_data, &pending.reference) {
-            Ok(data) => data,
+        let downloaded = match decrypt_chat_media_download(
+            &sess.mdk,
+            &pending.group_id,
+            &pending.reference,
+            &encrypted_data,
+            pending.encrypted_hash_hex.as_deref(),
+        ) {
+            Ok(downloaded) => downloaded,
             Err(e) => {
                 self.toast(format!("Media decrypt failed: {e}"));
                 return;
             }
         };
 
-        let original_hash_hex = hex::encode(pending.reference.original_hash);
+        let original_hash_hex = downloaded.attachment.original_hash_hex;
         let local_path = media_file_path(
             &self.data_dir,
             &pending.account_pubkey,
@@ -2077,7 +2136,7 @@ impl AppCore {
             &original_hash_hex,
             &pending.reference.filename,
         );
-        if let Err(e) = write_media_file(&local_path, &decrypted) {
+        if let Err(e) = write_media_file(&local_path, &downloaded.decrypted_data) {
             self.toast(format!("Media cache failed: {e}"));
             return;
         }
@@ -2122,63 +2181,22 @@ impl AppCore {
     }
 }
 
-/// Upload data to the first available Blossom server, verifying the hash.
-/// Returns `(uploaded_url, descriptor_hash_hex)` on success.
-pub(super) async fn upload_to_blossom(
-    servers: &[String],
-    data: Vec<u8>,
-    mime_type: &str,
-    expected_hash_hex: &str,
-    signer: &nostr_sdk::Keys,
-) -> Result<(String, String), String> {
-    if servers.is_empty() {
-        return Err("No valid Blossom servers configured".to_string());
-    }
-
-    let mut last_error: Option<String> = None;
-    for server in servers {
-        let base_url = match Url::parse(server) {
-            Ok(url) => url,
-            Err(e) => {
-                last_error = Some(format!("{server}: {e}"));
-                continue;
-            }
-        };
-
-        let blossom = BlossomClient::new(base_url);
-        let descriptor = match blossom
-            .upload_blob(
-                data.clone(),
-                Some(mime_type.to_string()),
-                None,
-                Some(signer),
-            )
-            .await
-        {
-            Ok(d) => d,
-            Err(e) => {
-                last_error = Some(format!("{server}: {e}"));
-                continue;
-            }
-        };
-
-        let descriptor_hash_hex = descriptor.sha256.to_string();
-        if !descriptor_hash_hex.eq_ignore_ascii_case(expected_hash_hex) {
-            last_error = Some(format!(
-                "{server}: uploaded hash mismatch (expected {expected_hash_hex}, got {descriptor_hash_hex})"
-            ));
-            continue;
-        }
-
-        return Ok((descriptor.url.to_string(), descriptor_hash_hex));
-    }
-
-    Err(last_error.unwrap_or_else(|| "Blossom upload failed".to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mdk_core::prelude::NostrGroupConfigData;
+    use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
+
+    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
 
     #[test]
     fn infer_media_kind_accepts_audio_mime_case_insensitively() {
@@ -2627,5 +2645,61 @@ mod tests {
         let result =
             preprocess_single_media(&data_dir, "a", "c", "not-base64!!!", "image/jpeg", "x.jpg");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_media_prepare_uses_shared_runtime_service() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_dir_str = inviter_dir.path().to_string_lossy().to_string();
+        let invitee_dir_str = invitee_dir.path().to_string_lossy().to_string();
+        let inviter_mdk =
+            crate::mdk_support::open_mdk(&inviter_dir_str, &inviter_keys.public_key(), "")
+                .expect("open inviter mdk");
+        let invitee_mdk =
+            crate::mdk_support::open_mdk(&invitee_dir_str, &invitee_keys.public_key(), "")
+                .expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "app media runtime".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let prepared = prepare_chat_media_upload(
+            &inviter_mdk,
+            &created.group.mls_group_id,
+            b"hello from app media",
+            "text/plain",
+            "note.txt",
+        )
+        .expect("prepare upload");
+        let downloaded = decrypt_chat_media_download(
+            &inviter_mdk,
+            &created.group.mls_group_id,
+            &finalize_chat_media_upload(
+                &inviter_mdk,
+                &created.group.mls_group_id,
+                &prepared.upload,
+                "https://example.com/blob".to_string(),
+                hex::encode(prepared.upload.encrypted_hash),
+            )
+            .reference,
+            &prepared.encrypted_data,
+            Some(&hex::encode(prepared.upload.encrypted_hash)),
+        )
+        .expect("decrypt via shared runtime");
+
+        assert_eq!(downloaded.attachment.filename, "note.txt");
+        assert_eq!(downloaded.decrypted_data, b"hello from app media");
     }
 }

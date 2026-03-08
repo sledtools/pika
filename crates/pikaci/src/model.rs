@@ -202,6 +202,18 @@ pub struct PreparedOutputHandoff {
     pub exposures: Vec<PreparedOutputExposure>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputRemoteExposureRequest {
+    pub schema_version: u32,
+    pub node_id: String,
+    pub installable: String,
+    pub output_name: String,
+    pub protocol: PreparedOutputHandoffProtocol,
+    pub realized_path: String,
+    #[serde(default)]
+    pub requested_exposures: Vec<PreparedOutputExposure>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PrepareNode {

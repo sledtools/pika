@@ -1,9 +1,9 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
-    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus, gc_runs, git_changed_files,
-    list_runs, load_logs, load_run_record, record_skipped_run, rerun_jobs_with_metadata,
-    run_jobs_with_metadata,
+    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus,
+    fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
+    load_run_record, record_skipped_run, rerun_jobs_with_metadata, run_jobs_with_metadata,
 };
 
 struct TargetSpec {
@@ -41,6 +41,9 @@ enum Command {
     },
     Status {
         run_id: String,
+    },
+    FulfillPreparedOutputRequest {
+        request_path: String,
     },
     Rerun {
         run_id: String,
@@ -143,6 +146,12 @@ fn main() -> anyhow::Result<()> {
             for job in &run.jobs {
                 println!("{} {}", job.id, status_text(job.status));
             }
+        }
+        Command::FulfillPreparedOutputRequest { request_path } => {
+            let request = fulfill_prepared_output_request(std::path::Path::new(&request_path))?;
+            println!("request={request_path}");
+            println!("output={}", request.output_name);
+            println!("requested_exposures={}", request.requested_exposures.len());
         }
         Command::Rerun { run_id } => {
             let previous = load_run_record(&options.state_root, &run_id)?;

@@ -181,6 +181,12 @@ pub enum PreparedOutputExposureAccess {
     ReadOnly,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputConsumerKind {
+    HostLocalSymlinkMountsV1,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PreparedOutputExposure {
     pub kind: PreparedOutputExposureKind,
@@ -282,6 +288,7 @@ pub struct RealizedPreparedOutputRecord {
     pub installable: String,
     pub output_name: String,
     pub protocol: PreparedOutputHandoffProtocol,
+    pub consumer: PreparedOutputConsumerKind,
     pub realized_path: String,
     #[serde(default)]
     pub exposures: Vec<PreparedOutputExposure>,

@@ -50,20 +50,6 @@ use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 const PROTOCOL_VERSION: u32 = 1;
 const ACCEPT_WELCOME_BACKLOG_LIMIT: usize = 200;
 
-fn find_pending_welcome_index<T>(
-    list: &[T],
-    target: &EventId,
-    wrapper_id: impl Fn(&T) -> &EventId,
-    welcome_id: impl Fn(&T) -> &EventId,
-) -> Option<usize> {
-    list.iter()
-        .position(|welcome| wrapper_id(welcome) == target)
-        .or_else(|| {
-            list.iter()
-                .position(|welcome| welcome_id(welcome) == target)
-        })
-}
-
 async fn accept_welcome_with_backfill<F, Fut>(
     mdk: &MDK<MdkSqliteStorage>,
     client: &Client,
@@ -2510,13 +2496,8 @@ pub async fn daemon_main(
                         };
                         match mdk.get_pending_welcomes(None) {
                             Ok(mut list) => {
-                                let found = find_pending_welcome_index(
-                                    &list,
-                                    &wrapper,
-                                    |welcome| &welcome.wrapper_event_id,
-                                    |welcome| &welcome.id,
-                                )
-                                .map(|idx| list.swap_remove(idx));
+                                let found =
+                                    pika_marmot_runtime::take_pending_welcome(&mut list, &wrapper);
                                 let Some(w) = found else {
                                     reply_tx
                                         .send(out_error(
@@ -4332,33 +4313,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn find_pending_welcome_index_matches_wrapper_or_welcome_id_only() {
-        let items = vec![
-            (
-                event_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                event_id("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    fn make_pending_welcome(
+        wrapper_hex: &str,
+        welcome_hex: &str,
+    ) -> mdk_storage_traits::welcomes::types::Welcome {
+        let welcomer = Keys::generate().public_key();
+        let created_at = Timestamp::from(1_u64);
+        mdk_storage_traits::welcomes::types::Welcome {
+            id: event_id(welcome_hex),
+            event: UnsignedEvent::new(
+                welcomer,
+                created_at,
+                Kind::MlsWelcome,
+                Tags::new(),
+                "{}".to_string(),
             ),
-            (
-                event_id("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
-                event_id("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+            mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+            nostr_group_id: [1; 32],
+            group_name: "test".to_string(),
+            group_description: String::new(),
+            group_image_hash: None,
+            group_image_key: None,
+            group_image_nonce: None,
+            group_admin_pubkeys: std::collections::BTreeSet::new(),
+            group_relays: std::collections::BTreeSet::new(),
+            welcomer,
+            member_count: 2,
+            state: mdk_storage_traits::welcomes::types::WelcomeState::Pending,
+            wrapper_event_id: event_id(wrapper_hex),
+        }
+    }
+
+    #[test]
+    fn pending_welcome_lookup_uses_shared_runtime_match_rules() {
+        let items = vec![
+            make_pending_welcome(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            make_pending_welcome(
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             ),
         ];
 
         assert_eq!(
-            find_pending_welcome_index(&items, &items[0].0, |item| &item.0, |item| &item.1),
+            pika_marmot_runtime::find_pending_welcome_index(&items, &items[0].wrapper_event_id),
             Some(0)
         );
         assert_eq!(
-            find_pending_welcome_index(&items, &items[1].1, |item| &item.0, |item| &item.1),
+            pika_marmot_runtime::find_pending_welcome_index(&items, &items[1].id),
             Some(1)
         );
         assert_eq!(
-            find_pending_welcome_index(
+            pika_marmot_runtime::find_pending_welcome_index(
                 &items,
                 &event_id("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
-                |item| &item.0,
-                |item| &item.1,
             ),
             None
         );

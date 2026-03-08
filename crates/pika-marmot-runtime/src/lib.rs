@@ -122,6 +122,33 @@ pub struct AcceptedWelcome {
     pub ingested_messages: Vec<mdk_storage_traits::messages::types::Message>,
 }
 
+pub fn find_pending_welcome<'a>(
+    welcomes: &'a [mdk_storage_traits::welcomes::types::Welcome],
+    target: &EventId,
+) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
+    welcomes
+        .iter()
+        .find(|welcome| welcome.wrapper_event_id == *target)
+        .or_else(|| welcomes.iter().find(|welcome| welcome.id == *target))
+}
+
+pub fn find_pending_welcome_index(
+    welcomes: &[mdk_storage_traits::welcomes::types::Welcome],
+    target: &EventId,
+) -> Option<usize> {
+    welcomes
+        .iter()
+        .position(|welcome| welcome.wrapper_event_id == *target)
+        .or_else(|| welcomes.iter().position(|welcome| welcome.id == *target))
+}
+
+pub fn take_pending_welcome(
+    welcomes: &mut Vec<mdk_storage_traits::welcomes::types::Welcome>,
+    target: &EventId,
+) -> Option<mdk_storage_traits::welcomes::types::Welcome> {
+    find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
+}
+
 /// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
 /// storage. This intentionally does not accept the welcome; hosts decide
 /// whether to stage, auto-accept, subscribe, or backfill after ingest. MDK may
@@ -365,6 +392,77 @@ mod tests {
 
         let loaded = load_processed_mls_event_ids(state_dir);
         assert_eq!(loaded.len(), PROCESSED_MLS_EVENT_IDS_MAX);
+    }
+
+    #[test]
+    fn find_pending_welcome_matches_wrapper_or_welcome_id_only() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime pending welcome test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let mut welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let welcome_event_id = welcome_rumor.id();
+
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor,
+                    [],
+                )
+                .await
+                .expect("build giftwrap")
+            });
+
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest");
+            });
+
+        let mut pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+
+        let by_wrapper = find_pending_welcome(&pending, &wrapper.id).expect("match wrapper id");
+        assert_eq!(by_wrapper.wrapper_event_id, wrapper.id);
+
+        let by_welcome =
+            find_pending_welcome(&pending, &welcome_event_id).expect("match welcome id");
+        assert_eq!(by_welcome.id, welcome_event_id);
+
+        let taken = take_pending_welcome(&mut pending, &welcome_event_id).expect("take welcome");
+        assert_eq!(taken.id, welcome_event_id);
+        assert!(pending.is_empty(), "take should remove the matched welcome");
+
+        let missing = EventId::from_hex(&"e".repeat(64)).expect("missing event id");
+        assert!(find_pending_welcome(&pending, &missing).is_none());
+        assert!(find_pending_welcome_index(&pending, &missing).is_none());
     }
 
     #[test]

@@ -357,6 +357,10 @@ pub struct RunRecord {
     #[serde(default)]
     pub prepared_outputs_path: Option<String>,
     #[serde(default)]
+    pub prepared_output_consumer: Option<PreparedOutputConsumerKind>,
+    #[serde(default)]
+    pub prepared_output_mode: Option<String>,
+    #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]
     pub filters: Vec<String>,

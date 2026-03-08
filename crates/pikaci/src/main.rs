@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
-    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunStatus,
+    GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunRecord, RunStatus,
     fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
     load_run_record, record_skipped_run, rerun_jobs_with_metadata, run_jobs_with_metadata,
 };
@@ -125,26 +125,8 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Status { run_id } => {
             let run = load_run_record(&options.state_root, &run_id)?;
-            println!(
-                "{} {} {}",
-                run.run_id,
-                run.target_id.as_deref().unwrap_or("-"),
-                status_text(run.status)
-            );
-            if let Some(plan_path) = &run.plan_path {
-                println!("plan={plan_path}");
-            }
-            if let Some(prepared_outputs_path) = &run.prepared_outputs_path {
-                println!("prepared_outputs={prepared_outputs_path}");
-            }
-            if let Some(message) = &run.message {
-                println!("{message}");
-            }
-            if !run.changed_files.is_empty() {
-                println!("changed_files={}", run.changed_files.len());
-            }
-            for job in &run.jobs {
-                println!("{} {}", job.id, status_text(job.status));
+            for line in format_status_lines(&run) {
+                println!("{line}");
             }
         }
         Command::FulfillPreparedOutputRequest { request_path } => {
@@ -618,6 +600,50 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
     }
 }
 
+fn format_status_lines(run: &RunRecord) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} {} {}",
+        run.run_id,
+        run.target_id.as_deref().unwrap_or("-"),
+        status_text(run.status)
+    )];
+    if let Some(plan_path) = &run.plan_path {
+        lines.push(format!("plan={plan_path}"));
+    }
+    if let Some(prepared_outputs_path) = &run.prepared_outputs_path {
+        lines.push(format!("prepared_outputs={prepared_outputs_path}"));
+    }
+    if let Some(prepared_output_consumer) = run.prepared_output_consumer {
+        lines.push(format!(
+            "prepared_output_consumer={}",
+            prepared_output_consumer_label(prepared_output_consumer)
+        ));
+    }
+    if let Some(prepared_output_mode) = &run.prepared_output_mode {
+        lines.push(format!("prepared_output_mode={prepared_output_mode}"));
+    }
+    if let Some(message) = &run.message {
+        lines.push(message.clone());
+    }
+    if !run.changed_files.is_empty() {
+        lines.push(format!("changed_files={}", run.changed_files.len()));
+    }
+    for job in &run.jobs {
+        lines.push(format!("{} {}", job.id, status_text(job.status)));
+    }
+    lines
+}
+
+fn prepared_output_consumer_label(kind: pikaci::PreparedOutputConsumerKind) -> &'static str {
+    match kind {
+        pikaci::PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 => {
+            "host_local_symlink_mounts_v1"
+        }
+        pikaci::PreparedOutputConsumerKind::RemoteExposureRequestV1 => "remote_exposure_request_v1",
+        pikaci::PreparedOutputConsumerKind::FulfillRequestCliV1 => "fulfill_request_cli_v1",
+    }
+}
+
 fn map_log_kind(kind: LogKindArg) -> LogKind {
     match kind {
         LogKindArg::Host => LogKind::Host,
@@ -1059,6 +1085,7 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         rerun_of: None,
         target_id: Some(target.id.to_string()),
         target_description: Some(target.description.to_string()),
+        prepared_output_mode: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1099,7 +1126,17 @@ fn rerun_target(
     previous: &pikaci::RunRecord,
 ) -> anyhow::Result<pikaci::RunRecord> {
     let target = target_spec_for_rerun(previous)?;
-    let metadata = RunMetadata {
+    let metadata = rerun_metadata(previous, &target);
+
+    if previous.status == RunStatus::Skipped {
+        return record_skipped_run(options, metadata);
+    }
+
+    rerun_jobs_with_metadata(target.jobs.as_slice(), previous, options, metadata)
+}
+
+fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetadata {
+    RunMetadata {
         rerun_of: Some(previous.run_id.clone()),
         target_id: previous
             .target_id
@@ -1109,16 +1146,11 @@ fn rerun_target(
             .target_description
             .clone()
             .or_else(|| Some(target.description.to_string())),
+        prepared_output_mode: previous.prepared_output_mode.clone(),
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
         message: Some(format!("rerun of {}", previous.run_id)),
-    };
-
-    if previous.status == RunStatus::Skipped {
-        return record_skipped_run(options, metadata);
     }
-
-    rerun_jobs_with_metadata(target.jobs.as_slice(), previous, options, metadata)
 }
 
 fn target_spec_for_rerun(previous: &pikaci::RunRecord) -> anyhow::Result<TargetSpec> {
@@ -1159,8 +1191,11 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{matches_any_filter, matches_filter, target_spec_for_rerun};
-    use pikaci::{JobRecord, RunRecord, RunStatus};
+    use super::{
+        format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
+        target_spec_for_rerun,
+    };
+    use pikaci::{JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus};
 
     #[test]
     fn path_filters_match_exact_and_prefix_patterns() {
@@ -1203,6 +1238,31 @@ mod tests {
         assert_eq!(target.id, "beachhead");
     }
 
+    #[test]
+    fn status_lines_include_prepared_output_mode_observability() {
+        let run = sample_run_record();
+        let lines = format_status_lines(&run);
+        assert!(lines.contains(&"prepared_output_consumer=fulfill_request_cli_v1".to_string()));
+        assert!(lines.contains(
+            &"prepared_output_mode=pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()
+        ));
+    }
+
+    #[test]
+    fn rerun_metadata_preserves_prepared_output_mode() {
+        let mut run = sample_run_record();
+        run.target_id = Some("pre-merge-pika-rust".to_string());
+        run.target_description = Some("Run staged rust lane".to_string());
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        let metadata = rerun_metadata(&run, &target);
+
+        assert_eq!(
+            metadata.prepared_output_mode.as_deref(),
+            Some("pre_merge_pika_rust_subprocess_fulfillment_v1")
+        );
+    }
+
     fn sample_run_record() -> RunRecord {
         RunRecord {
             run_id: "run-1".to_string(),
@@ -1218,6 +1278,8 @@ mod tests {
             finished_at: Some("2026-03-07T00:00:01Z".to_string()),
             plan_path: None,
             prepared_outputs_path: None,
+            prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
+            prepared_output_mode: Some("pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()),
             changed_files: vec![],
             filters: vec![],
             message: None,

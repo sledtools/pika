@@ -632,7 +632,7 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
         &run.prepared_output_invocation_wrapper_program
     {
         lines.push(format!(
-            "prepared_output_invocation_wrapper_program={prepared_output_invocation_wrapper_program}"
+            "prepared_output_invocation_launcher_program={prepared_output_invocation_wrapper_program}"
         ));
     }
     if let Some(message) = &run.message {

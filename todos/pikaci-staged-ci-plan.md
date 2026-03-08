@@ -453,7 +453,22 @@ Phase 6 helper-invoker slice notes:
   - and helper logs show whether the run used direct execution or the wrapper-shaped boundary.
 - What this slice proves: the staged `pre-merge-pika-rust` helper path can cross a real invocation seam that is narrower than “spawn whatever binary happens to be local,” while still staying Nix-backed and same-host in practice.
 - What is still missing: the wrapper is still only a local launcher contract; there is still no transport, no remote worker lifecycle, and no off-host result collection.
-- Next recommended slice: decide whether the current helper request/result pair plus wrapper-shaped invocation contract is enough for a first tiny off-host launcher prototype, or whether one more narrow helper-launch/result wrapper is needed first.
+- Next recommended slice: replace the generic wrapper argv seam with one dedicated fulfillment launcher contract so the off-host boundary is concrete without changing the helper request/result schemas.
+
+Phase 6 fulfillment-launcher slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `external_wrapper_command_v1` now rides a dedicated fulfillment launcher contract instead of an arbitrary wrapper argv protocol:
+  - a tiny launcher request file captures helper path plus helper request/result paths,
+  - a dedicated launcher binary consumes that request and invokes the helper locally today.
+- The helper request/result JSON contracts stay unchanged.
+- Observability is clearer:
+  - helper logs show launcher mode and launcher-request path,
+  - prepared-output state records the launcher-request file path,
+  - and run status exposes the launcher program used for the invocation seam.
+- What this slice proves: the staged `pre-merge-pika-rust` helper path now crosses a concrete launcher boundary that could later move off-host without redesigning the helper contracts.
+- What is still missing: the launcher is still same-host, with no transport, no remote lifecycle, and no remote result collection.
+- Next recommended slice: keep the contracts stable and prototype one tiny off-host launcher implementation behind this dedicated launcher request path.
 
 ## Deferred Until Proven Necessary
 
@@ -492,5 +507,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, and tenth narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for whether the current helper request/result pair plus wrapper-shaped invocation seam is sufficient for a first off-host launcher prototype, or whether one final tiny launcher/result wrapper is still needed before that, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, and eleventh narrow remote-prep forms.
+- Current recommended slice is one narrow off-host launcher prototype that keeps the helper request/result contracts stable and swaps only the launcher implementation behind the dedicated launcher request path, while keeping Rust execute inputs Nix-backed.

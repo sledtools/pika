@@ -17,12 +17,6 @@ use nostr_sdk::prelude::{Event, EventId, Keys, Kind};
 use serde::{Deserialize, Serialize};
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
-pub use group::{CreatedGroup, create_group_and_publish_welcomes};
-pub use welcome::{
-    AcceptedWelcome, IngestedWelcome, PublishedWelcome, accept_welcome_and_catch_up,
-    find_pending_welcome, find_pending_welcome_index, ingest_welcome_from_giftwrap,
-    publish_welcome_rumors, take_pending_welcome,
-};
 
 pub const PROCESSED_MLS_EVENT_IDS_FILE: &str = "processed_mls_event_ids_v1.txt";
 pub const PROCESSED_MLS_EVENT_IDS_MAX: usize = 8192;

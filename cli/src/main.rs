@@ -1090,7 +1090,7 @@ async fn create_group_and_publish_welcomes_for_invite(
     peer_kp: Event,
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
-) -> anyhow::Result<pika_marmot_runtime::welcome::CreatedGroup> {
+) -> anyhow::Result<pika_marmot_runtime::group::CreatedGroup> {
     create_group_and_publish_welcomes_for_invite_with_publisher(
         keys,
         mdk,
@@ -1113,12 +1113,12 @@ async fn create_group_and_publish_welcomes_for_invite_with_publisher<F, Fut>(
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
     publish_giftwrap: F,
-) -> anyhow::Result<pika_marmot_runtime::welcome::CreatedGroup>
+) -> anyhow::Result<pika_marmot_runtime::group::CreatedGroup>
 where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    pika_marmot_runtime::welcome::create_group_and_publish_welcomes(
+    pika_marmot_runtime::group::create_group_and_publish_welcomes(
         keys,
         mdk,
         vec![peer_kp],

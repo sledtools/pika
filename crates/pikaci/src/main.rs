@@ -622,6 +622,12 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
     if let Some(prepared_output_mode) = &run.prepared_output_mode {
         lines.push(format!("prepared_output_mode={prepared_output_mode}"));
     }
+    if let Some(prepared_output_invocation_mode) = run.prepared_output_invocation_mode {
+        lines.push(format!(
+            "prepared_output_invocation_mode={}",
+            prepared_output_invocation_mode_label(prepared_output_invocation_mode)
+        ));
+    }
     if let Some(message) = &run.message {
         lines.push(message.clone());
     }
@@ -641,6 +647,17 @@ fn prepared_output_consumer_label(kind: pikaci::PreparedOutputConsumerKind) -> &
         }
         pikaci::PreparedOutputConsumerKind::RemoteExposureRequestV1 => "remote_exposure_request_v1",
         pikaci::PreparedOutputConsumerKind::FulfillRequestCliV1 => "fulfill_request_cli_v1",
+    }
+}
+
+fn prepared_output_invocation_mode_label(
+    mode: pikaci::PreparedOutputInvocationMode,
+) -> &'static str {
+    match mode {
+        pikaci::PreparedOutputInvocationMode::DirectHelperExecV1 => "direct_helper_exec_v1",
+        pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1 => {
+            "external_wrapper_command_v1"
+        }
     }
 }
 
@@ -1086,6 +1103,7 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         target_id: Some(target.id.to_string()),
         target_description: Some(target.description.to_string()),
         prepared_output_mode: None,
+        prepared_output_invocation_mode: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1147,6 +1165,7 @@ fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetad
             .clone()
             .or_else(|| Some(target.description.to_string())),
         prepared_output_mode: previous.prepared_output_mode.clone(),
+        prepared_output_invocation_mode: previous.prepared_output_invocation_mode,
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
         message: Some(format!("rerun of {}", previous.run_id)),
@@ -1246,6 +1265,9 @@ mod tests {
         assert!(lines.contains(
             &"prepared_output_mode=pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()
         ));
+        assert!(
+            lines.contains(&"prepared_output_invocation_mode=direct_helper_exec_v1".to_string())
+        );
     }
 
     #[test]
@@ -1260,6 +1282,10 @@ mod tests {
         assert_eq!(
             metadata.prepared_output_mode.as_deref(),
             Some("pre_merge_pika_rust_subprocess_fulfillment_v1")
+        );
+        assert_eq!(
+            metadata.prepared_output_invocation_mode,
+            Some(pikaci::PreparedOutputInvocationMode::DirectHelperExecV1)
         );
     }
 
@@ -1280,6 +1306,9 @@ mod tests {
             prepared_outputs_path: None,
             prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
             prepared_output_mode: Some("pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()),
+            prepared_output_invocation_mode: Some(
+                pikaci::PreparedOutputInvocationMode::DirectHelperExecV1,
+            ),
             changed_files: vec![],
             filters: vec![],
             message: None,

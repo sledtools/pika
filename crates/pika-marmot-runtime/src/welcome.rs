@@ -3,7 +3,9 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 use mdk_core::prelude::NostrGroupConfigData;
-use nostr_sdk::prelude::{Event, EventBuilder, EventId, Keys, Kind, PublicKey, Tag, UnsignedEvent};
+use nostr_sdk::prelude::{
+    Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, Tag, UnsignedEvent,
+};
 
 use crate::{PikaMdk, ingest_group_backlog};
 
@@ -200,14 +202,15 @@ where
     })
 }
 
-pub async fn publish_welcome_rumors<F, Fut>(
-    keys: &Keys,
+pub async fn publish_welcome_rumors<T, F, Fut>(
+    signer: &T,
     welcome_rumors: &[UnsignedEvent],
     recipients: &[PublicKey],
     welcome_tags: Vec<Tag>,
     mut publish_giftwrap: F,
 ) -> Result<Vec<PublishedWelcome>>
 where
+    T: NostrSigner,
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
@@ -227,7 +230,7 @@ where
     {
         let welcome_event_id = rumor.id();
         let giftwrap =
-            EventBuilder::gift_wrap(keys, &receiver, rumor.clone(), welcome_tags.clone())
+            EventBuilder::gift_wrap(signer, &receiver, rumor.clone(), welcome_tags.clone())
                 .await
                 .context("build welcome giftwrap")?;
         publish_giftwrap(receiver, giftwrap.clone())

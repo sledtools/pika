@@ -3841,8 +3841,8 @@ impl AppCore {
         // into local state immediately, while welcome delivery continues in the
         // background as a best-effort side effect.
         if network_enabled {
-            self.publish_welcomes_to_peer(
-                peer_pubkey,
+            self.publish_welcomes_to_peers(
+                vec![peer_pubkey],
                 group_result.welcome_rumors,
                 group_relays.clone(),
             );
@@ -4145,13 +4145,11 @@ impl AppCore {
                         welcome_relays.push(r);
                     }
                 }
-                for pk in &peer_pubkeys {
-                    self.publish_welcomes_to_peer(
-                        *pk,
-                        group_result.welcome_rumors.clone(),
-                        welcome_relays.clone(),
-                    );
-                }
+                self.publish_welcomes_to_peers(
+                    peer_pubkeys.clone(),
+                    group_result.welcome_rumors.clone(),
+                    welcome_relays.clone(),
+                );
             }
 
             self.refresh_all_from_storage();
@@ -4202,9 +4200,7 @@ impl AppCore {
                     .map(|s| s.into_iter().collect())
                     .filter(|v: &Vec<RelayUrl>| !v.is_empty())
                     .unwrap_or(fallback_relays);
-                for pk in added_pubkeys {
-                    self.publish_welcomes_to_peer(pk, rumors.clone(), relays.clone());
-                }
+                self.publish_welcomes_to_peers(added_pubkeys, rumors.clone(), relays.clone());
             }
         }
 

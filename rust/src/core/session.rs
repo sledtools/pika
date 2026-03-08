@@ -1,6 +1,9 @@
 // Session lifecycle + networking side effects.
 
+use std::future::Future;
+
 use super::*;
+use pika_marmot_runtime::welcome::publish_welcome_rumors;
 
 impl AppCore {
     pub(super) fn start_session(&mut self, keys: Keys) -> anyhow::Result<()> {
@@ -448,9 +451,9 @@ impl AppCore {
         });
     }
 
-    pub(super) fn publish_welcomes_to_peer(
+    pub(super) fn publish_welcomes_to_peers(
         &mut self,
-        peer_pubkey: PublicKey,
+        peer_pubkeys: Vec<PublicKey>,
         welcome_rumors: Vec<UnsignedEvent>,
         relays: Vec<RelayUrl>,
     ) {
@@ -464,26 +467,100 @@ impl AppCore {
             }
             client.connect().await;
             client.wait_for_connection(Duration::from_secs(4)).await;
-
-            let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
-            let tags = vec![Tag::expiration(expires)];
-            for rumor in welcome_rumors {
-                let outcome = super::relay_publish::gift_wrap_with_retry(
-                    &client,
-                    &relays,
-                    &peer_pubkey,
-                    rumor,
-                    tags.clone(),
-                    4,
-                    "welcome publish",
-                    true,
-                )
-                .await;
-                if let super::relay_publish::PublishOutcome::Err(err) = outcome {
-                    tracing::error!("welcome delivery failed after retries: {err}");
+            let signer = match client.signer().await {
+                Ok(signer) => signer,
+                Err(err) => {
+                    tracing::error!("welcome delivery signer unavailable: {err}");
+                    return;
                 }
-            }
+            };
+            Self::publish_welcome_rumors_best_effort(
+                &client,
+                &signer,
+                &peer_pubkeys,
+                &welcome_rumors,
+                relays,
+                4,
+                "welcome publish",
+            )
+            .await;
         });
+    }
+
+    async fn publish_welcome_rumors_best_effort<T>(
+        client: &Client,
+        signer: &T,
+        recipients: &[PublicKey],
+        welcome_rumors: &[UnsignedEvent],
+        relays: Vec<RelayUrl>,
+        max_attempts: u8,
+        context: &'static str,
+    ) where
+        T: NostrSigner,
+    {
+        Self::publish_welcome_rumors_best_effort_with_publisher(
+            signer,
+            recipients,
+            welcome_rumors,
+            max_attempts,
+            context,
+            |_, giftwrap| {
+                let client = client.clone();
+                let relays = relays.clone();
+                async move {
+                    super::relay_publish::publish_event_with_retry(
+                        &client,
+                        &relays,
+                        &giftwrap,
+                        max_attempts,
+                        context,
+                        true,
+                    )
+                    .await
+                }
+            },
+        )
+        .await;
+    }
+
+    async fn publish_welcome_rumors_best_effort_with_publisher<T, F, Fut>(
+        signer: &T,
+        recipients: &[PublicKey],
+        welcome_rumors: &[UnsignedEvent],
+        max_attempts: u8,
+        context: &'static str,
+        mut publish_giftwrap: F,
+    ) where
+        T: NostrSigner,
+        F: FnMut(PublicKey, Event) -> Fut,
+        Fut: Future<Output = super::relay_publish::PublishOutcome>,
+    {
+        let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
+        let tags = vec![Tag::expiration(expires)];
+        let result = publish_welcome_rumors(
+            signer,
+            welcome_rumors,
+            recipients,
+            tags,
+            |receiver, giftwrap| {
+                let publish = publish_giftwrap(receiver, giftwrap);
+                async move {
+                    match publish.await {
+                        super::relay_publish::PublishOutcome::Ok => Ok(()),
+                        super::relay_publish::PublishOutcome::Err(err) => {
+                            tracing::error!(
+                                "{context} failed after {max_attempts} attempts: {err}"
+                            );
+                            Ok(())
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+        if let Err(err) = result {
+            tracing::error!("welcome delivery setup failed: {err}");
+        }
     }
 
     /// Load cached follow pubkeys from the profile DB and build an initial
@@ -890,5 +967,114 @@ impl AppCore {
                 let _ = client.send_event_to(&relays, &ev).await;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
+        crate::mdk_support::open_mdk(
+            dir.path().to_str().expect("tempdir path"),
+            &keys.public_key(),
+            "test.keychain.group",
+        )
+        .expect("open test mdk")
+    }
+
+    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
+
+    #[tokio::test]
+    async fn app_background_publish_uses_shared_welcome_pairing() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let bob_dir = tempfile::tempdir().expect("bob tempdir");
+        let charlie_dir = tempfile::tempdir().expect("charlie tempdir");
+        let inviter_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let charlie_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let bob_mdk = open_test_mdk(&bob_dir, &bob_keys);
+        let charlie_mdk = open_test_mdk(&charlie_dir, &charlie_keys);
+
+        let bob_kp = make_key_package_event(&bob_mdk, &bob_keys);
+        let charlie_kp = make_key_package_event(&charlie_mdk, &charlie_keys);
+        let config = NostrGroupConfigData {
+            name: "App publish test".to_string(),
+            description: String::new(),
+            image_hash: None,
+            image_key: None,
+            image_nonce: None,
+            relays: vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            admins: vec![inviter_keys.public_key()],
+        };
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![bob_kp, charlie_kp], config)
+            .expect("create group");
+
+        let published =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<(PublicKey, Event)>::new()));
+        let published_capture = std::sync::Arc::clone(&published);
+        AppCore::publish_welcome_rumors_best_effort_with_publisher(
+            &inviter_keys,
+            &[bob_keys.public_key(), charlie_keys.public_key()],
+            &group_result.welcome_rumors,
+            4,
+            "welcome publish",
+            move |receiver, giftwrap| {
+                let published_capture = std::sync::Arc::clone(&published_capture);
+                async move {
+                    published_capture
+                        .lock()
+                        .expect("published lock")
+                        .push((receiver, giftwrap));
+                    super::relay_publish::PublishOutcome::Ok
+                }
+            },
+        )
+        .await;
+
+        let published = published.lock().expect("published lock").clone();
+        assert_eq!(published.len(), 2);
+
+        for (receiver, wrapper) in published {
+            match receiver {
+                receiver if receiver == bob_keys.public_key() => {
+                    let ingested = pika_marmot_runtime::welcome::ingest_welcome_from_giftwrap(
+                        &bob_mdk,
+                        &bob_keys,
+                        &wrapper,
+                        |_| true,
+                    )
+                    .await
+                    .expect("ingest bob welcome");
+                    assert!(ingested.is_some(), "bob should ingest exactly one welcome");
+                }
+                receiver if receiver == charlie_keys.public_key() => {
+                    let ingested = pika_marmot_runtime::welcome::ingest_welcome_from_giftwrap(
+                        &charlie_mdk,
+                        &charlie_keys,
+                        &wrapper,
+                        |_| true,
+                    )
+                    .await
+                    .expect("ingest charlie welcome");
+                    assert!(
+                        ingested.is_some(),
+                        "charlie should ingest exactly one welcome"
+                    );
+                }
+                other => panic!("unexpected receiver {}", other.to_hex()),
+            }
+        }
     }
 }

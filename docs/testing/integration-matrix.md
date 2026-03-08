@@ -93,3 +93,15 @@ This matrix is the canonical ownership map for integration coverage.
 - Phase-1 closeout keeps compatibility wrappers but removes wrapper-owned orchestration.
 - Guardrails enforce selector/docs/lane alignment and prevent regression to legacy CLI harness paths.
 - Shared fixture pooling optimization is explicitly deferred to follow-up work.
+
+## Shared Runtime Regression Set
+
+These are the smallest high-signal checks to rerun when changing the shared runtime boundary
+between `pika-marmot-runtime` and the app / CLI / daemon hosts.
+
+- `cargo test -p pika-marmot-runtime publish_welcome_rumors_`
+- `cargo test -p pika-marmot-runtime create_group_and_publish_welcomes_returns_group_and_published_metadata`
+- `cargo test -p pikachat-sidecar init_group_uses_shared_runtime_helper_and_keeps_expiration_tag`
+- `cargo test -p pika_core app_background_publish_uses_shared_welcome_pairing`
+- `cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture`
+- `cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture`

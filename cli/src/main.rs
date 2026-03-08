@@ -1103,20 +1103,19 @@ fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
 
 fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let wrapper_id = EventId::from_hex(wrapper_event_id_hex).context("parse wrapper event id")?;
+    let target_id =
+        EventId::from_hex(wrapper_event_id_hex).context("parse pending welcome event id")?;
 
     let pending = mdk
         .get_pending_welcomes(None)
         .context("get pending welcomes")?;
-    let welcome = pending
-        .into_iter()
-        .find(|w| w.wrapper_event_id == wrapper_id)
-        .ok_or_else(|| anyhow!("no pending welcome with that wrapper_event_id"))?;
+    let welcome = find_pending_welcome_for_accept(&pending, &target_id)
+        .ok_or_else(|| anyhow!("no pending welcome with that event id"))?;
 
     let ngid = hex::encode(welcome.nostr_group_id);
     let mls_gid = hex::encode(welcome.mls_group_id.as_slice());
 
-    mdk.accept_welcome(&welcome).context("accept welcome")?;
+    mdk.accept_welcome(welcome).context("accept welcome")?;
 
     // CLI accept is intentionally narrow today: it joins locally but does not
     // subscribe or backfill here. Later `messages`, `send`, and listener flows
@@ -1127,6 +1126,13 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
         "mls_group_id": mls_gid,
     }));
     Ok(())
+}
+
+fn find_pending_welcome_for_accept<'a>(
+    pending: &'a [mdk_storage_traits::welcomes::types::Welcome],
+    target_id: &EventId,
+) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
+    pika_marmot_runtime::find_pending_welcome(pending, target_id)
 }
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
@@ -2514,6 +2520,41 @@ mod tests {
         }
     }
 
+    fn event_id(hex: &str) -> EventId {
+        EventId::from_hex(hex).expect("valid event id")
+    }
+
+    fn pending_welcome(
+        wrapper_hex: &str,
+        welcome_hex: &str,
+    ) -> mdk_storage_traits::welcomes::types::Welcome {
+        let welcomer = Keys::generate().public_key();
+        let created_at = Timestamp::from(1_u64);
+        mdk_storage_traits::welcomes::types::Welcome {
+            id: event_id(welcome_hex),
+            event: UnsignedEvent::new(
+                welcomer,
+                created_at,
+                Kind::MlsWelcome,
+                Tags::new(),
+                "{}".to_string(),
+            ),
+            wrapper_event_id: event_id(wrapper_hex),
+            welcomer,
+            mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+            nostr_group_id: [1; 32],
+            group_name: "cli test".to_string(),
+            group_description: String::new(),
+            group_image_hash: None,
+            group_image_key: None,
+            group_image_nonce: None,
+            group_admin_pubkeys: std::collections::BTreeSet::new(),
+            group_relays: std::collections::BTreeSet::new(),
+            member_count: 2,
+            state: mdk_storage_traits::welcomes::types::WelcomeState::Pending,
+        }
+    }
+
     #[test]
     fn agent_chat_http_parse() {
         let cli = Cli::try_parse_from([
@@ -2656,5 +2697,35 @@ mod tests {
         let help = String::from_utf8(help).expect("utf8 help");
         assert!(help.contains("no_reply_within_timeout"));
         assert!(help.contains("--listen-timeout"));
+    }
+
+    #[test]
+    fn accept_welcome_lookup_uses_shared_wrapper_or_welcome_match_rules() {
+        let pending = vec![
+            pending_welcome(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            pending_welcome(
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+        ];
+
+        let by_wrapper = find_pending_welcome_for_accept(&pending, &pending[0].wrapper_event_id)
+            .expect("match wrapper id");
+        assert_eq!(by_wrapper.wrapper_event_id, pending[0].wrapper_event_id);
+
+        let by_welcome =
+            find_pending_welcome_for_accept(&pending, &pending[1].id).expect("match welcome id");
+        assert_eq!(by_welcome.id, pending[1].id);
+
+        assert!(
+            find_pending_welcome_for_accept(
+                &pending,
+                &event_id("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+            )
+            .is_none()
+        );
     }
 }

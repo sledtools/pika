@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -15,14 +16,23 @@ const TOKEN_TTL_DAYS: i64 = 90;
 pub struct AuthState {
     challenges: Mutex<HashMap<String, (String, Instant)>>,
     store: Store,
-    allowed_npubs_hex: Vec<String>,
+    bootstrap_admin_npubs: HashSet<String>,
+    legacy_allowed_npubs: HashSet<String>,
 }
 
 impl AuthState {
-    pub fn new(allowed_npubs: &[String], store: Store) -> Self {
-        let allowed_npubs_hex = allowed_npubs
+    pub fn new(
+        bootstrap_admin_npubs: &[String],
+        legacy_allowed_npubs: &[String],
+        store: Store,
+    ) -> Self {
+        let bootstrap_admin_npubs = bootstrap_admin_npubs
             .iter()
-            .filter_map(|npub| PublicKey::parse(npub).ok().map(|pk| pk.to_hex()))
+            .filter_map(|npub| normalize_npub(npub).ok())
+            .collect();
+        let legacy_allowed_npubs = legacy_allowed_npubs
+            .iter()
+            .filter_map(|npub| normalize_npub(npub).ok())
             .collect();
 
         // Clean up expired tokens on startup
@@ -33,7 +43,8 @@ impl AuthState {
         Self {
             challenges: Mutex::new(HashMap::new()),
             store,
-            allowed_npubs_hex,
+            bootstrap_admin_npubs,
+            legacy_allowed_npubs,
         }
     }
 
@@ -46,7 +57,7 @@ impl AuthState {
         nonce
     }
 
-    pub fn verify_event(&self, event_json: &str) -> Result<(String, String), String> {
+    pub fn verify_event(&self, event_json: &str) -> Result<(String, String, bool), String> {
         let event: Event =
             serde_json::from_str(event_json).map_err(|e| format!("invalid event JSON: {}", e))?;
 
@@ -60,13 +71,6 @@ impl AuthState {
             return Err(format!("expected kind 27235, got {}", event.kind.as_u16()));
         }
 
-        let pubkey_hex = event.pubkey.to_hex();
-
-        // Check allowlist
-        if !self.allowed_npubs_hex.is_empty() && !self.allowed_npubs_hex.contains(&pubkey_hex) {
-            return Err("pubkey not in allowed list".to_string());
-        }
-
         // Check challenge nonce is in content
         let content = event.content.to_string();
         {
@@ -78,16 +82,21 @@ impl AuthState {
 
         // Issue token and persist to SQLite
         let token = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
-        let npub = PublicKey::from_hex(&pubkey_hex)
-            .ok()
-            .and_then(|pk| pk.to_bech32().ok())
-            .unwrap_or(pubkey_hex.clone());
+        let npub = event
+            .pubkey
+            .to_bech32()
+            .map_err(|e| format!("failed to encode npub: {}", e))?
+            .to_lowercase();
+
+        if !self.can_access_chat(&npub) {
+            return Err("pubkey not in allowed list".to_string());
+        }
 
         self.store
             .insert_auth_token(&token, &npub)
             .map_err(|e| format!("failed to persist token: {}", e))?;
 
-        Ok((token, npub))
+        Ok((token, npub.clone(), self.is_admin(&npub)))
     }
 
     pub fn validate_token(&self, token: &str) -> Option<String> {
@@ -97,7 +106,109 @@ impl AuthState {
             .flatten()
     }
 
+    pub fn is_admin(&self, npub: &str) -> bool {
+        normalize_npub(npub)
+            .map(|value| self.bootstrap_admin_npubs.contains(&value))
+            .unwrap_or(false)
+    }
+
+    pub fn is_legacy_allowed(&self, npub: &str) -> bool {
+        normalize_npub(npub)
+            .map(|value| self.legacy_allowed_npubs.contains(&value))
+            .unwrap_or(false)
+    }
+
+    pub fn is_config_managed_chat_principal(&self, npub: &str) -> bool {
+        self.is_admin(npub) || self.is_legacy_allowed(npub)
+    }
+
+    pub fn can_access_chat(&self, npub: &str) -> bool {
+        let normalized = match normalize_npub(npub) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        self.bootstrap_admin_npubs.contains(&normalized)
+            || self.legacy_allowed_npubs.contains(&normalized)
+            || self
+                .store
+                .is_chat_allowlist_active(&normalized)
+                .ok()
+                .unwrap_or(false)
+    }
+
+    pub fn bootstrap_admin_npubs(&self) -> Vec<String> {
+        let mut npubs: Vec<String> = self.bootstrap_admin_npubs.iter().cloned().collect();
+        npubs.sort();
+        npubs
+    }
+
+    pub fn legacy_allowed_npubs(&self) -> Vec<String> {
+        let mut npubs: Vec<String> = self.legacy_allowed_npubs.iter().cloned().collect();
+        npubs.sort();
+        npubs
+    }
+
     pub fn chat_enabled(&self) -> bool {
-        !self.allowed_npubs_hex.is_empty()
+        !self.bootstrap_admin_npubs.is_empty()
+            || !self.legacy_allowed_npubs.is_empty()
+            || self
+                .store
+                .has_active_chat_allowlist_entries()
+                .ok()
+                .unwrap_or(false)
+    }
+}
+
+pub fn normalize_npub(input: &str) -> Result<String, String> {
+    PublicKey::parse(input.trim())
+        .map_err(|e| format!("invalid nostr public key: {}", e))?
+        .to_bech32()
+        .map(|npub| npub.to_lowercase())
+        .map_err(|e| format!("failed to encode npub: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr::key::PublicKey;
+
+    use super::AuthState;
+    use crate::storage::Store;
+
+    const SAMPLE_NPUB: &str = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+
+    #[test]
+    fn legacy_allowed_user_can_chat_but_is_not_admin() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let auth = AuthState::new(&[], &[SAMPLE_NPUB.to_string()], store);
+
+        assert!(auth.can_access_chat(SAMPLE_NPUB));
+        assert!(!auth.is_admin(SAMPLE_NPUB));
+    }
+
+    #[test]
+    fn hex_legacy_allowed_user_normalizes_for_chat_access() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let pk = PublicKey::parse(SAMPLE_NPUB).expect("parse sample npub");
+        let auth = AuthState::new(&[], &[pk.to_hex()], store);
+
+        assert!(auth.can_access_chat(SAMPLE_NPUB));
+        assert!(!auth.is_admin(SAMPLE_NPUB));
+    }
+
+    #[test]
+    fn config_managed_principals_are_detected() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let legacy_hex = PublicKey::parse(SAMPLE_NPUB)
+            .expect("parse sample npub")
+            .to_hex();
+        let auth = AuthState::new(&[SAMPLE_NPUB.to_string()], &[legacy_hex], store);
+
+        assert!(auth.is_config_managed_chat_principal(SAMPLE_NPUB));
     }
 }

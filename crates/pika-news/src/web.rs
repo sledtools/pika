@@ -15,12 +15,12 @@ use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
 use tokio::sync::Notify;
 
-use crate::auth::AuthState;
+use crate::auth::{normalize_npub, AuthState};
 use crate::config::Config;
 use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
-use crate::storage::{FeedItem, PrDetailRecord, Store};
+use crate::storage::{ChatAllowlistEntry, FeedItem, PrDetailRecord, Store};
 use crate::tutorial::TutorialDoc;
 use crate::worker;
 
@@ -63,6 +63,10 @@ struct DetailTemplate {
 #[template(path = "inbox.html")]
 struct InboxTemplate {}
 
+#[derive(Template)]
+#[template(path = "admin.html")]
+struct AdminTemplate {}
+
 #[derive(Clone)]
 struct FeedItemView {
     pr_id: i64,
@@ -96,7 +100,24 @@ pub async fn serve(
     bind_addr: String,
     max_prs: usize,
 ) -> anyhow::Result<()> {
-    let auth = Arc::new(AuthState::new(&config.allowed_npubs, store.clone()));
+    let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
+    let legacy_allowed_npubs = config.allowed_npubs.clone();
+    let auth = Arc::new(AuthState::new(
+        &bootstrap_admin_npubs,
+        &legacy_allowed_npubs,
+        store.clone(),
+    ));
+
+    if bootstrap_admin_npubs.is_empty() && !legacy_allowed_npubs.is_empty() {
+        eprintln!(
+            "warning: allowed_npubs grants chat access only; set bootstrap_admin_npubs to enable /news/admin"
+        );
+    }
+
+    if let Err(err) = store.canonicalize_inbox_npubs() {
+        eprintln!("warning: failed to canonicalize inbox owners: {}", err);
+    }
+
     let poll_notify = Arc::new(Notify::new());
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
     if webhook_secret.is_some() {
@@ -179,10 +200,16 @@ pub async fn serve(
         .route("/news", get(feed_handler))
         .route("/news/pr/:pr_id", get(detail_handler))
         .route("/news/inbox", get(inbox_handler))
+        .route("/news/admin", get(admin_handler))
         .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
         .route("/news/api/inbox", get(api_inbox_list_handler))
         .route("/news/api/inbox/count", get(api_inbox_count_handler))
         .route("/news/api/inbox/dismiss", post(api_inbox_dismiss_handler))
+        .route("/news/api/me", get(api_me_handler))
+        .route(
+            "/news/api/admin/allowlist",
+            get(api_admin_allowlist_handler).post(api_admin_allowlist_upsert_handler),
+        )
         .route(
             "/news/api/inbox/neighbors/:pr_id",
             get(api_inbox_neighbors_handler),
@@ -423,8 +450,9 @@ async fn auth_verify_handler(
             .into_response();
     }
     match state.auth.verify_event(&body.event) {
-        Ok((token, npub)) => {
-            Json(serde_json::json!({"token": token, "npub": npub})).into_response()
+        Ok((token, npub, is_admin)) => {
+            Json(serde_json::json!({"token": token, "npub": npub, "is_admin": is_admin}))
+                .into_response()
         }
         Err(msg) => (
             StatusCode::UNAUTHORIZED,
@@ -449,25 +477,9 @@ async fn chat_history_handler(
     Path(pr_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let token = match extract_token(&headers) {
-        Some(t) => t,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "missing auth token"})),
-            )
-                .into_response();
-        }
-    };
-    let npub = match state.auth.validate_token(&token) {
-        Some(n) => n,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid or expired token"})),
-            )
-                .into_response();
-        }
+    let npub = match require_chat_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
 
     let store = state.store.clone();
@@ -536,25 +548,9 @@ async fn chat_send_handler(
     headers: axum::http::HeaderMap,
     Json(body): Json<ChatSendRequest>,
 ) -> impl IntoResponse {
-    let token = match extract_token(&headers) {
-        Some(t) => t,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "missing auth token"})),
-            )
-                .into_response();
-        }
-    };
-    let npub = match state.auth.validate_token(&token) {
-        Some(n) => n,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid or expired token"})),
-            )
-                .into_response();
-        }
+    let npub = match require_chat_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
     };
 
     let store = state.store.clone();
@@ -701,22 +697,8 @@ async fn regenerate_handler(
     Path(pr_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let token = match extract_token(&headers) {
-        Some(t) => t,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "missing auth token"})),
-            )
-                .into_response();
-        }
-    };
-    if state.auth.validate_token(&token).is_none() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "invalid or expired token"})),
-        )
-            .into_response();
+    if let Err(resp) = require_chat_auth(&state.auth, &headers) {
+        return resp;
     }
 
     let store = state.store.clone();
@@ -824,6 +806,18 @@ async fn inbox_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse
     }
 }
 
+async fn admin_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    let template = AdminTemplate {};
+    match template.render() {
+        Ok(rendered) => Html(rendered).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to render admin template: {}", err),
+        )
+            .into_response(),
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn require_auth(
     auth: &AuthState,
@@ -845,6 +839,177 @@ fn require_auth(
     })
 }
 
+#[allow(clippy::result_large_err)]
+fn require_chat_auth(
+    auth: &AuthState,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, axum::response::Response> {
+    let npub = require_auth(auth, headers)?;
+    if auth.can_access_chat(&npub) {
+        Ok(npub)
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "chat access revoked"})),
+        )
+            .into_response())
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn require_admin_auth(
+    auth: &AuthState,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, axum::response::Response> {
+    let npub = require_auth(auth, headers)?;
+    if auth.is_admin(&npub) {
+        Ok(npub)
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "admin access required"})),
+        )
+            .into_response())
+    }
+}
+
+async fn api_me_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    Json(serde_json::json!({
+        "npub": npub,
+        "is_admin": state.auth.is_admin(&npub),
+        "can_chat": state.auth.can_access_chat(&npub),
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct AdminAllowlistUpsertRequest {
+    npub: String,
+    note: Option<String>,
+    active: bool,
+}
+
+async fn api_admin_allowlist_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let _admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let bootstrap_admin_npubs = state.auth.bootstrap_admin_npubs();
+    let legacy_allowed_npubs = state.auth.legacy_allowed_npubs();
+    match tokio::task::spawn_blocking(move || {
+        let entries = store.list_chat_allowlist_entries()?;
+        Ok::<_, anyhow::Error>((entries, bootstrap_admin_npubs, legacy_allowed_npubs))
+    })
+    .await
+    {
+        Ok(Ok((entries, bootstrap_admin_npubs, legacy_allowed_npubs))) => Json(serde_json::json!({
+            "bootstrap_admin_npubs": bootstrap_admin_npubs,
+            "legacy_allowed_npubs": legacy_allowed_npubs,
+            "entries": entries,
+        }))
+        .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_admin_allowlist_upsert_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<AdminAllowlistUpsertRequest>,
+) -> impl IntoResponse {
+    let admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let npub = match normalize_npub(&body.npub) {
+        Ok(value) => value,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": msg})),
+            )
+                .into_response();
+        }
+    };
+
+    if state.auth.is_config_managed_chat_principal(&npub) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "This pubkey is managed by config and cannot be changed from the admin page"
+            })),
+        )
+            .into_response();
+    }
+
+    let note = body
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let active = body.active;
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || {
+        let existing = store.get_chat_allowlist_entry(&npub)?;
+        let entry =
+            store.upsert_chat_allowlist_entry(&npub, active, note.as_deref(), &admin_npub)?;
+        let backfilled = if should_backfill_managed_allowlist_entry(existing.as_ref(), active) {
+            store.backfill_inbox_for_npub(&npub)?
+        } else {
+            0
+        };
+        Ok::<_, anyhow::Error>((entry, backfilled))
+    })
+    .await
+    {
+        Ok(Ok((entry, backfilled))) => Json(serde_json::json!({
+            "entry": entry,
+            "backfilled": backfilled,
+        }))
+        .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+fn should_backfill_managed_allowlist_entry(
+    existing: Option<&ChatAllowlistEntry>,
+    active: bool,
+) -> bool {
+    active && existing.map(|entry| !entry.active).unwrap_or(true)
+}
+
 #[derive(serde::Deserialize)]
 struct InboxListParams {
     page: Option<i64>,
@@ -855,7 +1020,7 @@ async fn api_inbox_list_handler(
     headers: axum::http::HeaderMap,
     Query(params): Query<InboxListParams>,
 ) -> impl IntoResponse {
-    let npub = match require_auth(&state.auth, &headers) {
+    let npub = match require_chat_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
@@ -889,7 +1054,7 @@ async fn api_inbox_count_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let npub = match require_auth(&state.auth, &headers) {
+    let npub = match require_chat_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
@@ -920,7 +1085,7 @@ async fn api_inbox_dismiss_handler(
     headers: axum::http::HeaderMap,
     Json(body): Json<InboxDismissRequest>,
 ) -> impl IntoResponse {
-    let npub = match require_auth(&state.auth, &headers) {
+    let npub = match require_chat_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
@@ -951,7 +1116,7 @@ async fn api_inbox_neighbors_handler(
     Path(pr_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let npub = match require_auth(&state.auth, &headers) {
+    let npub = match require_chat_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
@@ -991,7 +1156,10 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{markdown_to_safe_html, verify_github_signature};
+    use super::{
+        markdown_to_safe_html, should_backfill_managed_allowlist_entry, verify_github_signature,
+    };
+    use crate::storage::ChatAllowlistEntry;
 
     #[test]
     fn sanitizes_markdown_html_output() {
@@ -1038,5 +1206,36 @@ mod tests {
     #[test]
     fn invalid_hex_rejected() {
         assert!(!verify_github_signature("secret", b"body", "sha256=zzzz"));
+    }
+
+    #[test]
+    fn managed_allowlist_backfills_only_for_new_active_entries() {
+        assert!(should_backfill_managed_allowlist_entry(None, true));
+        assert!(!should_backfill_managed_allowlist_entry(None, false));
+
+        let existing_active = ChatAllowlistEntry {
+            npub: "npub1existing".to_string(),
+            active: true,
+            note: Some("note".to_string()),
+            updated_by: "npub1admin".to_string(),
+            updated_at: "2026-03-08 00:00:00".to_string(),
+        };
+        assert!(!should_backfill_managed_allowlist_entry(
+            Some(&existing_active),
+            true
+        ));
+        assert!(!should_backfill_managed_allowlist_entry(
+            Some(&existing_active),
+            false
+        ));
+
+        let existing_inactive = ChatAllowlistEntry {
+            active: false,
+            ..existing_active
+        };
+        assert!(should_backfill_managed_allowlist_entry(
+            Some(&existing_inactive),
+            true
+        ));
     }
 }

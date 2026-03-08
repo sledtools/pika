@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use chrono::Utc;
+use nostr::key::PublicKey;
+use nostr::nips::nip19::ToBech32;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -208,7 +210,17 @@ impl Store {
         claude_session_id: Option<&str>,
     ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
-            conn.execute(
+            let tx = conn
+                .unchecked_transaction()
+                .context("start mark_generation_ready transaction")?;
+            let pr_id: i64 = tx
+                .query_row(
+                    "SELECT pr_id FROM generated_artifacts WHERE id = ?1",
+                    params![artifact_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("lookup pr_id for artifact {}", artifact_id))?;
+            tx.execute(
                 "UPDATE generated_artifacts
                  SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
                      generated_head_sha=?3, unified_diff=?4, claude_session_id=?5, updated_at=CURRENT_TIMESTAMP
@@ -223,6 +235,13 @@ impl Store {
                 ],
             )
             .with_context(|| format!("mark artifact {} ready", artifact_id))?;
+            tx.execute(
+                "DELETE FROM inbox_dismissals WHERE pr_id = ?1",
+                params![pr_id],
+            )
+            .with_context(|| format!("clear inbox dismissals for pr_id {}", pr_id))?;
+            tx.commit()
+                .with_context(|| format!("commit mark_generation_ready for artifact {}", artifact_id))?;
             Ok(())
         })
     }
@@ -558,7 +577,11 @@ impl Store {
             for npub in npubs {
                 let rows = conn
                     .execute(
-                        "INSERT OR IGNORE INTO inbox(npub, pr_id) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO inbox(npub, pr_id)
+                         SELECT ?1, ?2
+                         WHERE NOT EXISTS(
+                             SELECT 1 FROM inbox_dismissals WHERE npub = ?1 AND pr_id = ?2
+                         )",
                         params![npub, pr_id],
                     )
                     .context("populate inbox")?;
@@ -632,16 +655,23 @@ impl Store {
             return Ok(0);
         }
         self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .context("start dismiss inbox transaction")?;
             let placeholders: Vec<String> = pr_ids
                 .iter()
                 .enumerate()
                 .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
-            let sql = format!(
+            let insert_sql = format!(
+                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id)
+                 SELECT ?1, pr_id FROM inbox WHERE npub = ?1 AND pr_id IN ({})",
+                placeholders.join(", ")
+            );
+            let delete_sql = format!(
                 "DELETE FROM inbox WHERE npub = ?1 AND pr_id IN ({})",
                 placeholders.join(", ")
             );
-            let mut stmt = conn.prepare(&sql).context("prepare dismiss query")?;
             let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             param_values.push(Box::new(npub.to_string()));
             for id in pr_ids {
@@ -649,18 +679,39 @@ impl Store {
             }
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 param_values.iter().map(|p| p.as_ref()).collect();
-            let rows = stmt
-                .execute(param_refs.as_slice())
-                .context("dismiss inbox items")?;
+            let rows = {
+                let mut insert_stmt = tx
+                    .prepare(&insert_sql)
+                    .context("prepare dismiss tombstone query")?;
+                let mut delete_stmt = tx.prepare(&delete_sql).context("prepare dismiss query")?;
+                insert_stmt
+                    .execute(param_refs.as_slice())
+                    .context("insert dismiss tombstones")?;
+                delete_stmt
+                    .execute(param_refs.as_slice())
+                    .context("dismiss inbox items")?
+            };
+            tx.commit().context("commit dismiss inbox transaction")?;
             Ok(rows)
         })
     }
 
     pub fn dismiss_all_inbox(&self, npub: &str) -> anyhow::Result<usize> {
         self.with_connection(|conn| {
-            let rows = conn
+            let tx = conn
+                .unchecked_transaction()
+                .context("start dismiss all inbox transaction")?;
+            tx.execute(
+                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id)
+                 SELECT npub, pr_id FROM inbox WHERE npub = ?1",
+                params![npub],
+            )
+            .context("insert dismiss-all tombstones")?;
+            let rows = tx
                 .execute("DELETE FROM inbox WHERE npub = ?1", params![npub])
                 .context("dismiss all inbox")?;
+            tx.commit()
+                .context("commit dismiss all inbox transaction")?;
             Ok(rows)
         })
     }
@@ -696,6 +747,309 @@ impl Store {
                 .context("inbox next neighbor")?;
 
             Ok((prev, next))
+        })
+    }
+
+    // --- Chat allowlist methods ---
+
+    pub fn is_chat_allowlist_active(&self, npub: &str) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let active = conn
+                .query_row(
+                    "SELECT 1 FROM chat_allowlist WHERE npub = ?1 AND active = 1",
+                    params![npub],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .context("query active chat allowlist entry")?
+                .is_some();
+            Ok(active)
+        })
+    }
+
+    pub fn has_active_chat_allowlist_entries(&self) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let active = conn
+                .query_row(
+                    "SELECT 1 FROM chat_allowlist WHERE active = 1 LIMIT 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .context("query active chat allowlist entries")?
+                .is_some();
+            Ok(active)
+        })
+    }
+
+    pub fn list_chat_allowlist_entries(&self) -> anyhow::Result<Vec<ChatAllowlistEntry>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT npub, active, note, updated_by, updated_at
+                     FROM chat_allowlist
+                     ORDER BY npub ASC",
+                )
+                .context("prepare chat allowlist list query")?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(ChatAllowlistEntry {
+                        npub: row.get(0)?,
+                        active: row.get::<_, i64>(1)? != 0,
+                        note: row.get(2)?,
+                        updated_by: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                })
+                .context("query chat allowlist list")?;
+
+            let mut entries = Vec::new();
+            for row in rows {
+                entries.push(row.context("read chat allowlist row")?);
+            }
+            Ok(entries)
+        })
+    }
+
+    pub fn list_active_chat_allowlist_npubs(&self) -> anyhow::Result<Vec<String>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT npub FROM chat_allowlist WHERE active = 1 ORDER BY npub ASC")
+                .context("prepare active chat allowlist query")?;
+
+            let rows = stmt
+                .query_map([], |row| row.get(0))
+                .context("query active chat allowlist")?;
+
+            let mut npubs = Vec::new();
+            for row in rows {
+                npubs.push(row.context("read active chat allowlist row")?);
+            }
+            Ok(npubs)
+        })
+    }
+
+    pub fn get_chat_allowlist_entry(
+        &self,
+        npub: &str,
+    ) -> anyhow::Result<Option<ChatAllowlistEntry>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT npub, active, note, updated_by, updated_at
+                 FROM chat_allowlist
+                 WHERE npub = ?1",
+                params![npub],
+                |row| {
+                    Ok(ChatAllowlistEntry {
+                        npub: row.get(0)?,
+                        active: row.get::<_, i64>(1)? != 0,
+                        note: row.get(2)?,
+                        updated_by: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query chat allowlist entry")
+        })
+    }
+
+    pub fn upsert_chat_allowlist_entry(
+        &self,
+        npub: &str,
+        active: bool,
+        note: Option<&str>,
+        updated_by: &str,
+    ) -> anyhow::Result<ChatAllowlistEntry> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .context("start chat allowlist transaction")?;
+
+            tx.execute(
+                "INSERT INTO chat_allowlist(npub, active, note, updated_by, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
+                 ON CONFLICT(npub) DO UPDATE SET
+                    active = excluded.active,
+                    note = excluded.note,
+                    updated_by = excluded.updated_by,
+                    updated_at = CURRENT_TIMESTAMP",
+                params![npub, if active { 1 } else { 0 }, note, updated_by],
+            )
+            .context("upsert chat allowlist entry")?;
+
+            let action = if active {
+                "upsert_active"
+            } else {
+                "upsert_inactive"
+            };
+            tx.execute(
+                "INSERT INTO chat_allowlist_audit(actor_npub, target_npub, action, note)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![updated_by, npub, action, note],
+            )
+            .context("insert chat allowlist audit row")?;
+
+            let entry = tx
+                .query_row(
+                    "SELECT npub, active, note, updated_by, updated_at
+                     FROM chat_allowlist
+                     WHERE npub = ?1",
+                    params![npub],
+                    |row| {
+                        Ok(ChatAllowlistEntry {
+                            npub: row.get(0)?,
+                            active: row.get::<_, i64>(1)? != 0,
+                            note: row.get(2)?,
+                            updated_by: row.get(3)?,
+                            updated_at: row.get(4)?,
+                        })
+                    },
+                )
+                .context("reload chat allowlist entry")?;
+
+            tx.commit().context("commit chat allowlist transaction")?;
+            Ok(entry)
+        })
+    }
+
+    pub fn backfill_inbox_for_npub(&self, npub: &str) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let rows = conn
+                .execute(
+                    "INSERT OR IGNORE INTO inbox(npub, pr_id)
+                     SELECT ?1, pr.id
+                     FROM generated_artifacts ga
+                     JOIN pull_requests pr ON pr.id = ga.pr_id
+                     WHERE ga.status = 'ready'
+                       AND NOT EXISTS(
+                           SELECT 1 FROM inbox_dismissals d
+                           WHERE d.npub = ?1 AND d.pr_id = pr.id
+                       )",
+                    params![npub],
+                )
+                .context("backfill inbox for allowlisted npub")?;
+            Ok(rows)
+        })
+    }
+
+    pub fn rekey_inbox_npub(&self, from_npub: &str, to_npub: &str) -> anyhow::Result<usize> {
+        if from_npub == to_npub {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .context("start inbox rekey transaction")?;
+
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO inbox(npub, pr_id, reason, created_at)
+                     SELECT ?2, pr_id, reason, created_at
+                     FROM inbox
+                     WHERE npub = ?1",
+                    params![from_npub, to_npub],
+                )
+                .context("copy inbox rows to canonical npub")?;
+
+            tx.execute(
+                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id, dismissed_at)
+                 SELECT ?2, pr_id, dismissed_at
+                 FROM inbox_dismissals
+                 WHERE npub = ?1",
+                params![from_npub, to_npub],
+            )
+            .context("copy inbox dismissal rows to canonical npub")?;
+
+            tx.execute("DELETE FROM inbox WHERE npub = ?1", params![from_npub])
+                .context("delete old inbox rows after rekey")?;
+            tx.execute(
+                "DELETE FROM inbox_dismissals WHERE npub = ?1",
+                params![from_npub],
+            )
+            .context("delete old inbox dismissal rows after rekey")?;
+
+            tx.commit().context("commit inbox rekey transaction")?;
+            Ok(inserted)
+        })
+    }
+
+    pub fn canonicalize_inbox_npubs(&self) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .context("start inbox canonicalization transaction")?;
+
+            let raw_npubs: Vec<String> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT DISTINCT npub
+                         FROM (
+                           SELECT npub FROM inbox
+                           UNION
+                           SELECT npub FROM inbox_dismissals
+                         )
+                         ORDER BY npub ASC",
+                    )
+                    .context("prepare inbox owner scan")?;
+                let rows = stmt
+                    .query_map([], |row| row.get(0))
+                    .context("query inbox owners")?;
+
+                let mut values = Vec::new();
+                for row in rows {
+                    values.push(row.context("read inbox owner row")?);
+                }
+                values
+            };
+
+            let mut rekeyed = 0;
+            for raw_npub in raw_npubs {
+                let canonical_npub = match PublicKey::parse(raw_npub.trim()) {
+                    Ok(pk) => match pk.to_bech32() {
+                        Ok(npub) => npub.to_lowercase(),
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
+
+                if canonical_npub == raw_npub {
+                    continue;
+                }
+
+                tx.execute(
+                    "INSERT OR IGNORE INTO inbox(npub, pr_id, reason, created_at)
+                     SELECT ?2, pr_id, reason, created_at
+                     FROM inbox
+                     WHERE npub = ?1",
+                    params![raw_npub, canonical_npub],
+                )
+                .context("copy inbox rows to canonical owner")?;
+
+                tx.execute(
+                    "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id, dismissed_at)
+                     SELECT ?2, pr_id, dismissed_at
+                     FROM inbox_dismissals
+                     WHERE npub = ?1",
+                    params![raw_npub, canonical_npub],
+                )
+                .context("copy inbox dismissals to canonical owner")?;
+
+                tx.execute("DELETE FROM inbox WHERE npub = ?1", params![raw_npub])
+                    .context("delete raw inbox owner rows after canonicalization")?;
+                tx.execute(
+                    "DELETE FROM inbox_dismissals WHERE npub = ?1",
+                    params![raw_npub],
+                )
+                .context("delete raw inbox dismissal rows after canonicalization")?;
+
+                rekeyed += 1;
+            }
+
+            tx.commit()
+                .context("commit inbox canonicalization transaction")?;
+            Ok(rekeyed)
         })
     }
 
@@ -762,6 +1116,15 @@ pub struct InboxItem {
     pub generation_status: String,
     pub reason: String,
     pub inbox_created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ChatAllowlistEntry {
+    pub npub: String,
+    pub active: bool,
+    pub note: Option<String>,
+    pub updated_by: String,
+    pub updated_at: String,
 }
 
 fn ensure_repo(conn: &Connection, repo: &str) -> anyhow::Result<i64> {
@@ -968,6 +1331,16 @@ fn migrations() -> Vec<Migration> {
             name: "0005_auth_tokens",
             sql: include_str!("../migrations/0005_auth_tokens.sql"),
         },
+        Migration {
+            version: 6,
+            name: "0006_allowlist",
+            sql: include_str!("../migrations/0006_allowlist.sql"),
+        },
+        Migration {
+            version: 7,
+            name: "0007_inbox_dismissals",
+            sql: include_str!("../migrations/0007_inbox_dismissals.sql"),
+        },
     ]
 }
 
@@ -975,9 +1348,10 @@ fn migrations() -> Vec<Migration> {
 mod tests {
     use std::fs;
 
+    use nostr::key::PublicKey;
     use rusqlite::params;
 
-    use super::{PrUpsertInput, Store};
+    use super::{ChatAllowlistEntry, PrUpsertInput, Store};
 
     #[test]
     fn migrations_apply_and_reapply_without_data_loss() {
@@ -1363,5 +1737,300 @@ mod tests {
 
         // Other user still has their items
         assert_eq!(store.inbox_count("npub2other").unwrap(), 2);
+    }
+
+    #[test]
+    fn chat_allowlist_upsert_list_and_active_lookup_work() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        assert!(!store.has_active_chat_allowlist_entries().unwrap());
+        assert!(!store.is_chat_allowlist_active("npub1missing").unwrap());
+
+        let saved = store
+            .upsert_chat_allowlist_entry("npub1alice", true, Some("friend"), "npub1admin")
+            .expect("upsert allowlist entry");
+        assert_eq!(
+            saved,
+            ChatAllowlistEntry {
+                npub: "npub1alice".to_string(),
+                active: true,
+                note: Some("friend".to_string()),
+                updated_by: "npub1admin".to_string(),
+                updated_at: saved.updated_at.clone(),
+            }
+        );
+
+        assert!(store.has_active_chat_allowlist_entries().unwrap());
+        assert!(store.is_chat_allowlist_active("npub1alice").unwrap());
+
+        let rows = store.list_chat_allowlist_entries().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].npub, "npub1alice");
+        assert_eq!(rows[0].note.as_deref(), Some("friend"));
+
+        let updated = store
+            .upsert_chat_allowlist_entry("npub1alice", false, Some("paused"), "npub1admin")
+            .expect("deactivate allowlist entry");
+        assert!(!updated.active);
+        assert!(!store.is_chat_allowlist_active("npub1alice").unwrap());
+
+        let active = store.list_active_chat_allowlist_npubs().unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn backfill_inbox_for_npub_adds_existing_ready_artifacts() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 314,
+            title: "Ready tutorial".to_string(),
+            url: "https://github.com/sledtools/pika/pull/314".to_string(),
+            state: "open".to_string(),
+            head_sha: "ready-sha".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-03T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).expect("upsert PR");
+
+        let pr_id = store
+            .list_feed_items()
+            .expect("list feed")
+            .into_iter()
+            .find(|item| item.pr_number == 314)
+            .expect("find PR")
+            .pr_id;
+
+        store
+            .with_connection(|conn| {
+                conn.execute(
+                    "UPDATE generated_artifacts
+                     SET status='ready', tutorial_json='{}', html='<p>ok</p>'",
+                    [],
+                )
+                .expect("mark artifact ready");
+                Ok(())
+            })
+            .expect("prepare ready artifact");
+
+        let inserted = store.backfill_inbox_for_npub("npub1newuser").unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(store.inbox_count("npub1newuser").unwrap(), 1);
+
+        let dup = store.backfill_inbox_for_npub("npub1newuser").unwrap();
+        assert_eq!(dup, 0);
+
+        let items = store.list_inbox("npub1newuser", 50, 0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].pr_id, pr_id);
+    }
+
+    #[test]
+    fn dismissed_items_are_not_recreated_by_populate_or_backfill() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let make_pr = |number: i64| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: number,
+            title: format!("PR #{}", number),
+            url: format!("https://github.com/sledtools/pika/pull/{}", number),
+            state: "open".to_string(),
+            head_sha: format!("sha-{}", number),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&make_pr(1)).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let npub = "npub1dismissed";
+
+        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        assert_eq!(store.inbox_count(npub).unwrap(), 1);
+
+        store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
+        assert_eq!(store.inbox_count(npub).unwrap(), 0);
+
+        assert_eq!(store.populate_inbox(pr_id, &[npub.to_string()]).unwrap(), 0);
+        assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 0);
+        assert_eq!(store.inbox_count(npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn reset_artifact_to_pending_preserves_dismissals_until_new_ready_artifact() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 12,
+            title: "Regenerate me".to_string(),
+            url: "https://github.com/sledtools/pika/pull/12".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-12".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let npub = "npub1regen";
+
+        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
+        assert_eq!(store.inbox_count(npub).unwrap(), 0);
+
+        assert!(store.reset_artifact_to_pending(pr_id).unwrap());
+        assert_eq!(store.populate_inbox(pr_id, &[npub.to_string()]).unwrap(), 0);
+        assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 0);
+        assert_eq!(store.inbox_count(npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn mark_generation_ready_clears_dismissals_for_that_pr() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 13,
+            title: "New ready artifact".to_string(),
+            url: "https://github.com/sledtools/pika/pull/13".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-13".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = store
+            .claim_pending_generation_jobs(1)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .artifact_id;
+        let npub = "npub1ready";
+
+        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
+        assert_eq!(store.inbox_count(npub).unwrap(), 0);
+
+        store
+            .mark_generation_ready(
+                artifact_id,
+                "{}",
+                "<p>ok</p>",
+                "sha-13",
+                "diff",
+                Some("sid"),
+            )
+            .unwrap();
+        assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 1);
+        assert_eq!(store.inbox_count(npub).unwrap(), 1);
+    }
+
+    #[test]
+    fn rekey_inbox_npub_moves_existing_rows_without_recreating_missing_ones() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let make_pr = |number: i64| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: number,
+            title: format!("PR #{}", number),
+            url: format!("https://github.com/sledtools/pika/pull/{}", number),
+            state: "open".to_string(),
+            head_sha: format!("sha-{}", number),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+
+        store.upsert_pull_request(&make_pr(1)).unwrap();
+        store.upsert_pull_request(&make_pr(2)).unwrap();
+
+        let feed = store.list_feed_items().unwrap();
+        let pr_id_1 = feed.iter().find(|f| f.pr_number == 1).unwrap().pr_id;
+        let pr_id_2 = feed.iter().find(|f| f.pr_number == 2).unwrap().pr_id;
+
+        let old_npub = "deadbeef".repeat(8);
+        let new_npub = "npub1canonical";
+        store
+            .populate_inbox(pr_id_1, std::slice::from_ref(&old_npub))
+            .unwrap();
+        store
+            .populate_inbox(pr_id_2, std::slice::from_ref(&old_npub))
+            .unwrap();
+        store.dismiss_inbox_items(&old_npub, &[pr_id_2]).unwrap();
+
+        let moved = store.rekey_inbox_npub(&old_npub, new_npub).unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(store.inbox_count(&old_npub).unwrap(), 0);
+        assert_eq!(store.inbox_count(new_npub).unwrap(), 1);
+
+        let items = store.list_inbox(new_npub, 50, 0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].pr_id, pr_id_1);
+        assert_eq!(store.backfill_inbox_for_npub(new_npub).unwrap(), 0);
+        let items = store.list_inbox(new_npub, 50, 0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].pr_id, pr_id_1);
+    }
+
+    #[test]
+    fn canonicalize_inbox_npubs_rekeys_parseable_aliases_without_config_context() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 7,
+            title: "Canonicalize inbox".to_string(),
+            url: "https://github.com/sledtools/pika/pull/7".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-7".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let canonical = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+        let raw_hex = PublicKey::parse(canonical).unwrap().to_hex();
+
+        store
+            .populate_inbox(pr_id, std::slice::from_ref(&raw_hex))
+            .unwrap();
+
+        let rekeyed = store.canonicalize_inbox_npubs().unwrap();
+        assert_eq!(rekeyed, 1);
+        assert_eq!(store.inbox_count(&raw_hex).unwrap(), 0);
+        assert_eq!(store.inbox_count(canonical).unwrap(), 1);
+
+        store.dismiss_all_inbox(canonical).unwrap();
+        assert_eq!(store.backfill_inbox_for_npub(canonical).unwrap(), 0);
+        assert_eq!(store.inbox_count(canonical).unwrap(), 0);
     }
 }

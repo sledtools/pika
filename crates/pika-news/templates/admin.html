@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+
+{% block title %}Admin - pika-news{% endblock %}
+
+{% block styles %}
+      .shell { max-width: 980px; margin: 0 auto; padding: 2rem 1rem; }
+      h1 { margin-top: 0; }
+      .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-bottom: 1rem; }
+      .muted { color: var(--text-muted); }
+      .status { margin-top: 0.75rem; font-size: 0.9rem; color: var(--text-secondary); }
+      .error { color: #b91c1c; }
+      .success { color: #166534; }
+      form { display: grid; gap: 0.75rem; }
+      label { display: grid; gap: 0.3rem; font-size: 0.92rem; }
+      input[type=text] { width: 100%; padding: 0.65rem 0.75rem; border-radius: 10px; border: 1px solid var(--input-border); background: var(--surface-solid); color: var(--text); }
+      .checkbox-row { display: flex; align-items: center; gap: 0.5rem; }
+      .btn-row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+      .primary-btn, .secondary-btn { border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.85rem; cursor: pointer; font: inherit; }
+      .primary-btn { background: var(--accent); color: #fff; border-color: transparent; }
+      .secondary-btn { background: var(--btn-bg); color: var(--text); }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 0.75rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+      th { font-size: 0.82rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+      td code { font-size: 0.82rem; }
+      .empty { color: var(--text-muted); padding: 1rem 0; }
+{% endblock %}
+
+{% block body %}
+    <main class="shell">
+      <h1>Chat Access</h1>
+
+      <div id="admin-auth" class="panel muted" style="display:none;">
+        <p>Sign in with a bootstrap admin Nostr key to manage chat access.</p>
+      </div>
+
+      <div id="admin-forbidden" class="panel muted" style="display:none;">
+        <p>This account is signed in, but it is not a bootstrap admin for pika-news.</p>
+      </div>
+
+      <div id="admin-loading" class="panel muted">Loading...</div>
+
+      <div id="admin-content" style="display:none;">
+        <section class="panel">
+          <h2>Bootstrap Admins</h2>
+          <p class="muted">These keys come from config and always retain admin access.</p>
+          <div id="bootstrap-admins"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Config Chat Access</h2>
+          <p class="muted">These keys come from `allowed_npubs` config and keep chat access until config changes. They are not editable here.</p>
+          <div id="legacy-allowed"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Add Or Update User</h2>
+          <form id="allowlist-form">
+            <label>
+              Npub or hex pubkey
+              <input id="allowlist-npub" name="npub" type="text" required />
+            </label>
+            <label>
+              Note
+              <input id="allowlist-note" name="note" type="text" />
+            </label>
+            <label class="checkbox-row">
+              <input id="allowlist-active" name="active" type="checkbox" checked />
+              Active
+            </label>
+            <div class="btn-row">
+              <button class="primary-btn" type="submit">Save</button>
+              <button class="secondary-btn" id="allowlist-reset" type="button">Reset</button>
+            </div>
+          </form>
+          <div id="admin-status" class="status" style="display:none;"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Current Allowlist</h2>
+          <div id="allowlist-empty" class="empty" style="display:none;">No managed users yet.</div>
+          <table id="allowlist-table" style="display:none;">
+            <thead>
+              <tr>
+                <th>Npub</th>
+                <th>Status</th>
+                <th>Note</th>
+                <th>Updated By</th>
+                <th>Updated At</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="allowlist-rows"></tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      (function () {
+        var authEl = document.getElementById('admin-auth');
+        var forbiddenEl = document.getElementById('admin-forbidden');
+        var loadingEl = document.getElementById('admin-loading');
+        var contentEl = document.getElementById('admin-content');
+        var bootstrapEl = document.getElementById('bootstrap-admins');
+        var legacyAllowedEl = document.getElementById('legacy-allowed');
+        var statusEl = document.getElementById('admin-status');
+        var formEl = document.getElementById('allowlist-form');
+        var npubEl = document.getElementById('allowlist-npub');
+        var noteEl = document.getElementById('allowlist-note');
+        var activeEl = document.getElementById('allowlist-active');
+        var resetEl = document.getElementById('allowlist-reset');
+        var tableEl = document.getElementById('allowlist-table');
+        var emptyEl = document.getElementById('allowlist-empty');
+        var rowsEl = document.getElementById('allowlist-rows');
+
+        function getToken() {
+          return window.pikaAuth && window.pikaAuth.getToken();
+        }
+
+        function clearAuth() {
+          if (window.pikaAuth && window.pikaAuth.clear) {
+            window.pikaAuth.clear();
+          } else {
+            sessionStorage.removeItem('pika_news_token');
+            sessionStorage.removeItem('pika_news_npub');
+            sessionStorage.removeItem('pika_news_is_admin');
+          }
+        }
+
+        function showStatus(message, ok) {
+          statusEl.textContent = message;
+          statusEl.className = 'status ' + (ok ? 'success' : 'error');
+          statusEl.style.display = 'block';
+        }
+
+        function resetForm() {
+          formEl.reset();
+          activeEl.checked = true;
+          statusEl.style.display = 'none';
+        }
+
+        function renderBootstrapAdmins(npubs) {
+          if (!npubs || npubs.length === 0) {
+            bootstrapEl.innerHTML = '<p class="muted">No bootstrap admins configured.</p>';
+            return;
+          }
+          bootstrapEl.innerHTML = npubs.map(function (npub) {
+            return '<p><code>' + escapeHtml(npub) + '</code></p>';
+          }).join('');
+        }
+
+        function renderLegacyAllowed(npubs) {
+          if (!npubs || npubs.length === 0) {
+            legacyAllowedEl.innerHTML = '<p class="muted">No legacy config chat users configured.</p>';
+            return;
+          }
+          legacyAllowedEl.innerHTML = npubs.map(function (npub) {
+            return '<p><code>' + escapeHtml(npub) + '</code></p>';
+          }).join('');
+        }
+
+        function renderEntries(entries) {
+          rowsEl.innerHTML = '';
+          if (!entries || entries.length === 0) {
+            tableEl.style.display = 'none';
+            emptyEl.style.display = '';
+            return;
+          }
+
+          emptyEl.style.display = 'none';
+          tableEl.style.display = '';
+
+          entries.forEach(function (entry) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td><code>' + escapeHtml(entry.npub) + '</code></td>' +
+              '<td>' + (entry.active ? 'active' : 'inactive') + '</td>' +
+              '<td>' + escapeHtml(entry.note || '') + '</td>' +
+              '<td><code>' + escapeHtml(entry.updated_by) + '</code></td>' +
+              '<td>' + escapeHtml(entry.updated_at) + '</td>' +
+              '<td><button class="secondary-btn" type="button" data-npub="' + escapeHtml(entry.npub) + '">' + (entry.active ? 'Deactivate' : 'Activate') + '</button></td>';
+            rowsEl.appendChild(tr);
+
+            tr.querySelector('button').addEventListener('click', function () {
+              saveEntry({
+                npub: entry.npub,
+                note: entry.note || '',
+                active: !entry.active
+              });
+            });
+          });
+        }
+
+        function escapeHtml(str) {
+          var div = document.createElement('div');
+          div.textContent = str || '';
+          return div.innerHTML;
+        }
+
+        async function loadAdminPage() {
+          var token = getToken();
+          if (!token) {
+            loadingEl.style.display = 'none';
+            authEl.style.display = '';
+            return;
+          }
+
+          authEl.style.display = 'none';
+          forbiddenEl.style.display = 'none';
+          loadingEl.style.display = '';
+          contentEl.style.display = 'none';
+
+          try {
+            var res = await fetch('/news/api/admin/allowlist', {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadingEl.style.display = 'none';
+              authEl.style.display = '';
+              return;
+            }
+            if (res.status === 403) {
+              loadingEl.style.display = 'none';
+              forbiddenEl.style.display = '';
+              return;
+            }
+            if (!res.ok) throw new Error('Failed to load allowlist');
+
+            var data = await res.json();
+            renderBootstrapAdmins(data.bootstrap_admin_npubs || []);
+            renderLegacyAllowed(data.legacy_allowed_npubs || []);
+            renderEntries(data.entries || []);
+            loadingEl.style.display = 'none';
+            contentEl.style.display = '';
+          } catch (e) {
+            loadingEl.style.display = 'none';
+            showStatus(e.message, false);
+          }
+        }
+
+        async function saveEntry(payload) {
+          var token = getToken();
+          if (!token) {
+            loadAdminPage();
+            return;
+          }
+
+          try {
+            var res = await fetch('/news/api/admin/allowlist', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+              },
+              body: JSON.stringify(payload)
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadAdminPage();
+              return;
+            }
+            if (res.status === 403) {
+              forbiddenEl.style.display = '';
+              contentEl.style.display = 'none';
+              return;
+            }
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Save failed');
+
+            var status = payload.active
+              ? 'Saved. Backfilled ' + data.backfilled + ' existing inbox item(s).'
+              : 'Saved. Access is now inactive.';
+            showStatus(status, true);
+            resetForm();
+            loadAdminPage();
+          } catch (e) {
+            showStatus(e.message, false);
+          }
+        }
+
+        formEl.addEventListener('submit', function (event) {
+          event.preventDefault();
+          saveEntry({
+            npub: npubEl.value,
+            note: noteEl.value,
+            active: !!activeEl.checked
+          });
+        });
+
+        resetEl.addEventListener('click', resetForm);
+
+        if (window.pikaAuth && window.pikaAuth.isAuthed()) {
+          loadAdminPage();
+        } else {
+          loadingEl.style.display = 'none';
+          authEl.style.display = '';
+          window.addEventListener('pika-auth', loadAdminPage, { once: true });
+        }
+      })();
+    </script>
+{% endblock %}

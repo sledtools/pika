@@ -74,6 +74,16 @@
           return window.pikaAuth && window.pikaAuth.getToken();
         }
 
+        function clearAuth() {
+          if (window.pikaAuth && window.pikaAuth.clear) {
+            window.pikaAuth.clear();
+          } else {
+            sessionStorage.removeItem('pika_news_token');
+            sessionStorage.removeItem('pika_news_npub');
+            sessionStorage.removeItem('pika_news_is_admin');
+          }
+        }
+
         function show(el) { el.style.display = ''; }
         function hide(el) { el.style.display = 'none'; }
 
@@ -93,7 +103,8 @@
             var res = await fetch('/news/api/inbox?page=' + page, {
               headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (res.status === 401) {
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
               hide(loadingEl);
               show(authEl);
               return;
@@ -186,6 +197,11 @@
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
               body: JSON.stringify({ pr_ids: prIds }),
             });
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
+              loadInbox(1);
+              return;
+            }
             if (!res.ok) throw new Error('Dismiss failed');
             loadInbox(currentPage);
           } catch (e) {
@@ -203,6 +219,11 @@
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
               body: JSON.stringify({ all: true }),
             });
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
+              loadInbox(1);
+              return;
+            }
             if (!res.ok) throw new Error('Dismiss all failed');
             loadInbox(1);
           } catch (e) {

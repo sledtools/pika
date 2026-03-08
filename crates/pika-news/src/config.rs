@@ -40,6 +40,14 @@ pub struct Config {
     pub bind_port: u16,
     #[serde(default)]
     pub allowed_npubs: Vec<String>,
+    #[serde(default)]
+    pub bootstrap_admin_npubs: Vec<String>,
+}
+
+impl Config {
+    pub fn effective_bootstrap_admin_npubs(&self) -> Vec<String> {
+        self.bootstrap_admin_npubs.clone()
+    }
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {
@@ -129,5 +137,29 @@ bind_port = 8080
         let raw = r#"repos = ["test/repo"]"#;
         let parsed: Config = toml::from_str(raw).expect("parse minimal config");
         assert_eq!(parsed.webhook_secret_env, super::DEFAULT_WEBHOOK_SECRET_ENV);
+    }
+
+    #[test]
+    fn bootstrap_admins_do_not_fall_back_to_allowed_npubs() {
+        let raw = r#"
+repos = ["test/repo"]
+allowed_npubs = ["npub1legacy"]
+"#;
+        let parsed: Config = toml::from_str(raw).expect("parse minimal config");
+        assert!(parsed.effective_bootstrap_admin_npubs().is_empty());
+    }
+
+    #[test]
+    fn explicit_bootstrap_admins_override_legacy_allowed_npubs() {
+        let raw = r#"
+repos = ["test/repo"]
+allowed_npubs = ["npub1legacy"]
+bootstrap_admin_npubs = ["npub1admin"]
+"#;
+        let parsed: Config = toml::from_str(raw).expect("parse config");
+        assert_eq!(
+            parsed.effective_bootstrap_admin_npubs(),
+            vec!["npub1admin".to_string()]
+        );
     }
 }

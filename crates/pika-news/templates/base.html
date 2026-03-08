@@ -71,6 +71,7 @@
         <span id="user-actions" style="display:none;">
           <span class="nav-user">
             <a href="/news/inbox" class="inbox-link" id="inbox-link">Inbox <span id="inbox-badge" class="inbox-badge" style="display:none;">0</span></a>
+            <a href="/news/admin" class="inbox-link" id="admin-link" style="display:none;">Admin</a>
             <span class="npub-display" id="user-npub"></span>
             <button id="regen-btn" class="regen-btn" type="button" style="display:none;">Regenerate</button>
           </span>
@@ -89,27 +90,50 @@
         const authActions = document.getElementById('auth-actions');
         const userActions = document.getElementById('user-actions');
         const npubDisplay = document.getElementById('user-npub');
+        const adminLink = document.getElementById('admin-link');
 
         if (!loginBtn) return;
 
         // Use a global token stored per-site (not per-PR)
         let authToken = sessionStorage.getItem('pika_news_token');
         let savedNpub = sessionStorage.getItem('pika_news_npub');
+        let savedIsAdmin = sessionStorage.getItem('pika_news_is_admin') === '1';
 
         window.pikaAuth = {
           getToken: function () { return sessionStorage.getItem('pika_news_token'); },
           getNpub: function () { return sessionStorage.getItem('pika_news_npub'); },
+          isAdmin: function () { return sessionStorage.getItem('pika_news_is_admin') === '1'; },
           isAuthed: function () { return !!sessionStorage.getItem('pika_news_token'); },
+          clear: clearAuth,
         };
 
-        function showAuthed(npub) {
+        function setAdminVisible(isAdmin) {
+          if (!adminLink) return;
+          adminLink.style.display = isAdmin ? '' : 'none';
+        }
+
+        function clearAuth() {
+          var badge = document.getElementById('inbox-badge');
+          sessionStorage.removeItem('pika_news_token');
+          sessionStorage.removeItem('pika_news_npub');
+          sessionStorage.removeItem('pika_news_is_admin');
+          authActions.style.display = '';
+          userActions.style.display = 'none';
+          setAdminVisible(false);
+          if (badge) badge.style.display = 'none';
+          loginBtn.textContent = 'Sign in with Nostr';
+          loginBtn.disabled = false;
+        }
+
+        function showAuthed(npub, isAdmin) {
           authActions.style.display = 'none';
           userActions.style.display = 'inline';
           const short = npub && npub.length > 20 ? npub.slice(0, 10) + '...' + npub.slice(-6) : (npub || '');
           npubDisplay.textContent = short;
           npubDisplay.title = npub || '';
+          setAdminVisible(!!isAdmin);
           // Dispatch event so page-specific JS can react
-          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub } }));
+          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub, isAdmin: !!isAdmin } }));
           // Fetch inbox count for badge
           fetchInboxCount();
         }
@@ -120,7 +144,13 @@
           var badge = document.getElementById('inbox-badge');
           if (!badge) return;
           fetch('/news/api/inbox/count', { headers: { 'Authorization': 'Bearer ' + token } })
-            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (r) {
+              if (r.status === 401 || r.status === 403) {
+                clearAuth();
+                return null;
+              }
+              return r.ok ? r.json() : null;
+            })
             .then(function (data) {
               if (!data) return;
               if (data.count > 0) {
@@ -129,6 +159,30 @@
               } else {
                 badge.style.display = 'none';
               }
+            })
+            .catch(function () {});
+        }
+
+        function refreshSessionInfo() {
+          var token = sessionStorage.getItem('pika_news_token');
+          if (!token) return;
+          fetch('/news/api/me', { headers: { 'Authorization': 'Bearer ' + token } })
+            .then(function (r) {
+              if (r.status === 401 || r.status === 403) {
+                clearAuth();
+                return null;
+              }
+              return r.ok ? r.json() : null;
+            })
+            .then(function (data) {
+              if (!data) return;
+              if (!data.can_chat) {
+                clearAuth();
+                return;
+              }
+              sessionStorage.setItem('pika_news_npub', data.npub || '');
+              sessionStorage.setItem('pika_news_is_admin', data.is_admin ? '1' : '0');
+              showAuthed(data.npub, data.is_admin);
             })
             .catch(function () {});
         }
@@ -164,10 +218,11 @@
               const err = await verifyRes.json();
               throw new Error(err.error || 'Verification failed');
             }
-            const { token, npub } = await verifyRes.json();
+            const { token, npub, is_admin } = await verifyRes.json();
             sessionStorage.setItem('pika_news_token', token);
             sessionStorage.setItem('pika_news_npub', npub || pubkey);
-            showAuthed(npub || pubkey);
+            sessionStorage.setItem('pika_news_is_admin', is_admin ? '1' : '0');
+            showAuthed(npub || pubkey, !!is_admin);
           } catch (e) {
             loginBtn.textContent = 'Sign in with Nostr';
             loginBtn.disabled = false;
@@ -178,7 +233,8 @@
         loginBtn.addEventListener('click', doLogin);
 
         if (authToken && savedNpub) {
-          showAuthed(savedNpub);
+          showAuthed(savedNpub, savedIsAdmin);
+          refreshSessionInfo();
         }
       })();
     </script>

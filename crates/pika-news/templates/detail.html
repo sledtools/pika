@@ -337,17 +337,16 @@
         }
 
         function handleExpiredSession() {
-          sessionStorage.removeItem('pika_news_token');
-          sessionStorage.removeItem('pika_news_npub');
+          if (window.pikaAuth && window.pikaAuth.clear) {
+            window.pikaAuth.clear();
+          } else {
+            sessionStorage.removeItem('pika_news_token');
+            sessionStorage.removeItem('pika_news_npub');
+            sessionStorage.removeItem('pika_news_is_admin');
+          }
           if (chatMain) chatMain.style.display = 'none';
           if (chatDisabled) chatDisabled.style.display = '';
           if (regenBtn) regenBtn.style.display = 'none';
-          var authActions = document.getElementById('auth-actions');
-          var userActions = document.getElementById('user-actions');
-          if (authActions) authActions.style.display = '';
-          if (userActions) userActions.style.display = 'none';
-          var loginBtn = document.getElementById('nostr-login');
-          if (loginBtn) { loginBtn.textContent = 'Sign in with Nostr'; loginBtn.disabled = false; }
         }
 
         async function loadHistory() {
@@ -358,7 +357,7 @@
             const res = await fetch('/news/pr/' + prId + '/chat', {
               headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (res.status === 401) { handleExpiredSession(); return; }
+            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
             if (!res.ok) return;
             const data = await res.json();
             messagesDiv.innerHTML = '';
@@ -384,6 +383,7 @@
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + window.pikaAuth.getToken() },
             });
+            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Regenerate failed');
             regenBtn.textContent = 'Queued!';
@@ -413,7 +413,7 @@
               body: JSON.stringify({ message: msg }),
             });
             hideStatus();
-            if (res.status === 401) { handleExpiredSession(); return; }
+            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
             if (!res.ok) {
               const err = await res.json();
               throw new Error(err.error || 'Send failed');

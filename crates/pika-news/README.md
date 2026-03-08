@@ -15,6 +15,7 @@ worker_concurrency = 2
 retry_backoff_secs = 120
 bind_address = "127.0.0.1"
 bind_port = 8787
+bootstrap_admin_npubs = ["npub1..."]
 ```
 
 - `repos`: explicit `owner/repo` list for hosted polling mode.
@@ -27,6 +28,9 @@ bind_port = 8787
 - `retry_backoff_secs`: delay before retrying retry-safe generation failures.
 - `bind_address`: hosted server bind address.
 - `bind_port`: hosted server bind port.
+- `bootstrap_admin_npubs`: Nostr pubkeys that can always sign in and manage the runtime chat allowlist from `/news/admin`.
+
+`allowed_npubs` remains as a legacy chat-access list for existing deployments, but it no longer grants admin rights. Set `bootstrap_admin_npubs` explicitly for anyone who should manage the in-app admin page.
 
 ## Local mode
 

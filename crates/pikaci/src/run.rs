@@ -1990,6 +1990,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::{
         FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
@@ -3491,16 +3492,28 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
+        _lock: Option<MutexGuard<'static, ()>>,
     }
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: Option<&str>) -> Self {
+            static ENV_VAR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = (key == "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY").then(|| {
+                ENV_VAR_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .expect("lock env var test mutex")
+            });
             let previous = std::env::var(key).ok();
             match value {
                 Some(value) => unsafe { std::env::set_var(key, value) },
                 None => unsafe { std::env::remove_var(key) },
             }
-            Self { key, previous }
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
         }
     }
 

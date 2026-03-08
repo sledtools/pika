@@ -658,15 +658,26 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
 }
 
 fn pika_rust_jobs() -> Vec<JobSpec> {
-    vec![JobSpec {
-        id: "pika-core-lib-tests",
-        description: "Run pika_core lib and test targets in a vfkit guest",
-        timeout_secs: 1800,
-        writable_workspace: false,
-        guest_command: GuestCommand::ShellCommand {
-            command: "cargo test -p pika_core --lib --tests -- --nocapture",
+    vec![
+        JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
         },
-    }]
+        JobSpec {
+            id: "pika-core-messaging-e2e-tests",
+            description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+            },
+        },
+    ]
 }
 
 fn notification_jobs() -> Vec<JobSpec> {

@@ -26,19 +26,34 @@ let
   # Linux Rust lane family (`pre-merge-pika-rust`) by compiling the deterministic
   # `pika_core` lib + test targets without executing them.
   laneCompileCommand = ''
+    export PIKACI_PIKA_CORE_TEST_EXECUTABLES="$TMPDIR/pika-core-test-executables.tsv"
     export PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST="$TMPDIR/pika-core-lib-tests.manifest"
+    export PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST="$TMPDIR/pika-core-lib-app-flows.manifest"
+    export PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST="$TMPDIR/pika-core-messaging-e2e.manifest"
     target_root="''${CARGO_TARGET_DIR:-target}"
     cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
     cargo test --locked -p pika_core --lib --tests --no-run --message-format json-render-diagnostics >"$cargoBuildLog"
-    : >"$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST"
-    while IFS= read -r executable; do
-      printf '%s\n' "''${executable#"$target_root"/}" >>"$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST"
-    done < <(
-      ${pkgs.jq}/bin/jq -r '
-        select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
-        | .executable
-      ' <"$cargoBuildLog"
-    )
+    ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" '
+      select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
+      | [
+          .target.name,
+          (.target.kind | join(",")),
+          (.executable | sub("^" + $target_root; ""))
+        ]
+      | @tsv
+    ' <"$cargoBuildLog" >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+
+    ${pkgs.gawk}/bin/awk -F '\t' '
+      { print $3 }
+    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST"
+
+    ${pkgs.gawk}/bin/awk -F '\t' '
+      ($1 == "pika_core" && $2 == "lib") || $1 == "app_flows" { print $3 }
+    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST"
+
+    ${pkgs.gawk}/bin/awk -F '\t' '
+      $1 == "e2e_messaging" || $1 == "e2e_group_profiles" { print $3 }
+    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST"
   '';
 in
 rec {
@@ -58,12 +73,19 @@ rec {
     installPhaseCommand = ''
       mkdir -p "$out/bin" "$out/share/pikaci"
       cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/pikaci/pika-core-lib-tests.manifest"
-      cat >"$out/bin/run-pika-core-lib-tests" <<'EOF'
+      cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/pikaci/pika-core-lib-app-flows.manifest"
+      cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/pikaci/pika-core-messaging-e2e.manifest"
+      cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
       #!${pkgs.bash}/bin/bash
       set -euo pipefail
 
+      if [ "$#" -ne 1 ]; then
+        echo "usage: $(basename "$0") <manifest>" >&2
+        exit 1
+      fi
+
       root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-      manifest="$root/share/pikaci/pika-core-lib-tests.manifest"
+      manifest="$root/share/pikaci/$1"
       if [ ! -s "$manifest" ]; then
         echo "missing staged pika_core test manifest at $manifest" >&2
         exit 1
@@ -75,7 +97,26 @@ rec {
         "$root/target/$relative" --nocapture
       done <"$manifest"
       EOF
-      chmod +x "$out/bin/run-pika-core-lib-tests"
+      cat >"$out/bin/run-pika-core-lib-tests" <<'EOF'
+      #!${pkgs.bash}/bin/bash
+      set -euo pipefail
+      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-tests.manifest
+      EOF
+      cat >"$out/bin/run-pika-core-lib-app-flows-tests" <<'EOF'
+      #!${pkgs.bash}/bin/bash
+      set -euo pipefail
+      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
+      EOF
+      cat >"$out/bin/run-pika-core-messaging-e2e-tests" <<'EOF'
+      #!${pkgs.bash}/bin/bash
+      set -euo pipefail
+      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-messaging-e2e.manifest
+      EOF
+      chmod +x \
+        "$out/bin/run-pika-core-test-manifest" \
+        "$out/bin/run-pika-core-lib-tests" \
+        "$out/bin/run-pika-core-lib-app-flows-tests" \
+        "$out/bin/run-pika-core-messaging-e2e-tests"
     '';
   });
 }

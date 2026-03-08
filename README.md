@@ -1,6 +1,6 @@
 # Pika
 
-End-to-end encrypted messaging for iOS and Android, built on [MLS](https://messaginglayersecurity.rocks/) over [Nostr](https://nostr.com/).
+End-to-end encrypted messaging for iOS, Android, and Desktop, built on [MLS](https://messaginglayersecurity.rocks/) over [Nostr](https://nostr.com/).
 
 > [!WARNING]
 > Alpha software. This project was largely vibe-coded and likely contains privacy and security flaws. Do not use it for sensitive or production workloads.
@@ -33,6 +33,7 @@ Pika uses the [Marmot protocol](https://github.com/marmot-protocol/mdk) to layer
 ┌─────────┐       UniFFI / JNI       ┌────────────┐       Nostr events       ┌───────────┐
 │ iOS /   │  ───  actions  ────────▶  │  Rust core │  ──  encrypted msgs ──▶  │   Nostr   │
 │ Android │  ◀──  state snapshots ──  │  (pika_core)│  ◀─  encrypted msgs ──  │   relays  │
+│ Desktop │                           │             │                          │           │
 └─────────┘                           └────────────┘                          └───────────┘
                                             │
                                             ▼
@@ -43,7 +44,7 @@ Pika uses the [Marmot protocol](https://github.com/marmot-protocol/mdk) to layer
 ```
 
 - **Rust core** owns all business logic: MLS state, message encryption/decryption, Nostr transport, and app state
-- **iOS** (SwiftUI) and **Android** (Kotlin) are thin UI layers that render state snapshots from Rust and dispatch user actions back
+- **iOS** (SwiftUI), **Android** (Kotlin), and **Desktop** (Iced) are thin UI layers that render state snapshots from Rust and dispatch user actions back
 - **MDK** (Marmot Development Kit) provides the MLS implementation
 - **nostr-sdk** handles relay connections and event publishing/subscribing
 
@@ -55,13 +56,19 @@ pika/
 ├── ios/               iOS app (SwiftUI, XcodeGen)
 ├── android/           Android app (Kotlin, Gradle)
 ├── cli/               pikachat — command-line tool for testing and automation
+├── cmd/pika-relay/    Local relay + Blossom server for development
 ├── crates/
+│   ├── pika-desktop/  Desktop app (Iced)
 │   ├── pikachat-sidecar/ Pikachat daemon engine (shared library)
 │   ├── pika-media/    Media handling (audio, etc.)
+│   ├── pika-news/     Browser-first PR/news feed generator
+│   ├── pika-share/    Shared Rust core for the mobile share extension flow
 │   ├── pika-tls/      TLS / certificate utilities
+│   ├── pikaci/        CI orchestration and staged lane runner
 │   └── rmp-cli/       RMP scaffolding CLI
 ├── uniffi-bindgen/    UniFFI binding generator
 ├── docs/              Architecture and design docs
+├── todos/             Active implementation plans and workstream notes
 ├── tools/             Build and run tooling (pika-run, etc.)
 ├── scripts/           Developer scripts
 └── justfile           Task runner recipes
@@ -70,6 +77,7 @@ pika/
 ## Prerequisites
 
 - **Rust** (stable toolchain with cross-compilation targets)
+- **just** (task runner used throughout the repo)
 - **Nix** (optional) — `nix develop` provides a complete dev environment
 - **iOS**: Xcode, XcodeGen
 - **Android**: Android SDK, NDK
@@ -77,6 +85,12 @@ pika/
 The Nix flake (`flake.nix`) pins all dependencies including Rust toolchains and Android SDK components. This is the recommended way to get a reproducible environment.
 
 ## Getting started
+
+Start by checking the repo's platform commands and target-selection help:
+
+```sh
+just info
+```
 
 ### Build the Rust core
 
@@ -104,6 +118,14 @@ just android-assemble           # Build debug APK
 just run-android                # Build, install, and launch on device/emulator
 ```
 
+### Desktop
+
+```sh
+just desktop-check             # Build-check the Iced desktop app
+just run-desktop               # Run the desktop app
+just desktop-ui-test           # Run desktop tests
+```
+
 ### pikachat
 
 A command-line interface for testing the Marmot protocol directly:
@@ -121,7 +143,8 @@ just fmt          # Format Rust code
 just clippy       # Lint
 just test         # Run pika_core tests
 just qa           # Full QA: fmt + clippy + test + platform builds
-just pre-merge    # CI entrypoint for the whole repo
+just pre-merge-pika  # CI-safe app lane (Rust + Android + desktop)
+just pre-merge       # CI entrypoint for the whole repo
 ```
 
 See all available recipes with `just --list`.
@@ -135,6 +158,7 @@ just e2e-local-relay         # Deterministic E2E with local relay + local bot
 just e2e-public              # E2E against public relays (nondeterministic)
 just ios-ui-test             # iOS UI tests on simulator
 just android-ui-test         # Android instrumentation tests
+just desktop-ui-test         # Desktop UI/manager tests
 ```
 
 ## Architecture
@@ -149,6 +173,18 @@ Pika follows a **unidirectional data flow** pattern:
 State is transferred as full snapshots over UniFFI (Swift) and JNI (Kotlin). This keeps the system simple and eliminates partial-state consistency bugs.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design.
+
+## Contributor Docs
+
+Useful starting points for new contributors:
+
+- [`docs/rmp.md`](docs/rmp.md) — Rust-first ownership model and native capability bridge rules
+- [`docs/state.md`](docs/state.md) — `AppState` / `AppUpdate` flow
+- [`docs/shared-cargo-target.md`](docs/shared-cargo-target.md) — faster worktree setup
+- [`docs/android-parity-report-feb-26.md`](docs/android-parity-report-feb-26.md) — current Android gap audit
+- [`todos/android-parity-plan-feb-26.md`](todos/android-parity-plan-feb-26.md) — Android implementation plan
+- [`crates/rmp-cli/README.md`](crates/rmp-cli/README.md) — RMP CLI purpose and commands
+- [`crates/pika-news/README.md`](crates/pika-news/README.md) — `pika-news` local and hosted modes
 
 ## License
 

@@ -48,6 +48,7 @@ pub struct RunMetadata {
     pub rerun_of: Option<String>,
     pub target_id: Option<String>,
     pub target_description: Option<String>,
+    pub prepared_output_mode: Option<String>,
     pub changed_files: Vec<String>,
     pub filters: Vec<String>,
     pub message: Option<String>,
@@ -1296,6 +1297,7 @@ fn resolve_run_prepared_output_consumer_kind(
     configured_kind: PreparedOutputConsumerKind,
 ) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
     resolve_run_prepared_output_consumer_kind_for_mode(
+        metadata.prepared_output_mode.as_deref(),
         parse_bool_env_flag(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV)?,
         jobs,
         metadata,
@@ -1304,12 +1306,25 @@ fn resolve_run_prepared_output_consumer_kind(
 }
 
 fn resolve_run_prepared_output_consumer_kind_for_mode(
+    recorded_mode: Option<&str>,
     subprocess_mode_enabled: bool,
     jobs: &[JobSpec],
     metadata: &RunMetadata,
     configured_kind: PreparedOutputConsumerKind,
 ) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
-    if !subprocess_mode_enabled {
+    let requested_mode = match recorded_mode {
+        Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME) => {
+            Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME)
+        }
+        Some(value) => {
+            return Err(anyhow!(
+                "unsupported recorded prepared_output_mode `{value}`"
+            ));
+        }
+        None if subprocess_mode_enabled => Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME),
+        None => None,
+    };
+    if requested_mode.is_none() {
         return Ok((configured_kind, None));
     }
     if configured_kind != PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 {
@@ -1333,7 +1348,7 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
     }
     Ok((
         PreparedOutputConsumerKind::FulfillRequestCliV1,
-        Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME),
+        requested_mode,
     ))
 }
 
@@ -2402,6 +2417,7 @@ mod tests {
         };
 
         let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
+            None,
             true,
             &jobs,
             &metadata,
@@ -2430,6 +2446,7 @@ mod tests {
         };
 
         let err = resolve_run_prepared_output_consumer_kind_for_mode(
+            None,
             true,
             &jobs,
             &metadata,
@@ -2460,6 +2477,7 @@ mod tests {
         };
 
         let err = resolve_run_prepared_output_consumer_kind_for_mode(
+            None,
             true,
             &jobs,
             &metadata,
@@ -2471,6 +2489,36 @@ mod tests {
             err.to_string()
                 .contains("cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER")
         );
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_consumer_kind_uses_recorded_mode_for_reruns() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+        }];
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            prepared_output_mode: Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME.to_string()),
+            ..RunMetadata::default()
+        };
+
+        let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
+            metadata.prepared_output_mode.as_deref(),
+            false,
+            &jobs,
+            &metadata,
+            PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+        )
+        .expect("resolve recorded rerun mode");
+
+        assert_eq!(kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(mode, Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME));
     }
 
     #[test]

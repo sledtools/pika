@@ -1085,6 +1085,7 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         rerun_of: None,
         target_id: Some(target.id.to_string()),
         target_description: Some(target.description.to_string()),
+        prepared_output_mode: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1125,7 +1126,17 @@ fn rerun_target(
     previous: &pikaci::RunRecord,
 ) -> anyhow::Result<pikaci::RunRecord> {
     let target = target_spec_for_rerun(previous)?;
-    let metadata = RunMetadata {
+    let metadata = rerun_metadata(previous, &target);
+
+    if previous.status == RunStatus::Skipped {
+        return record_skipped_run(options, metadata);
+    }
+
+    rerun_jobs_with_metadata(target.jobs.as_slice(), previous, options, metadata)
+}
+
+fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetadata {
+    RunMetadata {
         rerun_of: Some(previous.run_id.clone()),
         target_id: previous
             .target_id
@@ -1135,16 +1146,11 @@ fn rerun_target(
             .target_description
             .clone()
             .or_else(|| Some(target.description.to_string())),
+        prepared_output_mode: previous.prepared_output_mode.clone(),
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
         message: Some(format!("rerun of {}", previous.run_id)),
-    };
-
-    if previous.status == RunStatus::Skipped {
-        return record_skipped_run(options, metadata);
     }
-
-    rerun_jobs_with_metadata(target.jobs.as_slice(), previous, options, metadata)
 }
 
 fn target_spec_for_rerun(previous: &pikaci::RunRecord) -> anyhow::Result<TargetSpec> {
@@ -1185,7 +1191,10 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_status_lines, matches_any_filter, matches_filter, target_spec_for_rerun};
+    use super::{
+        format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
+        target_spec_for_rerun,
+    };
     use pikaci::{JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus};
 
     #[test]
@@ -1237,6 +1246,21 @@ mod tests {
         assert!(lines.contains(
             &"prepared_output_mode=pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()
         ));
+    }
+
+    #[test]
+    fn rerun_metadata_preserves_prepared_output_mode() {
+        let mut run = sample_run_record();
+        run.target_id = Some("pre-merge-pika-rust".to_string());
+        run.target_description = Some("Run staged rust lane".to_string());
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        let metadata = rerun_metadata(&run, &target);
+
+        assert_eq!(
+            metadata.prepared_output_mode.as_deref(),
+            Some("pre_merge_pika_rust_subprocess_fulfillment_v1")
+        );
     }
 
     fn sample_run_record() -> RunRecord {

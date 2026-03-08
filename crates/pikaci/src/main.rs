@@ -650,6 +650,34 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
             "prepared_output_launcher_transport_program={prepared_output_launcher_transport_program}"
         ));
     }
+    if let Some(prepared_output_launcher_transport_host) =
+        &run.prepared_output_launcher_transport_host
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_host={prepared_output_launcher_transport_host}"
+        ));
+    }
+    if let Some(prepared_output_launcher_transport_remote_launcher_program) =
+        &run.prepared_output_launcher_transport_remote_launcher_program
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_remote_launcher_program={prepared_output_launcher_transport_remote_launcher_program}"
+        ));
+    }
+    if let Some(prepared_output_launcher_transport_remote_helper_program) =
+        &run.prepared_output_launcher_transport_remote_helper_program
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_remote_helper_program={prepared_output_launcher_transport_remote_helper_program}"
+        ));
+    }
+    if let Some(prepared_output_launcher_transport_remote_work_dir) =
+        &run.prepared_output_launcher_transport_remote_work_dir
+    {
+        lines.push(format!(
+            "prepared_output_launcher_transport_remote_work_dir={prepared_output_launcher_transport_remote_work_dir}"
+        ));
+    }
     if let Some(message) = &run.message {
         lines.push(message.clone());
     }
@@ -691,6 +719,9 @@ fn prepared_output_launcher_transport_mode_label(
             "direct_launcher_exec_v1"
         }
         pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1 => "command_transport_v1",
+        pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => {
+            "ssh_launcher_transport_v1"
+        }
     }
 }
 
@@ -1140,6 +1171,10 @@ fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci
         prepared_output_invocation_wrapper_program: None,
         prepared_output_launcher_transport_mode: None,
         prepared_output_launcher_transport_program: None,
+        prepared_output_launcher_transport_host: None,
+        prepared_output_launcher_transport_remote_launcher_program: None,
+        prepared_output_launcher_transport_remote_helper_program: None,
+        prepared_output_launcher_transport_remote_work_dir: None,
         changed_files: changed_files.clone().unwrap_or_default(),
         filters: target
             .filters
@@ -1208,6 +1243,18 @@ fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetad
         prepared_output_launcher_transport_mode: previous.prepared_output_launcher_transport_mode,
         prepared_output_launcher_transport_program: previous
             .prepared_output_launcher_transport_program
+            .clone(),
+        prepared_output_launcher_transport_host: previous
+            .prepared_output_launcher_transport_host
+            .clone(),
+        prepared_output_launcher_transport_remote_launcher_program: previous
+            .prepared_output_launcher_transport_remote_launcher_program
+            .clone(),
+        prepared_output_launcher_transport_remote_helper_program: previous
+            .prepared_output_launcher_transport_remote_helper_program
+            .clone(),
+        prepared_output_launcher_transport_remote_work_dir: previous
+            .prepared_output_launcher_transport_remote_work_dir
             .clone(),
         changed_files: previous.changed_files.clone(),
         filters: previous.filters.clone(),
@@ -1398,6 +1445,62 @@ mod tests {
     }
 
     #[test]
+    fn rerun_metadata_preserves_ssh_launcher_transport_details() {
+        let mut run = sample_run_record();
+        run.target_id = Some("pre-merge-pika-rust".to_string());
+        run.prepared_output_invocation_mode =
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+        run.prepared_output_invocation_wrapper_program =
+            Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_mode =
+            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
+        run.prepared_output_launcher_transport_program = Some("/usr/bin/ssh".to_string());
+        run.prepared_output_launcher_transport_host = Some("pika-build".to_string());
+        run.prepared_output_launcher_transport_remote_launcher_program =
+            Some("/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_remote_helper_program =
+            Some("/opt/pikaci/bin/pikaci-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_remote_work_dir =
+            Some("/var/tmp/pikaci-remote".to_string());
+
+        let target = target_spec_for_rerun(&run).expect("target");
+        let metadata = rerun_metadata(&run, &target);
+
+        assert_eq!(
+            metadata.prepared_output_launcher_transport_mode,
+            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_program
+                .as_deref(),
+            Some("/usr/bin/ssh")
+        );
+        assert_eq!(
+            metadata.prepared_output_launcher_transport_host.as_deref(),
+            Some("pika-build")
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_remote_launcher_program
+                .as_deref(),
+            Some("/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output")
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_remote_helper_program
+                .as_deref(),
+            Some("/opt/pikaci/bin/pikaci-fulfill-prepared-output")
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_remote_work_dir
+                .as_deref(),
+            Some("/var/tmp/pikaci-remote")
+        );
+    }
+
+    #[test]
     fn status_lines_include_launcher_transport_observability() {
         let mut run = sample_run_record();
         run.prepared_output_invocation_mode =
@@ -1417,6 +1520,46 @@ mod tests {
         assert!(
             lines.contains(
                 &"prepared_output_launcher_transport_program=/tmp/bin/fake-ssh".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn status_lines_include_ssh_launcher_transport_details() {
+        let mut run = sample_run_record();
+        run.prepared_output_invocation_mode =
+            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+        run.prepared_output_invocation_wrapper_program =
+            Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_mode =
+            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
+        run.prepared_output_launcher_transport_program = Some("/usr/bin/ssh".to_string());
+        run.prepared_output_launcher_transport_host = Some("pika-build".to_string());
+        run.prepared_output_launcher_transport_remote_launcher_program =
+            Some("/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_remote_helper_program =
+            Some("/opt/pikaci/bin/pikaci-fulfill-prepared-output".to_string());
+        run.prepared_output_launcher_transport_remote_work_dir =
+            Some("/var/tmp/pikaci-remote".to_string());
+
+        let lines = format_status_lines(&run);
+        assert!(lines.contains(
+            &"prepared_output_launcher_transport_mode=ssh_launcher_transport_v1".to_string()
+        ));
+        assert!(
+            lines.contains(&"prepared_output_launcher_transport_program=/usr/bin/ssh".to_string())
+        );
+        assert!(lines.contains(&"prepared_output_launcher_transport_host=pika-build".to_string()));
+        assert!(lines.contains(
+            &"prepared_output_launcher_transport_remote_launcher_program=/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output".to_string()
+        ));
+        assert!(lines.contains(
+            &"prepared_output_launcher_transport_remote_helper_program=/opt/pikaci/bin/pikaci-fulfill-prepared-output".to_string()
+        ));
+        assert!(
+            lines.contains(
+                &"prepared_output_launcher_transport_remote_work_dir=/var/tmp/pikaci-remote"
+                    .to_string()
             )
         );
     }
@@ -1444,6 +1587,10 @@ mod tests {
             prepared_output_invocation_wrapper_program: None,
             prepared_output_launcher_transport_mode: None,
             prepared_output_launcher_transport_program: None,
+            prepared_output_launcher_transport_host: None,
+            prepared_output_launcher_transport_remote_launcher_program: None,
+            prepared_output_launcher_transport_remote_helper_program: None,
+            prepared_output_launcher_transport_remote_work_dir: None,
             changed_files: vec![],
             filters: vec![],
             message: None,

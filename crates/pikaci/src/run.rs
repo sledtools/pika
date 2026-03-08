@@ -57,6 +57,10 @@ pub struct RunMetadata {
     pub prepared_output_invocation_wrapper_program: Option<String>,
     pub prepared_output_launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
     pub prepared_output_launcher_transport_program: Option<String>,
+    pub prepared_output_launcher_transport_host: Option<String>,
+    pub prepared_output_launcher_transport_remote_launcher_program: Option<String>,
+    pub prepared_output_launcher_transport_remote_helper_program: Option<String>,
+    pub prepared_output_launcher_transport_remote_work_dir: Option<String>,
     pub changed_files: Vec<String>,
     pub filters: Vec<String>,
     pub message: Option<String>,
@@ -77,6 +81,17 @@ const PREPARED_OUTPUT_FULFILLMENT_TRANSPORT_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_WRAPPER_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
 
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
     run_jobs(std::slice::from_ref(job), options)
@@ -170,6 +185,32 @@ fn run_jobs_against_snapshot(
                 .prepared_output_launcher_transport_program
                 .as_deref(),
         )?;
+    let prepared_output_launcher_transport_host =
+        resolve_run_prepared_output_launcher_transport_host(
+            prepared_output_launcher_transport_mode,
+            metadata.prepared_output_launcher_transport_host.as_deref(),
+        )?;
+    let prepared_output_launcher_transport_remote_launcher_program =
+        resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+            prepared_output_launcher_transport_mode,
+            metadata
+                .prepared_output_launcher_transport_remote_launcher_program
+                .as_deref(),
+        )?;
+    let prepared_output_launcher_transport_remote_helper_program =
+        resolve_run_prepared_output_launcher_transport_remote_helper_program(
+            prepared_output_launcher_transport_mode,
+            metadata
+                .prepared_output_launcher_transport_remote_helper_program
+                .as_deref(),
+        )?;
+    let prepared_output_launcher_transport_remote_work_dir =
+        resolve_run_prepared_output_launcher_transport_remote_work_dir(
+            prepared_output_launcher_transport_mode,
+            metadata
+                .prepared_output_launcher_transport_remote_work_dir
+                .as_deref(),
+        )?;
     validate_prepared_output_consumer_for_jobs(prepared_output_consumer_kind, &plan.jobs)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let prepared_outputs_path = write_prepared_outputs_record(
@@ -201,6 +242,13 @@ fn run_jobs_against_snapshot(
         prepared_output_launcher_transport_mode,
         prepared_output_launcher_transport_program: prepared_output_launcher_transport_program
             .clone(),
+        prepared_output_launcher_transport_host: prepared_output_launcher_transport_host.clone(),
+        prepared_output_launcher_transport_remote_launcher_program:
+            prepared_output_launcher_transport_remote_launcher_program.clone(),
+        prepared_output_launcher_transport_remote_helper_program:
+            prepared_output_launcher_transport_remote_helper_program.clone(),
+        prepared_output_launcher_transport_remote_work_dir:
+            prepared_output_launcher_transport_remote_work_dir.clone(),
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -214,6 +262,18 @@ fn run_jobs_against_snapshot(
             .map(Path::new),
         launcher_transport_mode: prepared_output_launcher_transport_mode,
         launcher_transport_program: prepared_output_launcher_transport_program
+            .as_deref()
+            .map(Path::new),
+        launcher_transport_host: prepared_output_launcher_transport_host.as_deref(),
+        launcher_transport_remote_launcher_program:
+            prepared_output_launcher_transport_remote_launcher_program
+                .as_deref()
+                .map(Path::new),
+        launcher_transport_remote_helper_program:
+            prepared_output_launcher_transport_remote_helper_program
+                .as_deref()
+                .map(Path::new),
+        launcher_transport_remote_work_dir: prepared_output_launcher_transport_remote_work_dir
             .as_deref()
             .map(Path::new),
     };
@@ -369,6 +429,10 @@ pub fn record_skipped_run(
         prepared_output_invocation_wrapper_program: None,
         prepared_output_launcher_transport_mode: None,
         prepared_output_launcher_transport_program: None,
+        prepared_output_launcher_transport_host: None,
+        prepared_output_launcher_transport_remote_launcher_program: None,
+        prepared_output_launcher_transport_remote_helper_program: None,
+        prepared_output_launcher_transport_remote_work_dir: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -667,15 +731,24 @@ struct PreparedOutputInvocationConfig<'a> {
     launcher_program: Option<&'a Path>,
     launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
     launcher_transport_program: Option<&'a Path>,
+    launcher_transport_host: Option<&'a str>,
+    launcher_transport_remote_launcher_program: Option<&'a Path>,
+    launcher_transport_remote_helper_program: Option<&'a Path>,
+    launcher_transport_remote_work_dir: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct PreparedOutputSubprocessConfig<'a> {
+    run_dir: Option<&'a Path>,
     launcher_program: Option<&'a Path>,
     launch_request_path: Option<&'a Path>,
     launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
     launcher_transport_program: Option<&'a Path>,
     transport_request_path: Option<&'a Path>,
+    launcher_transport_host: Option<&'a str>,
+    launcher_transport_remote_launcher_program: Option<&'a Path>,
+    launcher_transport_remote_helper_program: Option<&'a Path>,
+    launcher_transport_remote_work_dir: Option<&'a Path>,
 }
 
 trait PreparedOutputConsumer {
@@ -723,6 +796,7 @@ struct DirectHelperExecPreparedOutputFulfillmentInvoker;
 struct ExternalWrapperPreparedOutputFulfillmentInvoker;
 struct DirectLauncherExecPreparedOutputFulfillmentTransport;
 struct CommandTransportPreparedOutputFulfillmentTransport;
+struct SshLauncherTransportPreparedOutputFulfillmentTransport;
 
 #[derive(Clone)]
 struct PlannedJob {
@@ -1331,8 +1405,11 @@ fn configured_prepared_output_launcher_transport_mode()
             Ok(PreparedOutputLauncherTransportMode::DirectLauncherExecV1)
         }
         Some("command_transport_v1") => Ok(PreparedOutputLauncherTransportMode::CommandTransportV1),
+        Some("ssh_launcher_transport_v1") => {
+            Ok(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        }
         Some(value) => Err(anyhow!(
-            "unsupported {PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV} `{value}`; expected `direct_launcher_exec_v1` or `command_transport_v1`"
+            "unsupported {PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV} `{value}`; expected `direct_launcher_exec_v1`, `command_transport_v1`, or `ssh_launcher_transport_v1`"
         )),
     }
 }
@@ -1387,6 +1464,92 @@ fn resolve_run_prepared_output_launcher_transport_program(
                     })?,
             ))
         }
+        Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
+            recorded_transport_program
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+                        .unwrap_or_else(|_| "ssh".to_string())
+                }),
+        )),
+        _ => Ok(None),
+    }
+}
+
+fn resolve_run_prepared_output_launcher_transport_host(
+    transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    recorded_transport_host: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    match transport_mode {
+        Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
+            recorded_transport_host
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV)
+                        .unwrap_or_else(|_| "pika-build".to_string())
+                }),
+        )),
+        _ => Ok(None),
+    }
+}
+
+fn resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+    transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    recorded_remote_launcher_program: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    match transport_mode {
+        Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => {
+            if let Some(recorded_remote_launcher_program) = recorded_remote_launcher_program {
+                return Ok(Some(recorded_remote_launcher_program.to_string()));
+            }
+            Ok(Some(
+                std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV)
+                    .map_err(|_| {
+                        anyhow!(
+                            "{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV}=ssh_launcher_transport_v1 requires {PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV}"
+                        )
+                    })?,
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn resolve_run_prepared_output_launcher_transport_remote_helper_program(
+    transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    recorded_remote_helper_program: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    match transport_mode {
+        Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => {
+            if let Some(recorded_remote_helper_program) = recorded_remote_helper_program {
+                return Ok(Some(recorded_remote_helper_program.to_string()));
+            }
+            Ok(Some(
+                std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV)
+                    .map_err(|_| {
+                        anyhow!(
+                            "{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV}=ssh_launcher_transport_v1 requires {PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV}"
+                        )
+                    })?,
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn resolve_run_prepared_output_launcher_transport_remote_work_dir(
+    transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    recorded_remote_work_dir: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    match transport_mode {
+        Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
+            recorded_remote_work_dir
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV)
+                        .unwrap_or_else(|_| "/tmp/pikaci-prepared-output".to_string())
+                }),
+        )),
         _ => Ok(None),
     }
 }
@@ -1421,6 +1584,9 @@ fn selected_prepared_output_fulfillment_launcher_transport(
         PreparedOutputLauncherTransportMode::CommandTransportV1 => {
             Box::new(CommandTransportPreparedOutputFulfillmentTransport)
         }
+        PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => {
+            Box::new(SshLauncherTransportPreparedOutputFulfillmentTransport)
+        }
     }
 }
 
@@ -1430,6 +1596,7 @@ fn prepared_output_launcher_transport_mode_text(
     match mode {
         PreparedOutputLauncherTransportMode::DirectLauncherExecV1 => "direct_launcher_exec_v1",
         PreparedOutputLauncherTransportMode::CommandTransportV1 => "command_transport_v1",
+        PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => "ssh_launcher_transport_v1",
     }
 }
 
@@ -1584,6 +1751,421 @@ impl PreparedOutputFulfillmentLauncherTransport
     }
 }
 
+fn ssh_transport_required_string(
+    request: &PreparedOutputFulfillmentTransportRequest,
+    value: Option<&String>,
+    label: &str,
+) -> anyhow::Result<String> {
+    value.cloned().ok_or_else(|| {
+        anyhow!(
+            "transport request for node {:?} is missing {label}",
+            request.node_id
+        )
+    })
+}
+
+fn translate_prepared_output_remote_path(
+    local_run_dir: &Path,
+    remote_work_dir: &Path,
+    local_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    let relative = local_path.strip_prefix(local_run_dir).with_context(|| {
+        format!(
+            "translate {} into remote work dir {}",
+            local_path.display(),
+            remote_work_dir.display()
+        )
+    })?;
+    Ok(remote_work_dir.join(relative))
+}
+
+fn write_remote_file_via_ssh(
+    ssh_program: &Path,
+    host: &str,
+    remote_path: &Path,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    let remote_parent = remote_path
+        .parent()
+        .ok_or_else(|| anyhow!("remote path {} has no parent", remote_path.display()))?;
+    let mkdir_status = Command::new(ssh_program)
+        .arg(host)
+        .arg("mkdir")
+        .arg("-p")
+        .arg(remote_parent)
+        .status()
+        .with_context(|| {
+            format!(
+                "create remote directory {} via {} on {}",
+                remote_parent.display(),
+                ssh_program.display(),
+                host
+            )
+        })?;
+    if !mkdir_status.success() {
+        return Err(anyhow!(
+            "remote mkdir for {} on {} failed with {:?}",
+            remote_parent.display(),
+            host,
+            mkdir_status.code()
+        ));
+    }
+
+    let mut child = Command::new(ssh_program)
+        .arg(host)
+        .arg("tee")
+        .arg(remote_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "open remote writer for {} via {} on {}",
+                remote_path.display(),
+                ssh_program.display(),
+                host
+            )
+        })?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow!("missing stdin for remote tee {}", remote_path.display()))?
+        .write_all(bytes)
+        .with_context(|| format!("stream {}", remote_path.display()))?;
+    let status = child.wait().with_context(|| {
+        format!(
+            "wait for remote writer {} via {} on {}",
+            remote_path.display(),
+            ssh_program.display(),
+            host
+        )
+    })?;
+    if !status.success() {
+        return Err(anyhow!(
+            "remote writer for {} on {} failed with {:?}",
+            remote_path.display(),
+            host,
+            status.code()
+        ));
+    }
+    Ok(())
+}
+
+fn read_remote_file_via_ssh(
+    ssh_program: &Path,
+    host: &str,
+    remote_path: &Path,
+) -> anyhow::Result<Vec<u8>> {
+    let output = Command::new(ssh_program)
+        .arg(host)
+        .arg("cat")
+        .arg(remote_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "read remote file {} via {} on {}",
+                remote_path.display(),
+                ssh_program.display(),
+                host
+            )
+        })?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "remote read for {} on {} failed with {:?}",
+            remote_path.display(),
+            host,
+            output.status.code()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn validate_remote_fulfillment_result(
+    result: &PreparedOutputFulfillmentResult,
+    expected_request_path: &Path,
+    expected_node_id: &str,
+    expected_output_name: &str,
+    expected_realized_path: &str,
+    expected_exposures: &[PreparedOutputExposure],
+) -> anyhow::Result<()> {
+    if result.schema_version != 1 {
+        return Err(anyhow!(
+            "remote helper wrote unsupported schema_version={}",
+            result.schema_version
+        ));
+    }
+    if result.status != PreparedOutputFulfillmentStatus::Succeeded {
+        return Err(anyhow!(
+            "remote helper reported {:?} for {}; {}",
+            result.status,
+            expected_request_path.display(),
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "no remote helper error detail".to_string())
+        ));
+    }
+    if result.request_path != expected_request_path.display().to_string() {
+        return Err(anyhow!(
+            "remote helper reported request_path={} but expected {}",
+            result.request_path,
+            expected_request_path.display()
+        ));
+    }
+    if result.node_id.as_deref() != Some(expected_node_id) {
+        return Err(anyhow!(
+            "remote helper reported node_id={:?} but expected {}",
+            result.node_id,
+            expected_node_id
+        ));
+    }
+    if result.output_name.as_deref() != Some(expected_output_name) {
+        return Err(anyhow!(
+            "remote helper reported output_name={:?} but expected {}",
+            result.output_name,
+            expected_output_name
+        ));
+    }
+    if result.realized_path.as_deref() != Some(expected_realized_path) {
+        return Err(anyhow!(
+            "remote helper reported realized_path={:?} but expected {}",
+            result.realized_path,
+            expected_realized_path
+        ));
+    }
+    if result.fulfilled_exposures_count != result.fulfilled_exposures.len() {
+        return Err(anyhow!(
+            "remote helper reported fulfilled_exposures_count={} but returned {} exposure record(s)",
+            result.fulfilled_exposures_count,
+            result.fulfilled_exposures.len()
+        ));
+    }
+    if result.fulfilled_exposures != expected_exposures {
+        return Err(anyhow!(
+            "remote helper reported fulfilled exposures that do not match the translated remote request"
+        ));
+    }
+    Ok(())
+}
+
+impl PreparedOutputFulfillmentLauncherTransport
+    for SshLauncherTransportPreparedOutputFulfillmentTransport
+{
+    fn mode(&self) -> PreparedOutputLauncherTransportMode {
+        PreparedOutputLauncherTransportMode::SshLauncherTransportV1
+    }
+
+    fn invoke(
+        &self,
+        _launcher_program: &Path,
+        transport_program: Option<&Path>,
+        launch_request_path: &Path,
+        transport_request_path: Option<&Path>,
+    ) -> anyhow::Result<std::process::Output> {
+        let ssh_program = transport_program
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("ssh"));
+        let transport_request_path = transport_request_path.ok_or_else(|| {
+            anyhow!(
+                "missing transport request path for {}",
+                prepared_output_launcher_transport_mode_text(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1
+                )
+            )
+        })?;
+        let transport_request =
+            load_prepared_output_fulfillment_transport_request(transport_request_path)?;
+        if transport_request.path_contract
+            != PreparedOutputFulfillmentTransportPathContract::SshRemoteWorkDirTranslationV1
+        {
+            return Err(anyhow!(
+                "ssh transport requires path_contract=ssh_remote_work_dir_translation_v1 in {}",
+                transport_request_path.display()
+            ));
+        }
+        let host = ssh_transport_required_string(
+            &transport_request,
+            transport_request.remote_host.as_ref(),
+            "remote_host",
+        )?;
+        let local_run_dir = PathBuf::from(ssh_transport_required_string(
+            &transport_request,
+            transport_request.local_run_dir.as_ref(),
+            "local_run_dir",
+        )?);
+        let remote_work_dir = PathBuf::from(ssh_transport_required_string(
+            &transport_request,
+            transport_request.remote_work_dir.as_ref(),
+            "remote_work_dir",
+        )?);
+        let remote_launcher_program = PathBuf::from(ssh_transport_required_string(
+            &transport_request,
+            transport_request.remote_launcher_program.as_ref(),
+            "remote_launcher_program",
+        )?);
+        let remote_helper_program = PathBuf::from(ssh_transport_required_string(
+            &transport_request,
+            transport_request.remote_helper_program.as_ref(),
+            "remote_helper_program",
+        )?);
+
+        let launch_request = load_prepared_output_fulfillment_launch_request(launch_request_path)?;
+        let helper_request_path = PathBuf::from(&launch_request.helper_request_path);
+        let helper_result_path = PathBuf::from(&launch_request.helper_result_path);
+        let helper_request = load_prepared_output_request(&helper_request_path)?;
+        let remote_launcher_request_path = if let Some(remote_launcher_request_path) =
+            transport_request.remote_launcher_request_path.as_deref()
+        {
+            PathBuf::from(remote_launcher_request_path)
+        } else {
+            translate_prepared_output_remote_path(
+                &local_run_dir,
+                &remote_work_dir,
+                launch_request_path,
+            )?
+        };
+        let remote_helper_request_path = if let Some(remote_helper_request_path) =
+            transport_request.remote_helper_request_path.as_deref()
+        {
+            PathBuf::from(remote_helper_request_path)
+        } else {
+            translate_prepared_output_remote_path(
+                &local_run_dir,
+                &remote_work_dir,
+                &helper_request_path,
+            )?
+        };
+        let remote_helper_result_path = if let Some(remote_helper_result_path) =
+            transport_request.remote_helper_result_path.as_deref()
+        {
+            PathBuf::from(remote_helper_result_path)
+        } else {
+            translate_prepared_output_remote_path(
+                &local_run_dir,
+                &remote_work_dir,
+                &helper_result_path,
+            )?
+        };
+
+        let translated_exposures = helper_request
+            .requested_exposures
+            .iter()
+            .map(|exposure| {
+                Ok(PreparedOutputExposure {
+                    kind: exposure.kind,
+                    path: translate_prepared_output_remote_path(
+                        &local_run_dir,
+                        &remote_work_dir,
+                        Path::new(&exposure.path),
+                    )?
+                    .display()
+                    .to_string(),
+                    access: exposure.access,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let remote_helper_request = PreparedOutputRemoteExposureRequest {
+            schema_version: helper_request.schema_version,
+            node_id: helper_request.node_id.clone(),
+            installable: helper_request.installable.clone(),
+            output_name: helper_request.output_name.clone(),
+            protocol: helper_request.protocol,
+            realized_path: helper_request.realized_path.clone(),
+            requested_exposures: translated_exposures.clone(),
+        };
+        let remote_launch_request = PreparedOutputFulfillmentLaunchRequest {
+            schema_version: launch_request.schema_version,
+            helper_program: remote_helper_program.display().to_string(),
+            helper_request_path: remote_helper_request_path.display().to_string(),
+            helper_result_path: remote_helper_result_path.display().to_string(),
+            node_id: launch_request.node_id.clone(),
+            output_name: launch_request.output_name.clone(),
+        };
+
+        let nix_program = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV)
+            .unwrap_or_else(|_| "nix".to_string());
+        let nix_copy_status = Command::new(&nix_program)
+            .arg("copy")
+            .arg("--to")
+            .arg(format!("ssh://{host}"))
+            .arg(&helper_request.realized_path)
+            .status()
+            .with_context(|| {
+                format!(
+                    "copy {} to remote host {} via {}",
+                    helper_request.realized_path, host, nix_program
+                )
+            })?;
+        if !nix_copy_status.success() {
+            return Err(anyhow!(
+                "nix copy of {} to {} failed with {:?}",
+                helper_request.realized_path,
+                host,
+                nix_copy_status.code()
+            ));
+        }
+
+        let remote_helper_request_bytes = serde_json::to_vec_pretty(&remote_helper_request)
+            .context("encode remote helper request")?;
+        let remote_launch_request_bytes = serde_json::to_vec_pretty(&remote_launch_request)
+            .context("encode remote launch request")?;
+        write_remote_file_via_ssh(
+            &ssh_program,
+            &host,
+            &remote_helper_request_path,
+            &remote_helper_request_bytes,
+        )?;
+        write_remote_file_via_ssh(
+            &ssh_program,
+            &host,
+            &remote_launcher_request_path,
+            &remote_launch_request_bytes,
+        )?;
+
+        let launch_output = Command::new(&ssh_program)
+            .arg(&host)
+            .arg(&remote_launcher_program)
+            .arg(&remote_launcher_request_path)
+            .output()
+            .with_context(|| {
+                format!(
+                    "launch remote fulfillment helper on {} via {} with {}",
+                    host,
+                    ssh_program.display(),
+                    remote_launcher_request_path.display()
+                )
+            })?;
+
+        let remote_result_bytes =
+            read_remote_file_via_ssh(&ssh_program, &host, &remote_helper_result_path)?;
+        let remote_result: PreparedOutputFulfillmentResult =
+            serde_json::from_slice(&remote_result_bytes).with_context(|| {
+                format!(
+                    "decode remote helper result from {} on {}",
+                    remote_helper_result_path.display(),
+                    host
+                )
+            })?;
+        validate_remote_fulfillment_result(
+            &remote_result,
+            &remote_helper_request_path,
+            &helper_request.node_id,
+            &helper_request.output_name,
+            &helper_request.realized_path,
+            &translated_exposures,
+        )?;
+
+        let local_result =
+            fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path));
+        write_prepared_output_fulfillment_result(
+            Path::new(&launch_request.helper_result_path),
+            &local_result,
+        )?;
+
+        Ok(launch_output)
+    }
+}
+
 fn fulfill_prepared_output_request_via_subprocess(
     invocation_mode: PreparedOutputInvocationMode,
     subprocess: PreparedOutputSubprocessConfig<'_>,
@@ -1625,18 +2207,89 @@ fn fulfill_prepared_output_request_via_subprocess(
         subprocess.launcher_program,
         launcher_transport_mode,
     ) {
+        let (remote_launcher_request_path, remote_helper_request_path, remote_helper_result_path) =
+            if launcher_transport_mode
+                == PreparedOutputLauncherTransportMode::SshLauncherTransportV1
+            {
+                let local_run_dir = subprocess.run_dir.ok_or_else(|| {
+                    anyhow!("missing run_dir for ssh prepared-output launcher transport")
+                })?;
+                let remote_work_dir =
+                    subprocess
+                        .launcher_transport_remote_work_dir
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "missing remote work dir for ssh prepared-output launcher transport"
+                            )
+                        })?;
+                (
+                    Some(
+                        translate_prepared_output_remote_path(
+                            local_run_dir,
+                            remote_work_dir,
+                            subprocess.launch_request_path.ok_or_else(|| {
+                                anyhow!("missing launch request path for ssh transport request")
+                            })?,
+                        )?
+                        .display()
+                        .to_string(),
+                    ),
+                    Some(
+                        translate_prepared_output_remote_path(
+                            local_run_dir,
+                            remote_work_dir,
+                            request_path,
+                        )?
+                        .display()
+                        .to_string(),
+                    ),
+                    Some(
+                        translate_prepared_output_remote_path(
+                            local_run_dir,
+                            remote_work_dir,
+                            result_path,
+                        )?
+                        .display()
+                        .to_string(),
+                    ),
+                )
+            } else {
+                (None, None, None)
+            };
+        let path_contract = match launcher_transport_mode {
+            PreparedOutputLauncherTransportMode::DirectLauncherExecV1
+            | PreparedOutputLauncherTransportMode::CommandTransportV1 => {
+                PreparedOutputFulfillmentTransportPathContract::SameHostAbsolutePathsV1
+            }
+            PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => {
+                PreparedOutputFulfillmentTransportPathContract::SshRemoteWorkDirTranslationV1
+            }
+        };
         write_prepared_output_fulfillment_transport_request(
             transport_request_path,
             &PreparedOutputFulfillmentTransportRequest {
                 schema_version: 1,
-                path_contract:
-                    PreparedOutputFulfillmentTransportPathContract::SameHostAbsolutePathsV1,
+                path_contract,
                 launcher_program: launcher_program.display().to_string(),
                 launcher_request_path: subprocess
                     .launch_request_path
                     .ok_or_else(|| anyhow!("missing launch request path for transport request"))?
                     .display()
                     .to_string(),
+                local_run_dir: subprocess.run_dir.map(|path| path.display().to_string()),
+                remote_host: subprocess.launcher_transport_host.map(str::to_string),
+                remote_work_dir: subprocess
+                    .launcher_transport_remote_work_dir
+                    .map(|path| path.display().to_string()),
+                remote_launcher_program: subprocess
+                    .launcher_transport_remote_launcher_program
+                    .map(|path| path.display().to_string()),
+                remote_helper_program: subprocess
+                    .launcher_transport_remote_helper_program
+                    .map(|path| path.display().to_string()),
+                remote_launcher_request_path: remote_launcher_request_path.clone(),
+                remote_helper_request_path: remote_helper_request_path.clone(),
+                remote_helper_result_path: remote_helper_result_path.clone(),
                 node_id: Some(request.node_id.clone()),
                 output_name: Some(request.output_name.clone()),
             },
@@ -1644,12 +2297,28 @@ fn fulfill_prepared_output_request_via_subprocess(
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output fulfillment launcher_transport_mode={} transport={} transport_request={}",
+                "[pikaci] prepared output fulfillment launcher_transport_mode={} transport={} transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} remote_launch_request={} remote_helper_request={} remote_helper_result={} transport_request={}",
                 prepared_output_launcher_transport_mode_text(launcher_transport_mode),
                 subprocess
                     .launcher_transport_program
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "-".to_string()),
+                subprocess.launcher_transport_host.unwrap_or("-"),
+                subprocess
+                    .launcher_transport_remote_launcher_program
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                subprocess
+                    .launcher_transport_remote_helper_program
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                subprocess
+                    .launcher_transport_remote_work_dir
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                remote_launcher_request_path.as_deref().unwrap_or("-"),
+                remote_helper_request_path.as_deref().unwrap_or("-"),
+                remote_helper_result_path.as_deref().unwrap_or("-"),
                 transport_request_path.display()
             ),
         )?;
@@ -1657,7 +2326,7 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment invocation_mode={} launcher={} launcher_transport_mode={} launcher_transport={} launch_request={} transport_request={} helper={} request={} result={}",
+            "[pikaci] prepared output fulfillment invocation_mode={} launcher={} launcher_transport_mode={} launcher_transport={} launcher_transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} launch_request={} transport_request={} helper={} request={} result={}",
             prepared_output_invocation_mode_text(invoker.mode()),
             subprocess
                 .launcher_program
@@ -1668,6 +2337,19 @@ fn fulfill_prepared_output_request_via_subprocess(
                 .unwrap_or("-"),
             subprocess
                 .launcher_transport_program
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            subprocess.launcher_transport_host.unwrap_or("-"),
+            subprocess
+                .launcher_transport_remote_launcher_program
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            subprocess
+                .launcher_transport_remote_helper_program
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            subprocess
+                .launcher_transport_remote_work_dir
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "-".to_string()),
             subprocess
@@ -1686,11 +2368,18 @@ fn fulfill_prepared_output_request_via_subprocess(
     let output = invoker.invoke(
         &program,
         PreparedOutputSubprocessConfig {
+            run_dir: subprocess.run_dir,
             launcher_program: subprocess.launcher_program,
             launch_request_path: subprocess.launch_request_path,
             launcher_transport_mode,
             launcher_transport_program: subprocess.launcher_transport_program,
             transport_request_path: subprocess.transport_request_path,
+            launcher_transport_host: subprocess.launcher_transport_host,
+            launcher_transport_remote_launcher_program: subprocess
+                .launcher_transport_remote_launcher_program,
+            launcher_transport_remote_helper_program: subprocess
+                .launcher_transport_remote_helper_program,
+            launcher_transport_remote_work_dir: subprocess.launcher_transport_remote_work_dir,
         },
         request_path,
         result_path,
@@ -1951,8 +2640,11 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 .join("prepared-output-launch-requests")
                 .join(format!("{}.json", materialization.node_id))
         });
-        let transport_request_path = (invocation.launcher_transport_mode
-            == Some(PreparedOutputLauncherTransportMode::CommandTransportV1))
+        let transport_request_path = matches!(
+            invocation.launcher_transport_mode,
+            Some(PreparedOutputLauncherTransportMode::CommandTransportV1)
+                | Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        )
         .then(|| {
             run_dir
                 .join("prepared-output-transport-requests")
@@ -1987,11 +2679,18 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
         let fulfillment_result = fulfill_prepared_output_request_via_subprocess(
             invocation_mode,
             PreparedOutputSubprocessConfig {
+                run_dir: Some(run_dir),
                 launcher_program: invocation.launcher_program,
                 launch_request_path: launch_request_path.as_deref(),
                 launcher_transport_mode: invocation.launcher_transport_mode,
                 launcher_transport_program: invocation.launcher_transport_program,
                 transport_request_path: transport_request_path.as_deref(),
+                launcher_transport_host: invocation.launcher_transport_host,
+                launcher_transport_remote_launcher_program: invocation
+                    .launcher_transport_remote_launcher_program,
+                launcher_transport_remote_helper_program: invocation
+                    .launcher_transport_remote_helper_program,
+                launcher_transport_remote_work_dir: invocation.launcher_transport_remote_work_dir,
             },
             &request_path,
             &result_path,
@@ -2747,6 +3446,11 @@ mod tests {
         PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME, PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV,
         PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
         PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV, PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV,
+        PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV,
         PREPARED_OUTPUT_FULFILLMENT_TRANSPORT_BINARY_ENV,
         PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV, PrepareFailure,
         PreparedOutputConsumerFailure, PreparedOutputInvocationConfig,
@@ -2764,9 +3468,14 @@ mod tests {
         resolve_run_prepared_output_consumer_kind_for_mode,
         resolve_run_prepared_output_invocation_mode,
         resolve_run_prepared_output_invocation_wrapper_program,
+        resolve_run_prepared_output_launcher_transport_host,
         resolve_run_prepared_output_launcher_transport_mode,
-        resolve_run_prepared_output_launcher_transport_program, selected_prepared_output_consumer,
-        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
+        resolve_run_prepared_output_launcher_transport_program,
+        resolve_run_prepared_output_launcher_transport_remote_helper_program,
+        resolve_run_prepared_output_launcher_transport_remote_launcher_program,
+        resolve_run_prepared_output_launcher_transport_remote_work_dir,
+        selected_prepared_output_consumer, upsert_prepared_output_record,
+        validate_prepared_output_consumer_for_jobs, write_json,
         write_prepared_output_fulfillment_result, write_run_plan_record,
     };
     use crate::model::{
@@ -3497,7 +4206,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_prepared_output_launcher_transport_mode_defaults_and_switches_to_command() {
+    fn configured_prepared_output_launcher_transport_mode_defaults_and_switches_modes() {
         let _guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV, None);
         assert_eq!(
             configured_prepared_output_launcher_transport_mode()
@@ -3512,6 +4221,15 @@ mod tests {
         assert_eq!(
             configured_prepared_output_launcher_transport_mode().expect("command transport mode"),
             PreparedOutputLauncherTransportMode::CommandTransportV1
+        );
+
+        let _guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV,
+            Some("ssh_launcher_transport_v1"),
+        );
+        assert_eq!(
+            configured_prepared_output_launcher_transport_mode().expect("ssh transport mode"),
+            PreparedOutputLauncherTransportMode::SshLauncherTransportV1
         );
     }
 
@@ -3585,6 +4303,14 @@ mod tests {
             .expect("ignore transport path in direct launcher mode"),
             None
         );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("/usr/bin/ssh"),
+            )
+            .expect("use recorded transport path for ssh mode"),
+            Some("/usr/bin/ssh".to_string())
+        );
     }
 
     #[test]
@@ -3598,6 +4324,69 @@ mod tests {
         assert!(err.to_string().contains(
             "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=command_transport_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY"
         ));
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_launcher_transport_ssh_details_use_recorded_or_env() {
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some("/usr/bin/ssh"),
+        );
+        let _host_guard =
+            EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, Some("pika-build"));
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV,
+            Some("/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output"),
+        );
+        let _helper_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV,
+            Some("/opt/pikaci/bin/pikaci-fulfill-prepared-output"),
+        );
+        let _work_dir_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV,
+            Some("/var/tmp/pikaci-remote"),
+        );
+
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh transport program"),
+            Some("/usr/bin/ssh".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_host(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh transport host"),
+            Some("pika-build".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote launcher"),
+            Some("/opt/pikaci/bin/pikaci-launch-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_helper_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote helper"),
+            Some("/opt/pikaci/bin/pikaci-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_work_dir(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote work dir"),
+            Some("/var/tmp/pikaci-remote".to_string())
+        );
     }
 
     #[test]
@@ -4151,6 +4940,7 @@ EOF
                     PreparedOutputLauncherTransportMode::CommandTransportV1,
                 ),
                 launcher_transport_program: Some(&transport_path),
+                ..PreparedOutputInvocationConfig::default()
             },
         )
         .expect("consume handoff via command transport");
@@ -4195,6 +4985,219 @@ EOF
         let log_body = fs::read_to_string(&log_path).expect("read log");
         assert!(log_body.contains("launcher_transport_mode=command_transport_v1"));
         assert!(log_body.contains("transport_request="));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_can_invoke_helper_via_ssh_launcher_transport() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-ssh-transport-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_work_dir = root.join("remote-work");
+        let remote_mount_path =
+            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
+        let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
+        let ssh_path = root.join("fake-ssh.sh");
+        let nix_path = root.join("fake-nix.sh");
+        let ssh_log_path = root.join("ssh.log");
+        let nix_log_path = root.join("nix.log");
+        let launcher_log_path = root.join("remote-launcher.log");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::create_dir_all(root.join("remote-bin")).expect("create remote bin root");
+        fs::write(
+            &helper_path,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ne 3 ] || [ "$1" != "--result-path" ]; then
+  echo "unexpected helper args: $*" >&2
+  exit 17
+fi
+result_path="$2"
+request_path="$3"
+realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mkdir -p "$(dirname "$mount_path")"
+ln -sfn "$realized_path" "$mount_path"
+mkdir -p "$(dirname "$result_path")"
+cat >"$result_path" <<EOF
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+EOF
+"#,
+        )
+        .expect("write remote helper");
+        fs::write(
+            &launcher_path,
+            format!(
+                "#!/bin/sh\nset -eu\nif [ \"$#\" -ne 1 ]; then\n  echo \"unexpected launcher args: $*\" >&2\n  exit 23\nfi\nlaunch_request=\"$1\"\necho \"$launch_request\" > \"{}\"\nhelper=$(sed -n 's/.*\"helper_program\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_request=$(sed -n 's/.*\"helper_request_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_result=$(sed -n 's/.*\"helper_result_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nexec \"$helper\" --result-path \"$helper_result\" \"$helper_request\"\n",
+                launcher_log_path.display()
+            ),
+        )
+        .expect("write remote launcher");
+        fs::write(
+            &ssh_path,
+            format!(
+                "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\necho \"$host $*\" >> \"{}\"\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+                ssh_log_path.display()
+            ),
+        )
+        .expect("write fake ssh");
+        fs::write(
+            &nix_path,
+            format!(
+                "#!/bin/sh\nset -eu\necho \"$*\" >> \"{}\"\nif [ \"$#\" -ne 4 ] || [ \"$1\" != \"copy\" ] || [ \"$2\" != \"--to\" ]; then\n  echo \"unexpected nix args: $*\" >&2\n  exit 31\nfi\n",
+                nix_log_path.display()
+            ),
+        )
+        .expect("write fake nix");
+        for path in [&helper_path, &launcher_path, &ssh_path, &nix_path] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set script executable");
+        }
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
+            output_name: "ci.aarch64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some(launcher_path.to_str().expect("launcher path utf8")),
+        );
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some(ssh_path.to_str().expect("ssh path utf8")),
+        );
+        let _nix_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+            Some(nix_path.to_str().expect("nix path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let result = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+            PreparedOutputInvocationConfig {
+                invocation_mode: Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                launcher_program: Some(&launcher_path),
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_program: Some(&ssh_path),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_launcher_program: Some(&launcher_path),
+                launcher_transport_remote_helper_program: Some(&helper_path),
+                launcher_transport_remote_work_dir: Some(&remote_work_dir),
+            },
+        )
+        .expect("consume handoff via ssh transport");
+
+        assert_eq!(result.kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(result.exposures, handoff.exposures);
+        assert_eq!(
+            fs::read_link(&mount_path).expect("read local symlink"),
+            realized_path
+        );
+        assert_eq!(
+            fs::read_link(&remote_mount_path).expect("read remote symlink"),
+            realized_path
+        );
+        let transport_request_path = result
+            .consumer_transport_request_path
+            .as_deref()
+            .expect("transport request path");
+        let transport_request =
+            load_prepared_output_fulfillment_transport_request(Path::new(transport_request_path))
+                .expect("load transport request");
+        assert_eq!(
+            transport_request.path_contract,
+            PreparedOutputFulfillmentTransportPathContract::SshRemoteWorkDirTranslationV1
+        );
+        assert_eq!(transport_request.remote_host.as_deref(), Some("pika-build"));
+        assert_eq!(
+            transport_request.remote_launcher_program.as_deref(),
+            Some(launcher_path.to_str().expect("launcher path utf8"))
+        );
+        assert_eq!(
+            transport_request.remote_helper_program.as_deref(),
+            Some(helper_path.to_str().expect("helper path utf8"))
+        );
+        assert_eq!(
+            transport_request.remote_work_dir.as_deref(),
+            Some(remote_work_dir.to_str().expect("remote work dir utf8"))
+        );
+        assert_eq!(
+            transport_request
+                .remote_launcher_request_path
+                .as_deref()
+                .expect("remote launch request path"),
+            remote_work_dir
+                .join("prepared-output-launch-requests/prepare-pika-core-linux-rust-workspace-build.json")
+                .to_str()
+                .expect("remote launch request utf8")
+        );
+        assert_eq!(
+            transport_request
+                .remote_helper_request_path
+                .as_deref()
+                .expect("remote helper request path"),
+            remote_work_dir
+                .join("prepared-output-requests/prepare-pika-core-linux-rust-workspace-build.json")
+                .to_str()
+                .expect("remote helper request utf8")
+        );
+        assert_eq!(
+            transport_request
+                .remote_helper_result_path
+                .as_deref()
+                .expect("remote helper result path"),
+            remote_work_dir
+                .join("prepared-output-results/prepare-pika-core-linux-rust-workspace-build.json")
+                .to_str()
+                .expect("remote helper result utf8")
+        );
+        let nix_log = fs::read_to_string(&nix_log_path).expect("read nix log");
+        assert!(nix_log.contains(&format!(
+            "copy --to ssh://pika-build {}",
+            realized_path.display()
+        )));
+        let ssh_log = fs::read_to_string(&ssh_log_path).expect("read ssh log");
+        assert!(ssh_log.contains("pika-build tee "));
+        assert!(ssh_log.contains(launcher_path.to_str().expect("launcher path utf8")));
+        let launcher_log = fs::read_to_string(&launcher_log_path).expect("read launcher log");
+        assert_eq!(
+            launcher_log.trim(),
+            transport_request
+                .remote_launcher_request_path
+                .as_deref()
+                .expect("remote launch request path")
+        );
+        let log_body = fs::read_to_string(&log_path).expect("read log");
+        assert!(log_body.contains("launcher_transport_mode=ssh_launcher_transport_v1"));
+        assert!(log_body.contains("transport_host=pika-build"));
+        assert!(log_body.contains("remote_helper_result="));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -4735,6 +5738,10 @@ EOF
             prepared_output_invocation_wrapper_program: None,
             prepared_output_launcher_transport_mode: None,
             prepared_output_launcher_transport_program: None,
+            prepared_output_launcher_transport_host: None,
+            prepared_output_launcher_transport_remote_launcher_program: None,
+            prepared_output_launcher_transport_remote_helper_program: None,
+            prepared_output_launcher_transport_remote_work_dir: None,
             changed_files: Vec::new(),
             filters: Vec::new(),
             message: None,

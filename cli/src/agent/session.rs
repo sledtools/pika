@@ -17,7 +17,6 @@ use crate::agent::provider::{ChatLoopPlan, GroupCreatePlan, KeyPackageWaitPlan};
 use crate::{mdk_util, relay_util};
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct PublishedWelcome {
     pub wrapper_event_id_hex: String,
     pub rumor_json: String,
@@ -27,7 +26,6 @@ pub struct PublishedWelcome {
 pub struct CreatedChatGroup {
     pub mls_group_id: GroupId,
     pub nostr_group_id_hex: String,
-    #[allow(dead_code)]
     pub published_welcomes: Vec<PublishedWelcome>,
 }
 

@@ -11,6 +11,7 @@ pub const DEFAULT_GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 pub const DEFAULT_MERGED_LOOKBACK_HOURS: u64 = 72;
 pub const DEFAULT_WORKER_CONCURRENCY: usize = 2;
 pub const DEFAULT_RETRY_BACKOFF_SECS: u64 = 120;
+pub const DEFAULT_WEBHOOK_SECRET_ENV: &str = "PIKA_NEWS_WEBHOOK_SECRET";
 pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 pub const DEFAULT_BIND_PORT: u16 = 8787;
 
@@ -31,6 +32,8 @@ pub struct Config {
     pub worker_concurrency: usize,
     #[serde(default = "default_retry_backoff_secs")]
     pub retry_backoff_secs: u64,
+    #[serde(default = "default_webhook_secret_env")]
+    pub webhook_secret_env: String,
     #[serde(default = "default_bind_address")]
     pub bind_address: String,
     #[serde(default = "default_bind_port")]
@@ -57,6 +60,10 @@ fn default_model() -> String {
 
 fn default_api_key_env() -> String {
     DEFAULT_API_KEY_ENV.to_string()
+}
+
+fn default_webhook_secret_env() -> String {
+    DEFAULT_WEBHOOK_SECRET_ENV.to_string()
 }
 
 fn default_bind_address() -> String {
@@ -95,6 +102,7 @@ poll_interval_secs = 30
 model = "claude-sonnet-4-5-20250929"
 api_key_env = "ANTHROPIC_API_KEY"
 github_token_env = "GITHUB_TOKEN"
+webhook_secret_env = "MY_WEBHOOK_SECRET"
 merged_lookback_hours = 48
 worker_concurrency = 3
 retry_backoff_secs = 90
@@ -108,10 +116,18 @@ bind_port = 8080
         assert_eq!(parsed.model, "claude-sonnet-4-5-20250929");
         assert_eq!(parsed.api_key_env, "ANTHROPIC_API_KEY");
         assert_eq!(parsed.github_token_env, "GITHUB_TOKEN");
+        assert_eq!(parsed.webhook_secret_env, "MY_WEBHOOK_SECRET");
         assert_eq!(parsed.merged_lookback_hours, 48);
         assert_eq!(parsed.worker_concurrency, 3);
         assert_eq!(parsed.retry_backoff_secs, 90);
         assert_eq!(parsed.bind_address, "0.0.0.0");
         assert_eq!(parsed.bind_port, 8080);
+    }
+
+    #[test]
+    fn webhook_secret_env_defaults() {
+        let raw = r#"repos = ["test/repo"]"#;
+        let parsed: Config = toml::from_str(raw).expect("parse minimal config");
+        assert_eq!(parsed.webhook_secret_env, super::DEFAULT_WEBHOOK_SECRET_ENV);
     }
 }

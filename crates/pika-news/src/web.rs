@@ -1,14 +1,19 @@
+use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use askama::Template;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
+use hmac::{Hmac, Mac};
 use pulldown_cmark::{html, Options, Parser};
+use sha2::Sha256;
+use tokio::sync::Notify;
 
 use crate::auth::AuthState;
 use crate::config::Config;
@@ -25,6 +30,8 @@ struct AppState {
     config: Config,
     max_prs: usize,
     auth: Arc<AuthState>,
+    poll_notify: Arc<Notify>,
+    webhook_secret: Option<String>,
 }
 
 #[derive(Template)]
@@ -94,14 +101,24 @@ pub async fn serve(
     max_prs: usize,
 ) -> anyhow::Result<()> {
     let auth = Arc::new(AuthState::new(&config.allowed_npubs));
+    let poll_notify = Arc::new(Notify::new());
+    let webhook_secret = env::var(&config.webhook_secret_env).ok();
+    if webhook_secret.is_some() {
+        eprintln!("webhook: signature verification enabled");
+    } else {
+        eprintln!("webhook: no secret configured, endpoint disabled");
+    }
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
         max_prs,
         auth,
+        poll_notify: Arc::clone(&poll_notify),
+        webhook_secret,
     });
 
     let background_state = Arc::clone(&state);
+    let background_notify = Arc::clone(&poll_notify);
     tokio::spawn(async move {
         loop {
             let state = Arc::clone(&background_state);
@@ -151,7 +168,13 @@ pub async fn serve(
                     eprintln!("pika-news background task join error: {}", err);
                 }
             }
-            tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)).await;
+            // Wait for the poll interval OR an early wake-up from a webhook.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)) => {}
+                _ = background_notify.notified() => {
+                    eprintln!("poll: woken by webhook");
+                }
+            }
         }
     });
 
@@ -178,6 +201,7 @@ pub async fn serve(
             get(chat_history_handler).post(chat_send_handler),
         )
         .route("/news/pr/:pr_id/regenerate", post(regenerate_handler))
+        .route("/news/webhook", post(webhook_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -734,6 +758,73 @@ async fn regenerate_handler(
     }
 }
 
+// --- Webhook handler ---
+
+async fn webhook_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let secret = match &state.webhook_secret {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "webhook not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate X-Hub-Signature-256 header.
+    let signature = match headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(s) => s.to_string(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing signature"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !verify_github_signature(secret, &body, &signature) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid signature"})),
+        )
+            .into_response();
+    }
+
+    // Signature valid — wake the poller.
+    state.poll_notify.notify_one();
+    let event_type = headers
+        .get("x-github-event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    eprintln!("webhook: received {} event", event_type);
+
+    Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
+fn verify_github_signature(secret: &str, payload: &[u8], signature_header: &str) -> bool {
+    let hex_sig = match signature_header.strip_prefix("sha256=") {
+        Some(h) => h,
+        None => return false,
+    };
+    let sig_bytes = match hex::decode(hex_sig) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    mac.update(payload);
+    mac.verify_slice(&sig_bytes).is_ok()
+}
+
 // --- Inbox handlers ---
 
 async fn inbox_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -917,12 +1008,52 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::markdown_to_safe_html;
+    use super::{markdown_to_safe_html, verify_github_signature};
 
     #[test]
     fn sanitizes_markdown_html_output() {
         let rendered = markdown_to_safe_html("ok<script>alert('xss')</script>");
         assert!(rendered.contains("ok"));
         assert!(!rendered.contains("<script>"));
+    }
+
+    #[test]
+    fn valid_github_signature_accepted() {
+        let secret = "test-secret";
+        let payload = b"hello world";
+
+        // Compute expected signature.
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(payload);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        let header = format!("sha256={}", sig);
+
+        assert!(verify_github_signature(secret, payload, &header));
+    }
+
+    #[test]
+    fn wrong_secret_rejected() {
+        let payload = b"hello world";
+
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"right-secret").unwrap();
+        mac.update(payload);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        let header = format!("sha256={}", sig);
+
+        assert!(!verify_github_signature("wrong-secret", payload, &header));
+    }
+
+    #[test]
+    fn missing_prefix_rejected() {
+        assert!(!verify_github_signature("secret", b"body", "bad-header"));
+    }
+
+    #[test]
+    fn invalid_hex_rejected() {
+        assert!(!verify_github_signature("secret", b"body", "sha256=zzzz"));
     }
 }

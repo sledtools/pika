@@ -969,6 +969,15 @@ cli-identity STATE_DIR=".pikachat" RELAY="ws://127.0.0.1:7777":
 cli-smoke:
     cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
 
+# Minimum shared-runtime regression set for the app / CLI / daemon extraction boundary.
+shared-runtime-regression:
+    cargo test -p pika-marmot-runtime publish_welcome_rumors_
+    cargo test -p pika-marmot-runtime create_group_and_publish_welcomes_returns_group_and_published_metadata
+    cargo test -p pikachat-sidecar init_group_uses_shared_runtime_helper_and_keeps_expiration_tag
+    cargo test -p pika_core app_background_publish_uses_shared_welcome_pairing
+    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture
+
 # Quick smoke test including encrypted media upload/download over Blossom.
 
 # Starts its own relay automatically. Requires internet for the default Blossom server.

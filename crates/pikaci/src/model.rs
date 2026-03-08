@@ -189,6 +189,13 @@ pub enum PreparedOutputConsumerKind {
     FulfillRequestCliV1,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputInvocationMode {
+    DirectHelperExecV1,
+    ExternalWrapperCommandV1,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PreparedOutputExposure {
     pub kind: PreparedOutputExposureKind,
@@ -388,6 +395,10 @@ pub struct RunRecord {
     pub prepared_output_consumer: Option<PreparedOutputConsumerKind>,
     #[serde(default)]
     pub prepared_output_mode: Option<String>,
+    #[serde(default)]
+    pub prepared_output_invocation_mode: Option<PreparedOutputInvocationMode>,
+    #[serde(default)]
+    pub prepared_output_invocation_wrapper_program: Option<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]

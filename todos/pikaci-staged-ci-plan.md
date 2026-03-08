@@ -438,7 +438,22 @@ Phase 6 helper-result hardening notes:
 - Successful helper results now also drive persisted realized exposures instead of replaying the planned handoff shape blindly.
 - What this slice proves: the helper result contract is now useful as a real status boundary instead of only a debugging aid.
 - What is still missing: this is still same-host helper orchestration with no off-host invocation, transport, or remote result collection.
-- Next recommended slice: decide whether the current request/result pair is now sufficient for a first off-host helper prototype, or add one final tiny helper invocation wrapper only if that boundary still feels too implicit.
+- Next recommended slice: separate helper resolution from helper invocation so the same request/result pair can cross a more off-host-shaped launcher boundary without changing the prepared-output schemas.
+
+Phase 6 helper-invoker slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has an explicit helper-invocation seam in addition to helper resolution:
+  - the staged helper path can invoke the fulfillment helper directly,
+  - or through a small external-wrapper command contract that still runs locally today.
+- The request/result JSON contracts stay unchanged.
+- Observability is now explicit in run state and logs:
+  - `run.json` records the prepared-output invocation mode used for the run,
+  - `pikaci status` prints that mode,
+  - and helper logs show whether the run used direct execution or the wrapper-shaped boundary.
+- What this slice proves: the staged `pre-merge-pika-rust` helper path can cross a real invocation seam that is narrower than “spawn whatever binary happens to be local,” while still staying Nix-backed and same-host in practice.
+- What is still missing: the wrapper is still only a local launcher contract; there is still no transport, no remote worker lifecycle, and no off-host result collection.
+- Next recommended slice: decide whether the current helper request/result pair plus wrapper-shaped invocation contract is enough for a first tiny off-host launcher prototype, or whether one more narrow helper-launch/result wrapper is needed first.
 
 ## Deferred Until Proven Necessary
 
@@ -477,5 +492,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, and ninth narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for whether the current helper request/result pair is sufficient for a first off-host helper prototype, or whether one final tiny invocation wrapper is still needed before that, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, and tenth narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for whether the current helper request/result pair plus wrapper-shaped invocation seam is sufficient for a first off-host launcher prototype, or whether one final tiny launcher/result wrapper is still needed before that, while keeping Rust execute inputs Nix-backed.

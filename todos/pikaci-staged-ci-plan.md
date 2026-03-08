@@ -237,6 +237,13 @@ Land to `master`:
 
 - Yes, if the concurrency slice is small and reviewable.
 
+Phase 4 review notes:
+
+- Phase 4 is complete and landed in its narrowed form.
+- Shared prepared-build semantics should stay in Nix for now: `workspaceDeps` and `workspaceBuild` are still the reuse boundary, and execute consumes Nix-authored wrappers mounted read-only into the guest.
+- Execute parallelism is intentionally narrow. `pikaci` only runs execute nodes concurrently when every planned job is on the staged Linux Rust wrapper path; other cargo-driven jobs still collapse back to serial execution to avoid shared writable guest Cargo-state hazards.
+- The current fanout split is pointed at integration-heavy consumers (`app_flows` vs. messaging/group-profile e2e), not helper/unit noise. That is the right shape to preserve if we fan out this lane further.
+
 ## Phase 5: Decide On `nextest` Archive vs. Direct Reuse
 
 Goal:
@@ -259,6 +266,26 @@ Acceptance criteria:
 
 - We have a written decision and rationale.
 - The decision is based on a real migrated lane, not speculation.
+
+Phase 5 decision:
+
+- Stay with Nix-backed staged builds for now.
+- Do not add `nextest` archive support in the next implementation slice.
+- Revisit `nextest` archive only when remote execution or broader Rust fanout creates a real artifact-mobility problem that the current staged Nix path cannot handle cleanly.
+
+Rationale from the current migrated lane:
+
+- Current execute startup is conceptually cheap after prepare completes. The staged Rust execute nodes run small wrappers from `workspaceBuild` (`/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests` and `/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests`) that read manifest files and invoke already-built test binaries. The expensive work we can see locally is still VM bring-up, vfkit runner preparation, and guest-side test execution, not Rust recompilation inside execute.
+- The current shared prepared-build model already supports meaningful fanout on the reference lane. One `workspaceDeps` node and one `workspaceBuild` node feed multiple execute nodes, and the plan/log output makes the reuse boundary obvious. That is enough to keep pushing on scheduler and lane-shape work without introducing a second Rust artifact format yet.
+- The current friction is mostly about moving prepared state across machine boundaries, not about local lane fanout. The staged path is snapshot-scoped (`path:<snapshot>#ci.aarch64-linux.workspace*`) and consumed through host-local mount repointing plus read-only virtiofs shares into the guest. That works well on one orchestrating host, but it does not yet define how another host would discover, realize, transfer, or mount the prepared outputs.
+- `nextest` archive would buy us a more explicit Rust-test payload for cross-machine or high-fanout execution: archive export/import, a stable inventory of runnable tests, and a cleaner transport boundary than host-local mount repointing. Those are real advantages, but they are not the current bottleneck in the migrated lane.
+- `nextest` archive would also add immediate complexity that is not justified by today’s lane: new toolchain surface in the flake/guest environment, a second compile/execute contract alongside the current Crane outputs, archive packaging/import logic, and a sharper semantic shift away from the existing `cargo test --no-run` + manifest-wrapper path that already works for the first fanout slice.
+
+Recommended next implementation slice:
+
+- Phase 6 should be remote builder / remote executor preparation first.
+- Keep the current Nix-backed prepared-build contract and make the remote-execution constraints explicit before adding `nextest` archive.
+- The concrete next prompt should ask for a narrow remote-prep slice around how a prepared Nix output is identified, realized, and mounted by a non-local executor without inventing a generic artifact protocol.
 
 Land to `master`:
 
@@ -323,5 +350,7 @@ We have at least one important Linux Rust lane where:
 - Phase 1 is complete and landed.
 - Phase 2a is complete and landed.
 - Phase 2b is complete and landed.
-- Phase 3 is complete on this branch and ready to land.
-- Current recommended slice is still Phase 4, but only after explicitly confirming that scheduler/fanout work should target the integration-heavy parts of `pre-merge-pika-rust` rather than its helper-test tail.
+- Phase 3 is complete and landed.
+- Phase 4 is complete and landed in its narrowed form.
+- Phase 5 is complete in this document as a decision/update slice.
+- Current recommended slice is Phase 6: remote builder / remote executor preparation while keeping Rust execute inputs Nix-backed for now.

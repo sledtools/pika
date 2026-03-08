@@ -85,6 +85,13 @@ impl JobSpec {
         }
     }
 
+    pub fn staged_linux_rust_lane(&self) -> Option<StagedLinuxRustLane> {
+        match self.id {
+            "pika-core-lib-tests" => Some(StagedLinuxRustLane::PikaCoreLibTests),
+            _ => None,
+        }
+    }
+
     pub fn host_setup_command(&self) -> Option<&'static str> {
         match self.id {
             "tart-beachhead" => Some(concat!(
@@ -98,6 +105,33 @@ impl JobSpec {
                 "just ios-xcframework ios-xcodeproj",
             )),
             _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedLinuxRustLane {
+    PikaCoreLibTests,
+}
+
+impl StagedLinuxRustLane {
+    pub fn workspace_deps_output_name(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibTests => "ci.aarch64-linux.workspaceDeps",
+        }
+    }
+
+    pub fn workspace_build_output_name(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibTests => "ci.aarch64-linux.workspaceBuild",
+        }
+    }
+
+    pub fn execute_wrapper_command(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests"
+            }
         }
     }
 }

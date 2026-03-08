@@ -365,6 +365,15 @@ Phase 6 non-local-consumer slice notes:
 - Review follow-up: persisted state now distinguishes realized exposures from requested remote exposures so `prepared-outputs.json` does not claim that remote-request paths are already live.
 - What still remains next: a narrow slice that decides where and how this remote-request prototype is actually exercised outside tests or threaded into one real non-local-capable boundary.
 
+Phase 6 request-fulfillment slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has one real code path that consumes the machine-readable remote exposure request JSON and replays the requested read-only exposures locally.
+- The fulfillment path stays explicitly narrow and Nix-backed: it only reads the staged Linux Rust request schema and materializes the requested host symlink mounts.
+- What this slice proves: the request file written under `prepared-output-requests/` contains enough information to fulfill the staged output exposure without any extra lane-specific context.
+- What is still missing: this fulfillment path is still local replay, not a true remote boundary, and it is not yet threaded into an end-to-end staged run outside manual or explicit invocation.
+- Next recommended slice: decide whether to exercise this request-fulfillment path via a dedicated process boundary, a narrow helper invocation, or one controlled end-to-end staged lane mode that still stops short of full remote execution.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -402,5 +411,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, and third narrow remote-prep forms.
-- Current recommended slice is one narrow non-local boundary step that can actually consume the remote exposure request prototype while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, and fourth narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for where the request-fulfillment path should be exercised as a real boundary while keeping Rust execute inputs Nix-backed.

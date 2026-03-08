@@ -771,6 +771,7 @@ pub struct AppCore {
     // Nostr kind:0 profile cache (survives across session refreshes).
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached global profile
     group_profiles: HashMap<String, HashMap<String, ProfileCache>>, // chat_id -> (pubkey -> profile)
+    processed_group_event_ids: HashSet<EventId>,
     profile_db: Option<rusqlite::Connection>,
     chat_media_db: Option<rusqlite::Connection>,
 
@@ -887,6 +888,8 @@ impl AppCore {
 
         let push_device_id = Self::load_or_create_push_device_id(&data_dir);
         let push_subscribed_chat_ids = Self::load_push_subscriptions(&data_dir);
+        let processed_group_event_ids =
+            pika_marmot_runtime::load_processed_mls_event_ids(std::path::Path::new(&data_dir));
 
         let mut this = Self {
             state,
@@ -919,6 +922,7 @@ impl AppCore {
             local_outbox: HashMap::new(),
             profiles,
             group_profiles: HashMap::new(),
+            processed_group_event_ids,
             profile_db,
             typing_state: HashMap::new(),
             last_typing_sent: HashMap::new(),
@@ -3139,6 +3143,7 @@ impl AppCore {
         self.cancel_call_offer_timeout();
         self.cancel_voice_recording_ticks();
 
+        self.clear_processed_group_event_ids_cache();
         let root = std::path::Path::new(&self.data_dir);
         match std::fs::read_dir(root) {
             Ok(entries) => {
@@ -3327,6 +3332,12 @@ impl AppCore {
                 ok,
                 error,
             } => self.handle_publish_message_result(chat_id, rumor_id, ok, error),
+            InternalEvent::GroupSendCatchupCompleted {
+                chat_id,
+                rumor,
+                backlog_events,
+                error,
+            } => self.handle_group_send_catchup_completed(chat_id, rumor, backlog_events, error),
             InternalEvent::ChatMediaUploadCompleted {
                 request_id,
                 uploaded_url,
@@ -4451,6 +4462,7 @@ impl AppCore {
     }
 
     pub(crate) fn handle_group_message(&mut self, event: Event) {
+        let event_id = event.id;
         let result = {
             let Some(sess) = self.session.as_mut() else {
                 tracing::warn!("group_message but no session");
@@ -4465,7 +4477,46 @@ impl AppCore {
                 }
             }
         };
+        self.note_processed_group_event_id(event_id);
         self.handle_message_processing_result(result);
+    }
+
+    fn note_processed_group_event_id(&mut self, event_id: EventId) {
+        if !self.processed_group_event_ids.insert(event_id) {
+            return;
+        }
+        self.persist_processed_group_event_ids_cache();
+    }
+
+    fn note_processed_group_event_id_in_memory(&mut self, event_id: EventId) {
+        self.processed_group_event_ids.insert(event_id);
+    }
+
+    fn persist_processed_group_event_ids_cache(&mut self) {
+        if let Err(e) = pika_marmot_runtime::persist_processed_mls_event_ids(
+            std::path::Path::new(&self.data_dir),
+            &self.processed_group_event_ids,
+        ) {
+            tracing::warn!(%e, "failed to persist processed group event ids");
+        }
+    }
+
+    fn clear_processed_group_event_ids_cache(&mut self) {
+        self.processed_group_event_ids.clear();
+        let path = pika_marmot_runtime::processed_mls_event_ids_path(
+            std::path::Path::new(&self.data_dir),
+        );
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    path = %path.display(),
+                    "failed to delete processed group event id cache file"
+                );
+            }
+        }
     }
 
     fn handle_message_processing_result(&mut self, result: MessageProcessingResult) {
@@ -4729,6 +4780,7 @@ impl AppCore {
                         tracing::info!(path = %db_path.display(), "deleted mdk db on logout");
                     }
                 }
+                self.clear_processed_group_event_ids_cache();
                 self.clear_push_subscriptions();
                 self.stop_session();
                 self.state.auth = AuthState::LoggedOut;

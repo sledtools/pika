@@ -55,6 +55,12 @@ pub enum InternalEvent {
         ok: bool,
         error: Option<String>,
     },
+    GroupSendCatchupCompleted {
+        chat_id: String,
+        rumor: nostr_sdk::prelude::UnsignedEvent,
+        backlog_events: Vec<nostr_sdk::prelude::Event>,
+        error: Option<String>,
+    },
     ChatMediaUploadCompleted {
         request_id: String,
         uploaded_url: Option<String>,

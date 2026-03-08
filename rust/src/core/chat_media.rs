@@ -359,6 +359,7 @@ fn finalize_chat_media_upload(
         group_id,
         upload,
         UploadedBlob {
+            blossom_server: "app-local".to_string(),
             uploaded_url,
             descriptor_sha256_hex,
         },

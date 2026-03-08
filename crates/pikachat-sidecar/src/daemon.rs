@@ -4972,6 +4972,7 @@ mod tests {
             &created.group.mls_group_id,
             &prepared.upload,
             pika_marmot_runtime::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
                 uploaded_url: "https://example.com/blob".to_string(),
                 descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
             },

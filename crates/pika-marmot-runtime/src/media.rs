@@ -40,6 +40,7 @@ pub struct PreparedMediaUpload {
 
 #[derive(Debug, Clone)]
 pub struct UploadedBlob {
+    pub blossom_server: String,
     pub uploaded_url: String,
     pub descriptor_sha256_hex: String,
 }
@@ -294,6 +295,7 @@ where
         }
 
         return Ok(UploadedBlob {
+            blossom_server: server.clone(),
             uploaded_url: descriptor.url.to_string(),
             descriptor_sha256_hex,
         });
@@ -514,6 +516,7 @@ mod tests {
             &created.group.mls_group_id,
             &prepared.upload,
             UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
                 uploaded_url: "https://example.com/blob".to_string(),
                 descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
             },
@@ -597,6 +600,7 @@ mod tests {
             &mls_group_id,
             &prepared.upload,
             UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
                 uploaded_url: "https://example.com/blob".to_string(),
                 descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
             },

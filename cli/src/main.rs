@@ -844,6 +844,22 @@ fn media_attachment_to_json(
     })
 }
 
+fn media_upload_json(
+    result: &pika_marmot_runtime::media::RuntimeMediaUploadResult,
+    bytes: usize,
+) -> serde_json::Value {
+    json!({
+        "blossom_server": result.uploaded_blob.blossom_server,
+        "uploaded_url": result.uploaded_blob.uploaded_url,
+        "original_hash_hex": result.attachment.original_hash_hex,
+        "encrypted_hash_hex": result.attachment.encrypted_hash_hex,
+        "descriptor_sha256_hex": result.uploaded_blob.descriptor_sha256_hex,
+        "mime_type": result.attachment.mime_type,
+        "filename": result.attachment.filename,
+        "bytes": bytes,
+    })
+}
+
 // ── Commands ────────────────────────────────────────────────────────────────
 
 async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
@@ -1226,16 +1242,7 @@ async fn upload_media(
             &upload_servers,
         )
         .await?;
-    let media_json = json!({
-        "blossom_server": upload_servers.first().cloned(),
-        "uploaded_url": result.uploaded_blob.uploaded_url,
-        "original_hash_hex": result.attachment.original_hash_hex,
-        "encrypted_hash_hex": result.attachment.encrypted_hash_hex,
-        "descriptor_sha256_hex": result.uploaded_blob.descriptor_sha256_hex,
-        "mime_type": result.attachment.mime_type,
-        "filename": result.attachment.filename,
-        "bytes": bytes.len(),
-    });
+    let media_json = media_upload_json(&result, bytes.len());
     Ok((result.imeta_tag, media_json))
 }
 
@@ -2798,6 +2805,7 @@ mod tests {
             &created.group.mls_group_id,
             &prepared.upload,
             pika_marmot_runtime::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
                 uploaded_url: "https://example.com/blob".to_string(),
                 descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
             },
@@ -2812,6 +2820,45 @@ mod tests {
         assert_eq!(media.len(), 1);
         assert_eq!(media[0]["filename"], "cli.txt");
         assert_eq!(media[0]["mime_type"], "text/plain");
+    }
+
+    #[test]
+    fn cli_media_upload_json_uses_actual_uploaded_server() {
+        let result = pika_marmot_runtime::media::RuntimeMediaUploadResult {
+            attachment: pika_marmot_runtime::media::RuntimeMediaAttachment {
+                url: "https://cdn.example/blob".to_string(),
+                mime_type: "text/plain".to_string(),
+                filename: "cli.txt".to_string(),
+                original_hash_hex: "aa".repeat(32),
+                encrypted_hash_hex: Some("bb".repeat(32)),
+                nonce_hex: "cc".repeat(24),
+                scheme_version: "v1".to_string(),
+                width: None,
+                height: None,
+            },
+            reference: mdk_core::encrypted_media::types::MediaReference {
+                url: "https://cdn.example/blob".to_string(),
+                mime_type: "text/plain".to_string(),
+                filename: "cli.txt".to_string(),
+                original_hash: [0xaa; 32].into(),
+                nonce: [0xcc; 12].into(),
+                scheme_version: "v1".to_string(),
+                dimensions: None,
+            },
+            imeta_tag: Tag::parse(["imeta", "url https://cdn.example/blob"]).expect("imeta tag"),
+            uploaded_blob: pika_marmot_runtime::media::UploadedBlob {
+                blossom_server: "https://fallback.example".to_string(),
+                uploaded_url: "https://cdn.example/blob".to_string(),
+                descriptor_sha256_hex: "bb".repeat(32),
+            },
+        };
+
+        let json = media_upload_json(&result, 42);
+
+        assert_eq!(
+            json.get("blossom_server").and_then(|v| v.as_str()),
+            Some("https://fallback.example")
+        );
     }
 
     #[tokio::test]

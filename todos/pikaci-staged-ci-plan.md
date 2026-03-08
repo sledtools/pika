@@ -401,7 +401,18 @@ Phase 6 staged-run-mode slice notes:
   - and `pikaci status` prints both so it is obvious when a run crossed the subprocess request-fulfillment boundary.
 - What this slice proves: the current request format is sufficient not just for isolated fulfillment but for one real staged Linux Rust run path that routes prepare exposure through the subprocess boundary.
 - What is still missing: this remains same-host orchestration using the local `pikaci` CLI or an explicit helper binary path, not a true off-host helper or remote executor.
-- Next recommended slice: decide whether to keep iterating on this same-host helper boundary or replace it with one slightly more explicit helper contract that can be invoked off-host without teaching the rest of `pikaci` a generic artifact protocol.
+- Next recommended slice: replace the broad “spawn the main `pikaci` CLI” subprocess boundary with a slightly narrower fulfillment helper contract that can later move off-host without teaching the rest of `pikaci` a generic artifact protocol.
+
+Phase 6 helper-contract slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has a dedicated prepared-output fulfillment helper boundary:
+  - the same-host subprocess path resolves to a narrow helper executable contract rather than coupling directly to the main `pikaci` CLI surface,
+  - while the existing `pikaci fulfill-prepared-output-request` subcommand remains available for compatibility and manual debugging.
+- The opt-in staged Linux Rust run mode still uses the same request schema and same persisted run-state fields.
+- What this slice proves: the staged subprocess mode can ride a narrower helper contract without changing the Nix-backed prepared-output request format.
+- What is still missing: the helper is still local-only, still same-host, and still has no remote transport, remote invocation protocol, or off-host result handling.
+- Next recommended slice: decide whether the helper contract now has enough shape to be exercised out-of-process in a more production-like way, or whether one more small helper-specific status/result protocol is needed before any off-host prototype.
 
 ## Deferred Until Proven Necessary
 
@@ -440,5 +451,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, and sixth narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for whether the subprocess-backed staged Linux Rust helper path should keep using the in-tree `pikaci` CLI boundary or move to a slightly more explicit helper contract that can later live off-host, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, and seventh narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for whether the dedicated prepared-output fulfillment helper now needs a tiny helper-specific result/status contract before any off-host prototype, while keeping Rust execute inputs Nix-backed.

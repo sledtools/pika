@@ -13,7 +13,7 @@ fn first_test_nix_store_path() -> PathBuf {
 }
 
 #[test]
-fn fulfill_prepared_output_request_cli_replays_requested_mounts() {
+fn fulfill_prepared_output_request_helper_replays_requested_mounts() {
     let root = std::env::temp_dir().join(format!(
         "pikaci-fulfill-request-cli-{}",
         uuid::Uuid::new_v4()
@@ -43,11 +43,10 @@ fn fulfill_prepared_output_request_cli_replays_requested_mounts() {
     )
     .expect("write request");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_pikaci"))
-        .arg("fulfill-prepared-output-request")
+    let output = Command::new(env!("CARGO_BIN_EXE_pikaci-fulfill-prepared-output"))
         .arg(&request_path)
         .output()
-        .expect("run fulfill-prepared-output-request");
+        .expect("run helper fulfill-prepared-output");
 
     assert!(
         output.status.success(),

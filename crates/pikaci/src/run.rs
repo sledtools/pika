@@ -57,6 +57,7 @@ pub struct RunMetadata {
 const STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV: &str = "PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL";
 const STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME: &str =
     "pre_merge_pika_rust_subprocess_fulfillment_v1";
+const PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME: &str = "pikaci-fulfill-prepared-output";
 
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
     run_jobs(std::slice::from_ref(job), options)
@@ -1008,6 +1009,15 @@ fn write_prepared_output_remote_exposure_request(
     Ok(request_path)
 }
 
+fn prepared_output_fulfillment_helper_file_name(current_exe: &Path) -> String {
+    match current_exe.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if !ext.is_empty() => {
+            format!("{PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME}.{ext}")
+        }
+        _ => PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME.to_string(),
+    }
+}
+
 fn resolve_prepared_output_fulfillment_program(
     explicit_program: Option<PathBuf>,
     current_exe: PathBuf,
@@ -1015,15 +1025,17 @@ fn resolve_prepared_output_fulfillment_program(
     if let Some(path) = explicit_program {
         return Ok(path);
     }
-    if current_exe
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "pikaci")
-    {
+    let current_stem = current_exe.file_stem().and_then(|name| name.to_str());
+    if current_stem.is_some_and(|name| name == PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME) {
         return Ok(current_exe);
     }
+    if current_stem.is_some_and(|name| name == "pikaci") {
+        return Ok(
+            current_exe.with_file_name(prepared_output_fulfillment_helper_file_name(&current_exe))
+        );
+    }
     Err(anyhow!(
-        "PIKACI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`; current executable is {}",
+        "PIKACI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `{PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME}`; current executable is {}",
         current_exe.display()
     ))
 }
@@ -1045,18 +1057,17 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment subprocess={} request={}",
+            "[pikaci] prepared output fulfillment helper={} request={}",
             program.display(),
             request_path.display()
         ),
     )?;
     let output = Command::new(&program)
-        .arg("fulfill-prepared-output-request")
         .arg(request_path)
         .output()
         .with_context(|| {
             format!(
-                "run prepared-output fulfillment subprocess `{}` for {}",
+                "run prepared-output fulfillment helper `{}` for {}",
                 program.display(),
                 request_path.display()
             )
@@ -1064,7 +1075,7 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
     if !output.status.success() {
         return Err(anyhow!(
-            "prepared-output fulfillment subprocess `{}` failed with {:?} for {}; see {}",
+            "prepared-output fulfillment helper `{}` failed with {:?} for {}; see {}",
             program.display(),
             output.status.code(),
             request_path.display(),
@@ -1766,8 +1777,8 @@ mod tests {
 
     use super::{
         FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
-        PrepareFailure, PreparedOutputMaterialization, PreparedRun,
-        RemoteExposureRequestPreparedOutputConsumer, RunMetadata,
+        PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME, PrepareFailure, PreparedOutputMaterialization,
+        PreparedRun, RemoteExposureRequestPreparedOutputConsumer, RunMetadata,
         STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME,
         SnapshotSource, build_run_plan, configured_prepared_output_consumer_kind,
         consume_prepared_output_handoff, fulfill_prepared_output_request, gc_runs,
@@ -2522,22 +2533,38 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prepared_output_fulfillment_program_accepts_pikaci_binary_name() {
+    fn resolve_prepared_output_fulfillment_program_prefers_helper_sibling_for_pikaci_binary() {
         let resolved =
             resolve_prepared_output_fulfillment_program(None, PathBuf::from("/tmp/bin/pikaci"))
-                .expect("resolve pikaci binary");
-        assert_eq!(resolved, PathBuf::from("/tmp/bin/pikaci"));
+                .expect("resolve helper sibling");
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/bin").join(PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME)
+        );
     }
 
     #[test]
-    fn resolve_prepared_output_fulfillment_program_rejects_non_pikaci_host_binary() {
+    fn resolve_prepared_output_fulfillment_program_accepts_helper_binary_name() {
+        let resolved = resolve_prepared_output_fulfillment_program(
+            None,
+            PathBuf::from("/tmp/bin").join(PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME),
+        )
+        .expect("resolve helper binary");
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/bin").join(PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME)
+        );
+    }
+
+    #[test]
+    fn resolve_prepared_output_fulfillment_program_rejects_non_helper_host_binary() {
         let err = resolve_prepared_output_fulfillment_program(
             None,
             PathBuf::from("/tmp/bin/embedding-runner"),
         )
         .expect_err("reject embedding binary");
         assert!(err.to_string().contains(
-            "requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`"
+            "requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `pikaci-fulfill-prepared-output`"
         ));
     }
 
@@ -2589,11 +2616,11 @@ mod tests {
             &helper_path,
             r#"#!/bin/sh
 set -eu
-if [ "${1:-}" != "fulfill-prepared-output-request" ]; then
-  echo "unexpected command: ${1:-}" >&2
+if [ "$#" -ne 1 ]; then
+  echo "unexpected args: $*" >&2
   exit 17
 fi
-request_path="$2"
+request_path="$1"
 realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mkdir -p "$(dirname "$mount_path")"
@@ -2651,7 +2678,7 @@ ln -sfn "$realized_path" "$mount_path"
             realized_path
         );
         let log_body = fs::read_to_string(&log_path).expect("read log");
-        assert!(log_body.contains("prepared output fulfillment subprocess="));
+        assert!(log_body.contains("prepared output fulfillment helper="));
         assert!(
             log_body.contains("prepared output consumer=fulfill_request_cli_v1 fulfilled request")
         );

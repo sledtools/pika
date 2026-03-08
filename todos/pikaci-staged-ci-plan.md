@@ -354,6 +354,15 @@ Phase 6 consumer-slice notes:
 - The existing host-local symlink-mount path now runs through that seam and records which consumer handled the exposure in `prepared-outputs.json`.
 - What still remains next is one narrow non-local consumer implementation or prototype that uses the same handoff contract without widening into a full remote executor system.
 
+Phase 6 non-local-consumer slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has a second prepared-output consumer prototype shaped for non-local use.
+- The prototype consumes the same staged Linux Rust handoff contract but writes machine-readable remote exposure requests instead of mutating host mountpoints.
+- The local symlink consumer remains the default real path; the new prototype only makes the future remote boundary concrete in logs and persisted state.
+- What this slice proves: a future remote executor/builder boundary can be modeled as a consumer of the existing Nix handoff contract, and `prepared-outputs.json` can capture both the consumer choice and its request metadata without introducing a generic artifact system.
+- What still remains next: a narrow slice that decides where and how this remote-request prototype is actually exercised outside tests or threaded into one real non-local-capable boundary.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -391,5 +400,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first and second narrow remote-prep forms.
-- Current recommended slice is one narrow non-local consumer prototype for staged Linux Rust prepared-output handoffs while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, and third narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for where the non-local prepared-output consumer prototype should be exercised while keeping Rust execute inputs Nix-backed.

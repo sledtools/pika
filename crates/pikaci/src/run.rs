@@ -18,9 +18,10 @@ use crate::executor::{
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
     PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
-    PreparedOutputExposureKind, PreparedOutputHandoff, PreparedOutputHandoffProtocol,
-    PreparedOutputRemoteExposureRequest, PreparedOutputsRecord, RealizedPreparedOutputRecord,
-    RunPlanRecord, RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
+    PreparedOutputExposureKind, PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
+    PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputRemoteExposureRequest,
+    PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
+    RunnerKind, StagedLinuxRustLane,
 };
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
@@ -581,6 +582,7 @@ struct PreparedOutputConsumerResult {
     exposures: Vec<PreparedOutputExposure>,
     requested_exposures: Vec<PreparedOutputExposure>,
     consumer_request_path: Option<String>,
+    consumer_result_path: Option<String>,
 }
 
 trait PreparedOutputConsumer {
@@ -941,10 +943,7 @@ fn repoint_prepare_mount(mount_path: &Path, output_path: &Path) -> anyhow::Resul
 pub fn fulfill_prepared_output_request(
     request_path: &Path,
 ) -> anyhow::Result<PreparedOutputRemoteExposureRequest> {
-    let bytes =
-        fs::read(request_path).with_context(|| format!("read {}", request_path.display()))?;
-    let request: PreparedOutputRemoteExposureRequest = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decode {}", request_path.display()))?;
+    let request = load_prepared_output_request(request_path)?;
     if request.schema_version != 1 {
         return Err(anyhow!(
             "prepared output request `{}` uses unsupported schema_version {}; expected 1",
@@ -985,6 +984,40 @@ pub fn fulfill_prepared_output_request(
     Ok(request)
 }
 
+pub fn fulfill_prepared_output_request_result(
+    request_path: &Path,
+) -> PreparedOutputFulfillmentResult {
+    match fulfill_prepared_output_request(request_path) {
+        Ok(request) => PreparedOutputFulfillmentResult {
+            schema_version: 1,
+            request_path: request_path.display().to_string(),
+            node_id: Some(request.node_id),
+            output_name: Some(request.output_name),
+            realized_path: Some(request.realized_path),
+            status: PreparedOutputFulfillmentStatus::Succeeded,
+            fulfilled_exposures_count: request.requested_exposures.len(),
+            fulfilled_exposures: request.requested_exposures,
+            error: None,
+        },
+        Err(err) => {
+            let request = load_prepared_output_request(request_path).ok();
+            PreparedOutputFulfillmentResult {
+                schema_version: 1,
+                request_path: request_path.display().to_string(),
+                node_id: request.as_ref().map(|request| request.node_id.clone()),
+                output_name: request.as_ref().map(|request| request.output_name.clone()),
+                realized_path: request
+                    .as_ref()
+                    .map(|request| request.realized_path.clone()),
+                status: PreparedOutputFulfillmentStatus::Failed,
+                fulfilled_exposures_count: 0,
+                fulfilled_exposures: Vec::new(),
+                error: Some(format!("{err:#}")),
+            }
+        }
+    }
+}
+
 fn write_prepared_output_remote_exposure_request(
     materialization: &PreparedOutputMaterialization<'_>,
     handoff: &PreparedOutputHandoff,
@@ -1007,6 +1040,31 @@ fn write_prepared_output_remote_exposure_request(
         },
     )?;
     Ok(request_path)
+}
+
+fn load_prepared_output_request(
+    request_path: &Path,
+) -> anyhow::Result<PreparedOutputRemoteExposureRequest> {
+    let bytes =
+        fs::read(request_path).with_context(|| format!("read {}", request_path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", request_path.display()))
+}
+
+pub fn write_prepared_output_fulfillment_result(
+    result_path: &Path,
+    result: &PreparedOutputFulfillmentResult,
+) -> anyhow::Result<()> {
+    if let Some(parent) = result_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    write_json(result_path.to_path_buf(), result)
+}
+
+fn load_prepared_output_fulfillment_result(
+    result_path: &Path,
+) -> anyhow::Result<PreparedOutputFulfillmentResult> {
+    let bytes = fs::read(result_path).with_context(|| format!("read {}", result_path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", result_path.display()))
 }
 
 fn prepared_output_fulfillment_helper_file_name(current_exe: &Path) -> String {
@@ -1051,18 +1109,22 @@ fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
 
 fn fulfill_prepared_output_request_via_subprocess(
     request_path: &Path,
+    result_path: &Path,
     log_paths: &[PathBuf],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PreparedOutputFulfillmentResult> {
     let program = prepared_output_fulfillment_program()?;
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment helper={} request={}",
+            "[pikaci] prepared output fulfillment helper={} request={} result={}",
             program.display(),
-            request_path.display()
+            request_path.display(),
+            result_path.display()
         ),
     )?;
     let output = Command::new(&program)
+        .arg("--result-path")
+        .arg(result_path)
         .arg(request_path)
         .output()
         .with_context(|| {
@@ -1073,19 +1135,50 @@ fn fulfill_prepared_output_request_via_subprocess(
             )
         })?;
     append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
+    let result = load_prepared_output_fulfillment_result(result_path).with_context(|| {
+        format!(
+            "load prepared-output fulfillment result for request {}",
+            request_path.display()
+        )
+    })?;
+    append_log_line_many(
+        log_paths,
+        &format!(
+            "[pikaci] prepared output fulfillment result status={:?} exposures={} result={}",
+            result.status,
+            result.fulfilled_exposures_count,
+            result_path.display()
+        ),
+    )?;
     if !output.status.success() {
         return Err(anyhow!(
-            "prepared-output fulfillment helper `{}` failed with {:?} for {}; see {}",
+            "prepared-output fulfillment helper `{}` failed with {:?} for {}; {}; see {}",
             program.display(),
             output.status.code(),
             request_path.display(),
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "no helper error detail".to_string()),
             log_paths
                 .first()
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "<no log>".to_string())
         ));
     }
-    Ok(())
+    if result.status != PreparedOutputFulfillmentStatus::Succeeded {
+        return Err(anyhow!(
+            "prepared-output fulfillment helper `{}` reported {:?} for {}; {}",
+            program.display(),
+            result.status,
+            request_path.display(),
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "no helper error detail".to_string())
+        ));
+    }
+    Ok(result)
 }
 
 impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
@@ -1126,6 +1219,7 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
             exposures,
             requested_exposures: Vec::new(),
             consumer_request_path: None,
+            consumer_result_path: None,
         })
     }
 }
@@ -1159,6 +1253,7 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
             exposures: Vec::new(),
             requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
+            consumer_result_path: None,
         })
     }
 }
@@ -1177,6 +1272,10 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
     ) -> anyhow::Result<PreparedOutputConsumerResult> {
         let request_path =
             write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)?;
+        let results_dir = run_dir.join("prepared-output-results");
+        fs::create_dir_all(&results_dir)
+            .with_context(|| format!("create {}", results_dir.display()))?;
+        let result_path = results_dir.join(format!("{}.json", materialization.node_id));
         append_log_line_many(
             log_paths,
             &format!(
@@ -1185,13 +1284,15 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
                 request_path.display()
             ),
         )?;
-        fulfill_prepared_output_request_via_subprocess(&request_path, log_paths)?;
+        let fulfillment_result =
+            fulfill_prepared_output_request_via_subprocess(&request_path, &result_path, log_paths)?;
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output consumer={} fulfilled request {}",
+                "[pikaci] prepared output consumer={} fulfilled request {} via {} exposure(s)",
                 prepared_output_consumer_kind_text(PreparedOutputConsumerKind::FulfillRequestCliV1),
-                request_path.display()
+                request_path.display(),
+                fulfillment_result.fulfilled_exposures_count
             ),
         )?;
         Ok(PreparedOutputConsumerResult {
@@ -1199,6 +1300,7 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
             exposures: handoff.exposures.clone(),
             requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
+            consumer_result_path: Some(result_path.display().to_string()),
         })
     }
 }
@@ -1486,6 +1588,7 @@ fn run_prepare_nodes(
                             consumer: consumer_result.kind,
                             realized_path: output_path.display().to_string(),
                             consumer_request_path: consumer_result.consumer_request_path,
+                            consumer_result_path: consumer_result.consumer_result_path,
                             exposures: consumer_result.exposures,
                             requested_exposures: consumer_result.requested_exposures,
                         },
@@ -1781,7 +1884,8 @@ mod tests {
         PreparedRun, RemoteExposureRequestPreparedOutputConsumer, RunMetadata,
         STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME,
         SnapshotSource, build_run_plan, configured_prepared_output_consumer_kind,
-        consume_prepared_output_handoff, fulfill_prepared_output_request, gc_runs,
+        consume_prepared_output_handoff, fulfill_prepared_output_request,
+        fulfill_prepared_output_request_result, gc_runs, load_prepared_output_fulfillment_result,
         mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag,
         ready_execute_job_positions, resolve_prepared_output_fulfillment_program,
         resolve_run_prepared_output_consumer_kind_for_mode, selected_prepared_output_consumer,
@@ -1791,9 +1895,9 @@ mod tests {
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
         PrepareNode, PreparedOutputConsumerKind, PreparedOutputExposure,
-        PreparedOutputExposureAccess, PreparedOutputExposureKind, PreparedOutputHandoff,
-        PreparedOutputHandoffProtocol, PreparedOutputRemoteExposureRequest, PreparedOutputsRecord,
-        RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
+        PreparedOutputExposureAccess, PreparedOutputExposureKind, PreparedOutputFulfillmentStatus,
+        PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputRemoteExposureRequest,
+        PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
     };
 
     #[test]
@@ -2207,6 +2311,7 @@ mod tests {
                 consumer: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
                 realized_path: "/nix/store/workspace-build".to_string(),
                 consumer_request_path: None,
+                consumer_result_path: None,
                 exposures: vec![PreparedOutputExposure {
                     kind: PreparedOutputExposureKind::HostSymlinkMount,
                     path: "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
@@ -2616,15 +2721,21 @@ mod tests {
             &helper_path,
             r#"#!/bin/sh
 set -eu
-if [ "$#" -ne 1 ]; then
+if [ "$#" -ne 3 ] || [ "$1" != "--result-path" ]; then
   echo "unexpected args: $*" >&2
   exit 17
 fi
-request_path="$1"
+result_path="$2"
+request_path="$3"
 realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
+mkdir -p "$(dirname "$result_path")"
+cat >"$result_path" <<EOF
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+EOF
+printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"%s","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"%s","access":"read_only"}],"error":null}\n' "$request_path" "$realized_path" "$mount_path"
 "#,
         )
         .expect("write helper");
@@ -2670,15 +2781,30 @@ ln -sfn "$realized_path" "$mount_path"
             .consumer_request_path
             .as_deref()
             .expect("fulfillment request path");
+        let result_path = result
+            .consumer_result_path
+            .as_deref()
+            .expect("fulfillment result path");
         assert!(request_path.ends_with(
             "prepared-output-requests/prepare-pika-core-linux-rust-workspace-build.json"
+        ));
+        assert!(result_path.ends_with(
+            "prepared-output-results/prepare-pika-core-linux-rust-workspace-build.json"
         ));
         assert_eq!(
             fs::read_link(&mount_path).expect("read symlink"),
             realized_path
         );
+        let helper_result =
+            load_prepared_output_fulfillment_result(Path::new(result_path)).expect("load result");
+        assert_eq!(
+            helper_result.status,
+            PreparedOutputFulfillmentStatus::Succeeded
+        );
+        assert_eq!(helper_result.fulfilled_exposures_count, 1);
         let log_body = fs::read_to_string(&log_path).expect("read log");
         assert!(log_body.contains("prepared output fulfillment helper="));
+        assert!(log_body.contains("prepared output fulfillment result status=Succeeded"));
         assert!(
             log_body.contains("prepared output consumer=fulfill_request_cli_v1 fulfilled request")
         );
@@ -2812,6 +2938,89 @@ ln -sfn "$realized_path" "$mount_path"
         let err =
             fulfill_prepared_output_request(&request_path).expect_err("unknown schema version");
         assert!(err.to_string().contains("unsupported schema_version"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_prepared_output_request_result_reports_success_machine_readably() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-result-success-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+
+        let request_path = root.join("request.json");
+        write_json(
+            request_path.clone(),
+            &PreparedOutputRemoteExposureRequest {
+                schema_version: 1,
+                node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
+                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                realized_path: realized_path.display().to_string(),
+                requested_exposures: vec![PreparedOutputExposure {
+                    kind: PreparedOutputExposureKind::HostSymlinkMount,
+                    path: mount_path.display().to_string(),
+                    access: PreparedOutputExposureAccess::ReadOnly,
+                }],
+            },
+        )
+        .expect("write request");
+
+        let result = fulfill_prepared_output_request_result(&request_path);
+        let realized_path_string = realized_path.display().to_string();
+
+        assert_eq!(result.status, PreparedOutputFulfillmentStatus::Succeeded);
+        assert_eq!(result.fulfilled_exposures_count, 1);
+        assert_eq!(
+            result.realized_path.as_deref(),
+            Some(realized_path_string.as_str())
+        );
+        assert_eq!(
+            fs::read_link(&mount_path).expect("read symlink"),
+            realized_path
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_prepared_output_request_result_reports_failure_machine_readably() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-result-failure-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        let request_path = root.join("request.json");
+        write_json(
+            request_path.clone(),
+            &PreparedOutputRemoteExposureRequest {
+                schema_version: 1,
+                node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
+                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                realized_path: Path::new("/nix/store/missing-output").display().to_string(),
+                requested_exposures: Vec::new(),
+            },
+        )
+        .expect("write request");
+
+        let result = fulfill_prepared_output_request_result(&request_path);
+
+        assert_eq!(result.status, PreparedOutputFulfillmentStatus::Failed);
+        assert_eq!(result.fulfilled_exposures_count, 0);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .expect("failure error")
+                .contains("points at missing realized path")
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -215,6 +215,32 @@ pub struct PreparedOutputRemoteExposureRequest {
     pub requested_exposures: Vec<PreparedOutputExposure>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputFulfillmentStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputFulfillmentResult {
+    pub schema_version: u32,
+    pub request_path: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub output_name: Option<String>,
+    #[serde(default)]
+    pub realized_path: Option<String>,
+    pub status: PreparedOutputFulfillmentStatus,
+    #[serde(default)]
+    pub fulfilled_exposures_count: usize,
+    #[serde(default)]
+    pub fulfilled_exposures: Vec<PreparedOutputExposure>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PrepareNode {
@@ -306,6 +332,8 @@ pub struct RealizedPreparedOutputRecord {
     pub realized_path: String,
     #[serde(default)]
     pub consumer_request_path: Option<String>,
+    #[serde(default)]
+    pub consumer_result_path: Option<String>,
     #[serde(default)]
     pub exposures: Vec<PreparedOutputExposure>,
     #[serde(default)]

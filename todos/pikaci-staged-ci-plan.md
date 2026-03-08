@@ -412,7 +412,19 @@ Phase 6 helper-contract slice notes:
 - The opt-in staged Linux Rust run mode still uses the same request schema and same persisted run-state fields.
 - What this slice proves: the staged subprocess mode can ride a narrower helper contract without changing the Nix-backed prepared-output request format.
 - What is still missing: the helper is still local-only, still same-host, and still has no remote transport, remote invocation protocol, or off-host result handling.
-- Next recommended slice: decide whether the helper contract now has enough shape to be exercised out-of-process in a more production-like way, or whether one more small helper-specific status/result protocol is needed before any off-host prototype.
+- Next recommended slice: add one tiny helper-specific status/result contract so the helper boundary is less implicit than exit code plus logs.
+
+Phase 6 helper-result slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci-fulfill-prepared-output` now has a tiny machine-readable result contract:
+  - the helper can emit and persist a fulfillment result record for each request,
+  - the record captures request path, realized path, fulfilled exposure count, success/failure, and optional error text,
+  - and the staged subprocess mode records where that result lives.
+- The request JSON contract stays unchanged; only the helper result/report side is new.
+- What this slice proves: the same opt-in staged Linux Rust helper path can expose a future off-host caller to a clearer lifecycle than “helper exited 0 and logs looked okay.”
+- What is still missing: no remote transport, no helper distribution/invocation off-host, and no broader request/result orchestration beyond one local helper process.
+- Next recommended slice: decide whether this result contract is enough for a first off-host prototype or whether one more tiny helper invocation/status wrapper is needed before that step.
 
 ## Deferred Until Proven Necessary
 
@@ -451,5 +463,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, and seventh narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for whether the dedicated prepared-output fulfillment helper now needs a tiny helper-specific result/status contract before any off-host prototype, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, and eighth narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for whether the helper result contract is now sufficient for a first off-host prototype, or whether one more tiny helper invocation/status wrapper is needed before that, while keeping Rust execute inputs Nix-backed.

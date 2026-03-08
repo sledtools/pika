@@ -19,6 +19,7 @@ fn fulfill_prepared_output_request_helper_replays_requested_mounts() {
         uuid::Uuid::new_v4()
     ));
     let request_path = root.join("request.json");
+    let result_path = root.join("result.json");
     let realized_path = first_test_nix_store_path();
     let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
     fs::create_dir_all(&root).expect("create root");
@@ -44,6 +45,8 @@ fn fulfill_prepared_output_request_helper_replays_requested_mounts() {
     .expect("write request");
 
     let output = Command::new(env!("CARGO_BIN_EXE_pikaci-fulfill-prepared-output"))
+        .arg("--result-path")
+        .arg(&result_path)
         .arg(&request_path)
         .output()
         .expect("run helper fulfill-prepared-output");
@@ -55,9 +58,26 @@ fn fulfill_prepared_output_request_helper_replays_requested_mounts() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("decode stdout");
-    assert!(stdout.contains(&format!("request={}", request_path.display())));
-    assert!(stdout.contains("output=ci.aarch64-linux.workspaceBuild"));
-    assert!(stdout.contains("requested_exposures=1"));
+    let stdout_result: serde_json::Value =
+        serde_json::from_str(&stdout).expect("decode stdout json");
+    assert_eq!(
+        stdout_result["request_path"],
+        request_path.display().to_string()
+    );
+    assert_eq!(stdout_result["status"], "succeeded");
+    assert_eq!(stdout_result["fulfilled_exposures_count"], 1);
+    let result_body = fs::read_to_string(&result_path).expect("read result file");
+    let result_json: serde_json::Value =
+        serde_json::from_str(&result_body).expect("decode result file");
+    assert_eq!(
+        result_json["request_path"],
+        request_path.display().to_string()
+    );
+    assert_eq!(
+        result_json["realized_path"],
+        realized_path.display().to_string()
+    );
+    assert_eq!(result_json["fulfilled_exposures_count"], 1);
     assert_eq!(
         fs::read_link(&mount_path).expect("read symlink"),
         realized_path

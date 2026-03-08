@@ -431,9 +431,11 @@ Phase 6 helper-result hardening notes:
 - This next follow-up slice is now complete and landed.
 - The helper result contract is now authoritative for the subprocess fulfillment path:
   - `pikaci` validates the helper result status, not just the subprocess exit code,
+  - validates the helper-reported request/result details against the request it wrote,
   - and a helper that exits `0` while reporting `failed` is treated as a prepare failure.
 - Failed helper results are now still linked from persisted prepared-output state:
   - `prepared-outputs.json` keeps the request/result paths and requested exposures even when fulfillment aborts before any live exposure is realized.
+- Successful helper results now also drive persisted realized exposures instead of replaying the planned handoff shape blindly.
 - What this slice proves: the helper result contract is now useful as a real status boundary instead of only a debugging aid.
 - What is still missing: this is still same-host helper orchestration with no off-host invocation, transport, or remote result collection.
 - Next recommended slice: decide whether the current request/result pair is now sufficient for a first off-host helper prototype, or add one final tiny helper invocation wrapper only if that boundary still feels too implicit.

@@ -166,10 +166,10 @@ Tip: 'pikachat send --to npub1...' does this automatically for 1:1 DMs.")]
 
     /// Accept a pending welcome and join the group
     #[command(after_help = "Example:
-  pikachat welcomes   # find the wrapper_event_id
+  pikachat welcomes   # find the wrapper_event_id or welcome_event_id
   pikachat accept-welcome --wrapper-event-id abc123...")]
     AcceptWelcome {
-        /// Wrapper event ID (hex) from the welcomes list
+        /// Pending welcome event ID (wrapper_event_id or welcome_event_id hex) from the welcomes list
         #[arg(long)]
         wrapper_event_id: String,
     },
@@ -1136,17 +1136,7 @@ fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
     let pending = mdk
         .get_pending_welcomes(None)
         .context("get pending welcomes")?;
-    let out: Vec<serde_json::Value> = pending
-        .iter()
-        .map(|w| {
-            json!({
-                "wrapper_event_id": w.wrapper_event_id.to_hex(),
-                "from_pubkey": w.welcomer.to_hex(),
-                "nostr_group_id": hex::encode(w.nostr_group_id),
-                "group_name": w.group_name,
-            })
-        })
-        .collect();
+    let out: Vec<serde_json::Value> = pending.iter().map(pending_welcome_json).collect();
     print(json!({ "welcomes": out }));
     Ok(())
 }
@@ -1160,7 +1150,11 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
         .get_pending_welcomes(None)
         .context("get pending welcomes")?;
     let welcome = find_pending_welcome_for_accept(&pending, &target_id)
-        .ok_or_else(|| anyhow!("no pending welcome with that event id"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "no pending welcome with that event id; run `pikachat welcomes` and use wrapper_event_id or welcome_event_id"
+            )
+        })?;
 
     let ngid = hex::encode(welcome.nostr_group_id);
     let mls_gid = hex::encode(welcome.mls_group_id.as_slice());
@@ -1183,6 +1177,18 @@ fn find_pending_welcome_for_accept<'a>(
     target_id: &EventId,
 ) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
     pika_marmot_runtime::welcome::find_pending_welcome(pending, target_id)
+}
+
+fn pending_welcome_json(
+    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+) -> serde_json::Value {
+    json!({
+        "wrapper_event_id": welcome.wrapper_event_id.to_hex(),
+        "welcome_event_id": welcome.id.to_hex(),
+        "from_pubkey": welcome.welcomer.to_hex(),
+        "nostr_group_id": hex::encode(welcome.nostr_group_id),
+        "group_name": welcome.group_name,
+    })
 }
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
@@ -2788,6 +2794,37 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn welcomes_output_includes_wrapper_and_welcome_event_ids() {
+        let welcome = pending_welcome(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+
+        let value = pending_welcome_json(&welcome);
+        assert_eq!(
+            value.get("wrapper_event_id").and_then(|v| v.as_str()),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            value.get("welcome_event_id").and_then(|v| v.as_str()),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+    }
+
+    #[test]
+    fn accept_welcome_help_mentions_both_event_ids() {
+        let mut command = Cli::command();
+        let accept = command
+            .find_subcommand_mut("accept-welcome")
+            .expect("accept-welcome subcommand");
+        let mut help = Vec::new();
+        accept.write_long_help(&mut help).expect("render help");
+        let help = String::from_utf8(help).expect("utf8 help");
+        assert!(help.contains("wrapper_event_id or welcome_event_id"));
+        assert!(help.contains("pikachat welcomes"));
     }
 
     #[tokio::test]

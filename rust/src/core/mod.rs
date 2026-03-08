@@ -3904,6 +3904,8 @@ impl AppCore {
             return;
         }
 
+        // The app is currently eager here: it accepts MLS welcomes as soon as
+        // they arrive, unlike the daemon/CLI stage-first flows.
         tracing::info!(
             nostr_group_id = %nostr_group_hex,
             group_name = %welcome.group_name,
@@ -8001,6 +8003,146 @@ mod tests {
             );
 
             assert!(!core.pending_group_ops.contains("chat1"));
+        }
+    }
+
+    mod welcome_lifecycle_characterization {
+        use super::*;
+        use crate::updates::InternalEvent;
+        use mdk_core::prelude::NostrGroupConfigData;
+        use nostr_sdk::prelude::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
+        use std::sync::Arc;
+
+        fn make_logged_in_core() -> (AppCore, tempfile::TempDir, Keys) {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let data_dir = tmp.path().to_string_lossy().into_owned();
+            let mut core = make_core(data_dir.clone());
+            let keys = Keys::generate();
+            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "")
+                .expect("open invitee mdk");
+            let client = Client::builder().signer(keys.clone()).build();
+            core.session = Some(super::super::Session {
+                pubkey: keys.public_key(),
+                local_keys: Some(keys.clone()),
+                mdk,
+                client,
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups: std::collections::HashMap::new(),
+            });
+            (core, tmp, keys)
+        }
+
+        fn make_key_package_event(mdk: &crate::mdk_support::PikaMdk, keys: &Keys) -> Event {
+            let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+            let (content, tags, _hash_ref) = mdk
+                .create_key_package_for_event(&keys.public_key(), vec![relay])
+                .expect("create key package");
+            EventBuilder::new(Kind::MlsKeyPackage, content)
+                .tags(tags)
+                .sign_with_keys(keys)
+                .expect("sign key package")
+        }
+
+        #[test]
+        fn gift_wrap_received_accepts_immediately_and_skips_duplicate_pending_state() {
+            let (mut core, inviter_dir, invitee_keys) = make_logged_in_core();
+            let inviter_keys = Keys::generate();
+            let inviter_mdk = crate::mdk_support::open_mdk(
+                &inviter_dir.path().join("inviter").to_string_lossy(),
+                &inviter_keys.public_key(),
+                "",
+            )
+            .expect("open inviter mdk");
+            let invitee_kp = {
+                let invitee_mdk = &core.session.as_ref().expect("session").mdk;
+                make_key_package_event(invitee_mdk, &invitee_keys)
+            };
+            let config = NostrGroupConfigData::new(
+                "App welcome test".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                vec![inviter_keys.public_key(), invitee_keys.public_key()],
+            );
+            let group_result = inviter_mdk
+                .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+                .expect("create group");
+            let welcome_rumor = group_result
+                .welcome_rumors
+                .into_iter()
+                .next()
+                .expect("welcome rumor");
+            let wrapper = tokio::runtime::Runtime::new()
+                .expect("tokio runtime")
+                .block_on(async {
+                    EventBuilder::gift_wrap(
+                        &inviter_keys,
+                        &invitee_keys.public_key(),
+                        welcome_rumor.clone(),
+                        Vec::<Tag>::new(),
+                    )
+                    .await
+                    .expect("gift wrap")
+                });
+
+            core.handle_internal(InternalEvent::GiftWrapReceived {
+                wrapper: wrapper.clone(),
+                rumor: welcome_rumor.clone(),
+            });
+
+            let groups = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_groups()
+                .expect("get groups");
+            assert_eq!(
+                groups.len(),
+                1,
+                "app accepts welcome immediately on receipt"
+            );
+            assert!(
+                core.session
+                    .as_ref()
+                    .expect("session")
+                    .mdk
+                    .get_pending_welcomes(None)
+                    .expect("pending welcomes")
+                    .is_empty(),
+                "app should not leave the welcome staged after eager accept"
+            );
+
+            core.handle_internal(InternalEvent::GiftWrapReceived {
+                wrapper,
+                rumor: welcome_rumor,
+            });
+
+            assert_eq!(
+                core.session
+                    .as_ref()
+                    .expect("session")
+                    .mdk
+                    .get_groups()
+                    .expect("get groups")
+                    .len(),
+                1,
+                "re-delivered welcomes should not create duplicate active groups"
+            );
+            assert!(
+                core.session
+                    .as_ref()
+                    .expect("session")
+                    .mdk
+                    .get_pending_welcomes(None)
+                    .expect("pending welcomes")
+                    .is_empty(),
+                "re-delivered welcomes should stay skipped once the group is active"
+            );
         }
     }
 

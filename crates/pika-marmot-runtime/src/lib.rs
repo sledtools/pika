@@ -111,6 +111,10 @@ pub struct IngestedWelcome {
     pub group_name: String,
 }
 
+/// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
+/// storage. This intentionally does not accept the welcome; hosts decide
+/// whether to stage, auto-accept, subscribe, or backfill after ingest. MDK may
+/// already expose a pending group row before accept.
 pub async fn ingest_welcome_from_giftwrap<F>(
     mdk: &PikaMdk,
     keys: &Keys,
@@ -221,6 +225,20 @@ pub async fn ingest_group_backlog(
 mod tests {
     use super::*;
 
+    use mdk_core::prelude::NostrGroupConfigData;
+    use nostr_sdk::prelude::{EventBuilder, RelayUrl};
+
+    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
+
     #[test]
     fn identity_file_round_trip() {
         let f = IdentityFile {
@@ -288,5 +306,85 @@ mod tests {
 
         let loaded = load_processed_mls_event_ids(state_dir);
         assert_eq!(loaded.len(), PROCESSED_MLS_EVENT_IDS_MAX);
+    }
+
+    #[test]
+    fn ingest_welcome_from_giftwrap_stages_pending_welcome_without_joining() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime ingest test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let mut welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let welcome_event_id = welcome_rumor.id();
+
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor,
+                    [],
+                )
+                .await
+                .expect("build giftwrap")
+            });
+
+        let ingested = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should be accepted for ingest")
+            });
+
+        assert_eq!(ingested.wrapper_event_id, wrapper.id);
+        assert_eq!(ingested.welcome_event_id, welcome_event_id);
+        assert_eq!(
+            ingested.nostr_group_id_hex,
+            hex::encode(group_result.group.nostr_group_id)
+        );
+        assert_eq!(ingested.group_name, "Runtime ingest test");
+
+        let pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+        assert_eq!(pending.len(), 1, "ingest should stage exactly one welcome");
+        assert_eq!(
+            pending[0].wrapper_event_id, wrapper.id,
+            "staged welcome should keep the wrapper id for explicit accept flows"
+        );
+        let groups = invitee_mdk.get_groups().expect("get groups");
+        assert_eq!(
+            groups.len(),
+            1,
+            "shared ingest already surfaces a pending group before accept"
+        );
+        assert_eq!(
+            hex::encode(groups[0].nostr_group_id),
+            ingested.nostr_group_id_hex,
+            "pending group should line up with the staged welcome metadata"
+        );
     }
 }

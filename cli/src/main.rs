@@ -1118,6 +1118,10 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
 
     mdk.accept_welcome(&welcome).context("accept welcome")?;
 
+    // CLI accept is intentionally narrow today: it joins locally but does not
+    // subscribe or backfill here. Later `messages`, `send`, and listener flows
+    // do their own catch-up on demand.
+
     print(json!({
         "nostr_group_id": ngid,
         "mls_group_id": mls_gid,

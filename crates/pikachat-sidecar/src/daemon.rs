@@ -2504,6 +2504,9 @@ pub async fn daemon_main(
                                 let mls_group_id_hex = hex::encode(w.mls_group_id.as_slice());
                                 match mdk.accept_welcome(&w) {
                                     Ok(_) => {
+                                        // Daemon accept is intentionally stronger than the
+                                        // app/CLI manual accept paths today: it subscribes
+                                        // immediately and backfills the joined group.
                                         // Subscribe to group messages for this group.
                                         match crate::subscribe_group_msgs(&client, &nostr_group_id_hex).await {
                                             Ok(sid) => {

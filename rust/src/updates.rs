@@ -146,9 +146,7 @@ pub enum InternalEvent {
     // Result of publishing a group evolution event (add/remove/leave/rename commit).
     GroupEvolutionPublished {
         chat_id: String,
-        mls_group_id: mdk_core::prelude::GroupId,
-        welcome_rumors: Option<Vec<nostr_sdk::prelude::UnsignedEvent>>,
-        added_pubkeys: Vec<nostr_sdk::prelude::PublicKey>,
+        prepared: pika_marmot_runtime::membership::PreparedMembershipEvolution,
         ok: bool,
         error: Option<String>,
     },

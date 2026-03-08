@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
 pub use welcome::{
-    AcceptedWelcome, IngestedWelcome, accept_welcome_and_catch_up, find_pending_welcome,
-    find_pending_welcome_index, ingest_welcome_from_giftwrap, take_pending_welcome,
+    AcceptedWelcome, CreatedGroup, IngestedWelcome, PublishedWelcome, accept_welcome_and_catch_up,
+    create_group_and_publish_welcomes, find_pending_welcome, find_pending_welcome_index,
+    ingest_welcome_from_giftwrap, take_pending_welcome,
 };
 
 pub const PROCESSED_MLS_EVENT_IDS_FILE: &str = "processed_mls_event_ids_v1.txt";

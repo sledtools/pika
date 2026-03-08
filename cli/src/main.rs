@@ -1057,29 +1057,78 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
         vec![keys.public_key(), peer_pubkey],
     );
 
-    let result = mdk
-        .create_group(&keys.public_key(), vec![peer_kp], config)
-        .context("create group")?;
-
-    let ngid = hex::encode(result.group.nostr_group_id);
-
     // CLI invite waits for welcome delivery before returning, but it does not
     // subscribe or backfill here; later commands do catch-up on demand.
-    for rumor in result.welcome_rumors {
-        let giftwrap = EventBuilder::gift_wrap(&keys, &peer_pubkey, rumor, [])
-            .await
-            .context("build giftwrap")?;
-        relay_util::publish_and_confirm(&client, &relays, &giftwrap, "welcome").await?;
-    }
+    let created = create_group_and_publish_welcomes_for_invite(
+        &keys,
+        &mdk,
+        &client,
+        &relays,
+        peer_kp,
+        peer_pubkey,
+        config,
+    )
+    .await?;
+
+    let ngid = hex::encode(created.group.nostr_group_id);
 
     client.shutdown().await;
 
     print(json!({
         "nostr_group_id": ngid,
-        "mls_group_id": hex::encode(result.group.mls_group_id.as_slice()),
+        "mls_group_id": hex::encode(created.group.mls_group_id.as_slice()),
         "peer_pubkey": peer_pubkey.to_hex(),
     }));
     Ok(())
+}
+
+async fn create_group_and_publish_welcomes_for_invite(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    client: &Client,
+    relays: &[RelayUrl],
+    peer_kp: Event,
+    peer_pubkey: PublicKey,
+    config: NostrGroupConfigData,
+) -> anyhow::Result<pika_marmot_runtime::welcome::CreatedGroup> {
+    create_group_and_publish_welcomes_for_invite_with_publisher(
+        keys,
+        mdk,
+        peer_kp,
+        peer_pubkey,
+        config,
+        |_, giftwrap| {
+            let client = client.clone();
+            let relays = relays.to_vec();
+            async move { relay_util::publish_and_confirm(&client, &relays, &giftwrap, "welcome").await }
+        },
+    )
+    .await
+}
+
+async fn create_group_and_publish_welcomes_for_invite_with_publisher<F, Fut>(
+    keys: &Keys,
+    mdk: &mdk_util::PikaMdk,
+    peer_kp: Event,
+    peer_pubkey: PublicKey,
+    config: NostrGroupConfigData,
+    publish_giftwrap: F,
+) -> anyhow::Result<pika_marmot_runtime::welcome::CreatedGroup>
+where
+    F: FnMut(PublicKey, Event) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    pika_marmot_runtime::welcome::create_group_and_publish_welcomes(
+        keys,
+        mdk,
+        vec![peer_kp],
+        config,
+        &[peer_pubkey],
+        vec![],
+        publish_giftwrap,
+    )
+    .await
+    .context("create group and publish welcomes")
 }
 
 fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
@@ -2556,6 +2605,17 @@ mod tests {
         }
     }
 
+    fn make_key_package_event(mdk: &mdk_util::PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
+
     #[test]
     fn agent_chat_http_parse() {
         let cli = Cli::try_parse_from([
@@ -2727,6 +2787,60 @@ mod tests {
                 &event_id("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
             )
             .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn invite_create_group_uses_shared_runtime_helper() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = mdk_util::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let relays = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let peer_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "CLI test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            relays.clone(),
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
+        let published_capture = std::sync::Arc::clone(&published);
+
+        let created = create_group_and_publish_welcomes_for_invite_with_publisher(
+            &inviter_keys,
+            &inviter_mdk,
+            peer_kp,
+            invitee_keys.public_key(),
+            config,
+            move |_receiver, giftwrap| {
+                let published_capture = std::sync::Arc::clone(&published_capture);
+                async move {
+                    published_capture
+                        .lock()
+                        .expect("published lock")
+                        .push(giftwrap);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("create group and publish welcomes");
+
+        assert_eq!(created.group.name, "CLI test");
+        assert_eq!(created.published_welcomes.len(), 1);
+        assert_eq!(
+            created.published_welcomes[0].receiver,
+            invitee_keys.public_key()
+        );
+        assert_eq!(
+            created.published_welcomes[0].wrapper_event_id,
+            published.lock().expect("published lock")[0].id
         );
     }
 }

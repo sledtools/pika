@@ -35,3 +35,4 @@ qr2term = "0.3"
 
 [dev-dependencies]
 pika-test-utils = { path = "../crates/pika-test-utils" }
+tempfile = { workspace = true }

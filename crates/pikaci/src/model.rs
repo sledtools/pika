@@ -93,6 +93,10 @@ impl JobSpec {
         }
     }
 
+    pub fn supports_parallel_execute(&self) -> bool {
+        self.staged_linux_rust_lane().is_some()
+    }
+
     pub fn host_setup_command(&self) -> Option<&'static str> {
         match self.id {
             "tart-beachhead" => Some(concat!(

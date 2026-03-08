@@ -54,6 +54,18 @@ let
     ${pkgs.gawk}/bin/awk -F '\t' '
       $1 == "e2e_messaging" || $1 == "e2e_group_profiles" { print $3 }
     ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST"
+
+    unassignedIntegrationTests="$TMPDIR/pika-core-unassigned-integration-tests.tsv"
+    ${pkgs.gawk}/bin/awk -F '\t' '
+      $2 == "test" && $1 != "app_flows" && $1 != "e2e_messaging" && $1 != "e2e_group_profiles" {
+        print $0
+      }
+    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$unassignedIntegrationTests"
+    if [ -s "$unassignedIntegrationTests" ]; then
+      echo "unassigned pika_core integration test targets detected; update staged manifest partitioning:" >&2
+      cat "$unassignedIntegrationTests" >&2
+      exit 1
+    fi
   '';
 in
 rec {

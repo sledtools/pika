@@ -153,7 +153,7 @@ fn run_jobs_against_snapshot(
     let mut pending: Vec<usize> = (0..plan.jobs.len()).collect();
     let mut active: HashMap<usize, PlannedJob> = HashMap::new();
     let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<JobRecord>)>();
-    let max_parallel = max_parallel_execute_jobs();
+    let max_parallel = max_parallel_execute_jobs(&plan.jobs);
     let mut stop_scheduling = false;
 
     while !pending.is_empty() || !active.is_empty() {
@@ -935,30 +935,44 @@ fn mark_prepare_failure(
     failure: &PrepareFailure,
 ) -> anyhow::Result<()> {
     for planned_job in &plan.jobs {
-        if !planned_job
+        let directly_blocked = planned_job
             .depends_on
             .iter()
-            .any(|dep| dep == &failure.node_id)
-        {
-            continue;
-        }
-        append_log_line(
-            &planned_job.ctx.host_log_path,
-            &format!(
-                "[pikaci] prepare node `{}` failed before execute: {}",
-                failure.node_id, failure.message
-            ),
-        )?;
-        let record = failed_job_record(
-            &planned_job.job,
-            &planned_job.execute_node_id,
-            &planned_job.ctx,
-            format!(
+            .any(|dep| dep == &failure.node_id);
+        let (status_message, record) = if directly_blocked {
+            let message = format!(
                 "prepare node `{}` failed before execute: {}",
                 failure.node_id, failure.message
-            ),
-            None,
-        );
+            );
+            (
+                message.clone(),
+                failed_job_record(
+                    &planned_job.job,
+                    &planned_job.execute_node_id,
+                    &planned_job.ctx,
+                    message,
+                    None,
+                ),
+            )
+        } else {
+            let message = format!(
+                "not run because prepare phase stopped after `{}` failed: {}",
+                failure.node_id, failure.message
+            );
+            (
+                message.clone(),
+                skipped_job_record(
+                    &planned_job.job,
+                    &planned_job.execute_node_id,
+                    &planned_job.ctx,
+                    message,
+                ),
+            )
+        };
+        append_log_line(
+            &planned_job.ctx.host_log_path,
+            &format!("[pikaci] {status_message}"),
+        )?;
         write_job_record(&planned_job.ctx.job_dir, &record)?;
         upsert_run_job_record(run_record, record);
     }
@@ -973,12 +987,23 @@ fn upsert_run_job_record(run_record: &mut RunRecord, record: JobRecord) {
     }
 }
 
-fn max_parallel_execute_jobs() -> usize {
-    std::env::var("PIKACI_MAX_CONCURRENT_EXECUTES")
+fn max_parallel_execute_jobs(jobs: &[PlannedJob]) -> usize {
+    let configured_cap = std::env::var("PIKACI_MAX_CONCURRENT_EXECUTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(2)
+        .unwrap_or(2);
+    parallel_execute_cap_for_jobs(jobs, configured_cap)
+}
+
+fn parallel_execute_cap_for_jobs(jobs: &[PlannedJob], configured_cap: usize) -> usize {
+    if !jobs
+        .iter()
+        .all(|planned_job| planned_job.job.supports_parallel_execute())
+    {
+        return 1;
+    }
+    configured_cap
 }
 
 fn ready_execute_job_positions(
@@ -1136,12 +1161,13 @@ mod tests {
     use std::fs;
 
     use super::{
-        PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs,
-        ready_execute_job_positions, write_run_plan_record,
+        PrepareFailure, PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, ready_execute_job_positions,
+        write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-        PrepareNode, RunPlanRecord,
+        PrepareNode, RunPlanRecord, RunRecord, RunStatus,
     };
 
     #[test]
@@ -1500,6 +1526,143 @@ mod tests {
         assert_eq!(decoded.scope, PlanScope::PostHostSetupAndSnapshot);
         assert_eq!(decoded.nodes.len(), 1);
         assert!(path.ends_with("plan.json"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn max_parallel_execute_jobs_is_narrowed_to_staged_wrapper_lane() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-parallel-test-{}", uuid::Uuid::new_v4()));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let staged_jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
+            },
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
+        let mixed_jobs = vec![
+            staged_jobs[0].clone(),
+            JobSpec {
+                id: "agent-control-plane-unit",
+                description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::PackageUnitTests {
+                    package: "pika-agent-control-plane",
+                },
+            },
+        ];
+
+        let staged_plan =
+            build_run_plan(&staged_jobs, &prepared, &snapshot, &RunMetadata::default())
+                .expect("build staged plan");
+        let mixed_plan = build_run_plan(&mixed_jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build mixed plan");
+
+        assert_eq!(parallel_execute_cap_for_jobs(&staged_plan.jobs, 2), 2);
+        assert_eq!(parallel_execute_cap_for_jobs(&mixed_plan.jobs, 2), 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mark_prepare_failure_records_sibling_jobs_as_skipped_when_prepare_phase_aborts() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-prepare-failure-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let jobs = vec![
+            JobSpec {
+                id: "pika-core-lib-app-flows-tests",
+                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+                },
+            },
+            JobSpec {
+                id: "pika-core-messaging-e2e-tests",
+                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
+                },
+            },
+        ];
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build plan");
+        let mut run_record = RunRecord {
+            run_id: "run-1".to_string(),
+            status: RunStatus::Running,
+            rerun_of: None,
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            target_description: Some("Run pika rust lane".to_string()),
+            source_root: snapshot.source_root.clone(),
+            snapshot_dir: snapshot.snapshot_dir_string.clone(),
+            git_head: snapshot.git_head.clone(),
+            git_dirty: snapshot.git_dirty,
+            created_at: prepared.created_at.clone(),
+            finished_at: None,
+            plan_path: Some(prepared.run_dir.join("plan.json").display().to_string()),
+            changed_files: Vec::new(),
+            filters: Vec::new(),
+            message: None,
+            jobs: Vec::new(),
+        };
+
+        mark_prepare_failure(
+            &mut run_record,
+            &plan,
+            &PrepareFailure {
+                node_id: "prepare-pika-core-lib-app-flows-tests-runner".to_string(),
+                message: "runner build failed".to_string(),
+            },
+        )
+        .expect("record prepare failure");
+
+        assert_eq!(run_record.jobs.len(), 2);
+        let app_flows = run_record
+            .jobs
+            .iter()
+            .find(|job| job.id == "pika-core-lib-app-flows-tests")
+            .expect("app flows job record");
+        assert_eq!(app_flows.status, RunStatus::Failed);
+        assert!(
+            app_flows
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("prepare node `prepare-pika-core-lib-app-flows-tests-runner` failed")
+        );
+        let messaging = run_record
+            .jobs
+            .iter()
+            .find(|job| job.id == "pika-core-messaging-e2e-tests")
+            .expect("messaging job record");
+        assert_eq!(messaging.status, RunStatus::Skipped);
+        assert!(messaging.message.as_deref().unwrap_or_default().contains(
+            "prepare phase stopped after `prepare-pika-core-lib-app-flows-tests-runner` failed"
+        ));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -5,6 +5,7 @@ pub mod message;
 pub mod relay;
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -111,6 +112,16 @@ pub struct IngestedWelcome {
     pub group_name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct AcceptedWelcome {
+    pub wrapper_event_id: EventId,
+    pub welcome_event_id: EventId,
+    pub nostr_group_id_hex: String,
+    pub mls_group_id: mdk_storage_traits::GroupId,
+    pub group_name: String,
+    pub ingested_messages: Vec<mdk_storage_traits::messages::types::Message>,
+}
+
 /// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
 /// storage. This intentionally does not accept the welcome; hosts decide
 /// whether to stage, auto-accept, subscribe, or backfill after ingest. MDK may
@@ -161,6 +172,54 @@ where
         nostr_group_id_hex,
         group_name,
     }))
+}
+
+/// Accept a known pending welcome, optionally let the host run a narrow
+/// post-accept hook, then backfill recent group messages through the shared
+/// backlog ingest path.
+///
+/// Hosts still own policy. They choose when to call this, which relays to use
+/// for catch-up, and what to do in the `after_accept` hook (for example daemon
+/// subscription bookkeeping before backlog fetch).
+pub async fn accept_welcome_and_catch_up<F, Fut>(
+    mdk: &PikaMdk,
+    client: &nostr_sdk::Client,
+    relay_urls: &[nostr_sdk::RelayUrl],
+    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    seen: &mut HashSet<EventId>,
+    limit: usize,
+    after_accept: F,
+) -> Result<AcceptedWelcome>
+where
+    F: FnOnce(&AcceptedWelcome) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let mut accepted = AcceptedWelcome {
+        wrapper_event_id: welcome.wrapper_event_id,
+        welcome_event_id: welcome.id,
+        nostr_group_id_hex: hex::encode(welcome.nostr_group_id),
+        mls_group_id: welcome.mls_group_id.clone(),
+        group_name: welcome.group_name.clone(),
+        ingested_messages: Vec::new(),
+    };
+
+    mdk.accept_welcome(welcome).context("accept welcome")?;
+    after_accept(&accepted).await?;
+
+    if !relay_urls.is_empty() {
+        accepted.ingested_messages = ingest_group_backlog(
+            mdk,
+            client,
+            relay_urls,
+            &accepted.nostr_group_id_hex,
+            seen,
+            limit,
+        )
+        .await
+        .context("ingest accepted welcome backlog")?;
+    }
+
+    Ok(accepted)
 }
 
 pub fn ingest_application_message(
@@ -306,6 +365,98 @@ mod tests {
 
         let loaded = load_processed_mls_event_ids(state_dir);
         assert_eq!(loaded.len(), PROCESSED_MLS_EVENT_IDS_MAX);
+    }
+
+    #[test]
+    fn accept_welcome_and_catch_up_accepts_and_returns_group_ids_without_relays() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_client = nostr_sdk::Client::builder()
+            .signer(invitee_keys.clone())
+            .build();
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime accept test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor,
+                    [],
+                )
+                .await
+                .expect("build giftwrap")
+            });
+
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest");
+            });
+
+        let pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+        let welcome = pending.first().expect("pending welcome");
+        let mut seen = HashSet::new();
+        let accepted = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                accept_welcome_and_catch_up(
+                    &invitee_mdk,
+                    &invitee_client,
+                    &[],
+                    welcome,
+                    &mut seen,
+                    200,
+                    |_| async { Ok(()) },
+                )
+                .await
+                .expect("accept welcome and catch up")
+            });
+
+        assert_eq!(accepted.wrapper_event_id, wrapper.id);
+        assert_eq!(
+            accepted.nostr_group_id_hex,
+            hex::encode(group_result.group.nostr_group_id)
+        );
+        assert_eq!(accepted.group_name, "Runtime accept test");
+        assert!(
+            accepted.ingested_messages.is_empty(),
+            "empty relay list should preserve manual/narrow host behavior"
+        );
+        assert!(
+            invitee_mdk
+                .get_pending_welcomes(None)
+                .expect("get pending welcomes")
+                .is_empty(),
+            "accept should clear the pending welcome"
+        );
     }
 
     #[test]

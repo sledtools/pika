@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -47,6 +48,7 @@ use pika_marmot_runtime::call::key_id_for_sender;
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 
 const PROTOCOL_VERSION: u32 = 1;
+const ACCEPT_WELCOME_BACKLOG_LIMIT: usize = 200;
 
 fn find_pending_welcome_index<T>(
     list: &[T],
@@ -60,6 +62,31 @@ fn find_pending_welcome_index<T>(
             list.iter()
                 .position(|welcome| welcome_id(welcome) == target)
         })
+}
+
+async fn accept_welcome_with_backfill<F, Fut>(
+    mdk: &MDK<MdkSqliteStorage>,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    seen_group_events: &mut HashSet<EventId>,
+    after_accept: F,
+) -> anyhow::Result<pika_marmot_runtime::AcceptedWelcome>
+where
+    F: FnOnce(&pika_marmot_runtime::AcceptedWelcome) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    let backlog_relays: Vec<RelayUrl> = relay_urls.first().cloned().into_iter().collect();
+    pika_marmot_runtime::accept_welcome_and_catch_up(
+        mdk,
+        client,
+        &backlog_relays,
+        welcome,
+        seen_group_events,
+        ACCEPT_WELCOME_BACKLOG_LIMIT,
+        after_accept,
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -2500,65 +2527,93 @@ pub async fn daemon_main(
                                         .ok();
                                     continue;
                                 };
-                                let nostr_group_id_hex = hex::encode(w.nostr_group_id);
-                                let mls_group_id_hex = hex::encode(w.mls_group_id.as_slice());
-                                match mdk.accept_welcome(&w) {
-                                    Ok(_) => {
-                                        // Daemon accept is intentionally stronger than the
-                                        // app/CLI manual accept paths today: it subscribes
-                                        // immediately and backfills the joined group.
-                                        // Subscribe to group messages for this group.
-                                        match crate::subscribe_group_msgs(&client, &nostr_group_id_hex).await {
-                                            Ok(sid) => {
-                                                group_subs.insert(sid.clone(), nostr_group_id_hex.clone());
+                                let subscribed_group =
+                                    Arc::new(Mutex::new(None::<(SubscriptionId, String)>));
+                                let accept_client = client.clone();
+                                match accept_welcome_with_backfill(
+                                    &mdk,
+                                    &client,
+                                    &relay_urls,
+                                    &w,
+                                    &mut seen_group_events,
+                                    |accepted| {
+                                        let client = accept_client.clone();
+                                        let nostr_group_id_hex =
+                                            accepted.nostr_group_id_hex.clone();
+                                        let subscribed_group = Arc::clone(&subscribed_group);
+                                        async move {
+                                            // Daemon accept is intentionally stronger than the
+                                            // app/CLI manual accept paths today: it subscribes
+                                            // immediately before backlog catch-up.
+                                            match crate::subscribe_group_msgs(
+                                                &client,
+                                                &nostr_group_id_hex,
+                                            )
+                                            .await
+                                            {
+                                                Ok(sid) => {
+                                                    *subscribed_group.lock().expect("subscription lock") =
+                                                        Some((sid, nostr_group_id_hex));
+                                                }
+                                                Err(err) => {
+                                                    warn!("[pikachat] subscribe group msgs failed: {err:#}");
+                                                }
                                             }
-                                            Err(err) => {
-                                                warn!("[pikachat] subscribe group msgs failed: {err:#}");
-                                            }
+                                            Ok(())
                                         }
-
-                                        // Backfill recent group messages via shared ingest.
-                                        if let Some(relay0) = relay_urls.first().cloned()
-                                            && let Ok(msgs) = pika_marmot_runtime::ingest_group_backlog(
-                                                &mdk, &client, &[relay0], &nostr_group_id_hex, &mut seen_group_events, 200,
-                                            ).await
+                                    },
+                                )
+                                .await
+                                {
+                                    Ok(accepted) => {
+                                        if let Some((sid, nostr_group_id_hex)) = subscribed_group
+                                            .lock()
+                                            .expect("subscription lock")
+                                            .take()
                                         {
-                                            for msg in msgs {
-                                                if !sender_allowed(&msg.pubkey.to_hex()) {
-                                                    continue;
-                                                }
-                                                if classify_daemon_message(&msg)
-                                                    == Some(MessageClassification::TypingIndicator)
-                                                {
-                                                    continue;
-                                                }
-                                                let media: Vec<MediaAttachmentOut> = {
-                                                    let mgr = mdk.media_manager(msg.mls_group_id.clone());
-                                                    msg.tags.iter()
-                                                        .filter(|t| is_imeta_tag(t))
-                                                        .filter_map(|t| mgr.parse_imeta_tag(t).ok())
-                                                        .map(media_ref_to_attachment)
-                                                        .collect()
-                                                };
-                                                out_tx.send(OutMsg::MessageReceived{
-                                                    nostr_group_id: nostr_group_id_hex.clone(),
-                                                    from_pubkey: msg.pubkey.to_hex().to_lowercase(),
-                                                    content: msg.content,
-                                                    kind: msg.kind.as_u16(),
-                                                    created_at: msg.created_at.as_secs(),
-                                                    event_id: msg.id.to_hex(),
-                                                    message_id: msg.id.to_hex(),
-                                                    media,
-                                                }).ok();
+                                            group_subs.insert(sid.clone(), nostr_group_id_hex);
+                                        }
+                                        for msg in accepted.ingested_messages {
+                                            if !sender_allowed(&msg.pubkey.to_hex()) {
+                                                continue;
                                             }
+                                            if classify_daemon_message(&msg)
+                                                == Some(MessageClassification::TypingIndicator)
+                                            {
+                                                continue;
+                                            }
+                                            let media: Vec<MediaAttachmentOut> = {
+                                                let mgr = mdk.media_manager(msg.mls_group_id.clone());
+                                                msg.tags.iter()
+                                                    .filter(|t| is_imeta_tag(t))
+                                                    .filter_map(|t| mgr.parse_imeta_tag(t).ok())
+                                                    .map(media_ref_to_attachment)
+                                                    .collect()
+                                            };
+                                            out_tx.send(OutMsg::MessageReceived{
+                                                nostr_group_id: accepted.nostr_group_id_hex.clone(),
+                                                from_pubkey: msg.pubkey.to_hex().to_lowercase(),
+                                                content: msg.content,
+                                                kind: msg.kind.as_u16(),
+                                                created_at: msg.created_at.as_secs(),
+                                                event_id: msg.id.to_hex(),
+                                                message_id: msg.id.to_hex(),
+                                                media,
+                                            }).ok();
                                         }
 
+                                        let mls_group_id_hex =
+                                            hex::encode(accepted.mls_group_id.as_slice());
                                         reply_tx.send(out_ok(request_id, Some(json!({
-                                            "nostr_group_id": nostr_group_id_hex,
+                                            "nostr_group_id": accepted.nostr_group_id_hex.clone(),
                                             "mls_group_id": mls_group_id_hex,
                                         })))).ok();
-                                        let member_count = mdk.get_members(&w.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
-                                        out_tx.send(OutMsg::GroupJoined { nostr_group_id: nostr_group_id_hex, mls_group_id: mls_group_id_hex, member_count }).ok();
+                                        let member_count = mdk.get_members(&accepted.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
+                                        out_tx.send(OutMsg::GroupJoined {
+                                            nostr_group_id: accepted.nostr_group_id_hex,
+                                            mls_group_id: mls_group_id_hex,
+                                            member_count,
+                                        }).ok();
                                     }
                                     Err(e) => {
                                         reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
@@ -4236,9 +4291,21 @@ pub async fn daemon_main(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mdk_core::prelude::NostrGroupConfigData;
 
     fn event_id(hex: &str) -> EventId {
         EventId::from_hex(hex).expect("valid event id")
+    }
+
+    fn make_key_package_event(mdk: &crate::PikaMdk, keys: &Keys) -> Event {
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let (content, tags, _hash_ref) = mdk
+            .create_key_package_for_event(&keys.public_key(), vec![relay])
+            .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
     }
 
     fn make_test_message(
@@ -4294,6 +4361,78 @@ mod tests {
                 |item| &item.1,
             ),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_welcome_with_backfill_uses_shared_runtime_helper() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon accept test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let wrapper =
+            EventBuilder::gift_wrap(&inviter_keys, &invitee_keys.public_key(), welcome_rumor, [])
+                .await
+                .expect("build giftwrap");
+
+        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+            .await
+            .expect("ingest welcome")
+            .expect("welcome should ingest");
+
+        let pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+        let welcome = pending.first().expect("pending welcome");
+        let mut seen_group_events = HashSet::new();
+        let accepted = accept_welcome_with_backfill(
+            &invitee_mdk,
+            &invitee_client,
+            &[],
+            welcome,
+            &mut seen_group_events,
+            |_| async { Ok(()) },
+        )
+        .await
+        .expect("accept welcome with backfill");
+
+        assert_eq!(
+            accepted.nostr_group_id_hex,
+            hex::encode(group_result.group.nostr_group_id)
+        );
+        assert_eq!(accepted.group_name, "Daemon accept test");
+        assert!(
+            accepted.ingested_messages.is_empty(),
+            "empty relay list should keep daemon wrapper catch-up narrow in tests"
+        );
+        assert!(
+            invitee_mdk
+                .get_pending_welcomes(None)
+                .expect("get pending welcomes")
+                .is_empty(),
+            "shared daemon helper should clear the pending welcome"
         );
     }
 

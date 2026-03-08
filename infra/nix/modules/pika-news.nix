@@ -5,23 +5,21 @@ let
   serviceUser = "pika-news";
   serviceGroup = "pika-news";
   serviceStateDir = "/var/lib/pika-news";
-  prodAdmins = import ../lib/prod-admins.nix;
-  prodAdminNpubs = map (admin: admin.npub) prodAdmins;
-  allowedNpubsToml = lib.concatMapStringsSep "\n" (npub: ''      "${npub}",'') prodAdminNpubs;
-  configFile = pkgs.writeText "pika-news.toml" ''
-    repos = ["sledtools/pika"]
-    poll_interval_secs = 300
-    model = "claude-opus-4-6"
-    api_key_env = "ANTHROPIC_API_KEY"
-    github_token_env = "GITHUB_TOKEN"
-    merged_lookback_hours = 72
-    worker_concurrency = 1
-    bind_address = "127.0.0.1"
-    bind_port = ${toString servicePort}
-    allowed_npubs = [
-${allowedNpubsToml}
-    ]
-  '';
+  adminIdentities = import ../lib/admin-identities.nix;
+  tomlFormat = pkgs.formats.toml { };
+  configFile = tomlFormat.generate "pika-news.toml" {
+    repos = [ "sledtools/pika" ];
+    poll_interval_secs = 300;
+    model = "claude-opus-4-6";
+    api_key_env = "ANTHROPIC_API_KEY";
+    github_token_env = "GITHUB_TOKEN";
+    merged_lookback_hours = 72;
+    worker_concurrency = 1;
+    bind_address = "127.0.0.1";
+    bind_port = servicePort;
+    bootstrap_admin_npubs = adminIdentities.prodAdminNpubs;
+    allowed_npubs = [ ];
+  };
 in
 {
   sops.secrets."pika_news_github_token" = {

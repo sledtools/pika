@@ -8,8 +8,7 @@ let
   serviceUser = dbName;
   serviceGroup = dbName;
   serviceStateDir = "/var/lib/pika-server";
-  prodAdmins = import ../lib/prod-admins.nix;
-  prodAdminNpubs = map (admin: admin.npub) prodAdmins;
+  adminIdentities = import ../lib/admin-identities.nix;
   adminSessionSecretPath = "${serviceStateDir}/admin-session-secret";
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
@@ -117,7 +116,7 @@ in
       # from the machine import instead of hardcoding it in the shared module.
       PIKA_AGENT_MICROVM_SPAWNER_URL=${microvmSpawnerUrl}
       ''}
-      PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," prodAdminNpubs}
+      PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," adminIdentities.prodAdminNpubs}
       RUST_LOG=info
     '';
   };

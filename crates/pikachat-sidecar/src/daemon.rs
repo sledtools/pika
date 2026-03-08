@@ -24,6 +24,9 @@ use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, MessageClassification, TYPING_INDICATOR_KIND,
     classify_message as classify_shared_message,
 };
+use pika_marmot_runtime::welcome::{
+    AcceptedWelcome, accept_welcome_and_catch_up, take_pending_welcome,
+};
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
 use pika_media::crypto::{FrameInfo, decrypt_frame, encrypt_frame};
 use pika_media::network::NetworkRelay;
@@ -45,6 +48,8 @@ use crate::call_tts::synthesize_tts_pcm;
 #[cfg(test)]
 use pika_marmot_runtime::call::key_id_for_sender;
 #[cfg(test)]
+use pika_marmot_runtime::welcome::find_pending_welcome_index;
+#[cfg(test)]
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -57,13 +62,13 @@ async fn accept_welcome_with_backfill<F, Fut>(
     welcome: &mdk_storage_traits::welcomes::types::Welcome,
     seen_group_events: &mut HashSet<EventId>,
     after_accept: F,
-) -> anyhow::Result<pika_marmot_runtime::AcceptedWelcome>
+) -> anyhow::Result<AcceptedWelcome>
 where
-    F: FnOnce(&pika_marmot_runtime::AcceptedWelcome) -> Fut,
+    F: FnOnce(&AcceptedWelcome) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
     let backlog_relays: Vec<RelayUrl> = relay_urls.first().cloned().into_iter().collect();
-    pika_marmot_runtime::accept_welcome_and_catch_up(
+    accept_welcome_and_catch_up(
         mdk,
         client,
         &backlog_relays,
@@ -2496,8 +2501,7 @@ pub async fn daemon_main(
                         };
                         match mdk.get_pending_welcomes(None) {
                             Ok(mut list) => {
-                                let found =
-                                    pika_marmot_runtime::take_pending_welcome(&mut list, &wrapper);
+                                let found = take_pending_welcome(&mut list, &wrapper);
                                 let Some(w) = found else {
                                     reply_tx
                                         .send(out_error(
@@ -4358,15 +4362,12 @@ mod tests {
         ];
 
         assert_eq!(
-            pika_marmot_runtime::find_pending_welcome_index(&items, &items[0].wrapper_event_id),
+            find_pending_welcome_index(&items, &items[0].wrapper_event_id),
             Some(0)
         );
+        assert_eq!(find_pending_welcome_index(&items, &items[1].id), Some(1));
         assert_eq!(
-            pika_marmot_runtime::find_pending_welcome_index(&items, &items[1].id),
-            Some(1)
-        );
-        assert_eq!(
-            pika_marmot_runtime::find_pending_welcome_index(
+            find_pending_welcome_index(
                 &items,
                 &event_id("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
             ),

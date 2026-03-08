@@ -53,7 +53,7 @@ use pika_marmot_runtime::message::{
 pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND, TYPING_INDICATOR_KIND,
 };
-use pika_marmot_runtime::{accept_welcome_and_catch_up, find_pending_welcome};
+use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
 pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowListEntry> {

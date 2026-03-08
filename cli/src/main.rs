@@ -1132,7 +1132,7 @@ fn find_pending_welcome_for_accept<'a>(
     pending: &'a [mdk_storage_traits::welcomes::types::Welcome],
     target_id: &EventId,
 ) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
-    pika_marmot_runtime::find_pending_welcome(pending, target_id)
+    pika_marmot_runtime::welcome::find_pending_welcome(pending, target_id)
 }
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {

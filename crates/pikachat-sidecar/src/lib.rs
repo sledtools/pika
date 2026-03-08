@@ -6,9 +6,9 @@ pub mod daemon;
 mod relay;
 
 pub use daemon::{DaemonCmd, InCmd, OutMsg};
+pub use pika_marmot_runtime::welcome::ingest_welcome_from_giftwrap;
 pub use pika_marmot_runtime::{
-    IdentityFile, PikaMdk, ingest_application_message, ingest_welcome_from_giftwrap,
-    load_or_create_keys, new_mdk, open_mdk,
+    IdentityFile, PikaMdk, ingest_application_message, load_or_create_keys, new_mdk, open_mdk,
 };
 pub use relay::{check_relay_ready, connect_client, subscribe_group_msgs};
 

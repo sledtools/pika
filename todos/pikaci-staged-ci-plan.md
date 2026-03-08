@@ -484,6 +484,7 @@ Phase 6 launcher-transport slice notes:
   - helper logs show launcher transport mode plus transport-request path,
   - and prepared-output state records the transport-request file path when that path is used.
 - The transport request now explicitly records that this prototype still assumes same-host absolute paths for the launcher binary and launcher-request file.
+- That same-host path assumption stays backward-compatible within schema version 1 so recently written transport requests do not become unreadable just because the assumption was made explicit.
 - What this slice proves: the staged `pre-merge-pika-rust` helper path can cross one more real command boundary without changing the Nix-backed prepared-output contract or pretending full remote execution already exists.
 - What is still missing: there is still no actual remote host, no transport result protocol beyond process exit plus helper result file, no executor/builder orchestration around this launcher transport, and no path/install translation layer beyond the explicit same-host absolute-path assumption.
 - Next recommended slice: add one tiny portability tweak or explicit translation step above the transport request before the first real `ssh`-style launcher experiment, or, if that portability story is already acceptable, add one tiny launcher-transport result/report contract first.

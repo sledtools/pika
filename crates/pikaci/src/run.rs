@@ -4200,6 +4200,36 @@ EOF
     }
 
     #[test]
+    fn load_prepared_output_fulfillment_transport_request_defaults_path_contract_for_v1() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-load-transport-request-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        let request_path = root.join("transport-request.json");
+        fs::write(
+            &request_path,
+            r#"{"schema_version":1,"launcher_program":"/tmp/bin/pikaci-launch-fulfill-prepared-output","launcher_request_path":"/tmp/run/prepared-output-launch-requests/request.json","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild"}"#,
+        )
+        .expect("write legacy transport request");
+
+        let request = load_prepared_output_fulfillment_transport_request(&request_path)
+            .expect("load legacy transport request");
+
+        assert_eq!(request.schema_version, 1);
+        assert_eq!(
+            request.path_contract,
+            PreparedOutputFulfillmentTransportPathContract::SameHostAbsolutePathsV1
+        );
+        assert_eq!(
+            request.launcher_program,
+            "/tmp/bin/pikaci-launch-fulfill-prepared-output"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn fulfill_request_cli_consumer_rejects_failed_helper_result_with_zero_exit() {
         let root = std::env::temp_dir().join(format!(
             "pikaci-fulfill-request-cli-failed-result-test-{}",

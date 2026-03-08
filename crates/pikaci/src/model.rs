@@ -270,6 +270,7 @@ pub struct PreparedOutputFulfillmentLaunchRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct PreparedOutputFulfillmentTransportRequest {
     pub schema_version: u32,
+    #[serde(default)]
     pub path_contract: PreparedOutputFulfillmentTransportPathContract,
     pub launcher_program: String,
     pub launcher_request_path: String,
@@ -279,9 +280,10 @@ pub struct PreparedOutputFulfillmentTransportRequest {
     pub output_name: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedOutputFulfillmentTransportPathContract {
+    #[default]
     SameHostAbsolutePathsV1,
 }
 

@@ -585,6 +585,7 @@ trait PreparedOutputConsumer {
 
 struct HostLocalSymlinkPreparedOutputConsumer;
 struct RemoteExposureRequestPreparedOutputConsumer;
+struct FulfillRequestCliPreparedOutputConsumer;
 
 #[derive(Clone)]
 struct PlannedJob {
@@ -972,6 +973,99 @@ pub fn fulfill_prepared_output_request(
     Ok(request)
 }
 
+fn write_prepared_output_remote_exposure_request(
+    materialization: &PreparedOutputMaterialization<'_>,
+    handoff: &PreparedOutputHandoff,
+    run_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let requests_dir = run_dir.join("prepared-output-requests");
+    fs::create_dir_all(&requests_dir)
+        .with_context(|| format!("create {}", requests_dir.display()))?;
+    let request_path = requests_dir.join(format!("{}.json", materialization.node_id));
+    write_json(
+        request_path.clone(),
+        &PreparedOutputRemoteExposureRequest {
+            schema_version: 1,
+            node_id: materialization.node_id.to_string(),
+            installable: materialization.installable.to_string(),
+            output_name: materialization.output_name.to_string(),
+            protocol: materialization.protocol,
+            realized_path: materialization.realized_path.display().to_string(),
+            requested_exposures: handoff.exposures.clone(),
+        },
+    )?;
+    Ok(request_path)
+}
+
+fn resolve_prepared_output_fulfillment_program(
+    explicit_program: Option<PathBuf>,
+    current_exe: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit_program {
+        return Ok(path);
+    }
+    if current_exe
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "pikaci")
+    {
+        return Ok(current_exe);
+    }
+    Err(anyhow!(
+        "PIKACI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`; current executable is {}",
+        current_exe.display()
+    ))
+}
+
+fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
+    let explicit_program = std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_BINARY")
+        .ok()
+        .map(PathBuf::from);
+    let current_exe = std::env::current_exe()
+        .context("resolve host executable for prepared-output fulfillment")?;
+    resolve_prepared_output_fulfillment_program(explicit_program, current_exe)
+}
+
+fn fulfill_prepared_output_request_via_subprocess(
+    request_path: &Path,
+    log_paths: &[PathBuf],
+) -> anyhow::Result<()> {
+    let program = prepared_output_fulfillment_program()?;
+    append_log_line_many(
+        log_paths,
+        &format!(
+            "[pikaci] prepared output fulfillment subprocess={} request={}",
+            program.display(),
+            request_path.display()
+        ),
+    )?;
+    let output = Command::new(&program)
+        .arg("fulfill-prepared-output-request")
+        .arg(request_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "run prepared-output fulfillment subprocess `{}` for {}",
+                program.display(),
+                request_path.display()
+            )
+        })?;
+    append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "prepared-output fulfillment subprocess `{}` failed with {:?} for {}; see {}",
+            program.display(),
+            output.status.code(),
+            request_path.display(),
+            log_paths
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<no log>".to_string())
+        ));
+    }
+    Ok(())
+}
+
 impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
     fn kind(&self) -> PreparedOutputConsumerKind {
         PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
@@ -1026,22 +1120,8 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         run_dir: &Path,
         log_paths: &[PathBuf],
     ) -> anyhow::Result<PreparedOutputConsumerResult> {
-        let requests_dir = run_dir.join("prepared-output-requests");
-        fs::create_dir_all(&requests_dir)
-            .with_context(|| format!("create {}", requests_dir.display()))?;
-        let request_path = requests_dir.join(format!("{}.json", materialization.node_id));
-        write_json(
-            request_path.clone(),
-            &PreparedOutputRemoteExposureRequest {
-                schema_version: 1,
-                node_id: materialization.node_id.to_string(),
-                installable: materialization.installable.to_string(),
-                output_name: materialization.output_name.to_string(),
-                protocol: materialization.protocol,
-                realized_path: materialization.realized_path.display().to_string(),
-                requested_exposures: handoff.exposures.clone(),
-            },
-        )?;
+        let request_path =
+            write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)?;
         append_log_line_many(
             log_paths,
             &format!(
@@ -1055,6 +1135,46 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         Ok(PreparedOutputConsumerResult {
             kind: PreparedOutputConsumerKind::RemoteExposureRequestV1,
             exposures: Vec::new(),
+            requested_exposures: handoff.exposures.clone(),
+            consumer_request_path: Some(request_path.display().to_string()),
+        })
+    }
+}
+
+impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
+    fn kind(&self) -> PreparedOutputConsumerKind {
+        PreparedOutputConsumerKind::FulfillRequestCliV1
+    }
+
+    fn consume(
+        &self,
+        materialization: &PreparedOutputMaterialization<'_>,
+        handoff: &PreparedOutputHandoff,
+        run_dir: &Path,
+        log_paths: &[PathBuf],
+    ) -> anyhow::Result<PreparedOutputConsumerResult> {
+        let request_path =
+            write_prepared_output_remote_exposure_request(materialization, handoff, run_dir)?;
+        append_log_line_many(
+            log_paths,
+            &format!(
+                "[pikaci] prepared output consumer={} wrote fulfillment request {}",
+                prepared_output_consumer_kind_text(PreparedOutputConsumerKind::FulfillRequestCliV1),
+                request_path.display()
+            ),
+        )?;
+        fulfill_prepared_output_request_via_subprocess(&request_path, log_paths)?;
+        append_log_line_many(
+            log_paths,
+            &format!(
+                "[pikaci] prepared output consumer={} fulfilled request {}",
+                prepared_output_consumer_kind_text(PreparedOutputConsumerKind::FulfillRequestCliV1),
+                request_path.display()
+            ),
+        )?;
+        Ok(PreparedOutputConsumerResult {
+            kind: PreparedOutputConsumerKind::FulfillRequestCliV1,
+            exposures: handoff.exposures.clone(),
             requested_exposures: handoff.exposures.clone(),
             consumer_request_path: Some(request_path.display().to_string()),
         })
@@ -1077,6 +1197,7 @@ fn prepared_output_consumer_kind_text(kind: PreparedOutputConsumerKind) -> &'sta
     match kind {
         PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 => "host_local_symlink_mounts_v1",
         PreparedOutputConsumerKind::RemoteExposureRequestV1 => "remote_exposure_request_v1",
+        PreparedOutputConsumerKind::FulfillRequestCliV1 => "fulfill_request_cli_v1",
     }
 }
 
@@ -1155,8 +1276,9 @@ fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputCo
     {
         None => Ok(PreparedOutputConsumerKind::HostLocalSymlinkMountsV1),
         Some("remote_request_v1") => Ok(PreparedOutputConsumerKind::RemoteExposureRequestV1),
+        Some("fulfill_request_cli_v1") => Ok(PreparedOutputConsumerKind::FulfillRequestCliV1),
         Some(value) => Err(anyhow!(
-            "unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `{value}`; expected `remote_request_v1`"
+            "unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `{value}`; expected `remote_request_v1` or `fulfill_request_cli_v1`"
         )),
     }
 }
@@ -1170,6 +1292,9 @@ fn selected_prepared_output_consumer(
         }
         PreparedOutputConsumerKind::RemoteExposureRequestV1 => {
             Box::new(RemoteExposureRequestPreparedOutputConsumer)
+        }
+        PreparedOutputConsumerKind::FulfillRequestCliV1 => {
+            Box::new(FulfillRequestCliPreparedOutputConsumer)
         }
     }
 }
@@ -1553,16 +1678,19 @@ fn run_host_setup_commands(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     use super::{
-        HostLocalSymlinkPreparedOutputConsumer, PrepareFailure, PreparedOutputMaterialization,
-        PreparedRun, RemoteExposureRequestPreparedOutputConsumer, RunMetadata, SnapshotSource,
-        build_run_plan, configured_prepared_output_consumer_kind, consume_prepared_output_handoff,
+        FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
+        PrepareFailure, PreparedOutputMaterialization, PreparedRun,
+        RemoteExposureRequestPreparedOutputConsumer, RunMetadata, SnapshotSource, build_run_plan,
+        configured_prepared_output_consumer_kind, consume_prepared_output_handoff,
         fulfill_prepared_output_request, gc_runs, mark_prepare_failure,
         parallel_execute_cap_for_jobs, ready_execute_job_positions,
-        selected_prepared_output_consumer, upsert_prepared_output_record,
-        validate_prepared_output_consumer_for_jobs, write_json, write_run_plan_record,
+        resolve_prepared_output_fulfillment_program, selected_prepared_output_consumer,
+        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
+        write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
@@ -2152,6 +2280,16 @@ mod tests {
             selected_prepared_output_consumer(kind).kind(),
             PreparedOutputConsumerKind::RemoteExposureRequestV1
         );
+
+        let _guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_CONSUMER",
+            Some("fulfill_request_cli_v1"),
+        );
+        let kind = configured_prepared_output_consumer_kind().expect("cli fulfill consumer kind");
+        assert_eq!(
+            selected_prepared_output_consumer(kind).kind(),
+            PreparedOutputConsumerKind::FulfillRequestCliV1
+        );
     }
 
     #[test]
@@ -2162,6 +2300,26 @@ mod tests {
             err.to_string()
                 .contains("unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `typo`")
         );
+    }
+
+    #[test]
+    fn resolve_prepared_output_fulfillment_program_accepts_pikaci_binary_name() {
+        let resolved =
+            resolve_prepared_output_fulfillment_program(None, PathBuf::from("/tmp/bin/pikaci"))
+                .expect("resolve pikaci binary");
+        assert_eq!(resolved, PathBuf::from("/tmp/bin/pikaci"));
+    }
+
+    #[test]
+    fn resolve_prepared_output_fulfillment_program_rejects_non_pikaci_host_binary() {
+        let err = resolve_prepared_output_fulfillment_program(
+            None,
+            PathBuf::from("/tmp/bin/embedding-runner"),
+        )
+        .expect_err("reject embedding binary");
+        assert!(err.to_string().contains(
+            "requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is not `pikaci`"
+        ));
     }
 
     #[test]
@@ -2192,6 +2350,91 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only")
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_uses_subprocess_boundary() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-consumer-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("fulfill-helper.sh");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::write(
+            &helper_path,
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" != "fulfill-prepared-output-request" ]; then
+  echo "unexpected command: ${1:-}" >&2
+  exit 17
+fi
+request_path="$2"
+realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mkdir -p "$(dirname "$mount_path")"
+ln -sfn "$realized_path" "$mount_path"
+"#,
+        )
+        .expect("write helper");
+        let mut permissions = fs::metadata(&helper_path)
+            .expect("helper metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&helper_path, permissions).expect("set helper executable");
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
+            output_name: "ci.aarch64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let result = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+        )
+        .expect("consume handoff");
+
+        assert_eq!(result.kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(result.exposures, handoff.exposures);
+        assert_eq!(result.requested_exposures, handoff.exposures);
+        let request_path = result
+            .consumer_request_path
+            .as_deref()
+            .expect("fulfillment request path");
+        assert!(request_path.ends_with(
+            "prepared-output-requests/prepare-pika-core-linux-rust-workspace-build.json"
+        ));
+        assert_eq!(
+            fs::read_link(&mount_path).expect("read symlink"),
+            realized_path
+        );
+        let log_body = fs::read_to_string(&log_path).expect("read log");
+        assert!(log_body.contains("prepared output fulfillment subprocess="));
+        assert!(
+            log_body.contains("prepared output consumer=fulfill_request_cli_v1 fulfilled request")
         );
 
         let _ = fs::remove_dir_all(&root);

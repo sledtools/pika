@@ -186,6 +186,7 @@ pub enum PreparedOutputExposureAccess {
 pub enum PreparedOutputConsumerKind {
     HostLocalSymlinkMountsV1,
     RemoteExposureRequestV1,
+    FulfillRequestCliV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]

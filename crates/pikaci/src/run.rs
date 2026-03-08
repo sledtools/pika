@@ -53,6 +53,10 @@ pub struct RunMetadata {
     pub message: Option<String>,
 }
 
+const STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV: &str = "PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL";
+const STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME: &str =
+    "pre_merge_pika_rust_subprocess_fulfillment_v1";
+
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
     run_jobs(std::slice::from_ref(job), options)
 }
@@ -120,6 +124,8 @@ fn run_jobs_against_snapshot(
 ) -> anyhow::Result<RunRecord> {
     let plan = build_run_plan(jobs, prepared, snapshot, &metadata)?;
     let prepared_output_consumer_kind = configured_prepared_output_consumer_kind()?;
+    let (prepared_output_consumer_kind, prepared_output_mode) =
+        resolve_run_prepared_output_consumer_kind(jobs, &metadata, prepared_output_consumer_kind)?;
     validate_prepared_output_consumer_for_jobs(prepared_output_consumer_kind, &plan.jobs)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
     let prepared_outputs_path = write_prepared_outputs_record(
@@ -143,6 +149,8 @@ fn run_jobs_against_snapshot(
         finished_at: None,
         plan_path: Some(plan_path.display().to_string()),
         prepared_outputs_path: Some(prepared_outputs_path.display().to_string()),
+        prepared_output_consumer: Some(prepared_output_consumer_kind),
+        prepared_output_mode: prepared_output_mode.map(str::to_string),
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -294,6 +302,8 @@ pub fn record_skipped_run(
         finished_at: Some(created_at),
         plan_path: None,
         prepared_outputs_path: None,
+        prepared_output_consumer: None,
+        prepared_output_mode: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -1269,6 +1279,64 @@ fn upsert_prepared_output_record(
     write_json(prepared_outputs_path.to_path_buf(), &updated)
 }
 
+fn parse_bool_env_flag(name: &str) -> anyhow::Result<bool> {
+    match std::env::var(name).ok().as_deref() {
+        None => Ok(false),
+        Some("1" | "true" | "TRUE" | "yes" | "YES") => Ok(true),
+        Some("0" | "false" | "FALSE" | "no" | "NO") => Ok(false),
+        Some(value) => Err(anyhow!(
+            "unsupported {name} value `{value}`; expected 1/true/yes or 0/false/no"
+        )),
+    }
+}
+
+fn resolve_run_prepared_output_consumer_kind(
+    jobs: &[JobSpec],
+    metadata: &RunMetadata,
+    configured_kind: PreparedOutputConsumerKind,
+) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
+    resolve_run_prepared_output_consumer_kind_for_mode(
+        parse_bool_env_flag(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV)?,
+        jobs,
+        metadata,
+        configured_kind,
+    )
+}
+
+fn resolve_run_prepared_output_consumer_kind_for_mode(
+    subprocess_mode_enabled: bool,
+    jobs: &[JobSpec],
+    metadata: &RunMetadata,
+    configured_kind: PreparedOutputConsumerKind,
+) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
+    if !subprocess_mode_enabled {
+        return Ok((configured_kind, None));
+    }
+    if configured_kind != PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 {
+        return Err(anyhow!(
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER"
+        ));
+    }
+    if metadata.target_id.as_deref() != Some("pre-merge-pika-rust") {
+        return Err(anyhow!(
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} only supports target `pre-merge-pika-rust`"
+        ));
+    }
+    if jobs.is_empty()
+        || jobs
+            .iter()
+            .any(|job| job.staged_linux_rust_lane().is_none())
+    {
+        return Err(anyhow!(
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs"
+        ));
+    }
+    Ok((
+        PreparedOutputConsumerKind::FulfillRequestCliV1,
+        Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME),
+    ))
+}
+
 fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputConsumerKind> {
     match std::env::var("PIKACI_PREPARED_OUTPUT_CONSUMER")
         .ok()
@@ -1684,11 +1752,13 @@ mod tests {
     use super::{
         FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
         PrepareFailure, PreparedOutputMaterialization, PreparedRun,
-        RemoteExposureRequestPreparedOutputConsumer, RunMetadata, SnapshotSource, build_run_plan,
-        configured_prepared_output_consumer_kind, consume_prepared_output_handoff,
-        fulfill_prepared_output_request, gc_runs, mark_prepare_failure,
-        parallel_execute_cap_for_jobs, ready_execute_job_positions,
-        resolve_prepared_output_fulfillment_program, selected_prepared_output_consumer,
+        RemoteExposureRequestPreparedOutputConsumer, RunMetadata,
+        STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME,
+        SnapshotSource, build_run_plan, configured_prepared_output_consumer_kind,
+        consume_prepared_output_handoff, fulfill_prepared_output_request, gc_runs,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag,
+        ready_execute_job_positions, resolve_prepared_output_fulfillment_program,
+        resolve_run_prepared_output_consumer_kind_for_mode, selected_prepared_output_consumer,
         upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
         write_run_plan_record,
     };
@@ -2303,6 +2373,107 @@ mod tests {
     }
 
     #[test]
+    fn parse_bool_env_flag_accepts_expected_values() {
+        let _guard = EnvVarGuard::set(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, Some("true"));
+        assert!(
+            parse_bool_env_flag(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV).expect("parse true flag")
+        );
+
+        let _guard = EnvVarGuard::set(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, Some("0"));
+        assert!(
+            !parse_bool_env_flag(STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV).expect("parse false flag")
+        );
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_consumer_kind_enables_staged_subprocess_mode() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+        }];
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            ..RunMetadata::default()
+        };
+
+        let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
+            true,
+            &jobs,
+            &metadata,
+            PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+        )
+        .expect("resolve staged subprocess mode");
+
+        assert_eq!(kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(mode, Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME));
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_consumer_kind_rejects_non_pre_merge_target() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+        }];
+        let metadata = RunMetadata {
+            target_id: Some("beachhead".to_string()),
+            ..RunMetadata::default()
+        };
+
+        let err = resolve_run_prepared_output_consumer_kind_for_mode(
+            true,
+            &jobs,
+            &metadata,
+            PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+        )
+        .expect_err("reject non pre-merge target");
+
+        assert!(
+            err.to_string()
+                .contains("only supports target `pre-merge-pika-rust`")
+        );
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_consumer_kind_rejects_low_level_consumer_conflict() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+        }];
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pika-rust".to_string()),
+            ..RunMetadata::default()
+        };
+
+        let err = resolve_run_prepared_output_consumer_kind_for_mode(
+            true,
+            &jobs,
+            &metadata,
+            PreparedOutputConsumerKind::FulfillRequestCliV1,
+        )
+        .expect_err("reject low-level consumer conflict");
+
+        assert!(
+            err.to_string()
+                .contains("cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER")
+        );
+    }
+
+    #[test]
     fn resolve_prepared_output_fulfillment_program_accepts_pikaci_binary_name() {
         let resolved =
             resolve_prepared_output_fulfillment_program(None, PathBuf::from("/tmp/bin/pikaci"))
@@ -2681,6 +2852,8 @@ ln -sfn "$realized_path" "$mount_path"
                     .display()
                     .to_string(),
             ),
+            prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
+            prepared_output_mode: Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME.to_string()),
             changed_files: Vec::new(),
             filters: Vec::new(),
             message: None,

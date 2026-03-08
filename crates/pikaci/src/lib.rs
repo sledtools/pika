@@ -5,7 +5,7 @@ mod snapshot;
 
 pub use model::{
     ExecuteNode, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
-    PreparedOutputRemoteExposureRequest, RunPlanRecord,
+    PreparedOutputConsumerKind, PreparedOutputRemoteExposureRequest, RunPlanRecord,
 };
 pub use model::{GuestCommand, JobOutcome, JobRecord, JobSpec, RunRecord, RunStatus, RunnerKind};
 pub use run::{

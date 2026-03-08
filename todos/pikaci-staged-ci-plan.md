@@ -384,7 +384,24 @@ Phase 6 subprocess-fulfillment slice notes:
   - and it leaves the default host-local inline exposure path unchanged.
 - What this slice proves: the recorded request file survives a real process boundary and still contains enough information to materialize the expected read-only staged mounts.
 - What is still missing: this is still same-host subprocess orchestration, not remote transport, not remote execution, and not a replacement for the blocked `remote_request_v1` prototype.
-- Next recommended slice: decide whether to exercise this subprocess-backed consumer in one controlled end-to-end staged Linux Rust run mode or extract a slightly more explicit helper boundary that could later live off-host.
+- Next recommended slice: exercise this subprocess-backed consumer in one controlled end-to-end staged Linux Rust run mode or extract a slightly more explicit helper boundary that could later live off-host.
+
+Phase 6 staged-run-mode slice notes:
+
+- This next follow-up slice is now complete and landed.
+- `pikaci` now has one explicit opt-in real run mode for the staged Linux Rust lane family:
+  - `PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1` upgrades the `pre-merge-pika-rust` path to use `fulfill_request_cli_v1` end-to-end for prepared-output exposure,
+  - while the default path stays on host-local inline symlink fulfillment.
+- The mode is intentionally narrow:
+  - it only supports the `pre-merge-pika-rust` target,
+  - it only accepts staged Linux Rust jobs,
+  - and it refuses to combine with the lower-level `PIKACI_PREPARED_OUTPUT_CONSUMER` override so the run path stays obvious.
+- Observability is now explicit in run state and status:
+  - `run.json` records both the prepared-output consumer kind and the staged run mode label,
+  - and `pikaci status` prints both so it is obvious when a run crossed the subprocess request-fulfillment boundary.
+- What this slice proves: the current request format is sufficient not just for isolated fulfillment but for one real staged Linux Rust run path that routes prepare exposure through the subprocess boundary.
+- What is still missing: this remains same-host orchestration using the local `pikaci` CLI or an explicit helper binary path, not a true off-host helper or remote executor.
+- Next recommended slice: decide whether to keep iterating on this same-host helper boundary or replace it with one slightly more explicit helper contract that can be invoked off-host without teaching the rest of `pikaci` a generic artifact protocol.
 
 ## Deferred Until Proven Necessary
 
@@ -423,5 +440,5 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, and fifth narrow remote-prep forms.
-- Current recommended slice is one narrow decision/implementation step for whether the subprocess-backed request-fulfillment consumer should be exercised through a controlled end-to-end staged Linux Rust mode or replaced by a slightly more explicit helper boundary, while keeping Rust execute inputs Nix-backed.
+- Phase 6 is complete in its first, second, third, fourth, fifth, and sixth narrow remote-prep forms.
+- Current recommended slice is one narrow decision/implementation step for whether the subprocess-backed staged Linux Rust helper path should keep using the in-tree `pikaci` CLI boundary or move to a slightly more explicit helper contract that can later live off-host, while keeping Rust execute inputs Nix-backed.

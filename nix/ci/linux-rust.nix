@@ -55,9 +55,17 @@ let
       $1 == "e2e_messaging" || $1 == "e2e_group_profiles" { print $3 }
     ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST"
 
+    # Keep the fanout guard strict for new integration suites, but allow the
+    # currently deferred ignored lanes to remain outside the staged split until
+    # we intentionally migrate them.
     unassignedIntegrationTests="$TMPDIR/pika-core-unassigned-integration-tests.tsv"
     ${pkgs.gawk}/bin/awk -F '\t' '
-      $2 == "test" && $1 != "app_flows" && $1 != "e2e_messaging" && $1 != "e2e_group_profiles" {
+      $2 == "test" \
+        && $1 != "app_flows" \
+        && $1 != "e2e_messaging" \
+        && $1 != "e2e_group_profiles" \
+        && $1 != "e2e_calls" \
+        && $1 != "perf_relay_latency" {
         print $0
       }
     ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$unassignedIntegrationTests"

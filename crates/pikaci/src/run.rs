@@ -1948,6 +1948,30 @@ fn validate_remote_fulfillment_result(
     Ok(())
 }
 
+fn write_failed_local_fulfillment_result(
+    local_result_path: &Path,
+    local_request_path: &Path,
+    node_id: &str,
+    output_name: &str,
+    realized_path: &str,
+    error: String,
+) -> anyhow::Result<()> {
+    write_prepared_output_fulfillment_result(
+        local_result_path,
+        &PreparedOutputFulfillmentResult {
+            schema_version: 1,
+            request_path: local_request_path.display().to_string(),
+            node_id: Some(node_id.to_string()),
+            output_name: Some(output_name.to_string()),
+            realized_path: Some(realized_path.to_string()),
+            status: PreparedOutputFulfillmentStatus::Failed,
+            fulfilled_exposures_count: 0,
+            fulfilled_exposures: Vec::new(),
+            error: Some(error),
+        },
+    )
+}
+
 impl PreparedOutputFulfillmentLauncherTransport
     for SshLauncherTransportPreparedOutputFulfillmentTransport
 {
@@ -2136,31 +2160,65 @@ impl PreparedOutputFulfillmentLauncherTransport
                 )
             })?;
 
-        let remote_result_bytes =
-            read_remote_file_via_ssh(&ssh_program, &host, &remote_helper_result_path)?;
-        let remote_result: PreparedOutputFulfillmentResult =
-            serde_json::from_slice(&remote_result_bytes).with_context(|| {
+        if !launch_output.status.success() {
+            write_failed_local_fulfillment_result(
+                &helper_result_path,
+                &helper_request_path,
+                &helper_request.node_id,
+                &helper_request.output_name,
+                &helper_request.realized_path,
                 format!(
-                    "decode remote helper result from {} on {}",
-                    remote_helper_result_path.display(),
+                    "remote launcher {} on {} failed with {:?} before producing a helper result at {}",
+                    remote_launcher_program.display(),
+                    host,
+                    launch_output.status.code(),
+                    remote_helper_result_path.display()
+                ),
+            )?;
+            return Ok(launch_output);
+        }
+
+        let remote_result = (|| -> anyhow::Result<PreparedOutputFulfillmentResult> {
+            let remote_result_bytes =
+                read_remote_file_via_ssh(&ssh_program, &host, &remote_helper_result_path)?;
+            let remote_result: PreparedOutputFulfillmentResult =
+                serde_json::from_slice(&remote_result_bytes).with_context(|| {
+                    format!(
+                        "decode remote helper result from {} on {}",
+                        remote_helper_result_path.display(),
+                        host
+                    )
+                })?;
+            validate_remote_fulfillment_result(
+                &remote_result,
+                &remote_helper_request_path,
+                &helper_request.node_id,
+                &helper_request.output_name,
+                &helper_request.realized_path,
+                &translated_exposures,
+            )?;
+            Ok(remote_result)
+        })();
+
+        if let Err(err) = remote_result {
+            write_failed_local_fulfillment_result(
+                &helper_result_path,
+                &helper_request_path,
+                &helper_request.node_id,
+                &helper_request.output_name,
+                &helper_request.realized_path,
+                format!(
+                    "remote launcher {} on {} completed but remote helper result was unusable: {err:#}",
+                    remote_launcher_program.display(),
                     host
-                )
-            })?;
-        validate_remote_fulfillment_result(
-            &remote_result,
-            &remote_helper_request_path,
-            &helper_request.node_id,
-            &helper_request.output_name,
-            &helper_request.realized_path,
-            &translated_exposures,
-        )?;
+                ),
+            )?;
+            return Ok(launch_output);
+        }
 
         let local_result =
             fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path));
-        write_prepared_output_fulfillment_result(
-            Path::new(&launch_request.helper_result_path),
-            &local_result,
-        )?;
+        write_prepared_output_fulfillment_result(&helper_result_path, &local_result)?;
 
         Ok(launch_output)
     }
@@ -5198,6 +5256,106 @@ EOF
         assert!(log_body.contains("launcher_transport_mode=ssh_launcher_transport_v1"));
         assert!(log_body.contains("transport_host=pika-build"));
         assert!(log_body.contains("remote_helper_result="));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_logs_remote_launcher_failure_before_missing_result() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-ssh-transport-failure-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_work_dir = root.join("remote-work");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
+        let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
+        let ssh_path = root.join("fake-ssh.sh");
+        let nix_path = root.join("fake-nix.sh");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::create_dir_all(root.join("remote-bin")).expect("create remote bin root");
+        fs::write(
+            &helper_path,
+            "#!/bin/sh\nset -eu\necho \"helper should not run\" >&2\nexit 91\n",
+        )
+        .expect("write remote helper");
+        fs::write(
+            &launcher_path,
+            "#!/bin/sh\nset -eu\necho \"remote launcher exploded\" >&2\nexit 41\n",
+        )
+        .expect("write remote launcher");
+        fs::write(
+            &ssh_path,
+            "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+        )
+        .expect("write fake ssh");
+        fs::write(
+            &nix_path,
+            "#!/bin/sh\nset -eu\nif [ \"$#\" -ne 4 ] || [ \"$1\" != \"copy\" ] || [ \"$2\" != \"--to\" ]; then\n  echo \"unexpected nix args: $*\" >&2\n  exit 31\nfi\n",
+        )
+        .expect("write fake nix");
+        for path in [&helper_path, &launcher_path, &ssh_path, &nix_path] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set script executable");
+        }
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
+            output_name: "ci.aarch64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some(ssh_path.to_str().expect("ssh path utf8")),
+        );
+        let _nix_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+            Some(nix_path.to_str().expect("nix path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let err = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+            PreparedOutputInvocationConfig {
+                invocation_mode: Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                launcher_program: Some(&launcher_path),
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_program: Some(&ssh_path),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_launcher_program: Some(&launcher_path),
+                launcher_transport_remote_helper_program: Some(&helper_path),
+                launcher_transport_remote_work_dir: Some(&remote_work_dir),
+            },
+        )
+        .expect_err("ssh transport should fail when remote launcher exits nonzero");
+
+        assert!(err.message.contains("remote launcher"));
+        assert!(err.message.contains("failed with Some(41)"));
+        let log_body = fs::read_to_string(&log_path).expect("read log");
+        assert!(log_body.contains("remote launcher exploded"));
+        assert!(!log_body.contains("remote read for"));
 
         let _ = fs::remove_dir_all(&root);
     }

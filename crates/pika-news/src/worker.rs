@@ -29,6 +29,16 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
         return Ok(WorkerPassResult::default());
     }
 
+    let mut configured_npubs = normalized_configured_npubs(
+        &config.effective_bootstrap_admin_npubs(),
+        "bootstrap_admin_npubs",
+    );
+    configured_npubs.extend(normalized_configured_npubs(
+        &config.allowed_npubs,
+        "allowed_npubs",
+    ));
+    let configured_npubs: Vec<String> = configured_npubs.into_iter().collect();
+
     let github = Arc::new(
         GitHubClient::new(env::var(&config.github_token_env).ok())
             .context("initialize GitHub client for worker")?,
@@ -42,8 +52,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
         let model = config.model.clone();
         let api_key_env = config.api_key_env.clone();
         let retry_backoff_secs = config.retry_backoff_secs;
-        let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
-        let legacy_allowed_npubs = config.allowed_npubs.clone();
+        let configured_npubs = configured_npubs.clone();
 
         handles.push(thread::spawn(move || {
             process_job(
@@ -53,8 +62,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
                 &model,
                 &api_key_env,
                 retry_backoff_secs,
-                &bootstrap_admin_npubs,
-                &legacy_allowed_npubs,
+                &configured_npubs,
             )
         }));
     }
@@ -96,8 +104,7 @@ fn process_job(
     model_name: &str,
     api_key_env: &str,
     retry_backoff_secs: u64,
-    bootstrap_admin_npubs: &[String],
-    legacy_allowed_npubs: &[String],
+    configured_npubs: &[String],
 ) -> anyhow::Result<JobOutcome> {
     let diff = github
         .fetch_pull_diff(&job.repo, job.pr_number)
@@ -180,7 +187,7 @@ fn process_job(
 
     let tutorial_json =
         serde_json::to_string(&gen_output.tutorial).context("serialize tutorial JSON")?;
-    store
+    let activated = store
         .mark_generation_ready(
             job.artifact_id,
             &tutorial_json,
@@ -191,12 +198,7 @@ fn process_job(
         )
         .with_context(|| format!("mark artifact {} ready", job.artifact_id))?;
 
-    let mut recipients =
-        normalized_configured_npubs(bootstrap_admin_npubs, "bootstrap_admin_npubs");
-    recipients.extend(normalized_configured_npubs(
-        legacy_allowed_npubs,
-        "allowed_npubs",
-    ));
+    let mut recipients: BTreeSet<String> = configured_npubs.iter().cloned().collect();
     match store.list_active_chat_allowlist_npubs() {
         Ok(npubs) => {
             for npub in npubs {
@@ -211,12 +213,12 @@ fn process_job(
         }
     }
 
-    if !recipients.is_empty() {
+    if activated && !recipients.is_empty() {
         let recipients: Vec<String> = recipients.into_iter().collect();
-        if let Err(err) = store.populate_inbox(job.pr_id, &recipients) {
+        if let Err(err) = store.populate_inbox(job.artifact_id, &recipients) {
             eprintln!(
-                "warning: failed to populate inbox for pr_id {}: {}",
-                job.pr_id, err
+                "warning: failed to populate inbox for artifact {}: {}",
+                job.artifact_id, err
             );
         }
     }

@@ -697,12 +697,12 @@ async fn regenerate_handler(
     Path(pr_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_chat_auth(&state.auth, &headers) {
+    if let Err(resp) = require_admin_auth(&state.auth, &headers) {
         return resp;
     }
 
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.reset_artifact_to_pending(pr_id)).await {
+    match tokio::task::spawn_blocking(move || store.queue_regeneration(pr_id)).await {
         Ok(Ok(true)) => {
             Json(serde_json::json!({"status": "queued", "message": "Tutorial regeneration queued. Refresh in a minute."}))
                 .into_response()
@@ -845,7 +845,7 @@ fn require_chat_auth(
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
     let npub = require_auth(auth, headers)?;
-    if auth.can_access_chat(&npub) {
+    if auth.access_for_npub(&npub).can_chat {
         Ok(npub)
     } else {
         Err((
@@ -862,7 +862,7 @@ fn require_admin_auth(
     headers: &axum::http::HeaderMap,
 ) -> Result<String, axum::response::Response> {
     let npub = require_auth(auth, headers)?;
-    if auth.is_admin(&npub) {
+    if auth.access_for_npub(&npub).is_admin {
         Ok(npub)
     } else {
         Err((
@@ -881,10 +881,11 @@ async fn api_me_handler(
         Ok(n) => n,
         Err(resp) => return resp,
     };
+    let access = state.auth.access_for_npub(&npub);
     Json(serde_json::json!({
         "npub": npub,
-        "is_admin": state.auth.is_admin(&npub),
-        "can_chat": state.auth.can_access_chat(&npub),
+        "is_admin": access.is_admin,
+        "can_chat": access.can_chat,
     }))
     .into_response()
 }

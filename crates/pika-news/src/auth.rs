@@ -13,6 +13,12 @@ use crate::storage::Store;
 const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 const TOKEN_TTL_DAYS: i64 = 90;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessState {
+    pub can_chat: bool,
+    pub is_admin: bool,
+}
+
 pub struct AuthState {
     challenges: Mutex<HashMap<String, (String, Instant)>>,
     store: Store,
@@ -88,7 +94,8 @@ impl AuthState {
             .map_err(|e| format!("failed to encode npub: {}", e))?
             .to_lowercase();
 
-        if !self.can_access_chat(&npub) {
+        let access = self.access_for_npub(&npub);
+        if !access.can_chat {
             return Err("pubkey not in allowed list".to_string());
         }
 
@@ -96,7 +103,7 @@ impl AuthState {
             .insert_auth_token(&token, &npub)
             .map_err(|e| format!("failed to persist token: {}", e))?;
 
-        Ok((token, npub.clone(), self.is_admin(&npub)))
+        Ok((token, npub, access.is_admin))
     }
 
     pub fn validate_token(&self, token: &str) -> Option<String> {
@@ -106,34 +113,42 @@ impl AuthState {
             .flatten()
     }
 
-    pub fn is_admin(&self, npub: &str) -> bool {
-        normalize_npub(npub)
-            .map(|value| self.bootstrap_admin_npubs.contains(&value))
-            .unwrap_or(false)
-    }
-
-    pub fn is_legacy_allowed(&self, npub: &str) -> bool {
-        normalize_npub(npub)
-            .map(|value| self.legacy_allowed_npubs.contains(&value))
-            .unwrap_or(false)
-    }
-
-    pub fn is_config_managed_chat_principal(&self, npub: &str) -> bool {
-        self.is_admin(npub) || self.is_legacy_allowed(npub)
-    }
-
-    pub fn can_access_chat(&self, npub: &str) -> bool {
+    pub fn access_for_npub(&self, npub: &str) -> AccessState {
         let normalized = match normalize_npub(npub) {
             Ok(value) => value,
-            Err(_) => return false,
+            Err(_) => {
+                return AccessState {
+                    can_chat: false,
+                    is_admin: false,
+                };
+            }
         };
-        self.bootstrap_admin_npubs.contains(&normalized)
+        let is_admin = self.bootstrap_admin_npubs.contains(&normalized);
+        let can_chat = is_admin
             || self.legacy_allowed_npubs.contains(&normalized)
             || self
                 .store
                 .is_chat_allowlist_active(&normalized)
                 .ok()
-                .unwrap_or(false)
+                .unwrap_or(false);
+        AccessState { can_chat, is_admin }
+    }
+
+    pub fn is_admin(&self, npub: &str) -> bool {
+        self.access_for_npub(npub).is_admin
+    }
+
+    pub fn is_legacy_allowed(&self, npub: &str) -> bool {
+        let normalized = match normalize_npub(npub) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        !self.bootstrap_admin_npubs.contains(&normalized)
+            && self.legacy_allowed_npubs.contains(&normalized)
+    }
+
+    pub fn is_config_managed_chat_principal(&self, npub: &str) -> bool {
+        self.is_admin(npub) || self.is_legacy_allowed(npub)
     }
 
     pub fn bootstrap_admin_npubs(&self) -> Vec<String> {
@@ -183,7 +198,7 @@ mod tests {
         let store = Store::open(&db_path).expect("open store");
         let auth = AuthState::new(&[], &[SAMPLE_NPUB.to_string()], store);
 
-        assert!(auth.can_access_chat(SAMPLE_NPUB));
+        assert!(auth.access_for_npub(SAMPLE_NPUB).can_chat);
         assert!(!auth.is_admin(SAMPLE_NPUB));
     }
 
@@ -195,7 +210,7 @@ mod tests {
         let pk = PublicKey::parse(SAMPLE_NPUB).expect("parse sample npub");
         let auth = AuthState::new(&[], &[pk.to_hex()], store);
 
-        assert!(auth.can_access_chat(SAMPLE_NPUB));
+        assert!(auth.access_for_npub(SAMPLE_NPUB).can_chat);
         assert!(!auth.is_admin(SAMPLE_NPUB));
     }
 
@@ -210,5 +225,17 @@ mod tests {
         let auth = AuthState::new(&[SAMPLE_NPUB.to_string()], &[legacy_hex], store);
 
         assert!(auth.is_config_managed_chat_principal(SAMPLE_NPUB));
+    }
+
+    #[test]
+    fn bootstrap_admin_has_admin_and_chat_access() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let auth = AuthState::new(&[SAMPLE_NPUB.to_string()], &[], store);
+
+        let access = auth.access_for_npub(SAMPLE_NPUB);
+        assert!(access.is_admin);
+        assert!(access.can_chat);
     }
 }

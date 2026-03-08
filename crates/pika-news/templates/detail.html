@@ -349,6 +349,11 @@
           if (regenBtn) regenBtn.style.display = 'none';
         }
 
+        function syncRegenerateVisibility() {
+          if (!regenBtn) return;
+          regenBtn.style.display = (window.pikaAuth && window.pikaAuth.isAdmin && window.pikaAuth.isAdmin()) ? 'inline-block' : 'none';
+        }
+
         async function loadHistory() {
           if (!messagesDiv) return;
           const token = window.pikaAuth && window.pikaAuth.getToken();
@@ -370,7 +375,7 @@
         function onAuthed() {
           if (chatDisabled) chatDisabled.style.display = 'none';
           if (chatMain) chatMain.style.display = 'flex';
-          if (regenBtn) regenBtn.style.display = 'inline-block';
+          syncRegenerateVisibility();
           loadHistory();
         }
 
@@ -383,7 +388,13 @@
               method: 'POST',
               headers: { 'Authorization': 'Bearer ' + window.pikaAuth.getToken() },
             });
-            if (res.status === 401 || res.status === 403) { handleExpiredSession(); return; }
+            if (res.status === 401) { handleExpiredSession(); return; }
+            if (res.status === 403) {
+              regenBtn.textContent = 'Regenerate';
+              regenBtn.disabled = false;
+              alert('Admin access required to regenerate tutorials.');
+              return;
+            }
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Regenerate failed');
             regenBtn.textContent = 'Queued!';
@@ -439,6 +450,8 @@
         // Check if already authed
         if (window.pikaAuth && window.pikaAuth.isAuthed()) {
           onAuthed();
+        } else {
+          syncRegenerateVisibility();
         }
 
         // --- Resize handle ---

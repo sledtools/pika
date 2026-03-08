@@ -1,10 +1,12 @@
+use std::cmp::{max, min};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
 use nostr::key::PublicKey;
 use nostr::nips::nip19::ToBech32;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -77,8 +79,7 @@ pub struct PrDetailRecord {
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db_path = path.to_path_buf();
-        let mut conn = Connection::open(&db_path)
-            .with_context(|| format!("open sqlite database {}", db_path.display()))?;
+        let mut conn = open_connection(&db_path)?;
         run_migrations(&mut conn)?;
         Ok(Self { db_path })
     }
@@ -89,17 +90,16 @@ impl Store {
 
     pub fn with_connection<T>(
         &self,
-        f: impl FnOnce(&Connection) -> anyhow::Result<T>,
+        f: impl FnOnce(&mut Connection) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
-        let conn = Connection::open(&self.db_path)
-            .with_context(|| format!("open sqlite database {}", self.db_path.display()))?;
-        f(&conn)
+        let mut conn = open_connection(&self.db_path)?;
+        f(&mut conn)
     }
 
     pub fn upsert_pull_request(&self, input: &PrUpsertInput) -> anyhow::Result<UpsertOutcome> {
         self.with_connection(|conn| {
             let tx = conn
-                .unchecked_transaction()
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("start upsert transaction")?;
 
             let repo_id = ensure_repo(&tx, &input.repo)?;
@@ -159,13 +159,13 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT ga.id, r.repo, pr.pr_number, pr.title, pr.head_sha, pr.base_ref, pr.id
-                         FROM generated_artifacts ga
-                         JOIN pull_requests pr ON pr.id = ga.pr_id
+                        "SELECT av.id, r.repo, pr.pr_number, pr.title, av.source_head_sha, pr.base_ref, pr.id
+                         FROM artifact_versions av
+                         JOIN pull_requests pr ON pr.id = av.pr_id
                          JOIN repos r ON r.id = pr.repo_id
-                         WHERE ga.status = 'pending'
-                           AND (ga.next_retry_at IS NULL OR ga.next_retry_at <= CURRENT_TIMESTAMP)
-                         ORDER BY ga.updated_at ASC
+                         WHERE av.status = 'pending'
+                           AND (av.next_retry_at IS NULL OR av.next_retry_at <= CURRENT_TIMESTAMP)
+                         ORDER BY av.updated_at ASC
                          LIMIT ?1",
                     )
                     .context("prepare generation-claim query")?;
@@ -187,7 +187,9 @@ impl Store {
                 for row in rows {
                     let job = row.context("read generation job row")?;
                     tx.execute(
-                        "UPDATE generated_artifacts SET status='generating', updated_at=CURRENT_TIMESTAMP WHERE id = ?1",
+                        "UPDATE artifact_versions
+                         SET status='generating', updated_at=CURRENT_TIMESTAMP
+                         WHERE id = ?1 AND status = 'pending'",
                         params![job.artifact_id],
                     )
                     .with_context(|| format!("mark artifact {} as generating", job.artifact_id))?;
@@ -208,41 +210,85 @@ impl Store {
         generated_head_sha: &str,
         unified_diff: &str,
         claude_session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         self.with_connection(|conn| {
             let tx = conn
                 .unchecked_transaction()
                 .context("start mark_generation_ready transaction")?;
-            let pr_id: i64 = tx
+            let (pr_id, current_status, source_head_sha, artifact_version): (i64, String, String, i64) = tx
                 .query_row(
-                    "SELECT pr_id FROM generated_artifacts WHERE id = ?1",
+                    "SELECT pr_id, status, source_head_sha, version
+                     FROM artifact_versions
+                     WHERE id = ?1",
                     params![artifact_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .with_context(|| format!("lookup pr_id for artifact {}", artifact_id))?;
-            tx.execute(
-                "UPDATE generated_artifacts
-                 SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
-                     generated_head_sha=?3, unified_diff=?4, claude_session_id=?5, updated_at=CURRENT_TIMESTAMP
-                 WHERE id = ?6",
-                params![
-                    tutorial_json,
-                    html,
-                    generated_head_sha,
-                    unified_diff,
-                    claude_session_id,
-                    artifact_id
-                ],
-            )
-            .with_context(|| format!("mark artifact {} ready", artifact_id))?;
-            tx.execute(
-                "DELETE FROM inbox_dismissals WHERE pr_id = ?1",
-                params![pr_id],
-            )
-            .with_context(|| format!("clear inbox dismissals for pr_id {}", pr_id))?;
+            let current_pr_head_sha: String = tx
+                .query_row(
+                    "SELECT head_sha FROM pull_requests WHERE id = ?1",
+                    params![pr_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("lookup current head sha for pr_id {}", pr_id))?;
+            let newer_non_superseded_exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1
+                        FROM artifact_versions
+                        WHERE pr_id = ?1 AND version > ?2 AND status != 'superseded'
+                    )",
+                    params![pr_id, artifact_version],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("check newer versions for artifact {}", artifact_id))?;
+            let activated = current_status != "superseded"
+                && source_head_sha == current_pr_head_sha
+                && !newer_non_superseded_exists;
+            if activated {
+                tx.execute(
+                    "UPDATE artifact_versions
+                     SET is_current = 0, updated_at = CURRENT_TIMESTAMP
+                     WHERE pr_id = ?1 AND id != ?2 AND is_current = 1",
+                    params![pr_id, artifact_id],
+                )
+                .with_context(|| format!("retire previous current artifact for pr_id {}", pr_id))?;
+                tx.execute(
+                    "UPDATE artifact_versions
+                     SET status='ready', tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
+                         generated_head_sha=?3, unified_diff=?4, claude_session_id=?5,
+                         is_current=1, ready_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                     WHERE id = ?6",
+                    params![
+                        tutorial_json,
+                        html,
+                        generated_head_sha,
+                        unified_diff,
+                        claude_session_id,
+                        artifact_id
+                    ],
+                )
+                .with_context(|| format!("mark artifact {} ready", artifact_id))?;
+            } else {
+                tx.execute(
+                    "UPDATE artifact_versions
+                     SET status='superseded', is_current=0, tutorial_json=?1, html=?2, error_message=NULL, next_retry_at=NULL,
+                         generated_head_sha=?3, unified_diff=?4, claude_session_id=?5, updated_at=CURRENT_TIMESTAMP
+                     WHERE id = ?6",
+                    params![
+                        tutorial_json,
+                        html,
+                        generated_head_sha,
+                        unified_diff,
+                        claude_session_id,
+                        artifact_id
+                    ],
+                )
+                .with_context(|| format!("store superseded artifact payload {}", artifact_id))?;
+            }
             tx.commit()
                 .with_context(|| format!("commit mark_generation_ready for artifact {}", artifact_id))?;
-            Ok(())
+            Ok(activated)
         })
     }
 
@@ -256,18 +302,29 @@ impl Store {
         self.with_connection(|conn| {
             let current_retry: i64 = conn
                 .query_row(
-                    "SELECT retry_count FROM generated_artifacts WHERE id = ?1",
+                    "SELECT retry_count FROM artifact_versions WHERE id = ?1",
                     params![artifact_id],
                     |row| row.get(0),
                 )
                 .with_context(|| format!("read retry_count for artifact {}", artifact_id))?;
+            let current_status: String = conn
+                .query_row(
+                    "SELECT status FROM artifact_versions WHERE id = ?1",
+                    params![artifact_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("read status for artifact {}", artifact_id))?;
+
+            if current_status == "superseded" {
+                return Ok(());
+            }
 
             let next_retry_count = current_retry + 1;
             let should_retry = retry_safe && next_retry_count <= 5;
             if should_retry {
                 let modifier = format!("+{} seconds", retry_backoff_secs);
                 conn.execute(
-                    "UPDATE generated_artifacts
+                    "UPDATE artifact_versions
                      SET status='pending', error_message=?1, retry_count=?2,
                          next_retry_at=datetime('now', ?3), updated_at=CURRENT_TIMESTAMP
                      WHERE id = ?4",
@@ -276,7 +333,7 @@ impl Store {
                 .with_context(|| format!("schedule retry for artifact {}", artifact_id))?;
             } else {
                 conn.execute(
-                    "UPDATE generated_artifacts
+                    "UPDATE artifact_versions
                      SET status='failed', error_message=?1, retry_count=?2, next_retry_at=NULL, updated_at=CURRENT_TIMESTAMP
                      WHERE id = ?3",
                     params![error_message, next_retry_count, artifact_id],
@@ -352,10 +409,16 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT pr.id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, ga.status
+                    "SELECT pr.id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, latest.status
                      FROM pull_requests pr
                      JOIN repos r ON r.id = pr.repo_id
-                     LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                     LEFT JOIN artifact_versions latest ON latest.id = (
+                        SELECT av.id
+                        FROM artifact_versions av
+                        WHERE av.pr_id = pr.id AND av.status != 'superseded'
+                        ORDER BY av.version DESC
+                        LIMIT 1
+                     )
                      WHERE pr.state IN ('open', 'merged')
                      ORDER BY CASE pr.state WHEN 'open' THEN 0 WHEN 'merged' THEN 1 ELSE 2 END, pr.updated_at DESC",
                 )
@@ -390,10 +453,27 @@ impl Store {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at, pr.base_ref, pr.head_sha,
-                        COALESCE(ga.status, 'pending'), ga.tutorial_json, ga.unified_diff, ga.claude_session_id, ga.error_message
+                        COALESCE(latest.status, 'pending'),
+                        current_ready.tutorial_json,
+                        current_ready.unified_diff,
+                        current_ready.claude_session_id,
+                        latest.error_message
                  FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
-                 LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
+                 LEFT JOIN artifact_versions latest ON latest.id = (
+                    SELECT av.id
+                    FROM artifact_versions av
+                    WHERE av.pr_id = pr.id AND av.status != 'superseded'
+                    ORDER BY av.version DESC
+                    LIMIT 1
+                 )
+                 LEFT JOIN artifact_versions current_ready ON current_ready.id = (
+                    SELECT av.id
+                    FROM artifact_versions av
+                    WHERE av.pr_id = pr.id AND av.is_current = 1 AND av.status = 'ready'
+                    ORDER BY av.version DESC
+                    LIMIT 1
+                 )
                  WHERE pr.id = ?1",
                 params![pr_id],
                 |row| {
@@ -424,7 +504,7 @@ impl Store {
         self.with_connection(|conn| {
             let rows = conn
                 .execute(
-                    "UPDATE generated_artifacts
+                    "UPDATE artifact_versions
                      SET status='pending', updated_at=CURRENT_TIMESTAMP
                      WHERE status='generating'",
                     [],
@@ -434,26 +514,43 @@ impl Store {
         })
     }
 
-    pub fn reset_artifact_to_pending(&self, pr_id: i64) -> anyhow::Result<bool> {
+    pub fn queue_regeneration(&self, pr_id: i64) -> anyhow::Result<bool> {
         self.with_connection(|conn| {
-            let rows = conn
-                .execute(
-                    "UPDATE generated_artifacts
-                     SET status='pending', tutorial_json=NULL, html=NULL, error_message=NULL,
-                         next_retry_at=NULL, claude_session_id=NULL, unified_diff=NULL,
-                         updated_at=CURRENT_TIMESTAMP
-                     WHERE pr_id = ?1",
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start regenerate transaction")?;
+            let current_head_sha: Option<String> = tx
+                .query_row(
+                    "SELECT head_sha FROM pull_requests WHERE id = ?1",
                     params![pr_id],
+                    |row| row.get(0),
                 )
-                .context("reset artifact to pending")?;
-            Ok(rows > 0)
+                .optional()
+                .context("lookup PR for regeneration")?;
+            let Some(current_head_sha) = current_head_sha else {
+                return Ok(false);
+            };
+
+            if has_inflight_generation_for_head(&tx, pr_id, &current_head_sha)? {
+                tx.commit().context("commit no-op regenerate transaction")?;
+                return Ok(true);
+            }
+
+            supersede_non_current_generations(&tx, pr_id)?;
+            insert_pending_artifact_version(&tx, pr_id, &current_head_sha)?;
+            tx.commit().context("commit regenerate transaction")?;
+            Ok(true)
         })
     }
 
     pub fn get_artifact_session_id(&self, pr_id: i64) -> anyhow::Result<Option<String>> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT claude_session_id FROM generated_artifacts WHERE pr_id = ?1 AND status = 'ready'",
+                "SELECT claude_session_id
+                 FROM artifact_versions
+                 WHERE pr_id = ?1 AND is_current = 1 AND status = 'ready'
+                 ORDER BY version DESC
+                 LIMIT 1",
                 params![pr_id],
                 |row| row.get(0),
             )
@@ -472,7 +569,11 @@ impl Store {
         self.with_connection(|conn| {
             let artifact_id: i64 = conn
                 .query_row(
-                    "SELECT id FROM generated_artifacts WHERE pr_id = ?1",
+                    "SELECT id
+                     FROM artifact_versions
+                     WHERE pr_id = ?1 AND is_current = 1 AND status = 'ready'
+                     ORDER BY version DESC
+                     LIMIT 1",
                     params![pr_id],
                     |row| row.get(0),
                 )
@@ -568,27 +669,11 @@ impl Store {
 
     // --- Inbox methods ---
 
-    pub fn populate_inbox(&self, pr_id: i64, npubs: &[String]) -> anyhow::Result<usize> {
+    pub fn populate_inbox(&self, artifact_id: i64, npubs: &[String]) -> anyhow::Result<usize> {
         if npubs.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
-            let mut count = 0;
-            for npub in npubs {
-                let rows = conn
-                    .execute(
-                        "INSERT OR IGNORE INTO inbox(npub, pr_id)
-                         SELECT ?1, ?2
-                         WHERE NOT EXISTS(
-                             SELECT 1 FROM inbox_dismissals WHERE npub = ?1 AND pr_id = ?2
-                         )",
-                        params![npub, pr_id],
-                    )
-                    .context("populate inbox")?;
-                count += rows;
-            }
-            Ok(count)
-        })
+        self.with_connection(|conn| insert_inbox_rows_for_artifact(conn, artifact_id, npubs))
     }
 
     pub fn list_inbox(
@@ -600,14 +685,21 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT i.pr_id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at,
-                            COALESCE(ga.status, 'pending'), i.reason, i.created_at
-                     FROM inbox i
-                     JOIN pull_requests pr ON pr.id = i.pr_id
+                    "SELECT av.pr_id, r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at,
+                            COALESCE(latest.status, av.status), aus.reason, aus.created_at
+                     FROM artifact_user_states aus
+                     JOIN artifact_versions av ON av.id = aus.artifact_id
+                     JOIN pull_requests pr ON pr.id = av.pr_id
                      JOIN repos r ON r.id = pr.repo_id
-                     LEFT JOIN generated_artifacts ga ON ga.pr_id = pr.id
-                     WHERE i.npub = ?1
-                     ORDER BY i.created_at DESC
+                     LEFT JOIN artifact_versions latest ON latest.id = (
+                        SELECT av2.id
+                        FROM artifact_versions av2
+                        WHERE av2.pr_id = pr.id AND av2.status != 'superseded'
+                        ORDER BY av2.version DESC
+                        LIMIT 1
+                     )
+                     WHERE aus.npub = ?1 AND aus.state = 'inbox'
+                     ORDER BY aus.created_at DESC
                      LIMIT ?2 OFFSET ?3",
                 )
                 .context("prepare inbox query")?;
@@ -642,7 +734,7 @@ impl Store {
     pub fn inbox_count(&self, npub: &str) -> anyhow::Result<i64> {
         self.with_connection(|conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM inbox WHERE npub = ?1",
+                "SELECT COUNT(*) FROM artifact_user_states WHERE npub = ?1 AND state = 'inbox'",
                 params![npub],
                 |row| row.get(0),
             )
@@ -663,13 +755,14 @@ impl Store {
                 .enumerate()
                 .map(|(i, _)| format!("?{}", i + 2))
                 .collect();
-            let insert_sql = format!(
-                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id)
-                 SELECT ?1, pr_id FROM inbox WHERE npub = ?1 AND pr_id IN ({})",
-                placeholders.join(", ")
-            );
-            let delete_sql = format!(
-                "DELETE FROM inbox WHERE npub = ?1 AND pr_id IN ({})",
+            let update_sql = format!(
+                "UPDATE artifact_user_states
+                 SET state = 'dismissed', dismissed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                 WHERE npub = ?1
+                   AND state = 'inbox'
+                   AND artifact_id IN (
+                       SELECT id FROM artifact_versions WHERE pr_id IN ({})
+                   )",
                 placeholders.join(", ")
             );
             let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -679,18 +772,11 @@ impl Store {
             }
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 param_values.iter().map(|p| p.as_ref()).collect();
-            let rows = {
-                let mut insert_stmt = tx
-                    .prepare(&insert_sql)
-                    .context("prepare dismiss tombstone query")?;
-                let mut delete_stmt = tx.prepare(&delete_sql).context("prepare dismiss query")?;
-                insert_stmt
-                    .execute(param_refs.as_slice())
-                    .context("insert dismiss tombstones")?;
-                delete_stmt
-                    .execute(param_refs.as_slice())
-                    .context("dismiss inbox items")?
-            };
+            let rows = tx
+                .prepare(&update_sql)
+                .context("prepare dismiss query")?
+                .execute(param_refs.as_slice())
+                .context("dismiss inbox items")?;
             tx.commit().context("commit dismiss inbox transaction")?;
             Ok(rows)
         })
@@ -698,20 +784,14 @@ impl Store {
 
     pub fn dismiss_all_inbox(&self, npub: &str) -> anyhow::Result<usize> {
         self.with_connection(|conn| {
-            let tx = conn
-                .unchecked_transaction()
-                .context("start dismiss all inbox transaction")?;
-            tx.execute(
-                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id)
-                 SELECT npub, pr_id FROM inbox WHERE npub = ?1",
-                params![npub],
-            )
-            .context("insert dismiss-all tombstones")?;
-            let rows = tx
-                .execute("DELETE FROM inbox WHERE npub = ?1", params![npub])
+            let rows = conn
+                .execute(
+                    "UPDATE artifact_user_states
+                     SET state = 'dismissed', dismissed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                     WHERE npub = ?1 AND state = 'inbox'",
+                    params![npub],
+                )
                 .context("dismiss all inbox")?;
-            tx.commit()
-                .context("commit dismiss all inbox transaction")?;
             Ok(rows)
         })
     }
@@ -726,9 +806,18 @@ impl Store {
             // "prev" = newer item (higher created_at), "next" = older item (lower created_at).
             let prev: Option<i64> = conn
                 .query_row(
-                    "SELECT pr_id FROM inbox
-                     WHERE npub = ?1 AND created_at > (SELECT created_at FROM inbox WHERE npub = ?1 AND pr_id = ?2)
-                     ORDER BY created_at ASC LIMIT 1",
+                    "SELECT av.pr_id
+                     FROM artifact_user_states aus
+                     JOIN artifact_versions av ON av.id = aus.artifact_id
+                     WHERE aus.npub = ?1
+                       AND aus.state = 'inbox'
+                       AND aus.created_at > (
+                           SELECT aus2.created_at
+                           FROM artifact_user_states aus2
+                           JOIN artifact_versions av2 ON av2.id = aus2.artifact_id
+                           WHERE aus2.npub = ?1 AND aus2.state = 'inbox' AND av2.pr_id = ?2
+                       )
+                     ORDER BY aus.created_at ASC LIMIT 1",
                     params![npub, pr_id],
                     |row| row.get(0),
                 )
@@ -737,9 +826,18 @@ impl Store {
 
             let next: Option<i64> = conn
                 .query_row(
-                    "SELECT pr_id FROM inbox
-                     WHERE npub = ?1 AND created_at < (SELECT created_at FROM inbox WHERE npub = ?1 AND pr_id = ?2)
-                     ORDER BY created_at DESC LIMIT 1",
+                    "SELECT av.pr_id
+                     FROM artifact_user_states aus
+                     JOIN artifact_versions av ON av.id = aus.artifact_id
+                     WHERE aus.npub = ?1
+                       AND aus.state = 'inbox'
+                       AND aus.created_at < (
+                           SELECT aus2.created_at
+                           FROM artifact_user_states aus2
+                           JOIN artifact_versions av2 ON av2.id = aus2.artifact_id
+                           WHERE aus2.npub = ?1 AND aus2.state = 'inbox' AND av2.pr_id = ?2
+                       )
+                     ORDER BY aus.created_at DESC LIMIT 1",
                     params![npub, pr_id],
                     |row| row.get(0),
                 )
@@ -916,25 +1014,43 @@ impl Store {
 
     pub fn backfill_inbox_for_npub(&self, npub: &str) -> anyhow::Result<usize> {
         self.with_connection(|conn| {
-            let rows = conn
-                .execute(
-                    "INSERT OR IGNORE INTO inbox(npub, pr_id)
-                     SELECT ?1, pr.id
-                     FROM generated_artifacts ga
-                     JOIN pull_requests pr ON pr.id = ga.pr_id
-                     WHERE ga.status = 'ready'
-                       AND NOT EXISTS(
-                           SELECT 1 FROM inbox_dismissals d
-                           WHERE d.npub = ?1 AND d.pr_id = pr.id
-                       )",
-                    params![npub],
-                )
-                .context("backfill inbox for allowlisted npub")?;
-            Ok(rows)
+            let tx = conn
+                .unchecked_transaction()
+                .context("start inbox backfill transaction")?;
+            let artifact_ids: Vec<i64> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id
+                         FROM artifact_versions
+                         WHERE is_current = 1 AND status = 'ready'
+                         ORDER BY version ASC",
+                    )
+                    .context("prepare current artifact scan for backfill")?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, i64>(0))
+                    .context("query current artifacts for backfill")?;
+                let mut artifact_ids = Vec::new();
+                for row in rows {
+                    artifact_ids.push(row.context("read current artifact row")?);
+                }
+                artifact_ids
+            };
+            let recipient = npub.to_string();
+            let mut inserted = 0;
+            for artifact_id in artifact_ids {
+                inserted += insert_inbox_rows_for_artifact(
+                    &tx,
+                    artifact_id,
+                    std::slice::from_ref(&recipient),
+                )?;
+            }
+            tx.commit().context("commit inbox backfill transaction")?;
+            Ok(inserted)
         })
     }
 
-    pub fn rekey_inbox_npub(&self, from_npub: &str, to_npub: &str) -> anyhow::Result<usize> {
+    #[cfg(test)]
+    fn rekey_inbox_npub(&self, from_npub: &str, to_npub: &str) -> anyhow::Result<usize> {
         if from_npub == to_npub {
             return Ok(0);
         }
@@ -943,35 +1059,11 @@ impl Store {
                 .unchecked_transaction()
                 .context("start inbox rekey transaction")?;
 
-            let inserted = tx
-                .execute(
-                    "INSERT OR IGNORE INTO inbox(npub, pr_id, reason, created_at)
-                     SELECT ?2, pr_id, reason, created_at
-                     FROM inbox
-                     WHERE npub = ?1",
-                    params![from_npub, to_npub],
-                )
-                .context("copy inbox rows to canonical npub")?;
-
-            tx.execute(
-                "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id, dismissed_at)
-                 SELECT ?2, pr_id, dismissed_at
-                 FROM inbox_dismissals
-                 WHERE npub = ?1",
-                params![from_npub, to_npub],
-            )
-            .context("copy inbox dismissal rows to canonical npub")?;
-
-            tx.execute("DELETE FROM inbox WHERE npub = ?1", params![from_npub])
-                .context("delete old inbox rows after rekey")?;
-            tx.execute(
-                "DELETE FROM inbox_dismissals WHERE npub = ?1",
-                params![from_npub],
-            )
-            .context("delete old inbox dismissal rows after rekey")?;
+            let merged = merge_inbox_state_alias(&tx, from_npub, to_npub)
+                .context("merge inbox state rows for rekey")?;
 
             tx.commit().context("commit inbox rekey transaction")?;
-            Ok(inserted)
+            Ok(merged)
         })
     }
 
@@ -985,11 +1077,7 @@ impl Store {
                 let mut stmt = tx
                     .prepare(
                         "SELECT DISTINCT npub
-                         FROM (
-                           SELECT npub FROM inbox
-                           UNION
-                           SELECT npub FROM inbox_dismissals
-                         )
+                         FROM artifact_user_states
                          ORDER BY npub ASC",
                     )
                     .context("prepare inbox owner scan")?;
@@ -1018,33 +1106,15 @@ impl Store {
                     continue;
                 }
 
-                tx.execute(
-                    "INSERT OR IGNORE INTO inbox(npub, pr_id, reason, created_at)
-                     SELECT ?2, pr_id, reason, created_at
-                     FROM inbox
-                     WHERE npub = ?1",
-                    params![raw_npub, canonical_npub],
-                )
-                .context("copy inbox rows to canonical owner")?;
-
-                tx.execute(
-                    "INSERT OR IGNORE INTO inbox_dismissals(npub, pr_id, dismissed_at)
-                     SELECT ?2, pr_id, dismissed_at
-                     FROM inbox_dismissals
-                     WHERE npub = ?1",
-                    params![raw_npub, canonical_npub],
-                )
-                .context("copy inbox dismissals to canonical owner")?;
-
-                tx.execute("DELETE FROM inbox WHERE npub = ?1", params![raw_npub])
-                    .context("delete raw inbox owner rows after canonicalization")?;
-                tx.execute(
-                    "DELETE FROM inbox_dismissals WHERE npub = ?1",
-                    params![raw_npub],
-                )
-                .context("delete raw inbox dismissal rows after canonicalization")?;
-
-                rekeyed += 1;
+                if merge_inbox_state_alias(&tx, &raw_npub, &canonical_npub).with_context(|| {
+                    format!(
+                        "merge inbox owner {} into canonical {}",
+                        raw_npub, canonical_npub
+                    )
+                })? > 0
+                {
+                    rekeyed += 1;
+                }
             }
 
             tx.commit()
@@ -1208,54 +1278,307 @@ fn upsert_artifact_row(
     pr_id: i64,
     head_sha: &str,
 ) -> anyhow::Result<UpsertOutcome> {
-    let existing_generated_head: Option<Option<String>> = conn
+    let latest: Option<(String, String)> = conn
         .query_row(
-            "SELECT generated_head_sha FROM generated_artifacts WHERE pr_id = ?1",
+            "SELECT status, source_head_sha
+             FROM artifact_versions
+             WHERE pr_id = ?1
+             ORDER BY version DESC
+             LIMIT 1",
             params![pr_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .context("lookup existing artifact row")?;
+        .context("lookup latest artifact version")?;
 
-    match existing_generated_head {
+    match latest {
         None => {
-            conn.execute(
-                "INSERT INTO generated_artifacts(pr_id, status, generated_head_sha, updated_at)
-                 VALUES (?1, 'pending', ?2, CURRENT_TIMESTAMP)",
-                params![pr_id, head_sha],
-            )
-            .with_context(|| format!("insert generated artifact for pr_id {}", pr_id))?;
-
+            insert_pending_artifact_version(conn, pr_id, head_sha)?;
             Ok(UpsertOutcome {
                 inserted: false,
                 head_changed: false,
                 queued: true,
             })
         }
-        Some(current_generated_head) => {
-            let needs_refresh = current_generated_head
-                .as_deref()
-                .map(|existing| existing != head_sha)
-                .unwrap_or(true);
-
-            if needs_refresh {
-                conn.execute(
-                    "UPDATE generated_artifacts
-                     SET status='pending', tutorial_json=NULL, html=NULL, error_message=NULL, next_retry_at=NULL,
-                         generated_head_sha=?1, updated_at=CURRENT_TIMESTAMP
-                     WHERE pr_id = ?2",
-                    params![head_sha, pr_id],
-                )
-                .with_context(|| format!("mark artifact pending for pr_id {}", pr_id))?;
-            }
-
+        Some((status, current_head_sha))
+            if current_head_sha == head_sha
+                && matches!(
+                    status.as_str(),
+                    "pending" | "generating" | "ready" | "failed"
+                ) =>
+        {
             Ok(UpsertOutcome {
                 inserted: false,
                 head_changed: false,
-                queued: needs_refresh,
+                queued: false,
+            })
+        }
+        _ => {
+            supersede_non_current_generations(conn, pr_id)?;
+            insert_pending_artifact_version(conn, pr_id, head_sha)?;
+            Ok(UpsertOutcome {
+                inserted: false,
+                head_changed: false,
+                queued: true,
             })
         }
     }
+}
+
+fn insert_pending_artifact_version(
+    conn: &Connection,
+    pr_id: i64,
+    head_sha: &str,
+) -> anyhow::Result<i64> {
+    let next_version: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM artifact_versions WHERE pr_id = ?1",
+            params![pr_id],
+            |row| row.get(0),
+        )
+        .context("compute next artifact version")?;
+    conn.execute(
+        "INSERT INTO artifact_versions(
+            pr_id, version, source_head_sha, status, generated_head_sha,
+            created_at, updated_at
+         ) VALUES (?1, ?2, ?3, 'pending', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        params![pr_id, next_version, head_sha],
+    )
+    .with_context(|| {
+        format!(
+            "insert pending artifact version {} for pr_id {}",
+            next_version, pr_id
+        )
+    })?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactUserStateRow {
+    artifact_id: i64,
+    state: String,
+    reason: String,
+    created_at: String,
+    updated_at: String,
+    dismissed_at: Option<String>,
+}
+
+fn merge_inbox_state_alias(
+    conn: &Connection,
+    from_npub: &str,
+    to_npub: &str,
+) -> anyhow::Result<usize> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT artifact_id, state, reason, created_at, updated_at, dismissed_at
+             FROM artifact_user_states
+             WHERE npub = ?1
+             ORDER BY artifact_id ASC",
+        )
+        .context("prepare source inbox state scan")?;
+    let rows = stmt
+        .query_map(params![from_npub], |row| {
+            Ok(ArtifactUserStateRow {
+                artifact_id: row.get(0)?,
+                state: row.get(1)?,
+                reason: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                dismissed_at: row.get(5)?,
+            })
+        })
+        .context("query source inbox state rows")?;
+
+    let mut source_rows = Vec::new();
+    for row in rows {
+        source_rows.push(row.context("read source inbox state row")?);
+    }
+
+    for source in &source_rows {
+        let existing = conn
+            .query_row(
+                "SELECT artifact_id, state, reason, created_at, updated_at, dismissed_at
+                 FROM artifact_user_states
+                 WHERE npub = ?1 AND artifact_id = ?2",
+                params![to_npub, source.artifact_id],
+                |row| {
+                    Ok(ArtifactUserStateRow {
+                        artifact_id: row.get(0)?,
+                        state: row.get(1)?,
+                        reason: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        dismissed_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query destination inbox state row")?;
+
+        if let Some(existing) = existing {
+            let merged = merge_artifact_user_state_rows(&existing, source);
+            conn.execute(
+                "UPDATE artifact_user_states
+                 SET state = ?1,
+                     reason = ?2,
+                     created_at = ?3,
+                     updated_at = ?4,
+                     dismissed_at = ?5
+                 WHERE npub = ?6 AND artifact_id = ?7",
+                params![
+                    merged.state,
+                    merged.reason,
+                    merged.created_at,
+                    merged.updated_at,
+                    merged.dismissed_at,
+                    to_npub,
+                    merged.artifact_id
+                ],
+            )
+            .context("update merged destination inbox state row")?;
+            conn.execute(
+                "DELETE FROM artifact_user_states WHERE npub = ?1 AND artifact_id = ?2",
+                params![from_npub, source.artifact_id],
+            )
+            .context("delete merged source inbox state row")?;
+        } else {
+            conn.execute(
+                "UPDATE artifact_user_states
+                 SET npub = ?1
+                 WHERE npub = ?2 AND artifact_id = ?3",
+                params![to_npub, from_npub, source.artifact_id],
+            )
+            .context("rekey inbox state row")?;
+        }
+    }
+
+    Ok(source_rows.len())
+}
+
+fn merge_artifact_user_state_rows(
+    existing: &ArtifactUserStateRow,
+    incoming: &ArtifactUserStateRow,
+) -> ArtifactUserStateRow {
+    debug_assert_eq!(existing.artifact_id, incoming.artifact_id);
+
+    let existing_rank = artifact_user_state_rank(&existing.state);
+    let incoming_rank = artifact_user_state_rank(&incoming.state);
+    let winner = if incoming_rank > existing_rank
+        || (incoming_rank == existing_rank && incoming.updated_at > existing.updated_at)
+    {
+        incoming
+    } else {
+        existing
+    };
+
+    let state = winner.state.clone();
+    let dismissed_at = if state == "dismissed" {
+        max(existing.dismissed_at.clone(), incoming.dismissed_at.clone())
+    } else {
+        None
+    };
+
+    ArtifactUserStateRow {
+        artifact_id: existing.artifact_id,
+        state,
+        reason: winner.reason.clone(),
+        created_at: min(existing.created_at.clone(), incoming.created_at.clone()),
+        updated_at: max(existing.updated_at.clone(), incoming.updated_at.clone()),
+        dismissed_at,
+    }
+}
+
+fn artifact_user_state_rank(state: &str) -> u8 {
+    match state {
+        "dismissed" => 3,
+        "inbox" => 2,
+        "superseded" => 1,
+        _ => 0,
+    }
+}
+
+fn supersede_non_current_generations(conn: &Connection, pr_id: i64) -> anyhow::Result<usize> {
+    conn.execute(
+        "UPDATE artifact_versions
+         SET status = 'superseded', next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE pr_id = ?1
+           AND is_current = 0
+           AND status IN ('pending', 'generating', 'failed')",
+        params![pr_id],
+    )
+    .with_context(|| format!("supersede non-current generations for pr_id {}", pr_id))
+}
+
+fn has_inflight_generation_for_head(
+    conn: &Connection,
+    pr_id: i64,
+    head_sha: &str,
+) -> anyhow::Result<bool> {
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM artifact_versions
+                WHERE pr_id = ?1
+                  AND source_head_sha = ?2
+                  AND status IN ('pending', 'generating')
+            )",
+            params![pr_id, head_sha],
+            |row| row.get(0),
+        )
+        .context("check inflight generation for head sha")?;
+    Ok(exists)
+}
+
+fn insert_inbox_rows_for_artifact(
+    conn: &Connection,
+    artifact_id: i64,
+    npubs: &[String],
+) -> anyhow::Result<usize> {
+    if npubs.is_empty() {
+        return Ok(0);
+    }
+
+    let Some((pr_id, is_current)) = conn
+        .query_row(
+            "SELECT pr_id, is_current = 1
+             FROM artifact_versions
+             WHERE id = ?1 AND status = 'ready'",
+            params![artifact_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
+        )
+        .optional()
+        .context("lookup ready artifact for inbox insert")?
+    else {
+        return Ok(0);
+    };
+
+    if !is_current {
+        return Ok(0);
+    }
+
+    let mut count = 0;
+    for npub in npubs {
+        conn.execute(
+            "UPDATE artifact_user_states
+             SET state = 'superseded', updated_at = CURRENT_TIMESTAMP
+             WHERE npub = ?1
+               AND state = 'inbox'
+               AND artifact_id IN (
+                   SELECT id FROM artifact_versions WHERE pr_id = ?2 AND id != ?3
+               )",
+            params![npub, pr_id, artifact_id],
+        )
+        .with_context(|| format!("supersede stale inbox rows for {}", npub))?;
+        count += conn
+            .execute(
+                "INSERT OR IGNORE INTO artifact_user_states(npub, artifact_id, state, reason, created_at, updated_at)
+                 VALUES (?1, ?2, 'inbox', 'generation_ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                params![npub, artifact_id],
+            )
+            .context("insert artifact inbox row")?;
+    }
+    Ok(count)
 }
 
 fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
@@ -1296,6 +1619,14 @@ fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn open_connection(path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open(path)
+        .with_context(|| format!("open sqlite database {}", path.display()))?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .context("set sqlite busy timeout")?;
+    Ok(conn)
 }
 
 struct Migration {
@@ -1341,17 +1672,106 @@ fn migrations() -> Vec<Migration> {
             name: "0007_inbox_dismissals",
             sql: include_str!("../migrations/0007_inbox_dismissals.sql"),
         },
+        Migration {
+            version: 8,
+            name: "0008_artifact_versions",
+            sql: include_str!("../migrations/0008_artifact_versions.sql"),
+        },
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use nostr::key::PublicKey;
-    use rusqlite::params;
+    use rusqlite::{params, OptionalExtension};
 
     use super::{ChatAllowlistEntry, PrUpsertInput, Store};
+
+    fn latest_artifact_id(store: &Store, pr_id: i64) -> i64 {
+        store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM artifact_versions
+                     WHERE pr_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    params![pr_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("lookup latest artifact id")
+    }
+
+    fn mark_latest_artifact_ready(store: &Store, pr_id: i64, head_sha: &str) -> i64 {
+        let artifact_id = latest_artifact_id(store, pr_id);
+        store
+            .mark_generation_ready(
+                artifact_id,
+                "{}",
+                "<p>ok</p>",
+                head_sha,
+                "diff",
+                Some("sid"),
+            )
+            .expect("mark artifact ready");
+        artifact_id
+    }
+
+    fn artifact_user_state(
+        store: &Store,
+        npub: &str,
+        artifact_id: i64,
+    ) -> Option<(String, Option<String>)> {
+        store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT state, dismissed_at
+                     FROM artifact_user_states
+                     WHERE npub = ?1 AND artifact_id = ?2",
+                    params![npub, artifact_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .expect("query artifact user state")
+    }
+
+    fn artifact_version_count(store: &Store, pr_id: i64) -> i64 {
+        store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM artifact_versions WHERE pr_id = ?1",
+                    params![pr_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count artifact versions")
+    }
+
+    fn inflight_artifact_count(store: &Store, pr_id: i64, head_sha: &str) -> i64 {
+        store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*)
+                     FROM artifact_versions
+                     WHERE pr_id = ?1
+                       AND source_head_sha = ?2
+                       AND status IN ('pending', 'generating')",
+                    params![pr_id, head_sha],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count inflight artifact versions")
+    }
 
     #[test]
     fn migrations_apply_and_reapply_without_data_loss() {
@@ -1406,17 +1826,8 @@ mod tests {
         assert!(outcome.queued);
         assert!(!outcome.head_changed);
 
-        // Simulate a completed generation for the first head SHA.
-        store
-            .with_connection(|conn| {
-                conn.execute(
-                    "UPDATE generated_artifacts SET status='ready', generated_head_sha='sha-1', tutorial_json='{}'",
-                    [],
-                )
-                .expect("mark artifact ready");
-                Ok(())
-            })
-            .expect("prepare artifact");
+        let pr_id = store.list_feed_items().expect("list feed")[0].pr_id;
+        mark_latest_artifact_ready(&store, pr_id, "sha-1");
 
         let same_head = store
             .upsert_pull_request(&PrUpsertInput {
@@ -1439,15 +1850,23 @@ mod tests {
 
         store
             .with_connection(|conn| {
-                let (status, generated_head): (String, String) = conn
+                let (version, status, source_head_sha, current_count): (i64, String, String, i64) =
+                    conn
                     .query_row(
-                        "SELECT status, generated_head_sha FROM generated_artifacts LIMIT 1",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        "SELECT version, status, source_head_sha,
+                                (SELECT COUNT(*) FROM artifact_versions WHERE pr_id = ?1 AND is_current = 1)
+                         FROM artifact_versions
+                         WHERE pr_id = ?1
+                         ORDER BY version DESC
+                         LIMIT 1",
+                        params![pr_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .expect("read artifact row");
+                assert_eq!(version, 2);
                 assert_eq!(status, "pending");
-                assert_eq!(generated_head, "sha-2");
+                assert_eq!(source_head_sha, "sha-2");
+                assert_eq!(current_count, 1);
                 Ok(())
             })
             .expect("verify pending state");
@@ -1680,12 +2099,14 @@ mod tests {
         let feed = store.list_feed_items().unwrap();
         let pr_id_1 = feed.iter().find(|f| f.pr_number == 1).unwrap().pr_id;
         let pr_id_2 = feed.iter().find(|f| f.pr_number == 2).unwrap().pr_id;
+        let artifact_id_1 = mark_latest_artifact_ready(&store, pr_id_1, "sha-1");
+        let artifact_id_2 = mark_latest_artifact_ready(&store, pr_id_2, "sha-2");
 
         let npub = "npub1test".to_string();
         let npubs = vec![npub.clone(), "npub2other".to_string()];
 
         // Populate inbox for both npubs
-        let count = store.populate_inbox(pr_id_1, &npubs).unwrap();
+        let count = store.populate_inbox(artifact_id_1, &npubs).unwrap();
         assert_eq!(count, 2); // 2 users got an item
 
         // Populate second PR with a later timestamp (CURRENT_TIMESTAMP has 1s resolution)
@@ -1693,8 +2114,9 @@ mod tests {
             .with_connection(|conn| {
                 for n in &npubs {
                     conn.execute(
-                        "INSERT OR IGNORE INTO inbox(npub, pr_id, created_at) VALUES (?1, ?2, datetime('now', '+1 second'))",
-                        params![n, pr_id_2],
+                        "INSERT OR IGNORE INTO artifact_user_states(npub, artifact_id, state, reason, created_at, updated_at)
+                         VALUES (?1, ?2, 'inbox', 'generation_ready', datetime('now', '+1 second'), datetime('now', '+1 second'))",
+                        params![n, artifact_id_2],
                     )
                     .expect("insert inbox item with offset");
                 }
@@ -1703,7 +2125,7 @@ mod tests {
             .unwrap();
 
         // Duplicate populate should be ignored
-        let dup = store.populate_inbox(pr_id_1, &npubs).unwrap();
+        let dup = store.populate_inbox(artifact_id_1, &npubs).unwrap();
         assert_eq!(dup, 0);
 
         // Count
@@ -1807,18 +2229,7 @@ mod tests {
             .find(|item| item.pr_number == 314)
             .expect("find PR")
             .pr_id;
-
-        store
-            .with_connection(|conn| {
-                conn.execute(
-                    "UPDATE generated_artifacts
-                     SET status='ready', tutorial_json='{}', html='<p>ok</p>'",
-                    [],
-                )
-                .expect("mark artifact ready");
-                Ok(())
-            })
-            .expect("prepare ready artifact");
+        mark_latest_artifact_ready(&store, pr_id, "ready-sha");
 
         let inserted = store.backfill_inbox_for_npub("npub1newuser").unwrap();
         assert_eq!(inserted, 1);
@@ -1853,21 +2264,29 @@ mod tests {
         store.upsert_pull_request(&make_pr(1)).unwrap();
 
         let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-1");
         let npub = "npub1dismissed";
 
-        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        store
+            .populate_inbox(artifact_id, &[npub.to_string()])
+            .unwrap();
         assert_eq!(store.inbox_count(npub).unwrap(), 1);
 
         store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
         assert_eq!(store.inbox_count(npub).unwrap(), 0);
 
-        assert_eq!(store.populate_inbox(pr_id, &[npub.to_string()]).unwrap(), 0);
+        assert_eq!(
+            store
+                .populate_inbox(artifact_id, &[npub.to_string()])
+                .unwrap(),
+            0
+        );
         assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 0);
         assert_eq!(store.inbox_count(npub).unwrap(), 0);
     }
 
     #[test]
-    fn reset_artifact_to_pending_preserves_dismissals_until_new_ready_artifact() {
+    fn queue_regeneration_preserves_dismissals_until_new_ready_artifact() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-news.db");
         let store = Store::open(&db_path).expect("open store");
@@ -1886,20 +2305,28 @@ mod tests {
         };
         store.upsert_pull_request(&input).unwrap();
         let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-12");
         let npub = "npub1regen";
 
-        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        store
+            .populate_inbox(artifact_id, &[npub.to_string()])
+            .unwrap();
         store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
         assert_eq!(store.inbox_count(npub).unwrap(), 0);
 
-        assert!(store.reset_artifact_to_pending(pr_id).unwrap());
-        assert_eq!(store.populate_inbox(pr_id, &[npub.to_string()]).unwrap(), 0);
+        assert!(store.queue_regeneration(pr_id).unwrap());
+        assert_eq!(
+            store
+                .populate_inbox(artifact_id, &[npub.to_string()])
+                .unwrap(),
+            0
+        );
         assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 0);
         assert_eq!(store.inbox_count(npub).unwrap(), 0);
     }
 
     #[test]
-    fn mark_generation_ready_clears_dismissals_for_that_pr() {
+    fn new_ready_generation_restores_inbox_without_clearing_old_dismissal() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-news.db");
         let store = Store::open(&db_path).expect("open store");
@@ -1919,31 +2346,83 @@ mod tests {
         store.upsert_pull_request(&input).unwrap();
 
         let pr_id = store.list_feed_items().unwrap()[0].pr_id;
-        let artifact_id = store
-            .claim_pending_generation_jobs(1)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap()
-            .artifact_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-13");
         let npub = "npub1ready";
 
-        store.populate_inbox(pr_id, &[npub.to_string()]).unwrap();
+        store
+            .populate_inbox(artifact_id, &[npub.to_string()])
+            .unwrap();
         store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
         assert_eq!(store.inbox_count(npub).unwrap(), 0);
 
+        assert!(store.queue_regeneration(pr_id).unwrap());
+        let next_artifact_id = latest_artifact_id(&store, pr_id);
+        assert_ne!(artifact_id, next_artifact_id);
         store
             .mark_generation_ready(
-                artifact_id,
+                next_artifact_id,
                 "{}",
-                "<p>ok</p>",
+                "<p>new</p>",
                 "sha-13",
-                "diff",
-                Some("sid"),
+                "diff-2",
+                Some("sid-2"),
             )
             .unwrap();
         assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 1);
         assert_eq!(store.inbox_count(npub).unwrap(), 1);
+        store.dismiss_inbox_items(npub, &[pr_id]).unwrap();
+        assert_eq!(store.backfill_inbox_for_npub(npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn chat_sessions_are_scoped_to_the_current_artifact_version() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 88,
+            title: "Chat scope".to_string(),
+            url: "https://github.com/sledtools/pika/pull/88".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-88".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        mark_latest_artifact_ready(&store, pr_id, "sha-88");
+
+        let (first_session_id, first_messages) = store
+            .get_or_create_chat_session(pr_id, "npub1chat", "sid-v1")
+            .unwrap();
+        assert!(first_messages.is_empty());
+        store
+            .append_chat_message(first_session_id, "user", "first version")
+            .unwrap();
+
+        assert!(store.queue_regeneration(pr_id).unwrap());
+        let next_artifact_id = latest_artifact_id(&store, pr_id);
+        store
+            .mark_generation_ready(
+                next_artifact_id,
+                "{}",
+                "<p>new</p>",
+                "sha-88",
+                "diff-2",
+                Some("sid-v2"),
+            )
+            .unwrap();
+
+        let (second_session_id, second_messages) = store
+            .get_or_create_chat_session(pr_id, "npub1chat", "sid-v2")
+            .unwrap();
+        assert_ne!(first_session_id, second_session_id);
+        assert!(second_messages.is_empty());
     }
 
     #[test]
@@ -1971,19 +2450,21 @@ mod tests {
         let feed = store.list_feed_items().unwrap();
         let pr_id_1 = feed.iter().find(|f| f.pr_number == 1).unwrap().pr_id;
         let pr_id_2 = feed.iter().find(|f| f.pr_number == 2).unwrap().pr_id;
+        let artifact_id_1 = mark_latest_artifact_ready(&store, pr_id_1, "sha-1");
+        let artifact_id_2 = mark_latest_artifact_ready(&store, pr_id_2, "sha-2");
 
         let old_npub = "deadbeef".repeat(8);
         let new_npub = "npub1canonical";
         store
-            .populate_inbox(pr_id_1, std::slice::from_ref(&old_npub))
+            .populate_inbox(artifact_id_1, std::slice::from_ref(&old_npub))
             .unwrap();
         store
-            .populate_inbox(pr_id_2, std::slice::from_ref(&old_npub))
+            .populate_inbox(artifact_id_2, std::slice::from_ref(&old_npub))
             .unwrap();
         store.dismiss_inbox_items(&old_npub, &[pr_id_2]).unwrap();
 
         let moved = store.rekey_inbox_npub(&old_npub, new_npub).unwrap();
-        assert_eq!(moved, 1);
+        assert_eq!(moved, 2);
         assert_eq!(store.inbox_count(&old_npub).unwrap(), 0);
         assert_eq!(store.inbox_count(new_npub).unwrap(), 1);
 
@@ -1994,6 +2475,86 @@ mod tests {
         let items = store.list_inbox(new_npub, 50, 0).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].pr_id, pr_id_1);
+    }
+
+    #[test]
+    fn rekey_inbox_npub_prefers_dismissed_state_on_conflict() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 11,
+            title: "Conflicting inbox owners".to_string(),
+            url: "https://github.com/sledtools/pika/pull/11".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-11".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-11");
+        let old_npub =
+            PublicKey::parse("npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y")
+                .unwrap()
+                .to_hex();
+        let canonical_npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+
+        store
+            .populate_inbox(artifact_id, &[old_npub.clone(), canonical_npub.to_string()])
+            .unwrap();
+        store.dismiss_all_inbox(&old_npub).unwrap();
+
+        let moved = store.rekey_inbox_npub(&old_npub, canonical_npub).unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(store.inbox_count(canonical_npub).unwrap(), 0);
+        let state = artifact_user_state(&store, canonical_npub, artifact_id).unwrap();
+        assert_eq!(state.0, "dismissed");
+        assert!(state.1.as_deref().unwrap_or_default().starts_with("2026-"));
+        assert_eq!(store.backfill_inbox_for_npub(canonical_npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn canonicalize_inbox_npubs_preserves_dismissed_conflicts() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 12,
+            title: "Canonicalize conflicting inbox owners".to_string(),
+            url: "https://github.com/sledtools/pika/pull/12".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-12".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-12");
+        let canonical = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
+        let raw_hex = PublicKey::parse(canonical).unwrap().to_hex();
+
+        store
+            .populate_inbox(artifact_id, &[raw_hex.clone(), canonical.to_string()])
+            .unwrap();
+        store.dismiss_all_inbox(&raw_hex).unwrap();
+
+        let rekeyed = store.canonicalize_inbox_npubs().unwrap();
+        assert_eq!(rekeyed, 1);
+        assert_eq!(store.inbox_count(canonical).unwrap(), 0);
+        let state = artifact_user_state(&store, canonical, artifact_id).unwrap();
+        assert_eq!(state.0, "dismissed");
+        assert!(state.1.as_deref().unwrap_or_default().starts_with("2026-"));
     }
 
     #[test]
@@ -2017,11 +2578,12 @@ mod tests {
         store.upsert_pull_request(&input).unwrap();
 
         let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        let artifact_id = mark_latest_artifact_ready(&store, pr_id, "sha-7");
         let canonical = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
         let raw_hex = PublicKey::parse(canonical).unwrap().to_hex();
 
         store
-            .populate_inbox(pr_id, std::slice::from_ref(&raw_hex))
+            .populate_inbox(artifact_id, std::slice::from_ref(&raw_hex))
             .unwrap();
 
         let rekeyed = store.canonicalize_inbox_npubs().unwrap();
@@ -2032,5 +2594,47 @@ mod tests {
         store.dismiss_all_inbox(canonical).unwrap();
         assert_eq!(store.backfill_inbox_for_npub(canonical).unwrap(), 0);
         assert_eq!(store.inbox_count(canonical).unwrap(), 0);
+    }
+
+    #[test]
+    fn concurrent_regeneration_reuses_single_pending_version() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Arc::new(Store::open(&db_path).expect("open store"));
+
+        let input = PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: 21,
+            title: "Concurrent regenerate".to_string(),
+            url: "https://github.com/sledtools/pika/pull/21".to_string(),
+            state: "open".to_string(),
+            head_sha: "sha-21".to_string(),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: "2026-03-01T00:00:00Z".to_string(),
+            merged_at: None,
+        };
+        store.upsert_pull_request(&input).unwrap();
+        let pr_id = store.list_feed_items().unwrap()[0].pr_id;
+        mark_latest_artifact_ready(&store, pr_id, "sha-21");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                store.queue_regeneration(pr_id)
+            }));
+        }
+        barrier.wait();
+
+        for handle in handles {
+            assert!(handle.join().unwrap().unwrap());
+        }
+
+        assert_eq!(artifact_version_count(&store, pr_id), 2);
+        assert_eq!(inflight_artifact_count(&store, pr_id, "sha-21"), 1);
     }
 }

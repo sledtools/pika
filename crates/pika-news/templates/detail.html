@@ -31,11 +31,16 @@
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
 
-      /* Diff layout: file list sidebar + diffs */
+      /* Page-level file list sidebar + main content */
+      .content-with-files { display: flex; gap: 1rem; }
+      .file-list-sidebar { display: none; }
       @media (min-width: 1024px) {
-        #diff-container { display: flex; gap: 1rem; align-items: flex-start; }
-        #diff-container .d2h-file-list-wrapper { flex-shrink: 0; width: 280px; position: sticky; top: 4rem; max-height: calc(100vh - 5rem); overflow-y: auto; border-radius: 10px; }
-        #diff-container .d2h-wrapper { flex: 1; min-width: 0; }
+        .file-list-sidebar { display: block; flex-shrink: 0; width: 280px; position: sticky; top: 4rem; max-height: calc(100vh - 5rem); overflow-y: auto; }
+        .file-list-sidebar .d2h-file-list-wrapper { border-radius: 10px; }
+        .content-with-files .shell { flex: 1; min-width: 0; }
+      }
+      @media (max-width: 1023px) {
+        .content-with-files { display: block; }
       }
 
       /* Diff2html dark mode overrides */
@@ -119,6 +124,8 @@
     {% if chat_enabled %}
     <div class="page-layout" style="margin:0 auto;padding:2rem 1rem;">
     {% endif %}
+    <div class="content-with-files">
+    <aside id="file-list-sidebar" class="file-list-sidebar"></aside>
     <main class="shell">
       <p><a href="/news">Back to feed</a></p>
       <h1>{{ page_title }}</h1>
@@ -201,6 +208,7 @@
       </section>
       {% when None %}{% endmatch %}
     </main>
+    </div>
 
     {% if chat_enabled %}
     <aside class="chat-sidebar" id="chat-sidebar">
@@ -262,6 +270,8 @@
           const diffText = JSON.parse(diffDataEl.textContent);
           let currentStyle = 'side';
 
+          const fileListSidebar = document.getElementById('file-list-sidebar');
+
           function renderDiff(style) {
             const outputFormat = style === 'side' ? 'side-by-side' : 'line-by-line';
             diffContainer.innerHTML = Diff2Html.html(diffText, {
@@ -270,6 +280,12 @@
               outputFormat: outputFormat,
               highlight: true,
             });
+            // Move file list out of diff pane into the page-level sidebar
+            const fileList = diffContainer.querySelector('.d2h-file-list-wrapper');
+            if (fileList && fileListSidebar) {
+              fileListSidebar.innerHTML = '';
+              fileListSidebar.appendChild(fileList);
+            }
           }
 
           renderDiff(currentStyle);

@@ -6,6 +6,12 @@ use tokio::time::Instant;
 
 use crate::key_package::normalize_peer_key_package_event_for_mdk;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishOutcome {
+    Ok,
+    Err(String),
+}
+
 pub async fn connect_client(keys: &Keys, relay_urls: &[String]) -> Result<Client> {
     let client = Client::new(keys.clone());
     for url in relay_urls {
@@ -33,6 +39,125 @@ pub async fn publish_and_confirm(
         return Err(anyhow!("no relay accepted event ({label}): {reasons:?}"));
     }
     Ok(())
+}
+
+fn is_retryable_relay_error(err: &str) -> bool {
+    err.contains("auth")
+        || err.contains("AUTH")
+        || err.contains("protected")
+        || err.contains("not connected")
+        || err.contains("not ready")
+        || err.contains("no relays")
+}
+
+pub async fn publish_event_with_retry(
+    client: &Client,
+    relays: &[RelayUrl],
+    event: &Event,
+    max_attempts: u8,
+    context: &str,
+    reconnect: bool,
+) -> PublishOutcome {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..max_attempts {
+        if reconnect {
+            client.connect().await;
+            client.wait_for_connection(Duration::from_secs(5)).await;
+        }
+
+        match client.send_event_to(relays, event).await {
+            Ok(output) if !output.success.is_empty() => {
+                tracing::info!(
+                    attempt,
+                    ok_relays = ?output.success,
+                    failed_relays = ?output.failed.keys().collect::<Vec<_>>(),
+                    "{context}: publish ok"
+                );
+                return PublishOutcome::Ok;
+            }
+            Ok(output) => {
+                let err = output
+                    .failed
+                    .values()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "no relay accepted event".to_string());
+                let retryable = output.failed.values().any(|e| is_retryable_relay_error(e));
+                tracing::warn!(attempt, "{context}: publish failed err={err}");
+                last_err = Some(err);
+                if !retryable {
+                    break;
+                }
+            }
+            Err(e) => {
+                let es = e.to_string();
+                let retryable = is_retryable_relay_error(&es);
+                tracing::warn!(attempt, "{context}: publish error err={e:#}");
+                last_err = Some(es);
+                if !retryable {
+                    break;
+                }
+            }
+        }
+        if attempt + 1 < max_attempts {
+            backoff_sleep(attempt).await;
+        }
+    }
+    PublishOutcome::Err(last_err.unwrap_or_else(|| "unknown error".to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn gift_wrap_with_retry(
+    client: &Client,
+    relays: &[RelayUrl],
+    receiver: &PublicKey,
+    rumor: UnsignedEvent,
+    tags: Vec<Tag>,
+    max_attempts: u8,
+    context: &str,
+    reconnect: bool,
+) -> PublishOutcome {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..max_attempts {
+        if reconnect {
+            client.connect().await;
+            client.wait_for_connection(Duration::from_secs(5)).await;
+        }
+
+        match client
+            .gift_wrap_to(relays, receiver, rumor.clone(), tags.clone())
+            .await
+        {
+            Ok(output) if !output.success.is_empty() => return PublishOutcome::Ok,
+            Ok(output) => {
+                let err = output
+                    .failed
+                    .values()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "no relay accepted event".to_string());
+                let retryable = output.failed.values().any(|e| is_retryable_relay_error(e));
+                tracing::warn!(attempt, "{context}: failed err={err}");
+                last_err = Some(err);
+                if !retryable {
+                    break;
+                }
+            }
+            Err(e) => {
+                let es = e.to_string();
+                let retryable = is_retryable_relay_error(&es);
+                tracing::warn!(attempt, "{context}: error err={e:#}");
+                last_err = Some(es);
+                if !retryable {
+                    break;
+                }
+            }
+        }
+        if attempt + 1 < max_attempts {
+            backoff_sleep(attempt).await;
+        }
+    }
+    PublishOutcome::Err(last_err.unwrap_or_else(|| "unknown error".to_string()))
 }
 
 pub async fn fetch_latest_key_package(
@@ -65,6 +190,11 @@ pub async fn fetch_latest_key_package_for_mdk(
 
 fn normalize_fetched_key_package_for_mdk(event: &Event) -> Event {
     normalize_peer_key_package_event_for_mdk(event)
+}
+
+async fn backoff_sleep(attempt: u8) {
+    let delay_ms = 250u64.saturating_mul(1u64 << attempt);
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
 pub fn parse_relay_urls(urls: &[String]) -> Result<Vec<RelayUrl>> {
@@ -177,5 +307,13 @@ mod tests {
                 .iter()
                 .any(|tag| tag.as_slice() == ["mls_ciphersuite", "0x0001"])
         );
+    }
+
+    #[test]
+    fn retryable_relay_error_matches_app_rules() {
+        assert!(is_retryable_relay_error("auth required"));
+        assert!(is_retryable_relay_error("relay not ready"));
+        assert!(is_retryable_relay_error("protected event rejected"));
+        assert!(!is_retryable_relay_error("invalid event id"));
     }
 }

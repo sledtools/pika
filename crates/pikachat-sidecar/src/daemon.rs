@@ -361,7 +361,7 @@ fn default_group_name() -> String {
 const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
 use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
-use pika_marmot_runtime::relay::fetch_latest_key_package_for_mdk;
+use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -1986,16 +1986,7 @@ async fn publish_without_confirm_multi(
     event: &Event,
     label: &str,
 ) -> anyhow::Result<()> {
-    let out = client
-        .send_event_to(relays.to_vec(), event)
-        .await
-        .with_context(|| format!("send_event_to failed ({label})"))?;
-    if out.success.is_empty() {
-        return Err(anyhow!(
-            "event publish had no successful relays ({label}): {out:?}"
-        ));
-    }
-    Ok(())
+    publish_and_confirm(client, relays, event, label).await
 }
 
 async fn stdout_writer(mut rx: mpsc::UnboundedReceiver<OutMsg>) -> anyhow::Result<()> {

@@ -18,6 +18,7 @@ This is a phased plan, not a rigid contract. After each phase:
 - Reuse Nix/Crane-style staged build boundaries instead of inventing custom artifact formats early.
 - Land every viable phase to `master` quickly to minimize rebase pain against ongoing core-library refactors.
 - Treat test coverage as part of the migration, not a fixed constraint. If the current suite is low-value or flaky, improve or replace it as part of the work.
+- Treat this document as live. Update phase status, next-step recommendations, and review learnings after each landable slice.
 
 ## Phase 0: Baseline And Scope Lock
 
@@ -187,10 +188,16 @@ Review focus:
 
 - Are we accelerating bad tests?
 - Should the next lane migration target change based on what we learned?
+- Did phase 2b reveal any reason to insert another small cleanup or abstraction pass before scheduler work?
 
 Land to `master`:
 
 - Yes. Test-quality fixes should not sit around and diverge from ongoing core refactors.
+
+Decision gate after this phase:
+
+- Before starting scheduler work, explicitly decide whether Phase 4 is still the right next step.
+- If the audit shows the reference lane is weak, too narrow, or awkward to shard, revise the plan first instead of forcing fanout onto the wrong target.
 
 ## Phase 4: Scheduler And Fanout Preparation
 
@@ -306,6 +313,9 @@ We have at least one important Linux Rust lane where:
 
 ## Current Status
 
-- Phase 1 is implemented and reviewed.
-- Next recommended slice is Phase 2a only.
-- Do not combine Phase 2a and 2b in one implementation pass unless a review explicitly says to do so.
+- Phase 0 is complete.
+- Phase 1 is complete and landed.
+- Phase 2a is complete and landed.
+- Phase 2b is complete and ready to land once the branch is rebased onto current `origin/master` and re-verified.
+- Current recommended slice is Phase 3.
+- After Phase 3, re-evaluate whether Phase 4 should remain scheduler/fanout preparation or whether another smaller cleanup/refinement phase should come first.

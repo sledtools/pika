@@ -287,6 +287,13 @@ Recommended next implementation slice:
 - Keep the current Nix-backed prepared-build contract and make the remote-execution constraints explicit before adding `nextest` archive.
 - The concrete next prompt should ask for a narrow remote-prep slice around how a prepared Nix output is identified, realized, and mounted by a non-local executor without inventing a generic artifact protocol.
 
+Phase 5 review notes:
+
+- Phase 5 is complete and landed as a docs/decision slice.
+- Rust execute inputs should stay Nix-backed for now.
+- `nextest` archive stays deferred until remote execution or broader fanout creates a real artifact-mobility problem.
+- The next recommended slice is a narrow remote-prep step that makes staged Nix output handoff machine-readable without implementing remote execution yet.
+
 Land to `master`:
 
 - The decision doc, yes.
@@ -315,6 +322,17 @@ Review focus:
 Land to `master`:
 
 - Only in small slices. Do not reopen a giant branch at this stage.
+
+Phase 6 implementation notes:
+
+- This phase is complete in its first narrow form.
+- `pikaci` now records a machine-readable prepared-output handoff contract for staged Linux Rust Nix prepares:
+  - the run plan describes staged `workspaceDeps` and `workspaceBuild` prepares as `nix_store_path_v1` handoffs,
+  - the handoff includes explicit read-only host symlink mount exposures for the guest-facing staged paths,
+  - local prepare persists the realized handoff state in `prepared-outputs.json` alongside `plan.json` and `run.json`.
+- This does not add remote execution, remote builders, or a generic artifact protocol. It only makes the current local staged-prepare boundary concrete enough for a later non-local executor to consume.
+- The boundary lives with prepare-node modeling and prepare execution, not in the guest-command or lane-authoring surfaces. That should remain the containment line for later remote work.
+- Next recommended slice: one narrow non-local realization/mount prototype that consumes the staged Linux Rust prepared-output handoff contract, still without broadening to Apple/Android or adding `nextest` archive.
 
 ## Deferred Until Proven Necessary
 
@@ -352,5 +370,6 @@ We have at least one important Linux Rust lane where:
 - Phase 2b is complete and landed.
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
-- Phase 5 is complete in this document as a decision/update slice.
-- Current recommended slice is Phase 6: remote builder / remote executor preparation while keeping Rust execute inputs Nix-backed for now.
+- Phase 5 is complete and landed as a decision/update slice.
+- Phase 6 is complete in its first narrow remote-prep form.
+- Current recommended slice is the next narrow remote step: consume the staged Linux Rust prepared-output handoff contract from a non-local realization/mount boundary while keeping Rust execute inputs Nix-backed.

@@ -163,12 +163,46 @@ impl StagedLinuxRustLane {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputHandoffProtocol {
+    NixStorePathV1,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputExposureKind {
+    HostSymlinkMount,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputExposureAccess {
+    ReadOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputExposure {
+    pub kind: PreparedOutputExposureKind,
+    pub path: String,
+    pub access: PreparedOutputExposureAccess,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputHandoff {
+    pub protocol: PreparedOutputHandoffProtocol,
+    #[serde(default)]
+    pub exposures: Vec<PreparedOutputExposure>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PrepareNode {
     NixBuild {
         installable: String,
         output_name: String,
+        #[serde(default)]
+        handoff: Option<PreparedOutputHandoff>,
     },
 }
 
@@ -243,6 +277,24 @@ pub struct JobOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RealizedPreparedOutputRecord {
+    pub node_id: String,
+    pub installable: String,
+    pub output_name: String,
+    pub protocol: PreparedOutputHandoffProtocol,
+    pub realized_path: String,
+    #[serde(default)]
+    pub exposures: Vec<PreparedOutputExposure>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PreparedOutputsRecord {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub outputs: Vec<RealizedPreparedOutputRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobRecord {
     pub id: String,
     pub description: String,
@@ -277,6 +329,8 @@ pub struct RunRecord {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub plan_path: Option<String>,
+    #[serde(default)]
+    pub prepared_outputs_path: Option<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]

@@ -131,6 +131,9 @@ fn main() -> anyhow::Result<()> {
             if let Some(plan_path) = &run.plan_path {
                 println!("plan={plan_path}");
             }
+            if let Some(prepared_outputs_path) = &run.prepared_outputs_path {
+                println!("prepared_outputs={prepared_outputs_path}");
+            }
             if let Some(message) = &run.message {
                 println!("{message}");
             }
@@ -1205,6 +1208,7 @@ mod tests {
             created_at: "2026-03-07T00:00:00Z".to_string(),
             finished_at: Some("2026-03-07T00:00:01Z".to_string()),
             plan_path: None,
+            prepared_outputs_path: None,
             changed_files: vec![],
             filters: vec![],
             message: None,

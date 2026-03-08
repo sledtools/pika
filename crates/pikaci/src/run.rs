@@ -17,7 +17,10 @@ use crate::executor::{
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
-    RunPlanRecord, RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
+    PreparedOutputExposure, PreparedOutputExposureAccess, PreparedOutputExposureKind,
+    PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputsRecord,
+    RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus, RunnerKind,
+    StagedLinuxRustLane,
 };
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
@@ -117,6 +120,13 @@ fn run_jobs_against_snapshot(
 ) -> anyhow::Result<RunRecord> {
     let plan = build_run_plan(jobs, prepared, snapshot, &metadata)?;
     let plan_path = write_run_plan_record(&prepared.run_dir, &plan.record)?;
+    let prepared_outputs_path = write_prepared_outputs_record(
+        &prepared.run_dir,
+        &PreparedOutputsRecord {
+            schema_version: 1,
+            outputs: Vec::new(),
+        },
+    )?;
     let mut run_record = RunRecord {
         run_id: prepared.run_id.clone(),
         status: RunStatus::Running,
@@ -130,6 +140,7 @@ fn run_jobs_against_snapshot(
         created_at: prepared.created_at.clone(),
         finished_at: None,
         plan_path: Some(plan_path.display().to_string()),
+        prepared_outputs_path: Some(prepared_outputs_path.display().to_string()),
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -137,7 +148,7 @@ fn run_jobs_against_snapshot(
     };
     write_run_record(&prepared.run_dir, &run_record)?;
 
-    let prepared_node_ids = match run_prepare_nodes(&plan.prepares) {
+    let prepared_node_ids = match run_prepare_nodes(&plan.prepares, &prepared_outputs_path) {
         Ok(node_ids) => node_ids,
         Err(failure) => {
             mark_prepare_failure(&mut run_record, &plan, &failure)?;
@@ -275,6 +286,7 @@ pub fn record_skipped_run(
         created_at: created_at.clone(),
         finished_at: Some(created_at),
         plan_path: None,
+        prepared_outputs_path: None,
         changed_files: metadata.changed_files,
         filters: metadata.filters,
         message: metadata.message,
@@ -483,6 +495,15 @@ fn write_run_plan_record(run_dir: &Path, record: &RunPlanRecord) -> anyhow::Resu
     Ok(path)
 }
 
+fn write_prepared_outputs_record(
+    run_dir: &Path,
+    record: &PreparedOutputsRecord,
+) -> anyhow::Result<PathBuf> {
+    let path = run_dir.join("prepared-outputs.json");
+    write_json(path.clone(), record)?;
+    Ok(path)
+}
+
 fn write_job_record(job_dir: &Path, record: &JobRecord) -> anyhow::Result<()> {
     write_json(job_dir.join("status.json"), record)
 }
@@ -505,6 +526,7 @@ enum PrepareAction {
     NixBuildOutput {
         installable: String,
         output_name: &'static str,
+        handoff: Option<PreparedOutputHandoff>,
         mount_paths: Vec<PathBuf>,
         log_paths: Vec<PathBuf>,
     },
@@ -609,6 +631,10 @@ fn build_run_plan(
                         action: PrepareAction::NixBuildOutput {
                             installable: workspace_deps_installable.clone(),
                             output_name: lane.workspace_deps_output_name(),
+                            handoff: Some(PreparedOutputHandoff {
+                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                exposures: Vec::new(),
+                            }),
                             mount_paths: Vec::new(),
                             log_paths: Vec::new(),
                         },
@@ -624,6 +650,10 @@ fn build_run_plan(
                         prepare: PrepareNode::NixBuild {
                             installable: workspace_deps_installable.clone(),
                             output_name: lane.workspace_deps_output_name().to_string(),
+                            handoff: Some(PreparedOutputHandoff {
+                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                exposures: Vec::new(),
+                            }),
                         },
                     }
                 });
@@ -636,6 +666,10 @@ fn build_run_plan(
                         action: PrepareAction::NixBuildOutput {
                             installable: workspace_build_installable.clone(),
                             output_name: lane.workspace_build_output_name(),
+                            handoff: Some(PreparedOutputHandoff {
+                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                exposures: Vec::new(),
+                            }),
                             mount_paths: Vec::new(),
                             log_paths: Vec::new(),
                         },
@@ -651,12 +685,17 @@ fn build_run_plan(
                         prepare: PrepareNode::NixBuild {
                             installable: workspace_build_installable.clone(),
                             output_name: lane.workspace_build_output_name().to_string(),
+                            handoff: Some(PreparedOutputHandoff {
+                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                exposures: Vec::new(),
+                            }),
                         },
                     }
                 });
 
             add_staged_mount_consumer(
                 &mut planned_prepares,
+                &mut prepare_nodes,
                 &deps_node_id,
                 ctx.staged_linux_rust_workspace_deps_dir
                     .as_ref()
@@ -665,6 +704,7 @@ fn build_run_plan(
             );
             add_staged_mount_consumer(
                 &mut planned_prepares,
+                &mut prepare_nodes,
                 &build_node_id,
                 ctx.staged_linux_rust_workspace_build_dir
                     .as_ref()
@@ -700,6 +740,7 @@ fn build_run_plan(
                         output_name:
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                                 .to_string(),
+                        handoff: None,
                     },
                 },
             );
@@ -772,6 +813,7 @@ fn staged_linux_rust_installable(
 
 fn add_staged_mount_consumer(
     prepares: &mut [PlannedPrepare],
+    prepare_nodes: &mut HashMap<String, PlanNodeRecord>,
     node_id: &str,
     mount_path: &Path,
     log_path: &Path,
@@ -783,6 +825,7 @@ fn add_staged_mount_consumer(
         return;
     };
     let PrepareAction::NixBuildOutput {
+        handoff,
         mount_paths,
         log_paths,
         ..
@@ -795,6 +838,35 @@ fn add_staged_mount_consumer(
     }
     if !log_paths.iter().any(|path| path == log_path) {
         log_paths.push(log_path.to_path_buf());
+    }
+    if let Some(handoff) = handoff {
+        add_handoff_exposure(handoff, mount_path);
+    }
+    if let Some(PlanNodeRecord::Prepare {
+        prepare:
+            PrepareNode::NixBuild {
+                handoff: Some(handoff),
+                ..
+            },
+        ..
+    }) = prepare_nodes.get_mut(node_id)
+    {
+        add_handoff_exposure(handoff, mount_path);
+    }
+}
+
+fn add_handoff_exposure(handoff: &mut PreparedOutputHandoff, mount_path: &Path) {
+    let exposure = PreparedOutputExposure {
+        kind: PreparedOutputExposureKind::HostSymlinkMount,
+        path: mount_path.display().to_string(),
+        access: PreparedOutputExposureAccess::ReadOnly,
+    };
+    if !handoff
+        .exposures
+        .iter()
+        .any(|existing| existing == &exposure)
+    {
+        handoff.exposures.push(exposure);
     }
 }
 
@@ -856,7 +928,38 @@ fn realize_nix_build_output(
     Ok(PathBuf::from(path.trim()))
 }
 
-fn run_prepare_nodes(prepares: &[PlannedPrepare]) -> Result<Vec<String>, PrepareFailure> {
+fn upsert_prepared_output_record(
+    prepared_outputs_path: &Path,
+    record: RealizedPreparedOutputRecord,
+) -> anyhow::Result<()> {
+    let existing = if prepared_outputs_path.exists() {
+        let bytes = fs::read(prepared_outputs_path)
+            .with_context(|| format!("read {}", prepared_outputs_path.display()))?;
+        serde_json::from_slice::<PreparedOutputsRecord>(&bytes)
+            .with_context(|| format!("decode {}", prepared_outputs_path.display()))?
+    } else {
+        PreparedOutputsRecord {
+            schema_version: 1,
+            outputs: Vec::new(),
+        }
+    };
+    let mut updated = existing;
+    if let Some(existing) = updated
+        .outputs
+        .iter_mut()
+        .find(|output| output.node_id == record.node_id)
+    {
+        *existing = record;
+    } else {
+        updated.outputs.push(record);
+    }
+    write_json(prepared_outputs_path.to_path_buf(), &updated)
+}
+
+fn run_prepare_nodes(
+    prepares: &[PlannedPrepare],
+    prepared_outputs_path: &Path,
+) -> Result<Vec<String>, PrepareFailure> {
     let mut completed = HashSet::new();
     let mut completed_order = Vec::new();
     let mut pending: Vec<_> = prepares.iter().collect();
@@ -876,6 +979,7 @@ fn run_prepare_nodes(prepares: &[PlannedPrepare]) -> Result<Vec<String>, Prepare
             PrepareAction::NixBuildOutput {
                 installable,
                 output_name,
+                handoff,
                 mount_paths,
                 log_paths,
             } => {
@@ -904,6 +1008,35 @@ fn run_prepare_nodes(prepares: &[PlannedPrepare]) -> Result<Vec<String>, Prepare
                     node_id: prepare.node_id.clone(),
                     message: format!("{err:#}"),
                 })?;
+                if let Some(handoff) = handoff {
+                    upsert_prepared_output_record(
+                        prepared_outputs_path,
+                        RealizedPreparedOutputRecord {
+                            node_id: prepare.node_id.clone(),
+                            installable: installable.clone(),
+                            output_name: (*output_name).to_string(),
+                            protocol: handoff.protocol,
+                            realized_path: output_path.display().to_string(),
+                            exposures: handoff.exposures.clone(),
+                        },
+                    )
+                    .map_err(|err| PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    })?;
+                    append_log_line_many(
+                        log_paths,
+                        &format!(
+                            "[pikaci] prepared output handoff recorded: {} ({})",
+                            output_name,
+                            prepared_outputs_path.display()
+                        ),
+                    )
+                    .map_err(|err| PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    })?;
+                }
             }
             PrepareAction::VfkitRunner {
                 installable,
@@ -1163,11 +1296,13 @@ mod tests {
     use super::{
         PrepareFailure, PreparedRun, RunMetadata, SnapshotSource, build_run_plan, gc_runs,
         mark_prepare_failure, parallel_execute_cap_for_jobs, ready_execute_job_positions,
-        write_run_plan_record,
+        upsert_prepared_output_record, write_run_plan_record,
     };
     use crate::model::{
         ExecuteNode, GuestCommand, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-        PrepareNode, RunPlanRecord, RunRecord, RunStatus,
+        PrepareNode, PreparedOutputExposure, PreparedOutputExposureAccess,
+        PreparedOutputExposureKind, PreparedOutputHandoffProtocol, PreparedOutputsRecord,
+        RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
     };
 
     #[test]
@@ -1255,12 +1390,29 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        handoff,
                     } => {
                         assert!(
                             installable
                                 .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceDeps")
                         );
                         assert_eq!(output_name, "ci.aarch64-linux.workspaceDeps");
+                        let handoff = handoff.as_ref().expect("workspace deps handoff");
+                        assert_eq!(
+                            handoff.protocol,
+                            PreparedOutputHandoffProtocol::NixStorePathV1
+                        );
+                        assert_eq!(handoff.exposures.len(), 2);
+                        assert!(handoff.exposures.iter().any(|exposure| {
+                            exposure.path.ends_with(
+                                "jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-deps"
+                            )
+                        }));
+                        assert!(handoff.exposures.iter().any(|exposure| {
+                            exposure.path.ends_with(
+                                "jobs/pika-core-messaging-e2e-tests/staged-linux-rust/workspace-deps"
+                            )
+                        }));
                     }
                 }
             }
@@ -1285,12 +1437,23 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        handoff,
                     } => {
                         assert!(
                             installable
                                 .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceBuild")
                         );
                         assert_eq!(output_name, "ci.aarch64-linux.workspaceBuild");
+                        let handoff = handoff.as_ref().expect("workspace build handoff");
+                        assert_eq!(
+                            handoff.protocol,
+                            PreparedOutputHandoffProtocol::NixStorePathV1
+                        );
+                        assert_eq!(handoff.exposures.len(), 2);
+                        assert!(handoff.exposures.iter().all(|exposure| {
+                            exposure.kind == PreparedOutputExposureKind::HostSymlinkMount
+                                && exposure.access == PreparedOutputExposureAccess::ReadOnly
+                        }));
                     }
                 }
             }
@@ -1310,6 +1473,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        handoff,
                     } => {
                         assert!(installable.contains(
                             "jobs/pika-core-lib-app-flows-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
@@ -1318,6 +1482,7 @@ mod tests {
                             output_name,
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         );
+                        assert!(handoff.is_none());
                     }
                 }
             }
@@ -1337,6 +1502,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        handoff,
                     } => {
                         assert!(installable.contains(
                             "jobs/pika-core-messaging-e2e-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
@@ -1345,6 +1511,7 @@ mod tests {
                             output_name,
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         );
+                        assert!(handoff.is_none());
                     }
                 }
             }
@@ -1531,6 +1698,51 @@ mod tests {
     }
 
     #[test]
+    fn upsert_prepared_output_record_persists_machine_readable_handoff_state() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-prepared-output-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        let path = root.join("prepared-outputs.json");
+
+        upsert_prepared_output_record(
+            &path,
+            RealizedPreparedOutputRecord {
+                node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
+                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                realized_path: "/nix/store/workspace-build".to_string(),
+                exposures: vec![PreparedOutputExposure {
+                    kind: PreparedOutputExposureKind::HostSymlinkMount,
+                    path: "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
+                        .to_string(),
+                    access: PreparedOutputExposureAccess::ReadOnly,
+                }],
+            },
+        )
+        .expect("write prepared output record");
+
+        let bytes = fs::read(&path).expect("read prepared outputs");
+        let decoded: PreparedOutputsRecord =
+            serde_json::from_slice(&bytes).expect("decode prepared outputs");
+
+        assert_eq!(decoded.schema_version, 1);
+        assert_eq!(decoded.outputs.len(), 1);
+        assert_eq!(
+            decoded.outputs[0].protocol,
+            PreparedOutputHandoffProtocol::NixStorePathV1
+        );
+        assert_eq!(
+            decoded.outputs[0].exposures[0].path,
+            "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn max_parallel_execute_jobs_is_narrowed_to_staged_wrapper_lane() {
         let root =
             std::env::temp_dir().join(format!("pikaci-parallel-test-{}", uuid::Uuid::new_v4()));
@@ -1624,6 +1836,13 @@ mod tests {
             created_at: prepared.created_at.clone(),
             finished_at: None,
             plan_path: Some(prepared.run_dir.join("plan.json").display().to_string()),
+            prepared_outputs_path: Some(
+                prepared
+                    .run_dir
+                    .join("prepared-outputs.json")
+                    .display()
+                    .to_string(),
+            ),
             changed_files: Vec::new(),
             filters: Vec::new(),
             message: None,

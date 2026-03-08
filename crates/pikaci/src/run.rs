@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -12,7 +13,7 @@ use crate::executor::{
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
-    RunPlanRecord, RunRecord, RunStatus, RunnerKind,
+    RunPlanRecord, RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
 };
 use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
 
@@ -138,6 +139,7 @@ fn run_jobs_against_snapshot(
             &planned_job.job,
             &planned_job.execute_node_id,
             &planned_job.ctx,
+            planned_job.staged_linux_rust_prepare.as_ref(),
         )?;
         if job_record.status == RunStatus::Failed {
             run_failed = true;
@@ -194,7 +196,12 @@ pub fn record_skipped_run(
     Ok(run_record)
 }
 
-fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::Result<JobRecord> {
+fn run_one_job(
+    job: &JobSpec,
+    plan_node_id: &str,
+    ctx: &HostContext,
+    staged_linux_rust_prepare: Option<&StagedLinuxRustPrepare>,
+) -> anyhow::Result<JobRecord> {
     let job_dir = ctx.job_dir.clone();
     let host_log_path = ctx.host_log_path.clone();
     let guest_log_path = ctx.guest_log_path.clone();
@@ -217,7 +224,12 @@ fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::
     };
     write_job_record(&job_dir, &job_record)?;
 
-    let outcome = run_job_on_runner(job, ctx);
+    let mut ctx = ctx.clone();
+    if let Some(staged_linux_rust_prepare) = staged_linux_rust_prepare {
+        prepare_staged_linux_rust_host_context(&mut ctx, staged_linux_rust_prepare)?;
+    }
+
+    let outcome = run_job_on_runner(job, &ctx);
 
     let finished_at = Utc::now().to_rfc3339();
     match outcome {
@@ -388,11 +400,17 @@ struct PlannedJob {
     job: JobSpec,
     execute_node_id: String,
     ctx: HostContext,
+    staged_linux_rust_prepare: Option<StagedLinuxRustPrepare>,
 }
 
 struct RunPlan {
     record: RunPlanRecord,
     jobs: Vec<PlannedJob>,
+}
+
+struct StagedLinuxRustPrepare {
+    workspace_deps_installable: String,
+    workspace_build_installable: String,
 }
 
 struct PreparedRun {
@@ -423,6 +441,7 @@ fn build_run_plan(
 
     for job in jobs {
         let job_dir = prepared.jobs_dir.join(job.id);
+        fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
         let ctx = HostContext {
             workspace_snapshot_dir: prepare_job_workspace(job, &snapshot.snapshot_dir, &job_dir)?,
             workspace_read_only: !job.writable_workspace,
@@ -431,8 +450,48 @@ fn build_run_plan(
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: prepared.shared_cargo_home_dir.clone(),
             shared_target_dir: prepared.run_target_dir.clone(),
+            staged_linux_rust_workspace_deps_dir: job
+                .staged_linux_rust_lane()
+                .map(|_| job_dir.join("staged-linux-rust").join("workspace-deps")),
+            staged_linux_rust_workspace_build_dir: job
+                .staged_linux_rust_lane()
+                .map(|_| job_dir.join("staged-linux-rust").join("workspace-build")),
         };
         let mut depends_on = Vec::new();
+        let staged_linux_rust_prepare = job.staged_linux_rust_lane().map(|lane| {
+            let deps_node_id = format!("prepare-{}-workspace-deps", job.id);
+            let build_node_id = format!("prepare-{}-workspace-build", job.id);
+            let workspace_deps_installable =
+                staged_linux_rust_installable(&snapshot.snapshot_dir, lane, true);
+            let workspace_build_installable =
+                staged_linux_rust_installable(&snapshot.snapshot_dir, lane, false);
+            nodes.push(PlanNodeRecord::Prepare {
+                id: deps_node_id.clone(),
+                description: format!("Build staged Linux Rust dependencies for `{}`", job.id),
+                executor: PlanExecutorKind::HostLocal,
+                depends_on: Vec::new(),
+                prepare: PrepareNode::NixBuild {
+                    installable: workspace_deps_installable.clone(),
+                    output_name: lane.workspace_deps_output_name().to_string(),
+                },
+            });
+            nodes.push(PlanNodeRecord::Prepare {
+                id: build_node_id.clone(),
+                description: format!("Build staged Linux Rust test artifacts for `{}`", job.id),
+                executor: PlanExecutorKind::HostLocal,
+                depends_on: vec![deps_node_id.clone()],
+                prepare: PrepareNode::NixBuild {
+                    installable: workspace_build_installable.clone(),
+                    output_name: lane.workspace_build_output_name().to_string(),
+                },
+            });
+            depends_on.push(deps_node_id);
+            depends_on.push(build_node_id);
+            StagedLinuxRustPrepare {
+                workspace_deps_installable,
+                workspace_build_installable,
+            }
+        });
         if job.runner_kind() == RunnerKind::VfkitLocal {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let installable = materialize_vfkit_runner_flake(job, &ctx)?;
@@ -468,6 +527,7 @@ fn build_run_plan(
             job: job.clone(),
             execute_node_id,
             ctx,
+            staged_linux_rust_prepare,
         });
     }
 
@@ -487,6 +547,130 @@ fn build_run_plan(
         },
         jobs: planned_jobs,
     })
+}
+
+fn staged_linux_rust_installable(
+    snapshot_dir: &Path,
+    lane: StagedLinuxRustLane,
+    deps_only: bool,
+) -> String {
+    let output_name = if deps_only {
+        lane.workspace_deps_output_name()
+    } else {
+        lane.workspace_build_output_name()
+    };
+    format!("path:{}#{output_name}", snapshot_dir.display())
+}
+
+fn prepare_staged_linux_rust_host_context(
+    ctx: &mut HostContext,
+    staged_linux_rust_prepare: &StagedLinuxRustPrepare,
+) -> anyhow::Result<()> {
+    let workspace_deps_output = realize_nix_build_output(
+        &staged_linux_rust_prepare.workspace_deps_installable,
+        "workspaceDeps",
+        &ctx.host_log_path,
+    )?;
+    let workspace_build_output = realize_nix_build_output(
+        &staged_linux_rust_prepare.workspace_build_installable,
+        "workspaceBuild",
+        &ctx.host_log_path,
+    )?;
+    let workspace_deps_dir = ctx
+        .staged_linux_rust_workspace_deps_dir
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceDeps mount path"))?;
+    let workspace_build_dir = ctx
+        .staged_linux_rust_workspace_build_dir
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceBuild mount path"))?;
+    repoint_prepare_mount(workspace_deps_dir, &workspace_deps_output)?;
+    repoint_prepare_mount(workspace_build_dir, &workspace_build_output)?;
+    append_log_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] staged Linux Rust outputs ready: workspaceDeps={} workspaceBuild={}",
+            workspace_deps_dir.display(),
+            workspace_build_dir.display()
+        ),
+    )?;
+    Ok(())
+}
+
+fn repoint_prepare_mount(mount_path: &Path, output_path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = mount_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    if mount_path.exists() || mount_path.is_symlink() {
+        fs::remove_file(mount_path)
+            .or_else(|_| fs::remove_dir_all(mount_path))
+            .with_context(|| format!("remove {}", mount_path.display()))?;
+    }
+    unix_fs::symlink(output_path, mount_path).with_context(|| {
+        format!(
+            "symlink {} -> {}",
+            mount_path.display(),
+            output_path.display()
+        )
+    })
+}
+
+fn realize_nix_build_output(
+    installable: &str,
+    output_name: &str,
+    log_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    append_log_line(
+        log_path,
+        &format!(
+            "[pikaci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
+        ),
+    )?;
+    let output = Command::new("nix")
+        .arg("build")
+        .arg("--accept-flake-config")
+        .arg("--no-link")
+        .arg("--print-out-paths")
+        .arg(installable)
+        .output()
+        .with_context(|| format!("run staged prepare `{output_name}`"))?;
+    append_command_output(log_path, &output.stdout, &output.stderr)?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "staged prepare `{output_name}` failed with {:?}; see {}",
+            output.status.code(),
+            log_path.display()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("decode nix build output")?;
+    let path = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| anyhow!("nix build for `{output_name}` did not return an output path"))?;
+    Ok(PathBuf::from(path.trim()))
+}
+
+fn append_log_line(path: &Path, line: &str) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("write {}", path.display()))
+}
+
+fn append_command_output(log_path: &Path, stdout: &[u8], stderr: &[u8]) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("open {}", log_path.display()))?;
+    file.write_all(stdout)
+        .with_context(|| format!("write stdout to {}", log_path.display()))?;
+    file.write_all(stderr)
+        .with_context(|| format!("write stderr to {}", log_path.display()))
 }
 
 fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
@@ -642,8 +826,63 @@ mod tests {
                 "workspace_snapshot_created".to_string()
             ]
         );
-        assert_eq!(plan.record.nodes.len(), 2);
+        assert_eq!(plan.record.nodes.len(), 4);
         match &plan.record.nodes[0] {
+            PlanNodeRecord::Prepare {
+                id,
+                executor,
+                prepare,
+                ..
+            } => {
+                assert_eq!(id, "prepare-pika-core-lib-tests-workspace-deps");
+                assert_eq!(*executor, PlanExecutorKind::HostLocal);
+                match prepare {
+                    PrepareNode::NixBuild {
+                        installable,
+                        output_name,
+                    } => {
+                        assert!(
+                            installable
+                                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceDeps")
+                        );
+                        assert_eq!(output_name, "ci.aarch64-linux.workspaceDeps");
+                    }
+                }
+            }
+            other => panic!("expected prepare node, got {other:?}"),
+        }
+
+        match &plan.record.nodes[1] {
+            PlanNodeRecord::Prepare {
+                id,
+                executor,
+                depends_on,
+                prepare,
+                ..
+            } => {
+                assert_eq!(id, "prepare-pika-core-lib-tests-workspace-build");
+                assert_eq!(*executor, PlanExecutorKind::HostLocal);
+                assert_eq!(
+                    depends_on,
+                    &vec!["prepare-pika-core-lib-tests-workspace-deps".to_string()]
+                );
+                match prepare {
+                    PrepareNode::NixBuild {
+                        installable,
+                        output_name,
+                    } => {
+                        assert!(
+                            installable
+                                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceBuild")
+                        );
+                        assert_eq!(output_name, "ci.aarch64-linux.workspaceBuild");
+                    }
+                }
+            }
+            other => panic!("expected staged build prepare node, got {other:?}"),
+        }
+
+        match &plan.record.nodes[2] {
             PlanNodeRecord::Prepare {
                 id,
                 executor,
@@ -667,10 +906,10 @@ mod tests {
                     }
                 }
             }
-            other => panic!("expected prepare node, got {other:?}"),
+            other => panic!("expected runner prepare node, got {other:?}"),
         }
 
-        match &plan.record.nodes[1] {
+        match &plan.record.nodes[3] {
             PlanNodeRecord::Execute {
                 id,
                 executor,
@@ -682,7 +921,11 @@ mod tests {
                 assert_eq!(*executor, PlanExecutorKind::VfkitLocal);
                 assert_eq!(
                     depends_on,
-                    &vec!["prepare-pika-core-lib-tests-runner".to_string()]
+                    &vec![
+                        "prepare-pika-core-lib-tests-workspace-deps".to_string(),
+                        "prepare-pika-core-lib-tests-workspace-build".to_string(),
+                        "prepare-pika-core-lib-tests-runner".to_string()
+                    ]
                 );
                 match execute {
                     ExecuteNode::VmCommand {
@@ -693,7 +936,7 @@ mod tests {
                     } => {
                         assert_eq!(
                             command,
-                            "bash --noprofile --norc -lc 'cargo test -p pika_core --lib --tests -- --nocapture'"
+                            "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests"
                         );
                         assert!(!run_as_root);
                         assert_eq!(*timeout_secs, 1800);
@@ -706,6 +949,20 @@ mod tests {
 
         assert_eq!(plan.jobs.len(), 1);
         assert_eq!(plan.jobs[0].execute_node_id, "execute-pika-core-lib-tests");
+        let staged_linux_rust_prepare = plan.jobs[0]
+            .staged_linux_rust_prepare
+            .as_ref()
+            .expect("staged linux rust prepare");
+        assert!(
+            staged_linux_rust_prepare
+                .workspace_deps_installable
+                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceDeps")
+        );
+        assert!(
+            staged_linux_rust_prepare
+                .workspace_build_installable
+                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceBuild")
+        );
         assert!(
             prepared
                 .run_dir

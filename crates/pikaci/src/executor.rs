@@ -22,6 +22,8 @@ pub struct HostContext {
     pub guest_log_path: PathBuf,
     pub shared_cargo_home_dir: PathBuf,
     pub shared_target_dir: PathBuf,
+    pub staged_linux_rust_workspace_deps_dir: Option<PathBuf>,
+    pub staged_linux_rust_workspace_build_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -30,6 +32,15 @@ struct GuestResult {
     exit_code: i32,
     finished_at: String,
     message: Option<String>,
+}
+
+struct GuestFlakePaths<'a> {
+    artifacts_dir: &'a Path,
+    cargo_home_dir: &'a Path,
+    target_dir: &'a Path,
+    staged_linux_rust_workspace_deps_dir: Option<&'a Path>,
+    staged_linux_rust_workspace_build_dir: Option<&'a Path>,
+    socket_path: &'a Path,
 }
 
 const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
@@ -199,10 +210,18 @@ pub(crate) fn materialize_vfkit_runner_flake(
         job,
         &ctx.workspace_snapshot_dir,
         ctx.workspace_read_only,
-        &artifacts_dir,
-        &ctx.shared_cargo_home_dir,
-        &ctx.shared_target_dir,
-        &socket_path,
+        &GuestFlakePaths {
+            artifacts_dir: &artifacts_dir,
+            cargo_home_dir: &ctx.shared_cargo_home_dir,
+            target_dir: &ctx.shared_target_dir,
+            staged_linux_rust_workspace_deps_dir: ctx
+                .staged_linux_rust_workspace_deps_dir
+                .as_deref(),
+            staged_linux_rust_workspace_build_dir: ctx
+                .staged_linux_rust_workspace_build_dir
+                .as_deref(),
+            socket_path: &socket_path,
+        },
     )?;
     fs::write(flake_dir.join("flake.nix"), flake_nix)
         .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
@@ -937,18 +956,23 @@ fn render_guest_flake(
     job: &JobSpec,
     workspace_dir: &Path,
     workspace_read_only: bool,
-    artifacts_dir: &Path,
-    cargo_home_dir: &Path,
-    target_dir: &Path,
-    socket_path: &Path,
+    paths: &GuestFlakePaths<'_>,
 ) -> anyhow::Result<String> {
     let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
     let (guest_command, run_as_root) = compiled_guest_command(job);
     let workspace_dir = nix_escape(&workspace_dir.display().to_string());
-    let artifacts_dir = nix_escape(&artifacts_dir.display().to_string());
-    let cargo_home_dir = nix_escape(&cargo_home_dir.display().to_string());
-    let target_dir = nix_escape(&target_dir.display().to_string());
-    let socket_path = nix_escape(&socket_path.display().to_string());
+    let artifacts_dir = nix_escape(&paths.artifacts_dir.display().to_string());
+    let cargo_home_dir = nix_escape(&paths.cargo_home_dir.display().to_string());
+    let target_dir = nix_escape(&paths.target_dir.display().to_string());
+    let staged_linux_rust_workspace_deps_dir = paths
+        .staged_linux_rust_workspace_deps_dir
+        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string());
+    let staged_linux_rust_workspace_build_dir = paths
+        .staged_linux_rust_workspace_build_dir
+        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string());
+    let socket_path = nix_escape(&paths.socket_path.display().to_string());
     let guest_command = nix_escape(&guest_command);
     let workspace_read_only = if workspace_read_only { "true" } else { "false" };
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
@@ -976,6 +1000,8 @@ fn render_guest_flake(
           artifactsDir = "{artifacts_dir}";
           cargoHomeDir = "{cargo_home_dir}";
           cargoTargetDir = "{target_dir}";
+          stagedLinuxRustWorkspaceDepsDir = {staged_linux_rust_workspace_deps_dir};
+          stagedLinuxRustWorkspaceBuildDir = {staged_linux_rust_workspace_build_dir};
           socketPath = "{socket_path}";
           rustToolchain = pika.packages.aarch64-linux.rustToolchain;
           moqRelay = if pika.packages.aarch64-linux ? moqRelay then pika.packages.aarch64-linux.moqRelay else null;
@@ -997,6 +1023,10 @@ fn render_guest_flake(
 }
 
 pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
+    if let Some(lane) = job.staged_linux_rust_lane() {
+        return (lane.execute_wrapper_command().to_string(), false);
+    }
+
     match job.guest_command {
         GuestCommand::ExactCargoTest { package, test_name } => (
             format!(
@@ -1077,7 +1107,9 @@ fn shell_escape(value: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{builders_supports_aarch64_linux, render_guest_flake, vfkit_socket_path};
+    use super::{
+        GuestFlakePaths, builders_supports_aarch64_linux, render_guest_flake, vfkit_socket_path,
+    };
     use crate::model::{GuestCommand, JobSpec};
 
     #[test]
@@ -1096,10 +1128,14 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-beachhead.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-beachhead.sock"),
+            },
         )
         .expect("render flake");
 
@@ -1161,10 +1197,14 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-agent-control-plane-unit.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-agent-control-plane-unit.sock"),
+            },
         )
         .expect("render flake");
 
@@ -1188,10 +1228,14 @@ mod tests {
             &package_spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/agent-microvm-tests/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-agent-microvm-tests.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/agent-microvm-tests/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-agent-microvm-tests.sock"),
+            },
         )
         .expect("render flake");
         assert!(
@@ -1213,10 +1257,14 @@ mod tests {
             &filtered_spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/server-agent-api-tests/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-server-agent-api-tests.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/server-agent-api-tests/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-server-agent-api-tests.sock"),
+            },
         )
         .expect("render flake");
         assert!(filtered_flake.contains(
@@ -1239,10 +1287,14 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/rmp-init-smoke-ci/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/rmp-init-smoke-ci/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock"),
+            },
         )
         .expect("render flake");
 
@@ -1267,10 +1319,14 @@ mod tests {
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
-            Path::new("/tmp/pikaci/jobs/android-sdk-probe/artifacts"),
-            Path::new("/tmp/pikaci/cache/cargo-home"),
-            Path::new("/tmp/pikaci/cache/target"),
-            Path::new("/tmp/pikaci-android-sdk-probe.sock"),
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/android-sdk-probe/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: None,
+                staged_linux_rust_workspace_build_dir: None,
+                socket_path: Path::new("/tmp/pikaci-android-sdk-probe.sock"),
+            },
         )
         .expect("render flake");
 
@@ -1278,5 +1334,42 @@ mod tests {
         assert!(flake.contains("nix develop .#default -c bash -lc"));
         assert!(flake.contains("command -v adb"));
         assert!(flake.contains("runAsRoot = true;"));
+    }
+
+    #[test]
+    fn guest_flake_mounts_staged_linux_rust_outputs_for_pika_core_lane() {
+        let spec = JobSpec {
+            id: "pika-core-lib-tests",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --tests -- --nocapture",
+            },
+        };
+        let flake = render_guest_flake(
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            true,
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/tmp/pikaci/jobs/pika-core-lib-tests/artifacts"),
+                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/tmp/pikaci/cache/target"),
+                staged_linux_rust_workspace_deps_dir: Some(Path::new("/nix/store/workspace-deps")),
+                staged_linux_rust_workspace_build_dir: Some(Path::new(
+                    "/nix/store/workspace-build",
+                )),
+                socket_path: Path::new("/tmp/pikaci-pika-core-lib-tests.sock"),
+            },
+        )
+        .expect("render flake");
+
+        assert!(flake.contains(
+            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-tests\";"
+        ));
+        assert!(flake.contains("stagedLinuxRustWorkspaceDepsDir = \"/nix/store/workspace-deps\";"));
+        assert!(
+            flake.contains("stagedLinuxRustWorkspaceBuildDir = \"/nix/store/workspace-build\";")
+        );
     }
 }

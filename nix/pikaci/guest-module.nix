@@ -7,6 +7,8 @@
   artifactsDir,
   cargoHomeDir,
   cargoTargetDir,
+  stagedLinuxRustWorkspaceDepsDir ? null,
+  stagedLinuxRustWorkspaceBuildDir ? null,
   socketPath,
   rustToolchain ? null,
   moqRelay ? null,
@@ -245,6 +247,24 @@ EOF
         source = cargoTargetDir;
         mountPoint = "/cargo-target";
         readOnly = false;
+      }
+    ]
+    ++ lib.optionals (stagedLinuxRustWorkspaceDepsDir != null) [
+      {
+        proto = "virtiofs";
+        tag = "staged-linux-rust-workspace-deps";
+        source = stagedLinuxRustWorkspaceDepsDir;
+        mountPoint = "/staged/linux-rust/workspace-deps";
+        readOnly = true;
+      }
+    ]
+    ++ lib.optionals (stagedLinuxRustWorkspaceBuildDir != null) [
+      {
+        proto = "virtiofs";
+        tag = "staged-linux-rust-workspace-build";
+        source = stagedLinuxRustWorkspaceBuildDir;
+        mountPoint = "/staged/linux-rust/workspace-build";
+        readOnly = true;
       }
     ];
   };

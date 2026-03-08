@@ -199,6 +199,13 @@ Decision gate after this phase:
 - Before starting scheduler work, explicitly decide whether Phase 4 is still the right next step.
 - If the audit shows the reference lane is weak, too narrow, or awkward to shard, revise the plan first instead of forcing fanout onto the wrong target.
 
+Phase 3 review notes:
+
+- `pre-merge-pika-rust` is still a reasonable reference lane for staged-build reuse because its real value comes from deterministic local integration coverage, not from trivial helper tests.
+- The migrated `pika-core-lib-tests` path is broader than its name suggests: `cargo test -p pika_core --lib --tests -- --nocapture` also runs the non-ignored `rust/tests` integration suites (`app_flows`, messaging, group profiles).
+- The strongest signal in this lane is end-to-end state-machine, persistence, and local relay behavior. The weakest slice is small helper coverage in `rust/src/lib.rs` and similar utility-only tests, which should stay tight and low-maintenance rather than grow.
+- Phase 4 can still be scheduler/fanout preparation, but it should optimize around the high-value integration-heavy consumers in this lane rather than treating every helper test as an equally important fanout target.
+
 ## Phase 4: Scheduler And Fanout Preparation
 
 Goal:

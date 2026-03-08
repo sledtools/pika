@@ -117,40 +117,21 @@ pub fn build_nip98_authorization_header(nsec: &str, method: &str, url: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn normalize_peer_key_strips_nostr_prefix() {
-        assert_eq!(normalize_peer_key("nostr:npub1abc"), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_strips_pika_chat_deep_link() {
-        assert_eq!(normalize_peer_key("pika://chat/npub1abc"), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_strips_pika_test_scheme() {
-        assert_eq!(normalize_peer_key("pikatest://chat/npub1abc"), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_strips_pikadev_scheme() {
-        assert_eq!(normalize_peer_key("pikadev://chat/npub1abc"), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_strips_pika_chat_deep_link_with_trailing_slash() {
-        assert_eq!(normalize_peer_key("pika://chat/npub1abc/"), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_lowercases_and_trims() {
-        assert_eq!(normalize_peer_key("  NPUB1ABC  "), "npub1abc");
-    }
-
-    #[test]
-    fn normalize_peer_key_passthrough_plain_npub() {
-        assert_eq!(normalize_peer_key("npub1abc"), "npub1abc");
+    fn normalize_peer_key_canonicalizes_supported_inputs() {
+        for (input, expected) in [
+            ("nostr:npub1abc", "npub1abc"),
+            ("pika://chat/npub1abc", "npub1abc"),
+            ("pikatest://chat/npub1abc", "npub1abc"),
+            ("pikadev://chat/npub1abc", "npub1abc"),
+            ("pika://chat/npub1abc/", "npub1abc"),
+            ("  NPUB1ABC  ", "npub1abc"),
+            ("npub1abc", "npub1abc"),
+        ] {
+            assert_eq!(normalize_peer_key(input), expected, "input={input:?}");
+        }
     }
 
     #[test]
@@ -182,13 +163,43 @@ mod tests {
     }
 
     #[test]
-    fn build_nip98_authorization_header_returns_nostr_scheme() {
+    fn build_nip98_authorization_header_encodes_expected_event_tags() {
         let keys = nostr_sdk::prelude::Keys::generate();
         let nsec = keys.secret_key().to_secret_hex();
+        let url = "https://example.com/v1/agents/me";
         let header =
-            build_nip98_authorization_header(&nsec, "get", "https://example.com/v1/agents/me")
-                .expect("authorization header");
-        assert!(header.starts_with("Nostr "));
+            build_nip98_authorization_header(&nsec, "get", url).expect("authorization header");
+
+        let payload = header
+            .strip_prefix("Nostr ")
+            .and_then(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .expect("base64 encoded NIP-98 event");
+        let event: serde_json::Value = serde_json::from_slice(&payload).expect("event json");
+        let tags = event["tags"].as_array().expect("event tags");
+
+        assert_eq!(event["kind"], json!(27235));
+        assert!(tags.contains(&json!(["u", url])));
+        assert!(tags.contains(&json!(["method", "GET"])));
+    }
+
+    #[test]
+    fn build_nip98_authorization_header_rejects_blank_inputs() {
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let nsec = keys.secret_key().to_secret_hex();
+
+        assert_eq!(
+            build_nip98_authorization_header("", "GET", "https://example.com"),
+            None
+        );
+        assert_eq!(
+            build_nip98_authorization_header(&nsec, "", "https://example.com"),
+            None
+        );
+        assert_eq!(build_nip98_authorization_header(&nsec, "GET", ""), None);
     }
 }
 

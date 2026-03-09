@@ -37,6 +37,7 @@ pub struct JobSpec {
 #[serde(rename_all = "snake_case")]
 pub enum RunnerKind {
     VfkitLocal,
+    MicrovmRemote,
     TartLocal,
 }
 
@@ -44,6 +45,7 @@ impl RunnerKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::VfkitLocal => "vfkit_local",
+            Self::MicrovmRemote => "microvm_remote",
             Self::TartLocal => "tart_local",
         }
     }
@@ -54,6 +56,7 @@ impl RunnerKind {
 pub enum PlanExecutorKind {
     HostLocal,
     VfkitLocal,
+    MicrovmRemote,
     TartLocal,
 }
 
@@ -62,6 +65,7 @@ impl PlanExecutorKind {
         match self {
             Self::HostLocal => "host_local",
             Self::VfkitLocal => "vfkit_local",
+            Self::MicrovmRemote => "microvm_remote",
             Self::TartLocal => "tart_local",
         }
     }
@@ -71,6 +75,7 @@ impl From<RunnerKind> for PlanExecutorKind {
     fn from(value: RunnerKind) -> Self {
         match value {
             RunnerKind::VfkitLocal => Self::VfkitLocal,
+            RunnerKind::MicrovmRemote => Self::MicrovmRemote,
             RunnerKind::TartLocal => Self::TartLocal,
         }
     }
@@ -80,6 +85,8 @@ impl JobSpec {
     pub fn runner_kind(&self) -> RunnerKind {
         if self.id.starts_with("tart-") {
             RunnerKind::TartLocal
+        } else if self.staged_linux_rust_lane().is_some() {
+            RunnerKind::MicrovmRemote
         } else {
             RunnerKind::VfkitLocal
         }

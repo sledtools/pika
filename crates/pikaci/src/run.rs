@@ -12,7 +12,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_vfkit_runner_flake, prepare_vfkit_runner_link,
+    HostContext, compiled_guest_command, materialize_runner_flake, prepare_vfkit_runner_link,
     run_job_on_runner,
 };
 use crate::model::{
@@ -965,9 +965,19 @@ fn build_run_plan(
             depends_on.push(deps_node_id);
             depends_on.push(build_node_id);
         }
-        if job.runner_kind() == RunnerKind::VfkitLocal {
+        if matches!(
+            job.runner_kind(),
+            RunnerKind::VfkitLocal | RunnerKind::MicrovmRemote
+        ) {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
-            let installable = materialize_vfkit_runner_flake(job, &ctx)?;
+            let installable = materialize_runner_flake(job, &ctx)?;
+            let runner_description = match job.runner_kind() {
+                RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
+                RunnerKind::MicrovmRemote => {
+                    format!("Build remote microvm runner for `{}`", job.id)
+                }
+                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            };
             planned_prepares.push(PlannedPrepare {
                 node_id: prepare_node_id.clone(),
                 depends_on: Vec::new(),
@@ -981,7 +991,7 @@ fn build_run_plan(
                 prepare_node_id.clone(),
                 PlanNodeRecord::Prepare {
                     id: prepare_node_id.clone(),
-                    description: format!("Build vfkit runner for `{}`", job.id),
+                    description: runner_description,
                     executor: PlanExecutorKind::HostLocal,
                     depends_on: Vec::new(),
                     prepare: PrepareNode::NixBuild {
@@ -3098,13 +3108,12 @@ fn validate_prepared_output_consumer_for_jobs(
     jobs: &[PlannedJob],
 ) -> anyhow::Result<()> {
     if kind == PreparedOutputConsumerKind::RemoteExposureRequestV1
-        && jobs.iter().any(|planned_job| {
-            planned_job.job.runner_kind() == RunnerKind::VfkitLocal
-                && planned_job.job.staged_linux_rust_lane().is_some()
-        })
+        && jobs
+            .iter()
+            .any(|planned_job| planned_job.job.staged_linux_rust_lane().is_some())
     {
         return Err(anyhow!(
-            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust vfkit jobs still require local prepared-output mounts"
+            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust jobs still require fulfilled prepared-output mounts"
         ));
     }
     Ok(())
@@ -3768,7 +3777,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-lib-app-flows-tests");
-                assert_eq!(*executor, PlanExecutorKind::VfkitLocal);
+                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
                 assert_eq!(
                     depends_on,
                     &vec![
@@ -3800,11 +3809,13 @@ mod tests {
         match &plan.record.nodes[5] {
             PlanNodeRecord::Execute {
                 id,
+                executor,
                 depends_on,
                 execute,
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-messaging-e2e-tests");
+                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
                 assert_eq!(
                     depends_on,
                     &vec![

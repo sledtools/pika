@@ -704,11 +704,45 @@ Phase 6 staged Linux target pivot notes:
   - but the corrected `workspaceBuild` output still had a long local import/registration tail after the remote build completed,
   - so the slice still did not reach the true post-prepare execute boundary,
   - and the expected `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch therefore remains likely but still not freshly re-proven here.
+- The next rerun finally sharpened that remaining `workspaceBuild` tail:
+  - once remote `workspaceBuild` compile finished, `pika-build` went idle while the local host stayed busy with `nix build`, `nix-daemon __build-remote`, and `ssh ... nix-store --serve --write`,
+  - repeated `nettop` samples showed the ssh store stream was overwhelmingly inbound to the local machine,
+  - so the active tail was local ssh-store import / store registration of the realized `workspaceBuild` output, not more remote compile.
+- One narrow fix removed the last prepare-side reuse leak:
+  - `workspaceBuild` was still deriving a fresh synthetic staged source path per snapshot even when its contents matched the top-level staged source exactly,
+  - forcing `workspaceBuild` to reuse `workspaceDeps.src` made the staged `workspaceBuild` derivation hash-stable between top-level and run snapshot evaluation,
+  - and a fresh rerun then reused hot local `workspaceBuild` immediately instead of rebuilding or re-importing it again.
+- The real `pikaci` lane is now past both staged prepares and both remote fulfillments:
+  - `workspaceDeps` and `workspaceBuild` were both realized locally and exposed successfully on `pika-build`,
+  - the run then advanced to building the generated execute runner flake under `jobs/.../vm/flake`,
+  - and that generated flake still targets `system = "aarch64-linux"` even though the staged prepared outputs are `ci.x86_64-linux.*`.
+- That means the next blocker is now sharper but still one step ahead of the current live rerun:
+  - the immediate active wait is the generated `aarch64-linux` microVM runner build, not staged prepare reuse anymore,
+  - the known `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch remains the likely first execute-side blocker once the runner build clears,
+  - and the next architectural move should still be decided from that execute boundary rather than from more prepare-side churn.
+- The next execute-side slice replaced that stale `aarch64-linux` runner generation with a one-lane remote microVM path:
+  - staged Linux Rust jobs now plan and execute as `microvm_remote` instead of `vfkit_local`,
+  - the runner flake renderer now emits `system = "x86_64-linux"` with `hostPkgs = nixpkgs.legacyPackages.x86_64-linux` and `hypervisor = "cloud-hypervisor"` for the staged `pika_core` lane,
+  - and `guest-module.nix` now accepts a narrow hypervisor override so the same guest module can render either the old local vfkit guest or the new remote `microvm.nix` guest on `pika-build`.
+- One first rerun exposed a real planner bug rather than an execute-host limitation:
+  - the execute node and job records already said `microvm_remote`,
+  - but the plan builder was still calling the old vfkit-only runner-flake materializer,
+  - so the generated flake under `jobs/.../vm/flake` still came out as `aarch64-linux`,
+  - and that bug was fixed by routing runner prepare/materialization through the runner-kind-aware dispatcher.
+- After that fix, the corrected rerun finally rendered the right execute boundary:
+  - the generated runner flake for `pika-core-lib-app-flows-tests` now says `system = "x86_64-linux"`,
+  - it mounts the fulfilled staged outputs from the remote prepared-output work dir,
+  - and it targets `cloud-hypervisor` on `pika-build` rather than the local vfkit guest on macOS.
+- The live blocker is no longer the old execute architecture mismatch:
+  - the checked-in dual-prepare wrapper still succeeds and leaves both staged prepares hot,
+  - but the real `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun now fails before execute because the local host cannot materialize a fresh `.pikaci/runs/.../snapshot`,
+  - the host log shows `error: writing to file: No space left on device` while fetching the snapshot input for `path:.../snapshot#ci.x86_64-linux.workspaceDeps`,
+  - and repeated local `df -h` checks stayed below roughly `1 GiB` free even after deleting old generated `.pikaci/runs` directories.
 - Next recommended slice:
-  - keep the corrected staged manifest normalization and slimmer `workspaceBuild` output,
-  - finish or instrument the remaining local import tail for the corrected `workspaceBuild` output,
-  - rerun the real `pikaci` path with both staged prepare outputs hot once that import tail is no longer the active wait,
-  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) if the expected vfkit mismatch becomes the active blocker.
+  - keep the corrected staged manifest normalization, slimmer `workspaceBuild` output, `workspaceBuild.src = workspaceDeps.src`, and the new remote `x86_64-linux` microVM runner path,
+  - reclaim enough local disk to let `pikaci` create a fresh run snapshot again,
+  - rerun `just pikaci-pre-merge-pika-rust-prepares-remote-build` and then `just pikaci-remote-fulfill-pre-merge-pika-rust`,
+  - and use that first post-disk rerun to prove whether the lane reaches actual remote `microvm-run` on `pika-build` or exposes a narrower microVM runtime blocker.
 
 ## Deferred Until Proven Necessary
 
@@ -748,15 +782,10 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms, and is now pivoting target-system alignment away from `aarch64-linux`.
-- Current recommended slice is a narrow `x86_64-linux` efficiency follow-up on `pika-build`:
+- Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
   - stop spending more slices on local `linux-builder` recovery,
-  - prefer `ci.x86_64-linux.*` staged outputs for the Linux Rust lane,
-  - use `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` to prove where pre-compile time is going on the remote builder path,
-  - keep the staged source snapshot tight and Cargo job handling explicit,
-  - use the checked-in prewarm plus x86_64 builder-override wrapper when proving the fast path on `pika-build`,
-  - use the checked-in dual-prepare entrypoint when the goal is to force the real pre-merge lane past both staged prepare nodes,
-  - note that completed destination-side prewarm collapsed both `workspaceDeps` and `workspaceBuild` down to their main derivations and did surface real remote `cargo` compile on `pika-build`,
-  - keep the local `/etc/nix/machines` underfeed noted: the default spec still advertises only `4` jobs even though the proven override used `12`,
-  - note that the staged `workspaceBuild` wrapper manifests are now normalized to target-relative paths instead of absolute `/build/...` paths,
-  - note that the staged `workspaceBuild` output itself is now intentionally slimmer and was observed at roughly `673 MiB` instead of roughly `1.6 GiB`,
-  - and keep the remaining local import tail plus the likely later `aarch64-linux` vfkit execute mismatch separate: the import tail is still the active wait, while the execute mismatch remains the likely next end-to-end blocker after prepare finally clears.
+  - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
+  - keep using the checked-in prewarm plus dual-prepare wrappers to ensure prepare is not the intentional bottleneck,
+  - note that the generated runner is no longer `aarch64-linux`: the staged `pika_core` lane now renders an `x86_64-linux` `cloud-hypervisor` microVM runner for `pika-build`,
+  - note that the current blocker is local disk exhaustion while materializing a fresh `.pikaci` run snapshot, not runner architecture selection,
+  - and treat the first successful post-disk rerun as the point where we can finally observe actual remote `microvm-run` execution or the first narrower runtime blocker on `pika-build`.

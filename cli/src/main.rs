@@ -483,7 +483,7 @@ struct AgentMicrovmArgs {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum AgentMicrovmBackendCli {
-    LegacyExec,
+    Native,
     Acp,
 }
 
@@ -1746,7 +1746,7 @@ async fn cmd_download_media(
 
 fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
     let backend = match microvm.microvm_backend {
-        Some(AgentMicrovmBackendCli::LegacyExec) => Some(MicrovmAgentBackend::LegacyExec),
+        Some(AgentMicrovmBackendCli::Native) => Some(MicrovmAgentBackend::Native),
         Some(AgentMicrovmBackendCli::Acp) => Some(MicrovmAgentBackend::Acp {
             exec_command: microvm.microvm_acp_exec.clone(),
             cwd: microvm.microvm_acp_cwd.clone(),
@@ -2770,6 +2770,52 @@ mod tests {
             }
             _ => panic!("expected agent new command"),
         }
+    }
+
+    #[test]
+    fn agent_new_parses_native_microvm_backend() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-backend",
+            "native",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(
+                    microvm.microvm_backend,
+                    Some(AgentMicrovmBackendCli::Native)
+                );
+                assert!(microvm.microvm_acp_exec.is_none());
+                assert!(microvm.microvm_acp_cwd.is_none());
+            }
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    #[test]
+    fn agent_new_rejects_legacy_exec_microvm_backend() {
+        let err = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-backend",
+            "legacy-exec",
+        ])
+        .expect_err("legacy microvm backend should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("legacy-exec"));
+        assert!(msg.contains("native"));
+        assert!(msg.contains("acp"));
     }
 
     #[test]

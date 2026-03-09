@@ -52,7 +52,7 @@ pub struct MicrovmProvisionParams {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum MicrovmAgentBackend {
-    LegacyExec,
+    Native,
     Acp {
         #[serde(skip_serializing_if = "Option::is_none")]
         exec_command: Option<String>,
@@ -501,6 +501,20 @@ mod tests {
                     exec_command: Some("npx -y pi-acp".to_string()),
                     cwd: Some("/root/pika-agent/acp".to_string()),
                 }),
+            }),
+        };
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: AgentProvisionRequest =
+            serde_json::from_str(&encoded).expect("decode request");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn agent_provision_request_round_trips_native_microvm_backend() {
+        let request = AgentProvisionRequest {
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                backend: Some(MicrovmAgentBackend::Native),
             }),
         };
         let encoded = serde_json::to_string(&request).expect("encode request");

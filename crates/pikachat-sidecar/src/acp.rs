@@ -51,6 +51,26 @@ pub struct AcpPromptResult {
     pub final_text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcpTurnCompletion {
+    pub conversation_id: String,
+    pub result: Result<AcpPromptResult, String>,
+}
+
+#[derive(Clone, Debug)]
+struct QueuedAcpPrompt {
+    conversation_id: String,
+    prompt: String,
+}
+
+#[derive(Clone)]
+pub struct AcpBackendManager {
+    session_manager: AcpSessionManager,
+    queue_capacity: usize,
+    workers: Arc<Mutex<HashMap<String, mpsc::Sender<QueuedAcpPrompt>>>>,
+    completion_tx: mpsc::UnboundedSender<AcpTurnCompletion>,
+}
+
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse {
     #[allow(dead_code)]
@@ -396,6 +416,78 @@ impl AcpSessionManager {
     }
 }
 
+impl AcpBackendManager {
+    pub async fn spawn(
+        config: AcpBackendConfig,
+    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<AcpTurnCompletion>)> {
+        Self::spawn_with_queue_capacity(config, 8).await
+    }
+
+    async fn spawn_with_queue_capacity(
+        config: AcpBackendConfig,
+        queue_capacity: usize,
+    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<AcpTurnCompletion>)> {
+        let session_manager = AcpSessionManager::spawn(config).await?;
+        let (completion_tx, completion_rx) = mpsc::unbounded_channel();
+        Ok((
+            Self {
+                session_manager,
+                queue_capacity,
+                workers: Arc::new(Mutex::new(HashMap::new())),
+                completion_tx,
+            },
+            completion_rx,
+        ))
+    }
+
+    pub async fn enqueue_prompt(&self, conversation_id: &str, prompt: &str) -> anyhow::Result<()> {
+        if prompt.trim().is_empty() {
+            bail!("ACP prompt must not be empty");
+        }
+
+        let sender = self.worker_sender(conversation_id).await;
+        sender
+            .try_send(QueuedAcpPrompt {
+                conversation_id: conversation_id.to_string(),
+                prompt: prompt.to_string(),
+            })
+            .map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    anyhow!("ACP queue full for conversation {conversation_id}")
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    anyhow!("ACP worker closed for conversation {conversation_id}")
+                }
+            })
+    }
+
+    async fn worker_sender(&self, conversation_id: &str) -> mpsc::Sender<QueuedAcpPrompt> {
+        let mut workers = self.workers.lock().await;
+        if let Some(existing) = workers.get(conversation_id) {
+            return existing.clone();
+        }
+
+        let (tx, mut rx) = mpsc::channel::<QueuedAcpPrompt>(self.queue_capacity);
+        let worker_tx: mpsc::Sender<QueuedAcpPrompt> = tx.clone();
+        let session_manager = self.session_manager.clone();
+        let completion_tx = self.completion_tx.clone();
+        tokio::spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let result = session_manager
+                    .prompt_conversation(&job.conversation_id, &job.prompt)
+                    .await
+                    .map_err(|err| format!("{err:#}"));
+                let _ = completion_tx.send(AcpTurnCompletion {
+                    conversation_id: job.conversation_id,
+                    result,
+                });
+            }
+        });
+        workers.insert(conversation_id.to_string(), tx);
+        worker_tx
+    }
+}
+
 pub fn default_acp_cwd(state_dir: &Path) -> PathBuf {
     state_dir.join("acp")
 }
@@ -403,12 +495,14 @@ pub fn default_acp_cwd(state_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{Duration, timeout};
 
-    fn fake_acp_script(log_path: &Path) -> String {
+    fn fake_acp_script(log_path: &Path, delay_ms: u64) -> String {
         format!(
             r#"
 import json
 import sys
+import time
 from pathlib import Path
 
 log_path = Path({log_path:?})
@@ -437,6 +531,14 @@ for raw in sys.stdin:
             for block in msg["params"]["prompt"]
             if block.get("type") == "text"
         )
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"start:{{session_id}}:{{prompt}}\n")
+        if prompt == "fail":
+            print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"error":{{"code":-32001,"message":"prompt failed"}}}}), flush=True)
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"error:{{session_id}}:{{prompt}}\n")
+            continue
+        time.sleep({delay_ms} / 1000.0)
         for chunk in ("echo:", prompt):
             print(json.dumps({{
                 "jsonrpc":"2.0",
@@ -450,17 +552,19 @@ for raw in sys.stdin:
                 }}
             }}), flush=True)
         print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"result":{{"stopReason":"end_turn"}}}}), flush=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"end:{{session_id}}:{{prompt}}\n")
         continue
     print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"error":{{"code":-32601,"message":"unknown method"}}}}), flush=True)
 "#
         )
     }
 
-    fn write_fake_acp_backend(temp: &tempfile::TempDir) -> PathBuf {
+    fn write_fake_acp_backend(temp: &tempfile::TempDir, delay_ms: u64) -> PathBuf {
         let script_path = temp.path().join("fake_acp.py");
         std::fs::write(
             &script_path,
-            fake_acp_script(&temp.path().join("sessions.log")),
+            fake_acp_script(&temp.path().join("sessions.log"), delay_ms),
         )
         .expect("write fake ACP backend");
         script_path
@@ -469,7 +573,7 @@ for raw in sys.stdin:
     #[tokio::test]
     async fn acp_session_manager_reuses_session_per_conversation() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let script_path = write_fake_acp_backend(&temp);
+        let script_path = write_fake_acp_backend(&temp, 0);
         let manager = AcpSessionManager::spawn(AcpBackendConfig::new(
             format!("python3 -u {}", script_path.display()),
             temp.path(),
@@ -498,10 +602,199 @@ for raw in sys.stdin:
 
         let log_path = temp.path().join("sessions.log");
         let created = std::fs::read_to_string(&log_path).expect("read session log");
-        let created = created.lines().collect::<Vec<_>>();
+        let created = created
+            .lines()
+            .filter(|line| !line.contains(':'))
+            .collect::<Vec<_>>();
         assert_eq!(
             created,
             vec![first.session_id.as_str(), third.session_id.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_backend_manager_reuses_sessions_and_serializes_turns_per_conversation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = write_fake_acp_backend(&temp, 50);
+        let (manager, mut completion_rx) = AcpBackendManager::spawn_with_queue_capacity(
+            AcpBackendConfig::new(format!("python3 -u {}", script_path.display()), temp.path()),
+            4,
+        )
+        .await
+        .expect("spawn ACP backend manager");
+
+        manager
+            .enqueue_prompt("group-a", "first")
+            .await
+            .expect("enqueue first");
+        manager
+            .enqueue_prompt("group-a", "second")
+            .await
+            .expect("enqueue second");
+        manager
+            .enqueue_prompt("group-b", "other")
+            .await
+            .expect("enqueue third");
+
+        let first = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait first completion")
+            .expect("first completion");
+        let second = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait second completion")
+            .expect("second completion");
+        let third = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait third completion")
+            .expect("third completion");
+
+        let completions = [first, second, third];
+        let group_a: Vec<_> = completions
+            .iter()
+            .filter(|item| item.conversation_id == "group-a")
+            .collect();
+        assert_eq!(group_a.len(), 2);
+        assert_eq!(
+            group_a[0]
+                .result
+                .as_ref()
+                .expect("group-a first")
+                .final_text,
+            "echo:first"
+        );
+        assert_eq!(
+            group_a[1]
+                .result
+                .as_ref()
+                .expect("group-a second")
+                .final_text,
+            "echo:second"
+        );
+
+        let log_path = temp.path().join("sessions.log");
+        let lines = std::fs::read_to_string(&log_path)
+            .expect("read session log")
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let first_session = &group_a[0]
+            .result
+            .as_ref()
+            .expect("group-a first")
+            .session_id;
+        let second_session = &group_a[1]
+            .result
+            .as_ref()
+            .expect("group-a second")
+            .session_id;
+        assert_eq!(
+            first_session, second_session,
+            "same conversation should reuse one ACP session"
+        );
+        let start_first = lines
+            .iter()
+            .position(|line| line == &format!("start:{first_session}:first"))
+            .expect("start first");
+        let end_first = lines
+            .iter()
+            .position(|line| line == &format!("end:{first_session}:first"))
+            .expect("end first");
+        let start_second = lines
+            .iter()
+            .position(|line| line == &format!("start:{second_session}:second"))
+            .expect("start second");
+        let end_second = lines
+            .iter()
+            .position(|line| line == &format!("end:{second_session}:second"))
+            .expect("end second");
+        assert!(
+            start_first < end_first,
+            "first turn should finish after it starts"
+        );
+        assert!(
+            end_first < start_second,
+            "same-conversation prompts should not overlap"
+        );
+        assert!(
+            start_second < end_second,
+            "second turn should finish after it starts"
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_backend_manager_completes_prompts_via_background_queue() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = write_fake_acp_backend(&temp, 200);
+        let (manager, mut completion_rx) = AcpBackendManager::spawn_with_queue_capacity(
+            AcpBackendConfig::new(format!("python3 -u {}", script_path.display()), temp.path()),
+            2,
+        )
+        .await
+        .expect("spawn ACP backend manager");
+
+        manager
+            .enqueue_prompt("group-a", "hello")
+            .await
+            .expect("enqueue prompt");
+
+        assert!(
+            timeout(Duration::from_millis(50), completion_rx.recv())
+                .await
+                .is_err(),
+            "completion should arrive asynchronously, not inline"
+        );
+
+        let completion = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait completion")
+            .expect("completion");
+        assert_eq!(completion.conversation_id, "group-a");
+        assert_eq!(
+            completion.result.expect("prompt success").final_text,
+            "echo:hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_backend_manager_reports_prompt_failures_and_continues() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = write_fake_acp_backend(&temp, 0);
+        let (manager, mut completion_rx) = AcpBackendManager::spawn_with_queue_capacity(
+            AcpBackendConfig::new(format!("python3 -u {}", script_path.display()), temp.path()),
+            2,
+        )
+        .await
+        .expect("spawn ACP backend manager");
+
+        manager
+            .enqueue_prompt("group-a", "fail")
+            .await
+            .expect("enqueue failing prompt");
+        manager
+            .enqueue_prompt("group-a", "after")
+            .await
+            .expect("enqueue recovery prompt");
+
+        let failed = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait failure")
+            .expect("failure completion");
+        assert_eq!(failed.conversation_id, "group-a");
+        assert!(
+            failed
+                .result
+                .expect_err("expected failure")
+                .contains("prompt failed")
+        );
+
+        let succeeded = timeout(Duration::from_secs(2), completion_rx.recv())
+            .await
+            .expect("wait recovery")
+            .expect("recovery completion");
+        assert_eq!(
+            succeeded.result.expect("recovery success").final_text,
+            "echo:after"
         );
     }
 }

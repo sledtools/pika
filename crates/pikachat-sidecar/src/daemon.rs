@@ -49,7 +49,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-use crate::acp::{AcpBackendConfig, AcpSessionManager};
+use crate::acp::{AcpBackendConfig, AcpBackendManager, AcpTurnCompletion};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{DaemonCmd, InCmd, MediaAttachmentOut, OutMsg, out_error, out_ok};
@@ -1759,13 +1759,14 @@ pub async fn daemon_main(
         relay_urls
             .push(RelayUrl::parse("ws://127.0.0.1:18080").context("parse default relay url")?);
     }
-    let acp_backend = match acp_backend {
-        Some(config) => Some(
-            AcpSessionManager::spawn(config)
+    let (acp_backend, mut acp_completion_rx) = match acp_backend {
+        Some(config) => {
+            let (manager, completion_rx) = AcpBackendManager::spawn(config)
                 .await
-                .context("start ACP backend session manager")?,
-        ),
-        None => None,
+                .context("start ACP backend manager")?;
+            (Some(manager), Some(completion_rx))
+        }
+        None => (None, None),
     };
     let bootstrapped = bootstrap_runtime_for_daemon(state_dir, &keys)?;
     let client = bootstrapped.session.client.clone();
@@ -3367,6 +3368,70 @@ pub async fn daemon_main(
                     }
                 }
             }
+            acp_completion = async {
+                match acp_completion_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(AcpTurnCompletion { conversation_id, result }) = acp_completion else {
+                    acp_completion_rx = None;
+                    continue;
+                };
+                match result {
+                    Ok(reply) => {
+                        let final_text = reply.final_text.trim();
+                        if final_text.is_empty() {
+                            continue;
+                        }
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
+                            &conversation_id,
+                            OutboundConversationAction::Message {
+                                kind: Kind::ChatMessage,
+                                content: final_text.to_string(),
+                                tags: vec![],
+                                created_at: Timestamp::now(),
+                            },
+                        ) {
+                            Ok(prepared) => prepared,
+                            Err(DaemonPrepareError::BadGroup(err)) => {
+                                warn!(
+                                    "[pikachat] ACP reply group resolution failed group={} session={} err={err:#}",
+                                    conversation_id,
+                                    reply.session_id,
+                                );
+                                continue;
+                            }
+                            Err(DaemonPrepareError::Prepare(err)) => {
+                                warn!(
+                                    "[pikachat] ACP reply prepare failed group={} session={} err={err:#}",
+                                    conversation_id,
+                                    reply.session_id,
+                                );
+                                continue;
+                            }
+                        };
+                        if let Err(err) = host
+                            .publish_prepared(&prepared, "daemon_acp_reply")
+                            .await
+                        {
+                            warn!(
+                                "[pikachat] ACP reply publish failed group={} session={} err={err:#}",
+                                conversation_id,
+                                reply.session_id,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "[pikachat] ACP prompt failed group={} err={}",
+                            conversation_id,
+                            err
+                        );
+                    }
+                }
+            }
             call_evt = call_evt_rx.recv() => {
                 let Some(call_evt) = call_evt else { continue; };
                 match call_evt {
@@ -3742,63 +3807,16 @@ pub async fn daemon_main(
                                     &acp_content,
                                 )
                             {
-                                // MVP ACP bridge: keep daemon protocol/native runtime
-                                // handling stable and drive one text turn inline here.
                                 let prompt = build_acp_prompt(
                                     &acp_nostr_group_id,
                                     &acp_sender_hex,
                                     &acp_content,
                                 );
-                                match acp.prompt_conversation(&acp_nostr_group_id, &prompt).await {
-                                    Ok(reply) => {
-                                        let final_text = reply.final_text.trim();
-                                        if final_text.is_empty() {
-                                            continue;
-                                        }
-                                        let prepared = match host.prepare_outbound_action(
-                                            &acp_nostr_group_id,
-                                            OutboundConversationAction::Message {
-                                                kind: Kind::ChatMessage,
-                                                content: final_text.to_string(),
-                                                tags: vec![],
-                                                created_at: Timestamp::now(),
-                                            },
-                                        ) {
-                                            Ok(prepared) => prepared,
-                                            Err(DaemonPrepareError::BadGroup(err)) => {
-                                                warn!(
-                                                    "[pikachat] ACP reply group resolution failed group={} session={} err={err:#}",
-                                                    acp_nostr_group_id,
-                                                    reply.session_id,
-                                                );
-                                                continue;
-                                            }
-                                            Err(DaemonPrepareError::Prepare(err)) => {
-                                                warn!(
-                                                    "[pikachat] ACP reply prepare failed group={} session={} err={err:#}",
-                                                    acp_nostr_group_id,
-                                                    reply.session_id,
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        if let Err(err) = host
-                                            .publish_prepared(&prepared, "daemon_acp_reply")
-                                            .await
-                                        {
-                                            warn!(
-                                                "[pikachat] ACP reply publish failed group={} session={} err={err:#}",
-                                                acp_nostr_group_id,
-                                                reply.session_id,
-                                            );
-                                        }
-                                    }
-                                    Err(err) => {
-                                        warn!(
-                                            "[pikachat] ACP prompt failed group={} sender={} err={err:#}",
-                                            acp_nostr_group_id, acp_sender_hex
-                                        );
-                                    }
+                                if let Err(err) = acp.enqueue_prompt(&acp_nostr_group_id, &prompt).await {
+                                    warn!(
+                                        "[pikachat] ACP enqueue failed group={} sender={} err={err:#}",
+                                        acp_nostr_group_id, acp_sender_hex
+                                    );
                                 }
                             }
                         }

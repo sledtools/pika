@@ -545,19 +545,16 @@ Phase 6 staged Linux Rust prepare-integrity fix notes:
   - plain `nix build .#ci.aarch64-linux.workspaceDeps` reproduced the same failure outside the real `pikaci` run,
   - the mismatch happened while importing cargo-source paths back from `ssh-ng://builder@linux-builder`,
   - and the builder was simultaneously logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`.
-- The landed fix is intentionally narrow:
-  - staged Linux Rust prepares (`ci.aarch64-linux.workspaceDeps` and `ci.aarch64-linux.workspaceBuild`) now pass `--option builders-use-substitutes false`,
-  - which avoids the corrupted builder substitute cache for this path and forces those prepared outputs to be built from source on the existing builder instead of imported through the broken cache state,
-  - and unrelated `PrepareNode::NixBuild` paths keep their previous behavior.
+- A narrow `builders-use-substitutes = false` workaround was tested against the real staged path, but it did not clear the blocker end-to-end and should not become the default `pikaci` behavior.
 - A real rerun of `just pikaci-remote-fulfill-pre-merge-pika-rust` was attempted after the fix:
-  - the host logs now show the narrowed `builders-use-substitutes = false` path for `workspaceDeps`,
+  - the host logs showed the narrowed `builders-use-substitutes = false` experiment for `workspaceDeps`,
   - the broad cargo-source mismatch churn seen in the first run no longer reproduced,
   - but `workspaceDeps` still failed while importing one specific remote store path: `cargo-src-linux-raw-sys-0.4.15`.
 - The next blocker is now sharper and appears environmental:
   - `nix build` of that exact derivation still reproduces a hash mismatch when copying `/nix/store/81553n28hv3nqj9v1226qc16dvlqxh9y-cargo-src-linux-raw-sys-0.4.15` back from `ssh-ng://builder@linux-builder`,
   - the same builder is still logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`,
   - and this no longer looks like a staged flake-output or ssh-transport bug.
-- What this slice proves: the current blocker was narrowed inside the real run path without changing the Nix-backed prepare/execute contract or adding more remote-launcher abstraction, but the remaining failure is now a concrete local `linux-builder` store-health issue.
+- What this slice proves: the current blocker was narrowed inside the real run path without changing the Nix-backed prepare/execute contract or adding more remote-launcher abstraction, and the remaining failure is now a concrete local `linux-builder` store-health issue.
 - Next recommended slice: repair or recreate the local `linux-builder` state (at minimum the corrupt `cargo-src-linux-raw-sys-0.4.15` path, and likely the malformed `/root/.cache/nix/binary-cache-v7.sqlite`) and then rerun the same `pika-build` entrypoint before changing any more `pikaci` architecture.
 
 ## Deferred Until Proven Necessary

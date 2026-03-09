@@ -1102,7 +1102,6 @@ agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
 # Ensure/reuse an OpenClaw guest, then chat.
 agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_KIND=openclaw ./scripts/agent-demo.sh "{{ MESSAGE }}"
-
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel

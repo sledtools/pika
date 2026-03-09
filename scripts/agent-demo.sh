@@ -15,17 +15,32 @@ POLL_ATTEMPTS="${PIKA_AGENT_DEMO_POLL_ATTEMPTS:-45}"
 POLL_DELAY_SEC="${PIKA_AGENT_DEMO_POLL_DELAY_SEC:-2}"
 RECOVER_AFTER_ATTEMPT="${PIKA_AGENT_DEMO_RECOVER_AFTER_ATTEMPT:-10}"
 MESSAGE="${*:-CLI demo check: reply with ACK and one short sentence.}"
-MICROVM_BACKEND="${PIKA_AGENT_MICROVM_BACKEND:-acp}"
+AGENT_KIND="${PIKA_AGENT_MICROVM_KIND:-pi}"
+MICROVM_BACKEND="${PIKA_AGENT_MICROVM_BACKEND:-}"
+
+if [[ -z "$MICROVM_BACKEND" ]]; then
+  case "$AGENT_KIND" in
+    pi) MICROVM_BACKEND="acp" ;;
+    openclaw) MICROVM_BACKEND="native" ;;
+    *)
+      echo "Unsupported PIKA_AGENT_MICROVM_KIND: $AGENT_KIND (expected pi or openclaw)" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ -z "$AGENT_API_NSEC" ]]; then
   echo "PIKA_AGENT_API_NSEC (or PIKA_TEST_NSEC) is required." >&2
   exit 1
 fi
 
+echo "Agent demo kind: $AGENT_KIND"
 echo "Agent demo microVM backend: $MICROVM_BACKEND"
 
 export PIKA_AGENT_API_BASE_URL="$AGENT_API_BASE_URL"
 export PIKA_AGENT_API_NSEC="$AGENT_API_NSEC"
+export PIKA_AGENT_MICROVM_KIND="$AGENT_KIND"
+export PIKA_AGENT_MICROVM_BACKEND="$MICROVM_BACKEND"
 
 current_json="$("$ROOT/scripts/pikachat-cli.sh" agent me --api-base-url "$AGENT_API_BASE_URL" 2>/dev/null || true)"
 current_vm_id=""

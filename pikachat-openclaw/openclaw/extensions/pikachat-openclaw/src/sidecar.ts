@@ -1,8 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import os from "node:os";
-import path from "node:path";
 import readline from "node:readline";
+import type {
+  PikachatDaemonEventHandler,
+  PikachatDaemonInCmd,
+  PikachatDaemonOutMsg,
+} from "./daemon-protocol.js";
+export { resolveAccountStateDir } from "./daemon-launch.js";
 import { getPikachatRuntime } from "./runtime.js";
 
 type LegacyRuntimeLogger = {
@@ -16,144 +20,6 @@ function runtimeLogger(): LegacyRuntimeLogger | undefined {
   // OpenClaw's current PluginRuntime typing exposes logger via context log sinks.
   // Keep compatibility with existing plugin behavior when runtime.logger exists.
   return (getPikachatRuntime() as unknown as { logger?: LegacyRuntimeLogger }).logger;
-}
-
-type SidecarOutMsg =
-  | { type: "ready"; protocol_version: number; pubkey: string; npub: string }
-  | { type: "ok"; request_id?: string | null; result?: unknown }
-  | { type: "error"; request_id?: string | null; code: string; message: string }
-  | { type: "keypackage_published"; event_id: string }
-  | {
-      type: "welcome_received";
-      wrapper_event_id: string;
-      welcome_event_id: string;
-      from_pubkey: string;
-      nostr_group_id: string;
-      group_name: string;
-    }
-  | { type: "group_joined"; nostr_group_id: string; mls_group_id: string; member_count: number }
-  | {
-      type: "message_received";
-      nostr_group_id: string;
-      from_pubkey: string;
-      content: string;
-      kind: number;
-      created_at: number;
-      event_id: string;
-      message_id: string;
-      media?: Array<{
-        url: string;
-        mime_type: string;
-        filename: string;
-        original_hash_hex: string;
-        nonce_hex: string;
-        scheme_version: string;
-        width?: number | null;
-        height?: number | null;
-        local_path?: string | null;
-      }>;
-    }
-  | {
-      type: "call_invite_received";
-      call_id: string;
-      from_pubkey: string;
-      nostr_group_id: string;
-    }
-  | {
-      type: "call_session_started";
-      call_id: string;
-      nostr_group_id: string;
-      from_pubkey: string;
-    }
-  | { type: "call_session_ended"; call_id: string; reason: string }
-  | {
-      type: "call_debug";
-      call_id: string;
-      tx_frames: number;
-      rx_frames: number;
-      rx_dropped: number;
-    }
-  | {
-      type: "call_audio_chunk";
-      call_id: string;
-      audio_path: string;
-      sample_rate: number;
-      channels: number;
-    }
-  | {
-      type: "group_created";
-      nostr_group_id: string;
-      mls_group_id: string;
-      peer_pubkey: string;
-      member_count: number;
-    };
-
-type SidecarInCmd =
-  | { cmd: "publish_keypackage"; request_id: string; relays: string[] }
-  | { cmd: "set_relays"; request_id: string; relays: string[] }
-  | { cmd: "list_pending_welcomes"; request_id: string }
-  | { cmd: "accept_welcome"; request_id: string; wrapper_event_id: string }
-  | { cmd: "list_groups"; request_id: string }
-  | { cmd: "hypernote_catalog"; request_id: string }
-  | { cmd: "send_message"; request_id: string; nostr_group_id: string; content: string }
-  | { cmd: "send_hypernote"; request_id: string; nostr_group_id: string; content: string; title?: string; state?: string }
-  | { cmd: "react"; request_id: string; nostr_group_id: string; event_id: string; emoji: string }
-  | {
-      cmd: "submit_hypernote_action";
-      request_id: string;
-      nostr_group_id: string;
-      event_id: string;
-      action: string;
-      form?: Record<string, string>;
-    }
-  | { cmd: "send_typing"; request_id: string; nostr_group_id: string }
-  | { cmd: "accept_call"; request_id: string; call_id: string }
-  | { cmd: "reject_call"; request_id: string; call_id: string; reason?: string }
-  | { cmd: "end_call"; request_id: string; call_id: string; reason?: string }
-  | { cmd: "send_audio_response"; request_id: string; call_id: string; tts_text: string }
-  | { cmd: "send_audio_file"; request_id: string; call_id: string; audio_path: string; sample_rate: number; channels?: number }
-  | { cmd: "init_group"; request_id: string; peer_pubkey: string; group_name?: string }
-  | {
-      cmd: "send_media";
-      request_id: string;
-      nostr_group_id: string;
-      file_path: string;
-      mime_type?: string;
-      filename?: string;
-      caption?: string;
-      blossom_servers?: string[];
-    }
-  | { cmd: "shutdown"; request_id: string };
-
-type SidecarEventHandler = (msg: SidecarOutMsg) => void | Promise<void>;
-
-function sanitizePathSegment(value: string): string {
-  const cleaned = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return cleaned || "default";
-}
-
-function expandTilde(p: string): string {
-  if (p === "~" || p.startsWith("~/")) {
-    return path.join(os.homedir(), p.slice(1));
-  }
-  return p;
-}
-
-export function resolveAccountStateDir(params: {
-  accountId: string;
-  stateDirOverride?: string | undefined;
-  env?: NodeJS.ProcessEnv;
-}): string {
-  if (params.stateDirOverride && params.stateDirOverride.trim()) {
-    return path.resolve(expandTilde(params.stateDirOverride.trim()));
-  }
-  const env = params.env ?? process.env;
-  const stateDir = getPikachatRuntime().state.resolveStateDir(env, os.homedir);
-  return path.join(stateDir, "pikachat", "accounts", sanitizePathSegment(params.accountId));
 }
 
 /**
@@ -193,7 +59,7 @@ export class SendThrottle {
   }
 }
 
-export class PikachatSidecar {
+export class PikachatDaemonClient {
   #proc: ChildProcessWithoutNullStreams;
   #closed = false;
   #requestSeq = 0;
@@ -206,10 +72,10 @@ export class PikachatSidecar {
       startedAt: number;
     }
   >();
-  #onEvent: SidecarEventHandler | null = null;
-  #readyResolve: ((msg: SidecarOutMsg & { type: "ready" }) => void) | null = null;
+  #onEvent: PikachatDaemonEventHandler | null = null;
+  #readyResolve: ((msg: PikachatDaemonOutMsg & { type: "ready" }) => void) | null = null;
   #readyReject: ((err: Error) => void) | null = null;
-  #readyPromise: Promise<SidecarOutMsg & { type: "ready" }>;
+  #readyPromise: Promise<PikachatDaemonOutMsg & { type: "ready" }>;
   #exitResolve: (() => void) | null = null;
   #exitPromise: Promise<void>;
   #sendThrottle = new SendThrottle(1000, (err) => {
@@ -222,7 +88,7 @@ export class PikachatSidecar {
       env: { ...process.env, ...(params.env ?? {}) },
     });
 
-    // Keep stdout strictly for JSONL; log sidecar stderr through OpenClaw logger.
+    // Keep stdout strictly for daemon protocol JSONL; log daemon stderr through OpenClaw.
     const rl = readline.createInterface({ input: this.#proc.stdout });
     rl.on("line", (line) => {
       this.#handleLine(line).catch((err) => {
@@ -264,7 +130,7 @@ export class PikachatSidecar {
 
     this.#proc.on("exit", (code, signal) => {
       this.#closed = true;
-      const err = new Error(`pikachat sidecar exited code=${code ?? "null"} signal=${signal ?? "null"}`);
+      const err = new Error(`pikachat daemon exited code=${code ?? "null"} signal=${signal ?? "null"}`);
       for (const { reject } of this.#pending.values()) {
         reject(err);
       }
@@ -281,7 +147,7 @@ export class PikachatSidecar {
     });
   }
 
-  onEvent(handler: SidecarEventHandler): void {
+  onEvent(handler: PikachatDaemonEventHandler): void {
     this.#onEvent = handler;
   }
 
@@ -289,33 +155,33 @@ export class PikachatSidecar {
     return this.#proc.pid;
   }
 
-  /** Resolves when the sidecar process exits. Resolves immediately if already closed. */
+  /** Resolves when the daemon process exits. Resolves immediately if already closed. */
   waitForExit(): Promise<void> {
     if (this.#closed) return Promise.resolve();
     return this.#exitPromise;
   }
 
-  async waitForReady(timeoutMs: number = 10_000): Promise<SidecarOutMsg & { type: "ready" }> {
+  async waitForReady(timeoutMs: number = 10_000): Promise<PikachatDaemonOutMsg & { type: "ready" }> {
     if (this.#closed) {
-      throw new Error("sidecar already closed");
+      throw new Error("daemon already closed");
     }
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("timeout waiting for sidecar ready")), timeoutMs);
+      const t = setTimeout(() => reject(new Error("timeout waiting for daemon ready")), timeoutMs);
       // Avoid holding the event loop open if the caller abandons the promise.
       (t as any).unref?.();
     });
     const exitPromise = once(this.#proc, "exit").then(() => {
-      throw new Error("sidecar exited before ready");
+      throw new Error("daemon exited before ready");
     });
     return await Promise.race([this.#readyPromise, timeoutPromise, exitPromise]);
   }
 
-  async request(cmd: Omit<SidecarInCmd, "request_id">): Promise<unknown> {
+  async request(cmd: Omit<PikachatDaemonInCmd, "request_id">): Promise<unknown> {
     if (this.#closed) {
-      throw new Error("sidecar is closed");
+      throw new Error("daemon is closed");
     }
     const requestId = `r${Date.now()}_${++this.#requestSeq}`;
-    const payload = { ...cmd, request_id: requestId } as SidecarInCmd;
+    const payload = { ...cmd, request_id: requestId } as PikachatDaemonInCmd;
     const line = JSON.stringify(payload);
 
     const startedAt = Date.now();
@@ -523,11 +389,11 @@ export class PikachatSidecar {
   async #handleLine(line: string): Promise<void> {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let msg: SidecarOutMsg;
+    let msg: PikachatDaemonOutMsg;
     try {
-      msg = JSON.parse(trimmed) as SidecarOutMsg;
+      msg = JSON.parse(trimmed) as PikachatDaemonOutMsg;
     } catch {
-      runtimeLogger()?.warn?.(`[pikachat] invalid JSON from sidecar: ${trimmed}`);
+      runtimeLogger()?.warn?.(`[pikachat] invalid JSON from daemon: ${trimmed}`);
       return;
     }
 
@@ -575,3 +441,5 @@ export class PikachatSidecar {
     }
   }
 }
+
+export { PikachatDaemonClient as PikachatSidecar };

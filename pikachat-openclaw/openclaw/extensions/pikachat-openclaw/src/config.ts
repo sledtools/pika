@@ -1,4 +1,5 @@
 export type PikachatGroupPolicy = "allowlist" | "open";
+export type PikachatDaemonBackend = "native" | "acp";
 
 export type PikachatGroupConfig = {
   name?: string;
@@ -9,9 +10,12 @@ export type PikachatChannelConfig = {
   relays: string[];
   owner?: string | string[];
   stateDir?: string;
-  sidecarCmd?: string;
-  sidecarArgs?: string[];
-  sidecarVersion?: string;
+  daemonCmd?: string;
+  daemonArgs?: string[];
+  daemonVersion?: string;
+  daemonBackend: PikachatDaemonBackend;
+  daemonAcpExec?: string;
+  daemonAcpCwd?: string;
   autoAcceptWelcomes: boolean;
   groupPolicy: PikachatGroupPolicy;
   groupAllowFrom: string[];
@@ -46,11 +50,33 @@ export function resolvePikachatChannelConfig(raw: unknown): PikachatChannelConfi
   })();
 
   const stateDir = typeof obj.stateDir === "string" && obj.stateDir.trim() ? obj.stateDir.trim() : undefined;
-  const sidecarCmd =
-    typeof obj.sidecarCmd === "string" && obj.sidecarCmd.trim() ? obj.sidecarCmd.trim() : undefined;
-  const sidecarArgs = asStringArray(obj.sidecarArgs) ?? undefined;
-  const sidecarVersion =
-    typeof obj.sidecarVersion === "string" && obj.sidecarVersion.trim() ? obj.sidecarVersion.trim() : undefined;
+  const daemonCmd = (() => {
+    const raw = typeof obj.daemonCmd === "string" && obj.daemonCmd.trim()
+      ? obj.daemonCmd
+      : typeof obj.sidecarCmd === "string" && obj.sidecarCmd.trim()
+        ? obj.sidecarCmd
+        : undefined;
+    return raw?.trim();
+  })();
+  const daemonArgs = asStringArray(obj.daemonArgs) ?? asStringArray(obj.sidecarArgs) ?? undefined;
+  const daemonVersion = (() => {
+    const raw = typeof obj.daemonVersion === "string" && obj.daemonVersion.trim()
+      ? obj.daemonVersion
+      : typeof obj.sidecarVersion === "string" && obj.sidecarVersion.trim()
+        ? obj.sidecarVersion
+        : undefined;
+    return raw?.trim();
+  })();
+  const daemonBackend: PikachatDaemonBackend =
+    obj.daemonBackend === "acp" || obj.daemonBackend === "native" ? obj.daemonBackend : "native";
+  const daemonAcpExec =
+    typeof obj.daemonAcpExec === "string" && obj.daemonAcpExec.trim()
+      ? obj.daemonAcpExec.trim()
+      : undefined;
+  const daemonAcpCwd =
+    typeof obj.daemonAcpCwd === "string" && obj.daemonAcpCwd.trim()
+      ? obj.daemonAcpCwd.trim()
+      : undefined;
 
   const autoAcceptWelcomes =
     typeof obj.autoAcceptWelcomes === "boolean" ? obj.autoAcceptWelcomes : true;
@@ -74,9 +100,12 @@ export function resolvePikachatChannelConfig(raw: unknown): PikachatChannelConfi
     relays,
     owner,
     stateDir,
-    sidecarCmd,
-    sidecarArgs,
-    sidecarVersion,
+    daemonCmd,
+    daemonArgs,
+    daemonVersion,
+    daemonBackend,
+    daemonAcpExec,
+    daemonAcpCwd,
     autoAcceptWelcomes,
     groupPolicy,
     groupAllowFrom,

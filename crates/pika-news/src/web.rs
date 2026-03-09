@@ -222,6 +222,8 @@ pub async fn serve(
         )
         .route("/news/pr/:pr_id/regenerate", post(regenerate_handler))
         .route("/news/webhook", post(webhook_handler))
+        .route("/news/llms.txt", get(llms_txt_handler))
+        .route("/news/api/prs", get(api_prs_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -723,6 +725,163 @@ async fn regenerate_handler(
         )
             .into_response(),
     }
+}
+
+// --- LLMs.txt and PR summary API ---
+
+async fn llms_txt_handler() -> impl IntoResponse {
+    let body = "\
+# Pika News
+
+> AI-generated PR summaries for the Pika project.
+
+Pika News automatically generates structured tutorial-style summaries for every
+pull request in the sledtools/pika repository. Summaries include an executive
+overview, step-by-step walkthrough, affected files, and evidence snippets.
+
+## API
+
+### GET /news/api/prs
+
+Returns JSON array of PR summaries. Supports filtering:
+
+- `since_pr=N`   — only PRs with pr_number >= N
+- `since=DATE`   — only PRs updated on or after DATE (ISO 8601, e.g. 2026-03-07)
+
+Both parameters can be combined. Without filters, returns all tracked PRs.
+
+Response shape:
+```json
+[
+  {
+    \"repo\": \"sledtools/pika\",
+    \"pr_number\": 482,
+    \"title\": \"Fix agent provisioning flow\",
+    \"url\": \"https://github.com/sledtools/pika/pull/482\",
+    \"state\": \"merged\",
+    \"updated_at\": \"2026-03-04T...\",
+    \"generation_status\": \"ready\",
+    \"executive_summary\": \"...\",
+    \"steps\": [
+      {
+        \"title\": \"...\",
+        \"intent\": \"...\",
+        \"affected_files\": [\"...\"],
+        \"body_markdown\": \"...\"
+      }
+    ]
+  }
+]
+```
+
+PRs where generation is not yet `ready` will have `executive_summary` and
+`steps` set to null.
+
+### GET /news
+
+Human-readable feed of open and recently merged PRs.
+
+### GET /news/pr/:pr_id
+
+Human-readable detail page for a specific PR (by internal ID, not PR number).
+";
+    ([("content-type", "text/plain; charset=utf-8")], body)
+}
+
+#[derive(serde::Deserialize)]
+struct PrsQuery {
+    since_pr: Option<i64>,
+    since: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct PrSummaryResponse {
+    repo: String,
+    pr_number: i64,
+    title: String,
+    url: String,
+    state: String,
+    updated_at: String,
+    generation_status: String,
+    executive_summary: Option<String>,
+    steps: Option<Vec<PrStepResponse>>,
+}
+
+#[derive(serde::Serialize)]
+struct PrStepResponse {
+    title: String,
+    intent: String,
+    affected_files: Vec<String>,
+    body_markdown: String,
+}
+
+async fn api_prs_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PrsQuery>,
+) -> impl IntoResponse {
+    let store = state.store.clone();
+    let since_date = query.since.clone();
+    let since_pr = query.since_pr;
+
+    let records = match tokio::task::spawn_blocking(move || {
+        store.list_pr_summaries(since_pr, since_date.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(records)) => records,
+        Ok(Err(err)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to query pr summaries: {}", err),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("pr summaries task failed: {}", err),
+            )
+                .into_response();
+        }
+    };
+
+    let items: Vec<PrSummaryResponse> = records
+        .into_iter()
+        .map(|r| {
+            let (executive_summary, steps) = r
+                .tutorial_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<TutorialDoc>(json).ok())
+                .map(|doc| {
+                    let steps = doc
+                        .steps
+                        .into_iter()
+                        .map(|s| PrStepResponse {
+                            title: s.title,
+                            intent: s.intent,
+                            affected_files: s.affected_files,
+                            body_markdown: s.body_markdown,
+                        })
+                        .collect();
+                    (Some(doc.executive_summary), Some(steps))
+                })
+                .unwrap_or((None, None));
+
+            PrSummaryResponse {
+                repo: r.repo,
+                pr_number: r.pr_number,
+                title: r.title,
+                url: r.url,
+                state: r.state,
+                updated_at: r.updated_at,
+                generation_status: r.generation_status,
+                executive_summary,
+                steps,
+            }
+        })
+        .collect();
+
+    Json(items).into_response()
 }
 
 // --- Webhook handler ---

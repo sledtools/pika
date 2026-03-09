@@ -76,6 +76,18 @@ pub struct PrDetailRecord {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PrSummaryRecord {
+    pub repo: String,
+    pub pr_number: i64,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub updated_at: String,
+    pub generation_status: String,
+    pub tutorial_json: Option<String>,
+}
+
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db_path = path.to_path_buf();
@@ -444,6 +456,76 @@ impl Store {
             let mut items = Vec::new();
             for row in rows {
                 items.push(row.context("read feed item row")?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn list_pr_summaries(
+        &self,
+        since_pr: Option<i64>,
+        since_date: Option<&str>,
+    ) -> anyhow::Result<Vec<PrSummaryRecord>> {
+        self.with_connection(|conn| {
+            let mut conditions = vec!["pr.state IN ('open', 'merged')".to_string()];
+            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+            if let Some(pr_num) = since_pr {
+                conditions.push(format!("pr.pr_number >= ?{}", param_values.len() + 1));
+                param_values.push(Box::new(pr_num));
+            }
+            if let Some(date) = since_date {
+                conditions.push(format!("pr.updated_at >= ?{}", param_values.len() + 1));
+                param_values.push(Box::new(date.to_string()));
+            }
+
+            let where_clause = conditions.join(" AND ");
+            let sql = format!(
+                "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at,
+                        COALESCE(latest.status, 'pending'),
+                        current_ready.tutorial_json
+                 FROM pull_requests pr
+                 JOIN repos r ON r.id = pr.repo_id
+                 LEFT JOIN artifact_versions latest ON latest.id = (
+                    SELECT av.id
+                    FROM artifact_versions av
+                    WHERE av.pr_id = pr.id AND av.status != 'superseded'
+                    ORDER BY av.version DESC
+                    LIMIT 1
+                 )
+                 LEFT JOIN artifact_versions current_ready ON current_ready.id = (
+                    SELECT av.id
+                    FROM artifact_versions av
+                    WHERE av.pr_id = pr.id AND av.is_current = 1 AND av.status = 'ready'
+                    ORDER BY av.version DESC
+                    LIMIT 1
+                 )
+                 WHERE {}
+                 ORDER BY pr.pr_number DESC",
+                where_clause
+            );
+
+            let mut stmt = conn.prepare(&sql).context("prepare pr summaries query")?;
+            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+            let rows = stmt
+                .query_map(params_ref.as_slice(), |row| {
+                    Ok(PrSummaryRecord {
+                        repo: row.get(0)?,
+                        pr_number: row.get(1)?,
+                        title: row.get(2)?,
+                        url: row.get(3)?,
+                        state: row.get(4)?,
+                        updated_at: row.get(5)?,
+                        generation_status: row.get(6)?,
+                        tutorial_json: row.get(7)?,
+                    })
+                })
+                .context("query pr summaries")?;
+
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.context("read pr summary row")?);
             }
             Ok(items)
         })
@@ -2707,5 +2789,57 @@ mod tests {
 
         assert_eq!(artifact_version_count(&store, pr_id), 2);
         assert_eq!(inflight_artifact_count(&store, pr_id, "sha-21"), 1);
+    }
+
+    #[test]
+    fn list_pr_summaries_filters_by_pr_number_and_date() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let make_pr = |num: i64, date: &str| PrUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            pr_number: num,
+            title: format!("PR {}", num),
+            url: format!("https://github.com/sledtools/pika/pull/{}", num),
+            state: "merged".to_string(),
+            head_sha: format!("sha-{}", num),
+            base_ref: "master".to_string(),
+            author_login: Some("alice".to_string()),
+            updated_at: date.to_string(),
+            merged_at: Some(date.to_string()),
+        };
+
+        store
+            .upsert_pull_request(&make_pr(480, "2026-03-01T00:00:00Z"))
+            .expect("insert 480");
+        store
+            .upsert_pull_request(&make_pr(481, "2026-03-02T00:00:00Z"))
+            .expect("insert 481");
+        store
+            .upsert_pull_request(&make_pr(482, "2026-03-03T00:00:00Z"))
+            .expect("insert 482");
+
+        // No filter: all 3
+        let all = store.list_pr_summaries(None, None).expect("all");
+        assert_eq!(all.len(), 3);
+
+        // since_pr=481: PRs 481 and 482
+        let since_481 = store.list_pr_summaries(Some(481), None).expect("since 481");
+        assert_eq!(since_481.len(), 2);
+        assert!(since_481.iter().all(|r| r.pr_number >= 481));
+
+        // since date: only 482 updated on or after 2026-03-03
+        let since_date = store
+            .list_pr_summaries(None, Some("2026-03-03"))
+            .expect("since date");
+        assert_eq!(since_date.len(), 1);
+        assert_eq!(since_date[0].pr_number, 482);
+
+        // combined: since_pr=480 AND since date 2026-03-02 → PRs 481, 482
+        let combined = store
+            .list_pr_summaries(Some(480), Some("2026-03-02"))
+            .expect("combined");
+        assert_eq!(combined.len(), 2);
     }
 }

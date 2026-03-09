@@ -35,6 +35,7 @@ let
   opensslLib = lib.getLib pkgs.openssl;
   postgresqlDev = lib.getDev pkgs.postgresql;
   postgresqlLib = lib.getLib pkgs.postgresql;
+  pikaciGroupName = if hostGid == 100 then "users" else "pikaci";
   androidPackages =
     lib.optionals (androidSdk != null) [ androidSdk ]
     ++ lib.optionals (androidJdk != null) [ androidJdk ]
@@ -49,10 +50,13 @@ in
   boot.initrd.systemd.enable = lib.mkForce false;
 
   services.getty.autologinUser = "root";
+  users.groups = lib.optionalAttrs (pikaciGroupName == "pikaci") {
+    pikaci.gid = hostGid;
+  };
   users.users.pikaci = {
     isSystemUser = true;
     uid = hostUid;
-    group = "users";
+    group = pikaciGroupName;
     home = "/home/pikaci";
     createHome = true;
   };
@@ -112,9 +116,28 @@ in
       mkdir -p /artifacts
       exec > >(tee -a /artifacts/guest.log) 2>&1
 
+      ensure_writable_mount() {
+        local path="$1"
+        local desired_owner="${toString hostUid}:${toString hostGid}"
+        local current_owner
+
+        mkdir -p "$path"
+        current_owner="$(${pkgs.coreutils}/bin/stat -c '%u:%g' "$path" 2>/dev/null || true)"
+        if [ "$current_owner" = "$desired_owner" ]; then
+          return 0
+        fi
+
+        if ! chown "$desired_owner" "$path"; then
+          echo "[pikaci] leaving $path owned by ''${current_owner:-unknown}; expected $desired_owner but chown is unsupported on this mount" >&2
+        fi
+      }
+
       echo "[pikaci] guest booted at $(date -Iseconds)"
       mkdir -p /home/pikaci
-      chown pikaci:users /artifacts /cargo-home /cargo-target /home/pikaci || true
+      chown "${toString hostUid}:${toString hostGid}" /home/pikaci || true
+      ensure_writable_mount /artifacts
+      ensure_writable_mount /cargo-home
+      ensure_writable_mount /cargo-target
       cd /workspace/snapshot
       if [ "${lib.boolToString runAsRoot}" = "true" ]; then
         export HOME=/root

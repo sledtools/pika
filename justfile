@@ -51,8 +51,10 @@ info:
     @echo "    just pikahut-up"
     @echo "  Agent HTTP demo:"
     @echo "    just agent-microvm"
+    @echo "    just agent-microvm-acp         # guest daemon boots with --acp-exec"
     @echo "  Agent chat demo (ensure/reuse + send + listen):"
     @echo "    just agent-microvm-chat \"hello\""
+    @echo "    just agent-demo-acp \"hello\"   # full ACP-backed microVM demo"
     @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
     @echo "    just cli agent new --nsec <nsec>"
@@ -1000,6 +1002,10 @@ agent-microvm *ARGS="":
     fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
+# Run the HTTP agent ensure demo with ACP microVM guest bootstrap.
+agent-microvm-acp *ARGS="":
+    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
+
 # Ensure/reuse agent, send one message, then optionally listen for reply.
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
     ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
@@ -1047,6 +1053,10 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
 # Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
 agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
+# Reset/create/recover the current test account's VM, then chat through an ACP-backed guest daemon.
+agent-demo-acp MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
 
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:

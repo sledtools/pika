@@ -14,6 +14,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
+use pika_agent_control_plane::{
+    AgentProvisionRequest, MicrovmAgentBackend, MicrovmProvisionParams,
+};
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;
@@ -395,6 +398,9 @@ enum AgentCommand {
     New {
         #[command(flatten)]
         http: AgentHttpArgs,
+
+        #[command(flatten)]
+        microvm: AgentMicrovmArgs,
     },
 
     /// Fetch the current agent state for the configured Nostr signer
@@ -407,6 +413,9 @@ enum AgentCommand {
     Recover {
         #[command(flatten)]
         http: AgentHttpArgs,
+
+        #[command(flatten)]
+        microvm: AgentMicrovmArgs,
     },
 
     /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
@@ -416,6 +425,9 @@ enum AgentCommand {
     Chat {
         #[command(flatten)]
         http: AgentHttpArgs,
+
+        #[command(flatten)]
+        microvm: AgentMicrovmArgs,
 
         /// Message content to send to your personal agent
         message: String,
@@ -452,6 +464,27 @@ struct AgentHttpArgs {
     /// Nostr secret key (nsec1... or hex) used for NIP-98 request signing
     #[arg(long, env = "PIKA_AGENT_API_NSEC")]
     nsec: Option<String>,
+}
+
+#[derive(Clone, Debug, Args, Default)]
+struct AgentMicrovmArgs {
+    /// Select the microVM guest backend used for agent replies.
+    #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
+    microvm_backend: Option<AgentMicrovmBackendCli>,
+
+    /// ACP backend exec command inside the guest, used when --microvm-backend=acp.
+    #[arg(long, env = "PIKA_AGENT_MICROVM_ACP_EXEC")]
+    microvm_acp_exec: Option<String>,
+
+    /// ACP session cwd inside the guest, used when --microvm-backend=acp.
+    #[arg(long, env = "PIKA_AGENT_MICROVM_ACP_CWD")]
+    microvm_acp_cwd: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentMicrovmBackendCli {
+    LegacyExec,
+    Acp,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -713,11 +746,12 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Agent { cmd } => match cmd {
-            AgentCommand::New { http } => cmd_agent_new(http).await,
+            AgentCommand::New { http, microvm } => cmd_agent_new(http, microvm).await,
             AgentCommand::Me { http } => cmd_agent_me(http).await,
-            AgentCommand::Recover { http } => cmd_agent_recover(http).await,
+            AgentCommand::Recover { http, microvm } => cmd_agent_recover(http, microvm).await,
             AgentCommand::Chat {
                 http,
+                microvm,
                 message,
                 listen_timeout,
                 poll_attempts,
@@ -727,11 +761,14 @@ async fn main() -> anyhow::Result<()> {
                 cmd_agent_chat(
                     &cli,
                     http,
+                    microvm,
                     message,
-                    *listen_timeout,
-                    *poll_attempts,
-                    *poll_delay_sec,
-                    *recover_after_attempt,
+                    AgentChatExecutionOptions {
+                        listen_timeout: *listen_timeout,
+                        poll_attempts: *poll_attempts,
+                        poll_delay_sec: *poll_delay_sec,
+                        recover_after_attempt: *recover_after_attempt,
+                    },
                 )
                 .await
             }
@@ -1707,8 +1744,29 @@ async fn cmd_download_media(
     Ok(())
 }
 
-async fn cmd_agent_new(http: &AgentHttpArgs) -> anyhow::Result<()> {
-    let ensured = ensure_agent_idempotent(http).await?;
+fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
+    let backend = match microvm.microvm_backend {
+        Some(AgentMicrovmBackendCli::LegacyExec) => Some(MicrovmAgentBackend::LegacyExec),
+        Some(AgentMicrovmBackendCli::Acp) => Some(MicrovmAgentBackend::Acp {
+            exec_command: microvm.microvm_acp_exec.clone(),
+            cwd: microvm.microvm_acp_cwd.clone(),
+        }),
+        None => None,
+    };
+    let has_microvm_fields = backend.is_some();
+    if !has_microvm_fields {
+        return None;
+    }
+    Some(AgentProvisionRequest {
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            backend,
+        }),
+    })
+}
+
+async fn cmd_agent_new(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> anyhow::Result<()> {
+    let ensured = ensure_agent_idempotent(http, agent_provision_request(microvm).as_ref()).await?;
     print(json!({
         "operation": "ensure",
         "created": ensured.created,
@@ -1718,7 +1776,7 @@ async fn cmd_agent_new(http: &AgentHttpArgs) -> anyhow::Result<()> {
 }
 
 async fn cmd_agent_me(http: &AgentHttpArgs) -> anyhow::Result<()> {
-    let agent = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+    let agent = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
     print(json!({
         "operation": "me",
         "agent": agent,
@@ -1726,8 +1784,15 @@ async fn cmd_agent_me(http: &AgentHttpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_agent_recover(http: &AgentHttpArgs) -> anyhow::Result<()> {
-    let agent = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await?;
+async fn cmd_agent_recover(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> anyhow::Result<()> {
+    let body = agent_provision_request(microvm);
+    let agent = call_agent_api(
+        http,
+        reqwest::Method::POST,
+        AGENT_API_RECOVER_PATH,
+        body.as_ref(),
+    )
+    .await?;
     print(json!({
         "operation": "recover",
         "agent": agent,
@@ -1741,21 +1806,33 @@ struct EnsureAgentResult {
     created: bool,
 }
 
-async fn ensure_agent_idempotent(http: &AgentHttpArgs) -> anyhow::Result<EnsureAgentResult> {
+#[derive(Copy, Clone, Debug)]
+struct AgentChatExecutionOptions {
+    listen_timeout: u64,
+    poll_attempts: u32,
+    poll_delay_sec: u64,
+    recover_after_attempt: u32,
+}
+
+async fn ensure_agent_idempotent(
+    http: &AgentHttpArgs,
+    body: Option<&AgentProvisionRequest>,
+) -> anyhow::Result<EnsureAgentResult> {
     let method = reqwest::Method::POST;
-    let (status, body) = call_agent_api_raw(http, method.clone(), AGENT_API_ENSURE_PATH).await?;
+    let (status, response_body) =
+        call_agent_api_raw(http, method.clone(), AGENT_API_ENSURE_PATH, body).await?;
     if status.is_success() {
         return Ok(EnsureAgentResult {
-            agent: parse_agent_api_response_json(&body, AGENT_API_ENSURE_PATH)?,
+            agent: parse_agent_api_response_json(&response_body, AGENT_API_ENSURE_PATH)?,
             created: true,
         });
     }
 
     if status == reqwest::StatusCode::CONFLICT
-        && agent_api_error_code(&body).as_deref() == Some("agent_exists")
+        && agent_api_error_code(&response_body).as_deref() == Some("agent_exists")
     {
         return Ok(EnsureAgentResult {
-            agent: call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?,
+            agent: call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?,
             created: false,
         });
     }
@@ -1764,7 +1841,7 @@ async fn ensure_agent_idempotent(http: &AgentHttpArgs) -> anyhow::Result<EnsureA
         &method,
         AGENT_API_ENSURE_PATH,
         status,
-        &body,
+        &response_body,
     ))
 }
 
@@ -1883,15 +1960,13 @@ fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Resul
 async fn cmd_agent_chat(
     cli: &Cli,
     http: &AgentHttpArgs,
+    microvm: &AgentMicrovmArgs,
     message: &str,
-    listen_timeout: u64,
-    poll_attempts: u32,
-    poll_delay_sec: u64,
-    recover_after_attempt: u32,
+    options: AgentChatExecutionOptions,
 ) -> anyhow::Result<()> {
     let message = message.trim();
     anyhow::ensure!(!message.is_empty(), "message cannot be empty");
-    anyhow::ensure!(poll_attempts > 0, "--poll-attempts must be > 0");
+    anyhow::ensure!(options.poll_attempts > 0, "--poll-attempts must be > 0");
     let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
     let owner_keys = Keys::parse(&nsec).context("parse agent api nsec")?;
     let owner_chat_state_dir = cli
@@ -1907,15 +1982,16 @@ async fn cmd_agent_chat(
         cmd: Command::Identity,
     };
 
-    let ensured = ensure_agent_idempotent(http).await?;
+    let body = agent_provision_request(microvm);
+    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
     let mut tried_optimistic_send = false;
     let mut recovered_stalled_creating = false;
-    let poll_delay = Duration::from_secs(poll_delay_sec);
+    let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
     let mut last_agent_npub = String::new();
 
-    for attempt in 1..=poll_attempts {
-        let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH).await?;
+    for attempt in 1..=options.poll_attempts {
+        let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
         let (agent_npub, state) = parse_agent_fields(&me)?;
         last_state = state.clone();
         last_agent_npub = agent_npub.clone();
@@ -1925,10 +2001,10 @@ async fn cmd_agent_chat(
                 &chat_cli,
                 &agent_npub,
                 message,
-                listen_timeout,
+                options.listen_timeout,
             )
             .await?;
-            return finish_chat_send(outcome, listen_timeout);
+            return finish_chat_send(outcome, options.listen_timeout);
         }
 
         if state == "creating" && !ensured.created && !tried_optimistic_send {
@@ -1936,11 +2012,11 @@ async fn cmd_agent_chat(
                 &chat_cli,
                 &agent_npub,
                 message,
-                listen_timeout,
+                options.listen_timeout,
             )
             .await
             {
-                Ok(outcome) => return finish_chat_send(outcome, listen_timeout),
+                Ok(outcome) => return finish_chat_send(outcome, options.listen_timeout),
                 Err(_) => {
                     tried_optimistic_send = true;
                     eprintln!("optimistic send failed; continuing with recover/poll");
@@ -1950,18 +2026,30 @@ async fn cmd_agent_chat(
 
         if state == "error" {
             eprintln!("agent in error state; requesting recover");
-            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+            let _ = call_agent_api(
+                http,
+                reqwest::Method::POST,
+                AGENT_API_RECOVER_PATH,
+                body.as_ref(),
+            )
+            .await;
         } else if state == "creating"
             && !recovered_stalled_creating
-            && recover_after_attempt > 0
-            && attempt >= recover_after_attempt
+            && options.recover_after_attempt > 0
+            && attempt >= options.recover_after_attempt
         {
             eprintln!("agent still creating after {attempt} checks; requesting recover");
-            let _ = call_agent_api(http, reqwest::Method::POST, AGENT_API_RECOVER_PATH).await;
+            let _ = call_agent_api(
+                http,
+                reqwest::Method::POST,
+                AGENT_API_RECOVER_PATH,
+                body.as_ref(),
+            )
+            .await;
             recovered_stalled_creating = true;
         }
 
-        if attempt < poll_attempts {
+        if attempt < options.poll_attempts {
             tokio::time::sleep(poll_delay).await;
         }
     }
@@ -1974,11 +2062,15 @@ async fn cmd_agent_chat(
         "agent did not become ready (state={}); trying best-effort send",
         last_state
     );
-    if let Ok(outcome) =
-        send_to_agent_and_optionally_listen(&chat_cli, &last_agent_npub, message, listen_timeout)
-            .await
+    if let Ok(outcome) = send_to_agent_and_optionally_listen(
+        &chat_cli,
+        &last_agent_npub,
+        message,
+        options.listen_timeout,
+    )
+    .await
     {
-        return finish_chat_send(outcome, listen_timeout);
+        return finish_chat_send(outcome, options.listen_timeout);
     }
     anyhow::bail!(
         "agent chat failed: state remained {} and send failed; try `pikachat agent recover --api-base-url {} --nsec <nsec>`",
@@ -2041,18 +2133,20 @@ async fn call_agent_api(
     http: &AgentHttpArgs,
     method: reqwest::Method,
     path: &str,
+    body: Option<&AgentProvisionRequest>,
 ) -> anyhow::Result<serde_json::Value> {
-    let (status, body) = call_agent_api_raw(http, method.clone(), path).await?;
+    let (status, response_body) = call_agent_api_raw(http, method.clone(), path, body).await?;
     if !status.is_success() {
-        return Err(agent_api_http_error(&method, path, status, &body));
+        return Err(agent_api_http_error(&method, path, status, &response_body));
     }
-    parse_agent_api_response_json(&body, path)
+    parse_agent_api_response_json(&response_body, path)
 }
 
 async fn call_agent_api_raw(
     http: &AgentHttpArgs,
     method: reqwest::Method,
     path: &str,
+    body: Option<&AgentProvisionRequest>,
 ) -> anyhow::Result<(reqwest::StatusCode, String)> {
     let base_url = normalized_agent_api_base_url(&http.api_base_url)?;
     let nsec = agent_api_nsec_value(http.nsec.as_deref())?;
@@ -2071,7 +2165,7 @@ async fn call_agent_api_raw(
     if method == reqwest::Method::POST {
         request = request
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({}));
+            .json(body.unwrap_or(&AgentProvisionRequest { microvm: None }));
     }
 
     let response = request
@@ -2501,7 +2595,7 @@ mod tests {
         let cli = Cli::try_parse_from(args).expect("parse args");
         match cli.cmd {
             Command::Agent {
-                cmd: AgentCommand::New { http },
+                cmd: AgentCommand::New { http, .. },
             } => AgentHttpParse {
                 api_base_url: http.api_base_url,
                 nsec: http.nsec,
@@ -2595,6 +2689,7 @@ mod tests {
                 cmd:
                     AgentCommand::Chat {
                         http,
+                        microvm: _,
                         message,
                         listen_timeout,
                         poll_attempts,
@@ -2643,6 +2738,38 @@ mod tests {
         ]);
         assert_eq!(parsed.api_base_url, DEFAULT_AGENT_API_BASE_URL);
         assert!(parsed.nsec.is_some());
+    }
+
+    #[test]
+    fn agent_new_parses_acp_microvm_flags() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-backend",
+            "acp",
+            "--microvm-acp-exec",
+            "npx -y pi-acp",
+            "--microvm-acp-cwd",
+            "/root/pika-agent/acp",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(microvm.microvm_backend, Some(AgentMicrovmBackendCli::Acp));
+                assert_eq!(microvm.microvm_acp_exec.as_deref(), Some("npx -y pi-acp"));
+                assert_eq!(
+                    microvm.microvm_acp_cwd.as_deref(),
+                    Some("/root/pika-agent/acp")
+                );
+            }
+            _ => panic!("expected agent new command"),
+        }
     }
 
     #[test]

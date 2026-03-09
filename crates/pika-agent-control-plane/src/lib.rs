@@ -45,6 +45,26 @@ pub struct AuthContext {
 pub struct MicrovmProvisionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawner_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<MicrovmAgentBackend>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum MicrovmAgentBackend {
+    LegacyExec,
+    Acp {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exec_command: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
+pub struct AgentProvisionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microvm: Option<MicrovmProvisionParams>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -313,6 +333,10 @@ mod tests {
                 bot_secret_key_hex: Some("deadbeef".to_string()),
                 microvm: Some(MicrovmProvisionParams {
                     spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                    backend: Some(MicrovmAgentBackend::Acp {
+                        exec_command: Some("npx -y pi-acp".to_string()),
+                        cwd: Some("/root/pika-agent/acp".to_string()),
+                    }),
                 }),
             }),
             AgentControlCommand::ProcessWelcome(ProcessWelcomeCommand {
@@ -466,6 +490,23 @@ mod tests {
     fn spawner_create_vm_request_requires_guest_autostart() {
         let json = json!({});
         assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
+    }
+
+    #[test]
+    fn agent_provision_request_round_trips_microvm_backend() {
+        let request = AgentProvisionRequest {
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                backend: Some(MicrovmAgentBackend::Acp {
+                    exec_command: Some("npx -y pi-acp".to_string()),
+                    cwd: Some("/root/pika-agent/acp".to_string()),
+                }),
+            }),
+        };
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: AgentProvisionRequest =
+            serde_json::from_str(&encoded).expect("decode request");
+        assert_eq!(decoded, request);
     }
 
     #[test]

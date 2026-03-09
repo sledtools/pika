@@ -22,7 +22,7 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::{RequestContext, State};
-use pika_agent_control_plane::MicrovmProvisionParams;
+use pika_agent_control_plane::{AgentProvisionRequest, MicrovmProvisionParams};
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
     ResolvedMicrovmParams,
@@ -103,6 +103,13 @@ fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
 
 fn required_microvm_spawner_url_from_env() -> anyhow::Result<String> {
     required_microvm_spawner_url(std::env::var(MICROVM_SPAWNER_URL_ENV).ok())
+}
+
+fn default_microvm_params_from_env() -> anyhow::Result<MicrovmProvisionParams> {
+    Ok(MicrovmProvisionParams {
+        spawner_url: Some(required_microvm_spawner_url_from_env()?),
+        ..MicrovmProvisionParams::default()
+    })
 }
 
 fn is_private_ipv4(ip: Ipv4Addr) -> bool {
@@ -326,11 +333,24 @@ fn prepare_agent_for_reprovision(
     Ok(())
 }
 
-fn resolved_spawner_params() -> anyhow::Result<ResolvedMicrovmParams> {
-    let spawner_url = required_microvm_spawner_url_from_env()?;
-    let params = MicrovmProvisionParams {
-        spawner_url: Some(spawner_url),
-    };
+fn resolved_spawner_params(
+    requested: Option<&MicrovmProvisionParams>,
+) -> anyhow::Result<ResolvedMicrovmParams> {
+    let mut params = default_microvm_params_from_env()?;
+    if let Some(requested) = requested {
+        if requested
+            .spawner_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            params.spawner_url = requested.spawner_url.clone();
+        }
+        if requested.backend.is_some() {
+            params.backend = requested.backend.clone();
+        }
+    }
     let resolved = resolve_params(&params);
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
@@ -341,14 +361,16 @@ async fn provision_vm_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
     request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
 ) -> anyhow::Result<pika_agent_control_plane::SpawnerVmResponse> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
-    let resolved = resolved_spawner_params()?;
+    let resolved = resolved_spawner_params(requested)?;
     let create_vm = build_create_vm_request(
         &owner_pubkey,
         &default_message_relays(),
         &bot_identity.secret_hex,
         &bot_identity.pubkey_hex,
+        &resolved,
     );
     let spawner = MicrovmSpawnerClient::new(resolved.spawner_url.clone());
     spawner
@@ -361,6 +383,7 @@ async fn provision_agent_for_owner(
     state: &State,
     owner_npub: &str,
     request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
 ) -> Result<AgentInstance, AgentApiError> {
     let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
@@ -392,7 +415,7 @@ async fn provision_agent_for_owner(
         })?
     };
 
-    let vm = match provision_vm_for_owner(owner_npub, &bot_identity, request_id).await {
+    let vm = match provision_vm_for_owner(owner_npub, &bot_identity, request_id, requested).await {
         Ok(vm) => vm,
         Err(err) => {
             tracing::error!(
@@ -443,8 +466,9 @@ async fn reprovision_agent_response(
     state: &State,
     owner_npub: &str,
     request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    match provision_agent_for_owner(state, owner_npub, request_id).await {
+    match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
         Ok(reprovisioned) => json_response(reprovisioned, request_id),
         Err(err) if err.code == AgentApiErrorCode::AgentExists => {
             let mut conn = state.db_pool.get().map_err(|_| {
@@ -466,6 +490,7 @@ pub async fn ensure_agent(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
+    body: Option<Json<AgentProvisionRequest>>,
 ) -> Result<(StatusCode, Json<AgentStateResponse>), AgentApiError> {
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal)
@@ -481,9 +506,14 @@ pub async fn ensure_agent(
     .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     drop(conn);
 
-    let updated =
-        provision_agent_for_owner(&state, &requester.owner_npub, &request_context.request_id)
-            .await?;
+    let requested = body.as_ref().and_then(|body| body.microvm.as_ref());
+    let updated = provision_agent_for_owner(
+        &state,
+        &requester.owner_npub,
+        &request_context.request_id,
+        requested,
+    )
+    .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -529,6 +559,7 @@ pub async fn recover_my_agent(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
+    body: Option<Json<AgentProvisionRequest>>,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal)
@@ -548,6 +579,7 @@ pub async fn recover_my_agent(
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
             .with_request_id(request_context.request_id.clone()));
     };
+    let requested = body.as_ref().and_then(|body| body.microvm.as_ref());
     if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
@@ -556,6 +588,7 @@ pub async fn recover_my_agent(
             &state,
             &requester.owner_npub,
             &request_context.request_id,
+            requested,
         )
         .await;
     }
@@ -564,7 +597,7 @@ pub async fn recover_my_agent(
             .with_request_id(request_context.request_id.clone())
     })?;
 
-    let resolved = resolved_spawner_params().map_err(|_| {
+    let resolved = resolved_spawner_params(requested).map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
             .with_request_id(request_context.request_id.clone())
     })?;
@@ -590,6 +623,7 @@ pub async fn recover_my_agent(
                 &state,
                 &requester.owner_npub,
                 &request_context.request_id,
+                requested,
             )
             .await;
         }
@@ -621,7 +655,7 @@ pub async fn recover_my_agent(
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {
-    let _ = resolved_spawner_params().context("resolve and validate microvm spawner params")?;
+    let _ = resolved_spawner_params(None).context("resolve and validate microvm spawner params")?;
     Ok(())
 }
 
@@ -683,6 +717,24 @@ mod tests {
         )
         .execute(conn)
         .expect("truncate test tables");
+    }
+
+    fn with_spawner_env<T>(value: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = test_guard();
+        let prior = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+        unsafe {
+            std::env::set_var(MICROVM_SPAWNER_URL_ENV, value);
+        }
+        let result = f();
+        match prior {
+            Some(prior) => unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+            },
+            None => unsafe {
+                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+            },
+        }
+        result
     }
 
     #[test]
@@ -830,6 +882,29 @@ mod tests {
         let err = ensure_private_microvm_spawner_url("https://example.com")
             .expect_err("public host must be rejected");
         assert!(err.to_string().contains("private DNS"));
+    }
+
+    #[test]
+    fn resolved_spawner_params_overlays_requested_acp_backend() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Acp {
+                    exec_command: Some("npx -y pi-acp".to_string()),
+                    cwd: Some("/root/pika-agent/acp".to_string()),
+                }),
+            };
+
+            let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
+            assert_eq!(resolved.spawner_url, "http://127.0.0.1:8080");
+            assert_eq!(
+                resolved.backend,
+                pika_agent_microvm::ResolvedMicrovmAgentBackend::Acp {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                }
+            );
+        });
     }
 
     #[test]

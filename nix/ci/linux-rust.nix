@@ -207,6 +207,7 @@ rec {
 
   workspaceBuild = craneLib.mkCargoDerivation (commonArgs // {
     pname = "${commonArgs.pname}-build";
+    src = workspaceDeps.src;
     cargoArtifacts = workspaceDeps;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;

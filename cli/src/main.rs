@@ -15,7 +15,7 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
-    AgentProvisionRequest, MicrovmAgentBackend, MicrovmProvisionParams,
+    AgentProvisionRequest, MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
 };
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
@@ -468,6 +468,10 @@ struct AgentHttpArgs {
 
 #[derive(Clone, Debug, Args, Default)]
 struct AgentMicrovmArgs {
+    /// Select the agent product/runtime deployed in the microVM guest.
+    #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
+    microvm_kind: Option<AgentMicrovmKindCli>,
+
     /// Select the microVM guest backend used for agent replies.
     #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
     microvm_backend: Option<AgentMicrovmBackendCli>,
@@ -485,6 +489,12 @@ struct AgentMicrovmArgs {
 enum AgentMicrovmBackendCli {
     Native,
     Acp,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentMicrovmKindCli {
+    Pi,
+    Openclaw,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1745,6 +1755,11 @@ async fn cmd_download_media(
 }
 
 fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
+    let kind = match microvm.microvm_kind {
+        Some(AgentMicrovmKindCli::Pi) => Some(MicrovmAgentKind::Pi),
+        Some(AgentMicrovmKindCli::Openclaw) => Some(MicrovmAgentKind::Openclaw),
+        None => None,
+    };
     let backend = match microvm.microvm_backend {
         Some(AgentMicrovmBackendCli::Native) => Some(MicrovmAgentBackend::Native),
         Some(AgentMicrovmBackendCli::Acp) => Some(MicrovmAgentBackend::Acp {
@@ -1753,13 +1768,14 @@ fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionR
         }),
         None => None,
     };
-    let has_microvm_fields = backend.is_some();
+    let has_microvm_fields = kind.is_some() || backend.is_some();
     if !has_microvm_fields {
         return None;
     }
     Some(AgentProvisionRequest {
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
+            kind,
             backend,
         }),
     })
@@ -2748,6 +2764,8 @@ mod tests {
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "pi",
             "--microvm-backend",
             "acp",
             "--microvm-acp-exec",
@@ -2761,6 +2779,7 @@ mod tests {
             Command::Agent {
                 cmd: AgentCommand::New { microvm, .. },
             } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Pi));
                 assert_eq!(microvm.microvm_backend, Some(AgentMicrovmBackendCli::Acp));
                 assert_eq!(microvm.microvm_acp_exec.as_deref(), Some("npx -y pi-acp"));
                 assert_eq!(
@@ -2780,6 +2799,8 @@ mod tests {
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "openclaw",
             "--microvm-backend",
             "native",
         ])
@@ -2789,12 +2810,37 @@ mod tests {
             Command::Agent {
                 cmd: AgentCommand::New { microvm, .. },
             } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
                 assert_eq!(
                     microvm.microvm_backend,
                     Some(AgentMicrovmBackendCli::Native)
                 );
                 assert!(microvm.microvm_acp_exec.is_none());
                 assert!(microvm.microvm_acp_cwd.is_none());
+            }
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    #[test]
+    fn agent_new_parses_openclaw_kind_without_backend() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "openclaw",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
+                assert!(microvm.microvm_backend.is_none());
             }
             _ => panic!("expected agent new command"),
         }

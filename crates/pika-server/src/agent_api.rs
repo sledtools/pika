@@ -347,6 +347,9 @@ fn resolved_spawner_params(
         {
             params.spawner_url = requested.spawner_url.clone();
         }
+        if requested.kind.is_some() {
+            params.kind = requested.kind;
+        }
         if requested.backend.is_some() {
             params.backend = requested.backend.clone();
         }
@@ -889,6 +892,7 @@ mod tests {
         with_spawner_env("http://127.0.0.1:8080", || {
             let requested = MicrovmProvisionParams {
                 spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
                 backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Acp {
                     exec_command: Some("npx -y pi-acp".to_string()),
                     cwd: Some("/root/pika-agent/acp".to_string()),
@@ -898,11 +902,37 @@ mod tests {
             let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
             assert_eq!(resolved.spawner_url, "http://127.0.0.1:8080");
             assert_eq!(
+                resolved.kind,
+                pika_agent_microvm::ResolvedMicrovmAgentKind::Pi
+            );
+            assert_eq!(
                 resolved.backend,
                 pika_agent_microvm::ResolvedMicrovmAgentBackend::Acp {
                     exec_command: "npx -y pi-acp".to_string(),
                     cwd: "/root/pika-agent/acp".to_string(),
                 }
+            );
+        });
+    }
+
+    #[test]
+    fn resolved_spawner_params_overlays_requested_openclaw_kind() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            };
+
+            let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
+            assert_eq!(resolved.spawner_url, "http://127.0.0.1:8080");
+            assert_eq!(
+                resolved.kind,
+                pika_agent_microvm::ResolvedMicrovmAgentKind::Openclaw
+            );
+            assert_eq!(
+                resolved.backend,
+                pika_agent_microvm::ResolvedMicrovmAgentBackend::Native
             );
         });
     }

@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use nostr_sdk::prelude::PublicKey;
 use pika_agent_control_plane::{
-    MicrovmProvisionParams, SpawnerCreateVmRequest as CreateVmRequest,
+    MicrovmAgentBackend, MicrovmProvisionParams, SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
@@ -15,6 +15,9 @@ pub const AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
 pub const AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
 pub const AUTOSTART_BRIDGE_PATH: &str = "workspace/pika-agent/microvm-bridge.py";
 pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
+pub const DEFAULT_ACP_EXEC_COMMAND: &str = "npx -y pi-acp";
+pub const DEFAULT_ACP_CWD: &str = "/root/pika-agent/acp";
+pub const DEFAULT_LEGACY_EXEC_COMMAND: &str = "python3 /workspace/pika-agent/microvm-bridge.py";
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -25,6 +28,13 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ResolvedMicrovmParams {
     pub spawner_url: String,
+    pub backend: ResolvedMicrovmAgentBackend,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ResolvedMicrovmAgentBackend {
+    LegacyExec { exec_command: String },
+    Acp { exec_command: String, cwd: String },
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +234,7 @@ fn upstream_error_message(
 }
 
 pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
-    params.spawner_url.is_some()
+    params.spawner_url.is_some() || params.backend.is_some()
 }
 
 pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams {
@@ -236,6 +246,29 @@ pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams 
             .filter(|s| !s.is_empty())
             .unwrap_or(DEFAULT_SPAWNER_URL)
             .to_string(),
+        backend: resolve_backend(params.backend.as_ref()),
+    }
+}
+
+fn resolve_backend(backend: Option<&MicrovmAgentBackend>) -> ResolvedMicrovmAgentBackend {
+    match backend {
+        Some(MicrovmAgentBackend::Acp { exec_command, cwd }) => ResolvedMicrovmAgentBackend::Acp {
+            exec_command: exec_command
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_ACP_EXEC_COMMAND)
+                .to_string(),
+            cwd: cwd
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_ACP_CWD)
+                .to_string(),
+        },
+        Some(MicrovmAgentBackend::LegacyExec) | None => ResolvedMicrovmAgentBackend::LegacyExec {
+            exec_command: DEFAULT_LEGACY_EXEC_COMMAND.to_string(),
+        },
     }
 }
 
@@ -244,11 +277,26 @@ pub fn build_create_vm_request(
     relay_urls: &[String],
     bot_secret_hex: &str,
     bot_pubkey_hex: &str,
+    params: &ResolvedMicrovmParams,
 ) -> CreateVmRequest {
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), owner_pubkey.to_hex());
     env.insert("PIKA_RELAY_URLS".to_string(), relay_urls.join(","));
     env.insert("PIKA_BOT_PUBKEY".to_string(), bot_pubkey_hex.to_string());
+    match &params.backend {
+        ResolvedMicrovmAgentBackend::LegacyExec { exec_command } => {
+            env.insert(
+                "PIKA_AGENT_BACKEND_MODE".to_string(),
+                "legacy_exec".to_string(),
+            );
+            env.insert("PIKA_AGENT_LEGACY_EXEC".to_string(), exec_command.clone());
+        }
+        ResolvedMicrovmAgentBackend::Acp { exec_command, cwd } => {
+            env.insert("PIKA_AGENT_BACKEND_MODE".to_string(), "acp".to_string());
+            env.insert("PIKA_AGENT_ACP_EXEC".to_string(), exec_command.clone());
+            env.insert("PIKA_AGENT_ACP_CWD".to_string(), cwd.clone());
+        }
+    }
     for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PI_MODEL"] {
         if let Ok(value) = std::env::var(key) {
             if value.trim().is_empty() {
@@ -342,12 +390,41 @@ if [[ -z "$bin" ]]; then
 fi
 
 echo "[microvm-agent] starting daemon via $bin" >&2
-exec "$bin" daemon \
-  --state-dir "$STATE_DIR" \
-  --auto-accept-welcomes \
-  --allow-pubkey "${PIKA_OWNER_PUBKEY}" \
-  "${relay_args[@]}" \
-  --exec "python3 /workspace/pika-agent/microvm-bridge.py"
+daemon_args=(
+  daemon
+  --state-dir "$STATE_DIR"
+  --auto-accept-welcomes
+  --allow-pubkey "${PIKA_OWNER_PUBKEY}"
+  "${relay_args[@]}"
+)
+
+backend_mode="${PIKA_AGENT_BACKEND_MODE:-legacy_exec}"
+case "$backend_mode" in
+  legacy_exec)
+    legacy_exec="${PIKA_AGENT_LEGACY_EXEC:-python3 /workspace/pika-agent/microvm-bridge.py}"
+    if [[ -z "$legacy_exec" ]]; then
+      echo "[microvm-agent] legacy backend requires a non-empty exec command" >&2
+      exit 1
+    fi
+    daemon_args+=(--exec "$legacy_exec")
+    ;;
+  acp)
+    acp_exec="${PIKA_AGENT_ACP_EXEC:-npx -y pi-acp}"
+    acp_cwd="${PIKA_AGENT_ACP_CWD:-/root/pika-agent/acp}"
+    if [[ -z "$acp_exec" ]]; then
+      echo "[microvm-agent] ACP backend requires a non-empty ACP exec command" >&2
+      exit 1
+    fi
+    mkdir -p "$acp_cwd"
+    daemon_args+=(--acp-exec "$acp_exec" --acp-cwd "$acp_cwd")
+    ;;
+  *)
+    echo "[microvm-agent] unsupported backend mode: $backend_mode" >&2
+    exit 1
+    ;;
+esac
+
+exec "$bin" "${daemon_args[@]}"
 "#
 }
 
@@ -737,11 +814,28 @@ mod tests {
     fn resolve_params_applies_defaults_and_overrides() {
         let defaults = resolve_params(&MicrovmProvisionParams::default());
         assert_eq!(defaults.spawner_url, DEFAULT_SPAWNER_URL);
+        assert_eq!(
+            defaults.backend,
+            ResolvedMicrovmAgentBackend::LegacyExec {
+                exec_command: DEFAULT_LEGACY_EXEC_COMMAND.to_string()
+            }
+        );
 
         let overridden = resolve_params(&MicrovmProvisionParams {
             spawner_url: Some("http://10.0.0.5:8080".to_string()),
+            backend: Some(MicrovmAgentBackend::Acp {
+                exec_command: Some("npx -y pi-acp".to_string()),
+                cwd: Some("/tmp/acp".to_string()),
+            }),
         });
         assert_eq!(overridden.spawner_url, "http://10.0.0.5:8080");
+        assert_eq!(
+            overridden.backend,
+            ResolvedMicrovmAgentBackend::Acp {
+                exec_command: "npx -y pi-acp".to_string(),
+                cwd: "/tmp/acp".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -756,6 +850,12 @@ mod tests {
             ],
             &bot_keys.secret_key().to_secret_hex(),
             &bot_keys.public_key().to_hex(),
+            &ResolvedMicrovmParams {
+                spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+                backend: ResolvedMicrovmAgentBackend::LegacyExec {
+                    exec_command: DEFAULT_LEGACY_EXEC_COMMAND.to_string(),
+                },
+            },
         );
         let value = serde_json::to_value(req).expect("serialize create vm request");
 
@@ -767,6 +867,14 @@ mod tests {
         assert_eq!(
             value["guest_autostart"]["env"]["PIKA_RELAY_URLS"],
             "wss://relay-a.example.com,wss://relay-b.example.com"
+        );
+        assert_eq!(
+            value["guest_autostart"]["env"]["PIKA_AGENT_BACKEND_MODE"],
+            "legacy_exec"
+        );
+        assert_eq!(
+            value["guest_autostart"]["env"]["PIKA_AGENT_LEGACY_EXEC"],
+            DEFAULT_LEGACY_EXEC_COMMAND
         );
         assert!(value["guest_autostart"]["files"][AUTOSTART_SCRIPT_PATH]
             .as_str()
@@ -800,6 +908,8 @@ mod tests {
         );
         assert!(script.contains("--state-dir \"$STATE_DIR\""));
         assert!(script.contains("PIKA_PIKACHAT_BIN"));
+        assert!(script.contains("PIKA_AGENT_BACKEND_MODE"));
+        assert!(script.contains("--acp-exec \"$acp_exec\""));
         assert!(
             !script.contains("marmotd"),
             "autostart script must only resolve pikachat daemon binary"
@@ -811,7 +921,47 @@ mod tests {
         assert!(!microvm_params_provided(&MicrovmProvisionParams::default()));
         assert!(microvm_params_provided(&MicrovmProvisionParams {
             spawner_url: Some("http://127.0.0.1:8080".to_string()),
+            backend: None,
         }));
+        assert!(microvm_params_provided(&MicrovmProvisionParams {
+            spawner_url: None,
+            backend: Some(MicrovmAgentBackend::Acp {
+                exec_command: None,
+                cwd: None,
+            }),
+        }));
+    }
+
+    #[test]
+    fn build_create_vm_request_includes_acp_backend_env() {
+        let keys = Keys::generate();
+        let bot_keys = Keys::generate();
+        let req = build_create_vm_request(
+            &keys.public_key(),
+            &["wss://relay-a.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &ResolvedMicrovmParams {
+                spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+                backend: ResolvedMicrovmAgentBackend::Acp {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                },
+            },
+        );
+        let value = serde_json::to_value(req).expect("serialize create vm request");
+        assert_eq!(
+            value["guest_autostart"]["env"]["PIKA_AGENT_BACKEND_MODE"],
+            "acp"
+        );
+        assert_eq!(
+            value["guest_autostart"]["env"]["PIKA_AGENT_ACP_EXEC"],
+            "npx -y pi-acp"
+        );
+        assert_eq!(
+            value["guest_autostart"]["env"]["PIKA_AGENT_ACP_CWD"],
+            "/root/pika-agent/acp"
+        );
     }
 
     #[tokio::test]
@@ -960,6 +1110,7 @@ mod tests {
     fn resolve_params_trims_whitespace_and_ignores_empty() {
         let params = MicrovmProvisionParams {
             spawner_url: Some("  ".to_string()),
+            backend: None,
         };
         let resolved = resolve_params(&params);
         assert_eq!(resolved.spawner_url, DEFAULT_SPAWNER_URL);

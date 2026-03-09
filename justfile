@@ -57,6 +57,12 @@ info:
     @echo "    just cli --help"
     @echo "    just cli agent new --nsec <nsec>"
     @echo
+    @echo "pikaci remote fulfillment"
+    @echo "  Deploy helper binaries to pika-build:"
+    @echo "    just pikaci-remote-fulfill-deploy"
+    @echo "  Run staged Rust lane with remote fulfillment on pika-build:"
+    @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
+    @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
     @echo "    just rmp run ios"
@@ -1009,6 +1015,34 @@ agent-microvm-vmspawner-logs:
 # Tail the guest agent log for a specific VM on the pika-build microVM host.
 agent-microvm-guest-logs VM_ID:
     nix develop .#infra -c just -f infra/justfile build-guest-logs {{ VM_ID }}
+
+# Deploy the `pikaci` helper and launcher binaries onto pika-build via the host NixOS config.
+pikaci-remote-fulfill-deploy:
+    nix develop .#infra -c just -f infra/justfile build-deploy
+
+# Run the staged `pre-merge-pika-rust` lane with remote prepared-output fulfillment on pika-build.
+# Assumptions:
+# - pika-build has `/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output`
+# - pika-build has `/run/current-system/sw/bin/pikaci-fulfill-prepared-output`
+# - ssh access to `{{env_var_or_default("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST", "pika-build")}}` works
+
+# - nix can copy the realized prepared output to that host
+pikaci-remote-fulfill-pre-merge-pika-rust:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    export PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1
+    export PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1
+    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
+    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}"
+    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY:-/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output}"
+    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY:-/run/current-system/sw/bin/pikaci-fulfill-prepared-output}"
+    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/pikaci-prepared-output}"
+
+    cargo build -p pikaci --bins
+    export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$PWD/target/debug/pikaci-fulfill-prepared-output"
+    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
+    exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
 
 # Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
 agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":

@@ -1,4 +1,4 @@
-{ config, lib, pkgs, modulesPath, sops-nix, pikaNewsPkg, ... }:
+{ config, lib, pkgs, modulesPath, sops-nix, pikaNewsPkg, pikaciServerPkg, ... }:
 
 let
   cachePort = 5000;
@@ -219,6 +219,7 @@ in
 
   environment.systemPackages = with pkgs; [
     restic
+    pikaciServerPkg
     (writeShellScriptBin "pika-build-status" ''
       host-version
       echo ""

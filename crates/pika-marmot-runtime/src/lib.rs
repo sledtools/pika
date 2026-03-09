@@ -20,7 +20,8 @@ use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::{Event, EventId, Keys};
 use serde::{Deserialize, Serialize};
 
-use crate::conversation::{ConversationEvent, ConversationRuntime};
+use crate::conversation::ConversationEvent;
+use crate::runtime::MarmotRuntime;
 
 pub type PikaMdk = MDK<MdkSqliteStorage>;
 
@@ -113,7 +114,7 @@ pub fn ingest_application_message(
     mdk: &PikaMdk,
     event: &Event,
 ) -> Result<Option<mdk_storage_traits::messages::types::Message>> {
-    match ConversationRuntime::new(mdk).process_event(event)? {
+    match MarmotRuntime::new(mdk).process_event(event)? {
         Some(ConversationEvent::Application(message)) => Ok(Some(message.message)),
         _ => Ok(None),
     }
@@ -133,8 +134,8 @@ pub async fn ingest_group_backlog(
     seen: &mut HashSet<EventId>,
     limit: usize,
 ) -> Result<Vec<mdk_storage_traits::messages::types::Message>> {
-    ConversationRuntime::new(mdk)
-        .ingest_backlog_messages(client, relay_urls, nostr_group_id_hex, seen, limit)
+    MarmotRuntime::with_client(mdk, client)
+        .ingest_group_backlog(relay_urls, nostr_group_id_hex, seen, limit)
         .await
 }
 

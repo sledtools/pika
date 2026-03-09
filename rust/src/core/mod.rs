@@ -47,12 +47,9 @@ use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
 use pika_marmot_runtime::conversation::{
-    ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupUpdate,
-    RuntimeGroupUpdateKind,
+    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate, RuntimeGroupUpdateKind,
 };
-use pika_marmot_runtime::membership::{
-    EvolutionPublishStatus, MembershipRuntime, PreparedMembershipEvolution,
-};
+use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 use pika_marmot_runtime::message::{
@@ -61,9 +58,8 @@ use pika_marmot_runtime::message::{
 pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
-use pika_marmot_runtime::outbound::{
-    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
-};
+use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
+use pika_marmot_runtime::runtime::MarmotRuntime;
 use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
@@ -1038,7 +1034,7 @@ impl AppCore {
             .get(chat_id)
             .cloned()
             .context("chat not found")?;
-        OutboundConversationRuntime::new(&sess.mdk).prepare_action_for_group_ids(
+        MarmotRuntime::with_client(&sess.mdk, &sess.client).prepare_outbound_action_for_group_ids(
             sess.pubkey,
             group.mls_group_id,
             chat_id.to_string(),
@@ -1057,7 +1053,7 @@ impl AppCore {
             .get(chat_id)
             .cloned()
             .context("chat not found")?;
-        MembershipRuntime::new(&sess.mdk)
+        MarmotRuntime::with_client(&sess.mdk, &sess.client)
             .prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
@@ -4206,7 +4202,8 @@ impl AppCore {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
-        let finalized = MembershipRuntime::new(&sess.mdk).finalize_published_evolution(prepared);
+        let finalized = MarmotRuntime::with_client(&sess.mdk, &sess.client)
+            .finalize_published_evolution(prepared);
         if let Some(ref merge_error) = finalized.merge_error {
             tracing::error!(error = %merge_error, "merge_pending_commit failed");
         }
@@ -4441,7 +4438,7 @@ impl AppCore {
                 tracing::warn!("group_message but no session");
                 return;
             };
-            match ConversationRuntime::new(&sess.mdk).process_event(&event) {
+            match MarmotRuntime::with_client(&sess.mdk, &sess.client).process_event(&event) {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
@@ -4459,7 +4456,7 @@ impl AppCore {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
-            ConversationRuntime::new(&sess.mdk).interpret_processing_result(result)
+            MarmotRuntime::with_client(&sess.mdk, &sess.client).interpret_processing_result(result)
         };
         self.handle_conversation_event(outcome);
     }
@@ -5858,12 +5855,13 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
+                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+                    .prepare_evolution(
+                        entry.mls_group_id.clone(),
+                        result.evolution_event,
+                        None,
+                        vec![],
+                    ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Remove members failed: {e}"));
@@ -5894,12 +5892,13 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
+                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+                    .prepare_evolution(
+                        entry.mls_group_id.clone(),
+                        result.evolution_event,
+                        None,
+                        vec![],
+                    ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Leave group failed: {e}"));
@@ -5946,12 +5945,13 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MembershipRuntime::new(&sess.mdk).prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
+                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+                    .prepare_evolution(
+                        entry.mls_group_id.clone(),
+                        result.evolution_event,
+                        None,
+                        vec![],
+                    ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Rename failed: {e}"));
@@ -6743,7 +6743,7 @@ mod tests {
         }
 
         #[test]
-        fn app_send_preparation_uses_shared_outbound_runtime() {
+        fn app_send_preparation_uses_shared_runtime_facade() {
             let (mut core, chat_id, keys, group_id) = make_core_with_group();
             core.session.as_mut().expect("session").groups.insert(
                 chat_id.clone(),

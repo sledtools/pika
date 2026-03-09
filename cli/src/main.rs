@@ -15,9 +15,8 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
-use pika_marmot_runtime::outbound::{
-    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
-};
+use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
+use pika_marmot_runtime::runtime::MarmotRuntime;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -779,7 +778,7 @@ fn find_group(
     mdk: &mdk_util::PikaMdk,
     nostr_group_id_hex: &str,
 ) -> anyhow::Result<mdk_storage_traits::groups::types::Group> {
-    pika_marmot_runtime::conversation::ConversationRuntime::new(mdk)
+    MarmotRuntime::new(mdk)
         .find_group(nostr_group_id_hex)
         .with_context(|| {
             format!(
@@ -794,7 +793,7 @@ fn prepare_cli_outbound_action(
     group: mdk_storage_traits::groups::types::Group,
     action: OutboundConversationAction,
 ) -> anyhow::Result<PreparedConversationAction> {
-    OutboundConversationRuntime::new(mdk).prepare_action_for_group(sender, group, action)
+    MarmotRuntime::new(mdk).prepare_outbound_action_for_group(sender, group, action)
 }
 
 fn print(v: serde_json::Value) {
@@ -823,7 +822,7 @@ async fn ingest_group_backlog(
     Ok(())
 }
 
-use pika_marmot_runtime::media::{MediaRuntime, resolve_upload_metadata};
+use pika_marmot_runtime::media::resolve_upload_metadata;
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -834,7 +833,8 @@ fn message_media_refs(
     group_id: &GroupId,
     tags: &Tags,
 ) -> Vec<serde_json::Value> {
-    MediaRuntime::new(mdk)
+    MarmotRuntime::new(mdk)
+        .media()
         .parse_attachments_from_tags(group_id, tags.iter())
         .into_iter()
         .map(|attachment| media_attachment_to_json(attachment.attachment))
@@ -1212,7 +1212,7 @@ fn pending_welcome_json(
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let groups = pika_marmot_runtime::conversation::ConversationRuntime::new(&mdk)
+    let groups = MarmotRuntime::new(&mdk)
         .list_groups()
         .context("get groups")?;
     let out: Vec<serde_json::Value> = groups
@@ -1244,7 +1244,8 @@ async fn upload_media(
         std::fs::read(file).with_context(|| format!("read media file {}", file.display()))?;
     let resolved = resolve_upload_metadata(file, mime_type, filename);
     let upload_servers = blossom_servers_or_default(blossom_servers);
-    let result = MediaRuntime::new(mdk)
+    let result = MarmotRuntime::new(mdk)
+        .media()
         .upload_media(
             keys,
             mls_group_id,
@@ -1433,8 +1434,8 @@ async fn cmd_send(
         },
     )
     .context("create message")?;
-    OutboundConversationRuntime::new(&mdk)
-        .publish_prepared_with_confirm(&client, &relays, &prepared, "send_message")
+    MarmotRuntime::with_client(&mdk, &client)
+        .publish_prepared_action(&relays, &prepared, "send_message")
         .await?;
     client.shutdown().await;
     mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
@@ -1609,8 +1610,8 @@ async fn cmd_send_hypernote(
         },
     )
     .context("create message")?;
-    OutboundConversationRuntime::new(&mdk)
-        .publish_prepared_with_confirm(&client, &relays, &prepared, "send_hypernote")
+    MarmotRuntime::with_client(&mdk, &client)
+        .publish_prepared_action(&relays, &prepared, "send_hypernote")
         .await?;
     client.shutdown().await;
     mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
@@ -1651,7 +1652,7 @@ async fn cmd_download_media(
     let (mls_group_id, message) =
         found.ok_or_else(|| anyhow!("message {message_id_hex} not found in any group"))?;
 
-    let runtime = MediaRuntime::new(&mdk);
+    let runtime = MarmotRuntime::new(&mdk);
     let media = runtime
         .parse_message_attachments(&message)
         .into_iter()
@@ -2114,7 +2115,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     let group = find_group(&mdk, nostr_group_id_hex)?;
 
     let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
-    let msgs = pika_marmot_runtime::conversation::ConversationRuntime::new(&mdk)
+    let msgs = MarmotRuntime::new(&mdk)
         .get_messages(nostr_group_id_hex, Some(pagination))
         .context("get messages")?;
 
@@ -2811,7 +2812,7 @@ mod tests {
         let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = MediaRuntime::new(&inviter_mdk);
+        let runtime = MarmotRuntime::new(&inviter_mdk);
         let prepared = runtime
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -2881,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_send_preparation_uses_shared_outbound_runtime() {
+    fn cli_send_preparation_uses_shared_runtime_facade() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();

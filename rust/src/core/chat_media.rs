@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use ::image::GenericImageView as _;
 use base64::Engine;
 use mdk_core::encrypted_media::types::MediaReference;
-use pika_marmot_runtime::media::{
-    upload_encrypted_blob, MediaRuntime, UploadedBlob, MAX_CHAT_MEDIA_BYTES,
-};
+use pika_marmot_runtime::media::{upload_encrypted_blob, UploadedBlob, MAX_CHAT_MEDIA_BYTES};
+use pika_marmot_runtime::runtime::MarmotRuntime;
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
@@ -345,7 +344,7 @@ fn prepare_chat_media_upload(
     mime_type: &str,
     filename: &str,
 ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-    MediaRuntime::new(mdk).prepare_upload(group_id, bytes, Some(mime_type), Some(filename))
+    MarmotRuntime::new(mdk).prepare_upload(group_id, bytes, Some(mime_type), Some(filename))
 }
 
 fn finalize_chat_media_upload(
@@ -355,7 +354,7 @@ fn finalize_chat_media_upload(
     uploaded_url: String,
     descriptor_sha256_hex: String,
 ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
-    MediaRuntime::new(mdk).finish_upload(
+    MarmotRuntime::new(mdk).finish_upload(
         group_id,
         upload,
         UploadedBlob {
@@ -373,7 +372,7 @@ fn decrypt_chat_media_download(
     encrypted_data: &[u8],
     expected_encrypted_hash_hex: Option<&str>,
 ) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
-    MediaRuntime::new(mdk).decrypt_downloaded_media(
+    MarmotRuntime::new(mdk).decrypt_downloaded_media(
         group_id,
         reference,
         encrypted_data,
@@ -1843,8 +1842,8 @@ impl AppCore {
                     },
                 );
 
-            let prepared = match OutboundConversationRuntime::new(&sess.mdk)
-                .prepare_action_for_group_ids(
+            let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+                .prepare_outbound_action_for_group_ids(
                     sess.pubkey,
                     group.mls_group_id.clone(),
                     chat_id.clone(),

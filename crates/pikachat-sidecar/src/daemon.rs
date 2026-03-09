@@ -16,20 +16,18 @@ use pika_marmot_runtime::call::{
     parse_call_signal as parse_shared_call_signal,
 };
 use pika_marmot_runtime::call_runtime::{
-    CallWorkflowRuntime, GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome,
-    PendingIncomingCall, PendingOutgoingCall,
+    GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome, PendingIncomingCall,
+    PendingOutgoingCall,
 };
-use pika_marmot_runtime::conversation::{ConversationEvent, ConversationRuntime};
+use pika_marmot_runtime::conversation::ConversationEvent;
 use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes};
 use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, MessageClassification, classify_message as classify_shared_message,
 };
-use pika_marmot_runtime::outbound::{
-    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
-};
+use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    BootstrappedRuntimeSession, bootstrap_runtime_session, subscribe_group_messages_individual,
-    subscribe_welcome_inbox,
+    BootstrappedRuntimeSession, MarmotRuntime, bootstrap_runtime_session,
+    subscribe_group_messages_individual, subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, take_pending_welcome,
@@ -497,8 +495,8 @@ fn default_group_name() -> String {
 
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::media::{
-    MAX_CHAT_MEDIA_BYTES, MediaRuntime, ParsedMediaAttachment, RuntimeMediaAttachment,
-    resolve_upload_metadata, upload_encrypted_blob,
+    MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, RuntimeMediaAttachment, resolve_upload_metadata,
+    upload_encrypted_blob,
 };
 use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
@@ -524,7 +522,7 @@ fn parse_daemon_message_media_attachments(
     mdk: &crate::PikaMdk,
     message: &mdk_storage_traits::messages::types::Message,
 ) -> Vec<ParsedMediaAttachment> {
-    MediaRuntime::new(mdk).parse_message_attachments(message)
+    MarmotRuntime::new(mdk).parse_message_attachments(message)
 }
 
 /// Download encrypted media from Blossom, decrypt it, and write to a temp file.
@@ -535,7 +533,7 @@ async fn download_and_decrypt_media(
     attachment: &ParsedMediaAttachment,
     state_dir: &Path,
 ) -> anyhow::Result<String> {
-    let downloaded = MediaRuntime::new(mdk)
+    let downloaded = MarmotRuntime::new(mdk)
         .download_media(mls_group_id, &attachment.reference, None)
         .await?;
 
@@ -726,7 +724,7 @@ fn out_ok(request_id: Option<String>, result: Option<serde_json::Value>) -> OutM
 
 /// Decode a hex nostr_group_id, validate it, and return the matching MLS group ID.
 fn resolve_group(mdk: &MDK<MdkSqliteStorage>, nostr_group_id: &str) -> anyhow::Result<GroupId> {
-    ConversationRuntime::new(mdk).mls_group_id_for_nostr_group_id(nostr_group_id)
+    MarmotRuntime::new(mdk).mls_group_id_for_nostr_group_id(nostr_group_id)
 }
 
 fn resign_wrapper_without_protected_tags(keys: &Keys, wrapper: &Event) -> anyhow::Result<Event> {
@@ -784,12 +782,12 @@ fn prepare_daemon_outbound_action(
     nostr_group_id: &str,
     action: OutboundConversationAction,
 ) -> Result<PreparedConversationAction, DaemonPrepareError> {
-    let runtime = OutboundConversationRuntime::new(mdk);
+    let runtime = MarmotRuntime::new(mdk);
     let target = runtime
-        .resolve_target(nostr_group_id)
+        .resolve_outbound_target(nostr_group_id)
         .map_err(DaemonPrepareError::BadGroup)?;
     runtime
-        .prepare_action_for_target(sender, target, action)
+        .prepare_outbound_action_for_target(sender, target, action)
         .map_err(DaemonPrepareError::Prepare)
 }
 
@@ -991,8 +989,8 @@ fn prepare_call_invite_for_daemon(
     PendingOutgoingCall,
     pika_marmot_runtime::call_runtime::PreparedCallSignal,
 )> {
-    CallWorkflowRuntime::new(mdk)
-        .prepare_outgoing_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
+    MarmotRuntime::new(mdk)
+        .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
         .map_err(anyhow::Error::msg)
 }
 
@@ -2676,7 +2674,7 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::ListGroups { request_id } => {
-                        match ConversationRuntime::new(&mdk).list_groups() {
+                        match MarmotRuntime::new(&mdk).list_groups() {
                             Ok(groups) => {
                                 let out = groups
                                     .iter()
@@ -2701,7 +2699,7 @@ pub async fn daemon_main(
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
-                        match ConversationRuntime::new(&mdk)
+                        match MarmotRuntime::new(&mdk)
                             .get_messages(&nostr_group_id, Some(pagination))
                         {
                             Ok(msgs) => {
@@ -2983,7 +2981,7 @@ pub async fn daemon_main(
                         }
 
                         let resolved = resolve_upload_metadata(path, mime_type.as_deref(), filename.as_deref());
-                        let runtime = MediaRuntime::new(&mdk);
+                        let runtime = MarmotRuntime::new(&mdk);
                         let prepared = match runtime.prepare_upload(
                             &mls_group_id,
                             &bytes,
@@ -3066,7 +3064,7 @@ pub async fn daemon_main(
                         }
 
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
-                        let runtime = MediaRuntime::new(&mdk);
+                        let runtime = MarmotRuntime::new(&mdk);
 
                         // Process all files: read, encrypt, upload sequentially.
                         #[allow(clippy::type_complexity)]
@@ -3356,7 +3354,8 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        let prepared = match CallWorkflowRuntime::new(&mdk).prepare_accept_incoming(
+                        let runtime = MarmotRuntime::new(&mdk);
+                        let prepared = match runtime.prepare_accept_incoming_call(
                             &invite,
                             GroupCallContext {
                                 mls_group_id: &mls_group_id,
@@ -3365,8 +3364,8 @@ pub async fn daemon_main(
                         ) {
                             Ok(v) => v,
                             Err(err) => {
-                                if let Ok(signal) = CallWorkflowRuntime::new(&mdk)
-                                    .prepare_reject_signal(&invite.call_id, "auth_failed")
+                                if let Ok(signal) =
+                                    runtime.prepare_reject_call_signal(&invite.call_id, "auth_failed")
                                 {
                                     let _ = publish_call_payload(
                                         &client,
@@ -3498,8 +3497,8 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
-                        let signal = match CallWorkflowRuntime::new(&mdk)
-                            .prepare_reject_signal(&invite.call_id, &reason)
+                        let signal = match MarmotRuntime::new(&mdk)
+                            .prepare_reject_call_signal(&invite.call_id, &reason)
                         {
                             Ok(signal) => signal,
                             Err(e) => {
@@ -3544,7 +3543,7 @@ pub async fn daemon_main(
                         }
 
                         if let Ok(signal) =
-                            CallWorkflowRuntime::new(&mdk).prepare_end_signal(&call_id, &reason)
+                            MarmotRuntime::new(&mdk).prepare_end_call_signal(&call_id, &reason)
                         {
                             let _ = publish_call_payload(
                                 &client,
@@ -4050,7 +4049,7 @@ pub async fn daemon_main(
                         continue;
                     }
 
-                    match ConversationRuntime::new(&mdk).process_event(&event) {
+                    match MarmotRuntime::new(&mdk).process_event(&event) {
                         Ok(Some(ConversationEvent::Application(runtime_msg))) => {
                             let classification = runtime_msg.classification;
                             let nostr_group_id = runtime_msg.nostr_group_id_hex;
@@ -4077,7 +4076,7 @@ pub async fn daemon_main(
                                     }
                                     _ => None,
                                 };
-                                match CallWorkflowRuntime::new(&mdk).handle_inbound_signal(
+                                match MarmotRuntime::new(&mdk).handle_inbound_call_signal(
                                     pika_marmot_runtime::call_runtime::InboundSignalContext {
                                         target_id: &nostr_group_id,
                                         sender_pubkey_hex: &sender_hex,
@@ -4390,7 +4389,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_group_lookup_uses_shared_conversation_runtime() {
+    fn daemon_group_lookup_uses_shared_runtime_facade() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -4418,7 +4417,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_outbound_prepare_uses_shared_runtime_service() {
+    fn daemon_outbound_prepare_uses_shared_runtime_facade() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -5043,7 +5042,7 @@ mod tests {
         let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = MediaRuntime::new(&inviter_mdk);
+        let runtime = MarmotRuntime::new(&inviter_mdk);
         let prepared = runtime
             .prepare_upload(
                 &created.group.mls_group_id,

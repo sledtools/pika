@@ -677,10 +677,26 @@ Phase 6 staged Linux target pivot notes:
   - keep the checked-in prewarm entrypoint,
   - add a checked-in wrapper that pairs that prewarm with the proven `NIX_BUILDERS=... 12 ...` override while the local `/etc/nix/machines` entry still advertises only `4` jobs,
   - and treat the next optimization target as steady-state feed/config cleanup plus the real `pikaci` path, not more blind speculation about missing remote compile.
+- The first real `pikaci` rerun after that fast-path proof got materially further:
+  - it passed the staged `workspaceDeps` prepare step,
+  - the remote prepared-output launcher/helper path on `pika-build` succeeded and recorded the expected staged mount exposures,
+  - and the next active node became `ci.x86_64-linux.workspaceBuild`, not the old `workspaceDeps` bottleneck.
+- That rerun also narrowed the next blocker:
+  - a dry-run for `.#ci.x86_64-linux.workspaceBuild` likewise collapsed to only its main derivation,
+  - so the next wait was no longer a broad missing closure and not yet the execute-host architecture mismatch,
+  - it was the main staged `workspaceBuild` derivation itself.
+- The next narrow operational improvement is now checked in:
+  - a new entrypoint fast-builds both staged Linux Rust prepare outputs on `pika-build` before the real pre-merge lane runs,
+  - and a direct rerun of that `workspaceBuild` path showed the same desired transition as `workspaceDeps`: remote `cargo test -j 16` compile on `pika-build`.
+- The end-to-end boundary is still one step further ahead:
+  - this slice did not yet reach the real execute nodes because `workspaceBuild` still spent a long tail finalizing/copying its large realized output back to the local store,
+  - so the known `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch remains the likely next blocker,
+  - but it was not yet re-proven by a completed real run in this slice.
 - Next recommended slice:
   - decide whether the x86_64 builder job-count increase should stay as an explicit wrapper override or move into the local machine configuration,
-  - rerun the real `pikaci` path now that `workspaceDeps` has reached and completed remote compile on `pika-build`,
-  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture.
+  - rerun the real `pikaci` path with both staged prepare outputs already hot via the checked-in dual-prepare entrypoint,
+  - confirm whether the next completed run finally reaches the execute boundary,
+  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture if the expected vfkit mismatch becomes the active blocker.
 
 ## Deferred Until Proven Necessary
 
@@ -726,6 +742,7 @@ We have at least one important Linux Rust lane where:
   - use `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` to prove where pre-compile time is going on the remote builder path,
   - keep the staged source snapshot tight and Cargo job handling explicit,
   - use the checked-in prewarm plus x86_64 builder-override wrapper when proving the fast path on `pika-build`,
-  - note that a completed destination-side prewarm eliminated the post-warm tail down to the main derivation and did surface real remote `cargo` compile on `pika-build`,
+  - use the checked-in dual-prepare entrypoint when the goal is to force the real pre-merge lane past both staged prepare nodes,
+  - note that completed destination-side prewarm collapsed both `workspaceDeps` and `workspaceBuild` down to their main derivations and did surface real remote `cargo` compile on `pika-build`,
   - keep the local `/etc/nix/machines` underfeed noted: the default spec still advertises only `4` jobs even though the proven override used `12`,
-  - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the later end-to-end blocker once prepare performance is acceptable.
+  - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the likely next end-to-end blocker once the completed real rerun gets past `workspaceBuild`.

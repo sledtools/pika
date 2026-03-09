@@ -95,9 +95,13 @@
         chmod -R u+w "$out/rust"
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
+        cp -R ${./crates/pika-agent-control-plane} "$out/crates/pika-agent-control-plane"
+        cp -R ${./crates/pika-agent-microvm} "$out/crates/pika-agent-microvm"
         cp -R ${./crates/pika-marmot-runtime} "$out/crates/pika-marmot-runtime"
         cp -R ${./crates/pika-media} "$out/crates/pika-media"
         cp -R ${./crates/pika-relay-profiles} "$out/crates/pika-relay-profiles"
+        cp -R ${./crates/pika-server} "$out/crates/pika-server"
+        cp -R ${./crates/pika-test-utils} "$out/crates/pika-test-utils"
         cp -R ${./crates/pika-tls} "$out/crates/pika-tls"
         cp -R ${./crates/pikahut} "$out/crates/pikahut"
         cp ${./nix/ci/pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
@@ -764,6 +768,7 @@ EOF
         crane = crane;
         src = ciPikaCoreWorkspaceSrc;
         cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
+        pikaRelayPkg = pikaRelayPkg;
         outputHashes = {
           "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
             "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";

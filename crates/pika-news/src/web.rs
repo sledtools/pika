@@ -819,6 +819,20 @@ async fn api_prs_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PrsQuery>,
 ) -> impl IntoResponse {
+    if let Some(ref since) = query.since {
+        // Accept ISO 8601 date (YYYY-MM-DD) or datetime prefix; reject garbage.
+        if chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d").is_err()
+            && chrono::DateTime::parse_from_rfc3339(since).is_err()
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid 'since' parameter: expected ISO 8601 date (YYYY-MM-DD) or datetime"
+                    .to_string(),
+            )
+                .into_response();
+        }
+    }
+
     let store = state.store.clone();
     let since_date = query.since.clone();
     let since_pr = query.since_pr;

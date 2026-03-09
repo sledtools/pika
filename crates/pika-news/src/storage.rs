@@ -483,7 +483,11 @@ impl Store {
             let sql = format!(
                 "SELECT r.repo, pr.pr_number, pr.title, pr.url, pr.state, pr.updated_at,
                         COALESCE(latest.status, 'pending'),
-                        current_ready.tutorial_json
+                        CASE
+                            WHEN COALESCE(latest.status, 'pending') = 'ready'
+                                THEN current_ready.tutorial_json
+                            ELSE NULL
+                        END
                  FROM pull_requests pr
                  JOIN repos r ON r.id = pr.repo_id
                  LEFT JOIN artifact_versions latest ON latest.id = (

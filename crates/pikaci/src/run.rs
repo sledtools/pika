@@ -12,8 +12,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_runner_flake, prepare_vfkit_runner_link,
-    run_job_on_runner,
+    HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
+    prepare_vfkit_runner_link, run_job_on_runner,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -681,6 +681,11 @@ enum PrepareAction {
         runner_link: PathBuf,
         log_paths: Vec<PathBuf>,
     },
+    RemoteMicrovmRunner {
+        job: JobSpec,
+        ctx: HostContext,
+        log_paths: Vec<PathBuf>,
+    },
 }
 
 #[derive(Clone)]
@@ -978,14 +983,23 @@ fn build_run_plan(
                 }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
-            planned_prepares.push(PlannedPrepare {
-                node_id: prepare_node_id.clone(),
-                depends_on: Vec::new(),
-                action: PrepareAction::VfkitRunner {
+            let action = match job.runner_kind() {
+                RunnerKind::VfkitLocal => PrepareAction::VfkitRunner {
                     installable: installable.clone(),
                     runner_link: ctx.job_dir.join("vm").join("runner"),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
+                RunnerKind::MicrovmRemote => PrepareAction::RemoteMicrovmRunner {
+                    job: job.clone(),
+                    ctx: ctx.clone(),
+                    log_paths: vec![ctx.host_log_path.clone()],
+                },
+                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            };
+            planned_prepares.push(PlannedPrepare {
+                node_id: prepare_node_id.clone(),
+                depends_on: Vec::new(),
+                action,
             });
             prepare_nodes.insert(
                 prepare_node_id.clone(),
@@ -3260,6 +3274,22 @@ fn run_prepare_nodes(
                     message: "missing vfkit runner prepare log path".to_string(),
                 })?;
                 prepare_vfkit_runner_link(installable, runner_link, log_path).map_err(|err| {
+                    PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    }
+                })?;
+            }
+            PrepareAction::RemoteMicrovmRunner {
+                job,
+                ctx,
+                log_paths,
+            } => {
+                let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
+                    node_id: prepare.node_id.clone(),
+                    message: "missing remote microvm runner prepare log path".to_string(),
+                })?;
+                prepare_remote_microvm_runner(job, ctx, log_path).map_err(|err| {
                     PrepareFailure {
                         node_id: prepare.node_id.clone(),
                         message: format!("{err:#}"),

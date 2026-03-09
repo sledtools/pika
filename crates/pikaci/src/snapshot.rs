@@ -91,7 +91,7 @@ fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()
 fn should_skip(name: &str, root: bool) -> bool {
     matches!(name, ".git" | ".pikaci" | ".direnv")
         || name == "target"
-        || (!root && name == "node_modules")
+        || (!root && matches!(name, "node_modules" | ".gradle" | "DerivedData" | "build"))
 }
 
 pub fn git_head(source_root: &Path) -> Option<String> {
@@ -174,7 +174,11 @@ mod tests {
         assert!(should_skip(".direnv", true));
         assert!(should_skip("target", true));
         assert!(should_skip("node_modules", false));
+        assert!(should_skip(".gradle", false));
+        assert!(should_skip("DerivedData", false));
+        assert!(should_skip("build", false));
         assert!(!should_skip("Cargo.toml", true));
         assert!(!should_skip("src", false));
+        assert!(!should_skip("build", true));
     }
 }

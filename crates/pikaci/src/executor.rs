@@ -60,7 +60,6 @@ struct RemoteMicrovmContext {
     remote_workspace_deps_dir: PathBuf,
     remote_workspace_build_dir: PathBuf,
     remote_runner_link: PathBuf,
-    remote_runner_store_path: PathBuf,
 }
 
 const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
@@ -215,28 +214,6 @@ fn run_remote_microvm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Jo
     ensure_file(&ctx.host_log_path)?;
     ensure_file(&ctx.guest_log_path)?;
 
-    let runner_link = ctx.job_dir.join("vm").join("runner");
-    if !runner_link.exists() {
-        let installable = materialize_runner_flake(job, ctx)?;
-        prepare_runner_link(&installable, &runner_link, &ctx.host_log_path)?;
-    }
-
-    let local_runner_store_path = fs::read_link(&runner_link)
-        .with_context(|| format!("resolve {}", runner_link.display()))?;
-
-    append_line(
-        &ctx.host_log_path,
-        &format!(
-            "[pikaci] staging remote x86_64 microvm runner for `{}` on {}",
-            job.id, remote.remote_host
-        ),
-    )?;
-
-    copy_path_to_remote_store(
-        &local_runner_store_path,
-        &remote.remote_host,
-        &ctx.host_log_path,
-    )?;
     ensure_remote_microvm_directories(&remote, &ctx.host_log_path)?;
     sync_snapshot_to_remote(
         &ctx.workspace_snapshot_dir,
@@ -244,12 +221,7 @@ fn run_remote_microvm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Jo
         &remote.remote_host,
         &ctx.host_log_path,
     )?;
-    remote_symlink(
-        &remote.remote_runner_store_path,
-        &remote.remote_runner_link,
-        &remote.remote_host,
-        &ctx.host_log_path,
-    )?;
+    ensure_remote_microvm_runner(job, ctx, &remote, &ctx.host_log_path)?;
 
     append_line(
         &ctx.host_log_path,
@@ -340,6 +312,22 @@ pub(crate) fn prepare_vfkit_runner_link(
     prepare_runner_link(installable, runner_link, log_path)
 }
 
+pub(crate) fn prepare_remote_microvm_runner(
+    job: &JobSpec,
+    ctx: &HostContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let remote = remote_microvm_context(job, ctx)?;
+    ensure_remote_microvm_directories(&remote, log_path)?;
+    sync_snapshot_to_remote(
+        &ctx.workspace_snapshot_dir,
+        &remote.remote_snapshot_dir,
+        &remote.remote_host,
+        log_path,
+    )?;
+    ensure_remote_microvm_runner(job, ctx, &remote, log_path)
+}
+
 pub(crate) fn materialize_runner_flake(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<String> {
     match job.runner_kind() {
         RunnerKind::VfkitLocal => materialize_vfkit_runner_flake(job, ctx),
@@ -408,7 +396,7 @@ fn materialize_remote_microvm_runner_flake(
     let flake_nix = render_guest_flake(
         guest_runner_config_for(RunnerKind::MicrovmRemote),
         job,
-        &ctx.workspace_snapshot_dir,
+        &remote.remote_snapshot_dir,
         ctx.workspace_read_only,
         &GuestFlakePaths {
             artifacts_dir: &remote.remote_artifacts_dir,
@@ -1213,7 +1201,6 @@ fn remote_microvm_context(
             .join("staged-linux-rust")
             .join("workspace-build"),
         remote_runner_link: remote_job_dir.join("vm").join("runner"),
-        remote_runner_store_path: remote_job_dir.join("vm").join("runner-store"),
         remote_job_dir,
     })
 }
@@ -1236,24 +1223,6 @@ fn run_ssh_command(remote_host: &str, command: &str) -> Command {
     let mut cmd = Command::new(ssh_binary());
     cmd.arg(remote_host).arg(command);
     cmd
-}
-
-fn copy_path_to_remote_store(
-    local_store_path: &Path,
-    remote_host: &str,
-    log_path: &Path,
-) -> anyhow::Result<()> {
-    let store_uri = format!("ssh://{remote_host}");
-    run_command_to_log(
-        Command::new(ssh_nix_binary())
-            .arg("copy")
-            .arg("--substitute-on-destination")
-            .arg("--to")
-            .arg(&store_uri)
-            .arg(local_store_path),
-        log_path,
-        "[pikaci] copy runner to remote store",
-    )
 }
 
 fn ensure_remote_microvm_directories(
@@ -1288,66 +1257,104 @@ fn sync_snapshot_to_remote(
     remote_host: &str,
     log_path: &Path,
 ) -> anyhow::Result<()> {
+    let ready_marker = remote_snapshot_dir.join("pikaci-snapshot.json");
+    let already_ready_command = format!(
+        "test -f {}",
+        shell_single_quote(&ready_marker.display().to_string())
+    );
+    if run_ssh_command(remote_host, &already_ready_command)
+        .status()
+        .with_context(|| format!("check remote snapshot on {remote_host}"))?
+        .success()
+    {
+        append_line(
+            log_path,
+            &format!(
+                "[pikaci] remote snapshot already available at {}",
+                remote_snapshot_dir.display()
+            ),
+        )?;
+        return Ok(());
+    }
+
+    sync_directory_to_remote(
+        local_snapshot_dir,
+        remote_snapshot_dir,
+        remote_host,
+        log_path,
+        "snapshot",
+    )
+}
+
+fn sync_directory_to_remote(
+    local_dir: &Path,
+    remote_dir: &Path,
+    remote_host: &str,
+    log_path: &Path,
+    label: &str,
+) -> anyhow::Result<()> {
     append_line(
         log_path,
         &format!(
-            "[pikaci] sync snapshot {} -> {}:{}",
-            local_snapshot_dir.display(),
+            "[pikaci] sync {label} {} -> {}:{}",
+            local_dir.display(),
             remote_host,
-            remote_snapshot_dir.display()
+            remote_dir.display()
         ),
     )?;
     let mkdir_command = format!(
         "set -euo pipefail; rm -rf {}; mkdir -p {}",
-        shell_single_quote(&remote_snapshot_dir.display().to_string()),
-        shell_single_quote(&remote_snapshot_dir.display().to_string()),
+        shell_single_quote(&remote_dir.display().to_string()),
+        shell_single_quote(&remote_dir.display().to_string()),
     );
     run_command_to_log(
         &mut run_ssh_command(remote_host, &mkdir_command),
         log_path,
-        "[pikaci] reset remote snapshot dir",
+        &format!("[pikaci] reset remote {label} dir"),
     )?;
 
     let mut child = Command::new("tar")
         .arg("-C")
-        .arg(local_snapshot_dir)
+        .arg(local_dir)
         .arg("-cf")
         .arg("-")
         .arg(".")
         .stdout(Stdio::piped())
         .spawn()
-        .context("spawn local snapshot tar")?;
+        .with_context(|| format!("spawn local {label} tar"))?;
     let mut ssh = run_ssh_command(
         remote_host,
         &format!(
             "set -euo pipefail; tar -C {} -xf -",
-            shell_single_quote(&remote_snapshot_dir.display().to_string())
+            shell_single_quote(&remote_dir.display().to_string())
         ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .context("spawn remote snapshot untar")?;
+    .with_context(|| format!("spawn remote {label} untar"))?;
     std::io::copy(
         child
             .stdout
             .as_mut()
-            .ok_or_else(|| anyhow!("local tar stdout unavailable"))?,
+            .ok_or_else(|| anyhow!("local {label} tar stdout unavailable"))?,
         ssh.stdin
             .as_mut()
-            .ok_or_else(|| anyhow!("remote tar stdin unavailable"))?,
+            .ok_or_else(|| anyhow!("remote {label} tar stdin unavailable"))?,
     )
-    .context("stream snapshot tar to remote host")?;
+    .with_context(|| format!("stream {label} tar to remote host"))?;
     ssh.stdin.take();
-    let tar_status = child.wait().context("wait for local snapshot tar")?;
+    let tar_status = child
+        .wait()
+        .with_context(|| format!("wait for local {label} tar"))?;
     let ssh_output = ssh
         .wait_with_output()
-        .context("wait for remote snapshot untar")?;
+        .with_context(|| format!("wait for remote {label} untar"))?;
     if !tar_status.success() || !ssh_output.status.success() {
         append_line(log_path, &String::from_utf8_lossy(&ssh_output.stderr))?;
         bail!(
-            "sync snapshot to {} failed with local={:?} remote={:?}",
+            "sync {label} to {} failed with local={:?} remote={:?}",
             remote_host,
             tar_status.code(),
             ssh_output.status.code()
@@ -1378,6 +1385,86 @@ fn remote_symlink(
         &mut run_ssh_command(remote_host, &command),
         log_path,
         "[pikaci] install remote runner symlink",
+    )
+}
+
+fn ensure_remote_microvm_runner(
+    job: &JobSpec,
+    ctx: &HostContext,
+    remote: &RemoteMicrovmContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let remote_runner_bin = remote.remote_runner_link.join("bin").join("microvm-run");
+    let already_ready_command = format!(
+        "test -x {}",
+        shell_single_quote(&remote_runner_bin.display().to_string())
+    );
+    if run_ssh_command(&remote.remote_host, &already_ready_command)
+        .status()
+        .with_context(|| format!("check remote runner on {}", remote.remote_host))?
+        .success()
+    {
+        append_line(
+            log_path,
+            &format!(
+                "[pikaci] remote runner already available at {}",
+                remote.remote_runner_link.display()
+            ),
+        )?;
+        return Ok(());
+    }
+
+    let local_flake_dir = ctx.job_dir.join("vm").join("flake");
+    let installable = materialize_runner_flake(job, ctx)?;
+    append_line(
+        log_path,
+        &format!(
+            "[pikaci] stage remote runner flake {} for `{}` on {}",
+            installable, job.id, remote.remote_host
+        ),
+    )?;
+    let remote_flake_dir = remote.remote_vm_dir.join("flake");
+    sync_directory_to_remote(
+        &local_flake_dir,
+        &remote_flake_dir,
+        &remote.remote_host,
+        log_path,
+        "runner flake",
+    )?;
+
+    let remote_installable = format!(
+        "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
+        remote_flake_dir.display()
+    );
+    let build_command = format!(
+        "set -euo pipefail; {} build --accept-flake-config --no-link --print-out-paths {}",
+        shell_single_quote(&ssh_nix_binary()),
+        shell_single_quote(&remote_installable)
+    );
+    let output = run_ssh_command(&remote.remote_host, &build_command)
+        .output()
+        .with_context(|| format!("build remote runner on {}", remote.remote_host))?;
+    if !output.status.success() {
+        append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
+        append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
+        bail!(
+            "remote runner build failed on {} with {:?}",
+            remote.remote_host,
+            output.status.code()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("decode remote runner build stdout")?;
+    let remote_store_path = stdout
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("/nix/store/"))
+        .ok_or_else(|| anyhow!("remote runner build produced no store path"))?;
+    append_line(log_path, stdout.trim_end())?;
+    remote_symlink(
+        Path::new(remote_store_path),
+        &remote.remote_runner_link,
+        &remote.remote_host,
+        log_path,
     )
 }
 

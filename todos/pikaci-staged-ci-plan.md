@@ -798,7 +798,7 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms, and is now pivoting target-system alignment away from `aarch64-linux`.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, and fifteenth narrow remote-execute forms, and is now sharpening the first real `microvm-run` launch boundary on `pika-build`.
 - Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
   - stop spending more slices on local `linux-builder` recovery,
   - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
@@ -806,4 +806,8 @@ We have at least one important Linux Rust lane where:
   - note that the generated runner is no longer `aarch64-linux`: the staged `pika_core` lane now renders an `x86_64-linux` `cloud-hypervisor` microVM runner for `pika-build`,
   - note that local disk exhaustion is no longer the active blocker,
   - note that the first post-disk runtime blocker was the unsupported `user` network interface under `cloud-hypervisor`, and that narrow guest-module fix is now in,
-  - and treat the still-running staged runner build / first eventual `microvm-run` launch on `pika-build` as the next boundary to sharpen.
+  - note that the runner flake no longer points at `/Users/.../snapshot`: it now renders against the remote snapshot path and the staged `declaredRunner` build completes on `pika-build`,
+  - note that the run snapshot was still far too large for this boundary because it copied generated mobile build state (`android/app/build`, `ios/build`, Gradle caches) into the remote runner input,
+  - note that snapshots now skip those generated nested build directories, shrinking the observed run snapshot from about `2.0G` to about `698M`,
+  - note that the run-scoped remote snapshot was also being deleted and re-uploaded for sibling jobs, and that the execute path now reuses an already-populated remote snapshot instead of resetting it,
+  - and treat the first actual `microvm-run` / `cloud-hypervisor` launch on `pika-build` as the next boundary to observe cleanly now that `declaredRunner` itself is no longer the active unknown.

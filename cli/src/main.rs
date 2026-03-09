@@ -371,6 +371,15 @@ If --output is omitted, the original filename from the sender is used.")]
         /// self-contained bot runtime.
         #[arg(long)]
         exec: Option<String>,
+
+        /// Spawn an external ACP-speaking backend over stdio JSON-RPC for text chat replies.
+        /// Example: `npx -y pi-acp`
+        #[arg(long)]
+        acp_exec: Option<String>,
+
+        /// Working directory passed to ACP `session/new` (defaults to <state_dir>/acp).
+        #[arg(long)]
+        acp_cwd: Option<PathBuf>,
     },
 
     /// Manage AI agents (HTTP control plane)
@@ -689,6 +698,8 @@ async fn main() -> anyhow::Result<()> {
             allow_pubkey,
             auto_accept_welcomes,
             exec,
+            acp_exec,
+            acp_cwd,
         } => {
             cmd_daemon(
                 &cli,
@@ -696,6 +707,8 @@ async fn main() -> anyhow::Result<()> {
                 allow_pubkey,
                 *auto_accept_welcomes,
                 exec.as_deref(),
+                acp_exec.as_deref(),
+                acp_cwd.as_deref(),
             )
             .await
         }
@@ -2451,8 +2464,16 @@ async fn cmd_daemon(
     allow_pubkey: &[String],
     auto_accept_welcomes: bool,
     exec_cmd: Option<&str>,
+    acp_exec: Option<&str>,
+    acp_cwd: Option<&Path>,
 ) -> anyhow::Result<()> {
     let relay_urls = resolve_relays(cli);
+    let acp_backend = acp_exec.map(|exec_cmd| {
+        let cwd = acp_cwd
+            .map(PathBuf::from)
+            .unwrap_or_else(|| pikachat_sidecar::acp::default_acp_cwd(&cli.state_dir));
+        pikachat_sidecar::acp::AcpBackendConfig::new(exec_cmd, cwd)
+    });
     pikachat_sidecar::daemon::daemon_main(
         &relay_urls,
         &cli.state_dir,
@@ -2460,6 +2481,7 @@ async fn cmd_daemon(
         allow_pubkey,
         auto_accept_welcomes,
         exec_cmd,
+        acp_backend,
     )
     .await
     .context("pikachat daemon failed")
@@ -2788,6 +2810,29 @@ mod tests {
                 );
             }
             _ => panic!("expected accept-welcome command"),
+        }
+    }
+
+    #[test]
+    fn daemon_command_parses_acp_backend_flags() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "daemon",
+            "--acp-exec",
+            "npx -y pi-acp",
+            "--acp-cwd",
+            "/tmp/pikachat-acp",
+        ])
+        .expect("parse daemon ACP flags");
+
+        match cli.cmd {
+            Command::Daemon {
+                acp_exec, acp_cwd, ..
+            } => {
+                assert_eq!(acp_exec.as_deref(), Some("npx -y pi-acp"));
+                assert_eq!(acp_cwd.as_deref(), Some(Path::new("/tmp/pikachat-acp")));
+            }
+            _ => panic!("expected daemon command"),
         }
     }
 

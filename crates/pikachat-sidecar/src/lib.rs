@@ -2,9 +2,12 @@
 //!
 //! - [`protocol`] is the stable JSONL/socket contract external adapters target.
 //! - [`daemon`] is the concrete runtime host that serves that contract over stdio/socket/exec.
+//! - [`acp`] is the generic ACP backend/session bridge the daemon can host alongside
+//!   the native protocol surface.
 
 use anyhow::Context;
 
+pub mod acp;
 mod call_audio;
 mod call_tts;
 pub mod daemon;

@@ -49,6 +49,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
+use crate::acp::{AcpBackendConfig, AcpSessionManager};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{DaemonCmd, InCmd, MediaAttachmentOut, OutMsg, out_error, out_ok};
@@ -1643,6 +1644,24 @@ fn classify_daemon_message(
     classify_shared_message(msg.kind, &msg.content, msg.tags.iter())
 }
 
+fn should_prompt_acp_reply(
+    classification: MessageClassification,
+    sender_hex: &str,
+    local_pubkey_hex: &str,
+    content: &str,
+) -> bool {
+    classification == MessageClassification::Chat
+        && sender_hex != local_pubkey_hex
+        && !content.trim().is_empty()
+}
+
+fn build_acp_prompt(nostr_group_id: &str, sender_hex: &str, content: &str) -> String {
+    format!(
+        "conversation_id: {nostr_group_id}\nsender_pubkey: {sender_hex}\nmessage:\n{}",
+        content.trim()
+    )
+}
+
 pub async fn daemon_main(
     relays_arg: &[String],
     state_dir: &Path,
@@ -1650,6 +1669,7 @@ pub async fn daemon_main(
     allow_pubkeys: &[String],
     auto_accept_welcomes: bool,
     exec_cmd: Option<&str>,
+    acp_backend: Option<AcpBackendConfig>,
 ) -> anyhow::Result<()> {
     crate::ensure_dir(state_dir).context("create state dir")?;
 
@@ -1739,6 +1759,14 @@ pub async fn daemon_main(
         relay_urls
             .push(RelayUrl::parse("ws://127.0.0.1:18080").context("parse default relay url")?);
     }
+    let acp_backend = match acp_backend {
+        Some(config) => Some(
+            AcpSessionManager::spawn(config)
+                .await
+                .context("start ACP backend session manager")?,
+        ),
+        None => None,
+    };
     let bootstrapped = bootstrap_runtime_for_daemon(state_dir, &keys)?;
     let client = bootstrapped.session.client.clone();
     let mdk = bootstrapped.session.mdk;
@@ -3693,6 +3721,9 @@ pub async fn daemon_main(
                                     media.push(att);
                                 }
                             }
+                            let acp_nostr_group_id = nostr_group_id.clone();
+                            let acp_sender_hex = sender_hex.clone();
+                            let acp_content = msg.content.clone();
                             out_tx.send(OutMsg::MessageReceived {
                                 nostr_group_id,
                                 from_pubkey: sender_hex,
@@ -3703,6 +3734,73 @@ pub async fn daemon_main(
                                 message_id: msg.id.to_hex(),
                                 media,
                             }).ok();
+                            if let Some(acp) = acp_backend.as_ref()
+                                && should_prompt_acp_reply(
+                                    classification,
+                                    &acp_sender_hex,
+                                    &pubkey_hex,
+                                    &acp_content,
+                                )
+                            {
+                                // MVP ACP bridge: keep daemon protocol/native runtime
+                                // handling stable and drive one text turn inline here.
+                                let prompt = build_acp_prompt(
+                                    &acp_nostr_group_id,
+                                    &acp_sender_hex,
+                                    &acp_content,
+                                );
+                                match acp.prompt_conversation(&acp_nostr_group_id, &prompt).await {
+                                    Ok(reply) => {
+                                        let final_text = reply.final_text.trim();
+                                        if final_text.is_empty() {
+                                            continue;
+                                        }
+                                        let prepared = match host.prepare_outbound_action(
+                                            &acp_nostr_group_id,
+                                            OutboundConversationAction::Message {
+                                                kind: Kind::ChatMessage,
+                                                content: final_text.to_string(),
+                                                tags: vec![],
+                                                created_at: Timestamp::now(),
+                                            },
+                                        ) {
+                                            Ok(prepared) => prepared,
+                                            Err(DaemonPrepareError::BadGroup(err)) => {
+                                                warn!(
+                                                    "[pikachat] ACP reply group resolution failed group={} session={} err={err:#}",
+                                                    acp_nostr_group_id,
+                                                    reply.session_id,
+                                                );
+                                                continue;
+                                            }
+                                            Err(DaemonPrepareError::Prepare(err)) => {
+                                                warn!(
+                                                    "[pikachat] ACP reply prepare failed group={} session={} err={err:#}",
+                                                    acp_nostr_group_id,
+                                                    reply.session_id,
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        if let Err(err) = host
+                                            .publish_prepared(&prepared, "daemon_acp_reply")
+                                            .await
+                                        {
+                                            warn!(
+                                                "[pikachat] ACP reply publish failed group={} session={} err={err:#}",
+                                                acp_nostr_group_id,
+                                                reply.session_id,
+                                            );
+                                        }
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            "[pikachat] ACP prompt failed group={} sender={} err={err:#}",
+                                            acp_nostr_group_id, acp_sender_hex
+                                        );
+                                    }
+                                }
+                            }
                         }
                         Ok(Some(_)) => {}
                         Ok(None) => {}
@@ -3811,6 +3909,42 @@ mod tests {
             state: mdk_storage_traits::welcomes::types::WelcomeState::Pending,
             wrapper_event_id: event_id(wrapper_hex),
         }
+    }
+
+    #[test]
+    fn acp_prompt_mapping_keeps_group_and_sender_context() {
+        let prompt = build_acp_prompt("001122", "abcdef", "hello from nostr");
+        assert!(prompt.contains("conversation_id: 001122"));
+        assert!(prompt.contains("sender_pubkey: abcdef"));
+        assert!(prompt.contains("message:\nhello from nostr"));
+    }
+
+    #[test]
+    fn acp_prompt_trigger_skips_self_and_empty_messages() {
+        assert!(should_prompt_acp_reply(
+            MessageClassification::Chat,
+            "peer",
+            "self",
+            "hello",
+        ));
+        assert!(!should_prompt_acp_reply(
+            MessageClassification::TypingIndicator,
+            "peer",
+            "self",
+            "typing",
+        ));
+        assert!(!should_prompt_acp_reply(
+            MessageClassification::Chat,
+            "self",
+            "self",
+            "hello",
+        ));
+        assert!(!should_prompt_acp_reply(
+            MessageClassification::Chat,
+            "peer",
+            "self",
+            "   ",
+        ));
     }
 
     #[test]

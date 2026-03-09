@@ -10,7 +10,7 @@ import { setPikachatRuntime } from "./src/runtime.js";
 const plugin = {
   id: "pikachat-openclaw",
   name: "Pikachat",
-  description: "Pikachat MLS group messaging over Nostr (Rust sidecar)",
+  description: "Pikachat MLS group messaging over Nostr (daemon protocol host)",
   configSchema: pikachatPluginConfigSchema,
   register(api: OpenClawPluginApi) {
     setPikachatRuntime(api.runtime);

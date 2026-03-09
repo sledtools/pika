@@ -14,8 +14,8 @@ import {
   resolvePikachatAccount,
   type ResolvedPikachatAccount,
 } from "./types.js";
-import { PikachatSidecar, resolveAccountStateDir } from "./sidecar.js";
-import { resolvePikachatSidecarCommand } from "./sidecar-install.js";
+import { buildPikachatDaemonLaunchSpec } from "./daemon-launch.js";
+import { PikachatDaemonClient } from "./sidecar.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -84,13 +84,13 @@ async function transcribeAudioChunk(params: {
   return text || undefined;
 }
 
-type PikachatSidecarHandle = {
-  sidecar: PikachatSidecar;
+type PikachatDaemonHandle = {
+  daemon: PikachatDaemonClient;
   pubkey: string;
   npub: string;
 };
 
-const activeSidecars = new Map<string, PikachatSidecarHandle>();
+const activeDaemons = new Map<string, PikachatDaemonHandle>();
 
 // Map session keys to group/account context so tool factories can resolve targets.
 const sessionGroupMap = new Map<string, { groupId: string; accountId: string }>();
@@ -103,7 +103,7 @@ function findGroupIdForAccount(accountId: string): string | null {
   return null;
 }
 
-// Per-account hypernote catalog text fetched from sidecar at startup.
+// Per-account hypernote catalog text fetched from the daemon at startup.
 const hypernoteCatalogs = new Map<string, string>();
 
 // Group chat pending history buffer (for context injection when mention-gated)
@@ -114,7 +114,7 @@ const GROUP_HISTORY_LIMIT = 50;
 // Cache group names from welcome events
 const groupNames = new Map<string, string>();
 
-// Cache group member counts from sidecar events (group_joined, group_created, list_groups).
+// Cache group member counts from daemon events (group_joined, group_created, list_groups).
 // Used to auto-detect 1:1 DM groups without relying on the group name.
 const groupMemberCounts = new Map<string, number>();
 
@@ -327,7 +327,7 @@ function isDmGroup(chatId: string, cfg: any): boolean {
 
 /**
  * Check if a group is a 1:1 conversation (2 or fewer members).
- * Uses the member count cache populated from sidecar events (group_joined,
+ * Uses the member count cache populated from daemon events (group_joined,
  * group_created, list_groups).
  * Returns false if unknown (fail-open: treat as multi-person group).
  */
@@ -579,11 +579,11 @@ function looksLikeGroupIdHex(input: string): boolean {
   return /^[0-9a-f]{64}$/i.test(input.trim());
 }
 
-function resolveOutboundTarget(to: string, accountId?: string | null): { handle: PikachatSidecarHandle; groupId: string } {
+function resolveOutboundTarget(to: string, accountId?: string | null): { handle: PikachatDaemonHandle; groupId: string } {
   const aid = accountId ?? DEFAULT_ACCOUNT_ID;
-  const handle = activeSidecars.get(aid);
+  const handle = activeDaemons.get(aid);
   if (!handle) {
-    throw new Error(`pikachat sidecar not running for account ${aid}`);
+    throw new Error(`pikachat daemon not running for account ${aid}`);
   }
   const groupId = normalizeGroupId(to);
   if (!looksLikeGroupIdHex(groupId)) {
@@ -666,31 +666,6 @@ function formatHypernoteActionResponse(response: { action: string; form: Record<
   return [`[Hypernote action "${response.action}" submitted]`, ...lines].join("\n");
 }
 
-function resolveSidecarCmd(cfgCmd?: string | null): string | null {
-  const env = process.env.PIKACHAT_SIDECAR_CMD?.trim();
-  if (env) return env;
-  const trimmed = String(cfgCmd ?? "").trim();
-  return trimmed ? trimmed : null;
-}
-
-function resolveSidecarArgs(cfgArgs?: string[] | null): string[] | null {
-  const env = process.env.PIKACHAT_SIDECAR_ARGS?.trim();
-  if (env) {
-    try {
-      const parsed = JSON.parse(env);
-      if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
-        return parsed;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  if (Array.isArray(cfgArgs) && cfgArgs.every((x) => typeof x === "string")) {
-    return cfgArgs;
-  }
-  return null;
-}
-
 export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   id: "pikachat-openclaw",
   meta: {
@@ -699,7 +674,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     selectionLabel: "Pikachat (Rust)",
     docsPath: "/channels/pikachat-openclaw",
     docsLabel: "pikachat-openclaw",
-    blurb: "MLS E2EE groups over Nostr (Rust sidecar).",
+    blurb: "MLS E2EE groups over Nostr (daemon protocol).",
     order: 56,
     quickstartAllowFrom: true,
   },
@@ -727,7 +702,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       name: account.name ?? undefined,
       enabled: account.enabled,
       configured: account.configured,
-      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? undefined,
+      publicKey: activeDaemons.get(account.accountId)?.pubkey ?? undefined,
     }),
     resolveAllowFrom: ({ cfg, accountId }) =>
       (resolvePikachatAccount({ cfg, accountId }).config.groupAllowFrom ?? []).map((x) => String(x)),
@@ -784,11 +759,11 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             details: { ok: false, reason: "missing_message_id" },
           };
         }
-        const handle = activeSidecars.get(accountId ?? DEFAULT_ACCOUNT_ID);
+        const handle = activeDaemons.get(accountId ?? DEFAULT_ACCOUNT_ID);
         if (!handle) {
           return {
             content: [{ type: "text", text: "Sidecar not running." }],
-            details: { ok: false, reason: "sidecar_not_running" },
+            details: { ok: false, reason: "daemon_not_running" },
           };
         }
         const groupId = findGroupIdForAccount(accountId ?? DEFAULT_ACCOUNT_ID);
@@ -798,7 +773,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             details: { ok: false, reason: "missing_target_group" },
           };
         }
-        const result = await handle.sidecar.sendReaction(groupId, messageId, emoji);
+        const result = await handle.daemon.sendReaction(groupId, messageId, emoji);
         const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
         return {
           content: [{ type: "text", text: `Reaction sent.${eventIdNote}` }],
@@ -833,7 +808,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       name: account.name ?? undefined,
       enabled: account.enabled,
       configured: account.configured,
-      publicKey: activeSidecars.get(account.accountId)?.pubkey ?? undefined,
+      publicKey: activeDaemons.get(account.accountId)?.pubkey ?? undefined,
     }),
   },
 
@@ -842,7 +817,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
     textChunkLimit: 4000,
     sendText: async ({ to, text, accountId }) => {
       const { handle, groupId } = resolveOutboundTarget(to, accountId);
-      const result = await handle.sidecar.sendMessage(groupId, text ?? "");
+      const result = await handle.daemon.sendMessage(groupId, text ?? "");
       return { channel: "pikachat-openclaw", to: groupId, messageId: result?.event_id ?? "" };
     },
     sendMedia: async ({ to, text, mediaUrl, accountId }) => {
@@ -851,7 +826,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         throw new Error("sendMedia requires a mediaUrl");
       }
 
-      // Download media to a temp file so the sidecar can read it
+      // Download media to a temp file so the daemon can read it
       const tempDir = mkdtempSync(path.join(tmpdir(), "pikachat-media-"));
       const urlObj = new URL(mediaUrl);
       const basename = path.basename(urlObj.pathname) || "file.bin";
@@ -869,12 +844,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       }
 
       try {
-        const result = (await handle.sidecar.sendMedia(groupId, tempFile, {
+        const result = (await handle.daemon.sendMedia(groupId, tempFile, {
           caption: text ?? "",
         })) as any;
         return { channel: "pikachat-openclaw" as const, to: groupId, messageId: result?.event_id ?? "" };
       } finally {
-        // Clean up temp file after a delay to ensure sidecar has read it
+        // Clean up temp file after a delay to ensure the daemon has read it
         const timer = setTimeout(() => {
           rmSync(tempDir, { recursive: true, force: true });
         }, 30_000);
@@ -891,12 +866,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       const resolved = resolvePikachatAccount({ cfg, accountId: account.accountId });
 
       // Guard against duplicate startAccount calls for the same account.
-      // Return a long-lived Promise tied to the existing sidecar so the
+      // Return a long-lived Promise tied to the existing daemon client so the
       // framework considers this channel alive (prevents auto-restart loops).
-      const existingHandle = activeSidecars.get(resolved.accountId);
+      const existingHandle = activeDaemons.get(resolved.accountId);
       if (existingHandle) {
         ctx.log?.info?.(
-          `[${resolved.accountId}] sidecar already running, skipping duplicate startAccount`,
+          `[${resolved.accountId}] daemon already running, skipping duplicate startAccount`,
         );
         ctx.setStatus({
           accountId: resolved.accountId,
@@ -905,18 +880,18 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         return new Promise<void>((resolve) => {
           const finish = () => resolve();
           ctx.abortSignal.addEventListener("abort", () => {
-            const handle = activeSidecars.get(resolved.accountId);
+            const handle = activeDaemons.get(resolved.accountId);
             if (handle) {
-              activeSidecars.delete(resolved.accountId);
-              void handle.sidecar.shutdown();
+              activeDaemons.delete(resolved.accountId);
+              void handle.daemon.shutdown();
             }
-            ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar stopped`);
+            ctx.log?.info?.(`[${resolved.accountId}] pikachat daemon stopped`);
             finish();
           }, { once: true });
-          existingHandle.sidecar.waitForExit().then(finish);
+          existingHandle.daemon.waitForExit().then(finish);
         });
       }
-      activeSidecars.set(resolved.accountId, null as any);
+      activeDaemons.set(resolved.accountId, null as any);
 
       if (!resolved.enabled) {
         throw new Error("pikachat account disabled");
@@ -926,35 +901,20 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       }
 
       const relays = resolved.config.relays.map((r) => String(r).trim()).filter(Boolean);
-      const baseStateDir = resolveAccountStateDir({
+      const daemonLaunch = await buildPikachatDaemonLaunchSpec({
         accountId: resolved.accountId,
-        stateDirOverride: resolved.config.stateDir,
-      });
-      const requestedSidecarCmd = resolveSidecarCmd(resolved.config.sidecarCmd) ?? "pikachat";
-      const sidecarCmd = await resolvePikachatSidecarCommand({
-        requestedCmd: requestedSidecarCmd,
+        config: resolved.config,
         log: ctx.log,
-        pinnedVersion: resolved.config.sidecarVersion,
       });
-      const relayArgs = (relays.length > 0 ? relays : ["ws://127.0.0.1:18080"]).flatMap((r) => ["--relay", r]);
-      const configuredSidecarArgs = resolveSidecarArgs(resolved.config.sidecarArgs);
-      let sidecarArgs = configuredSidecarArgs ?? ["daemon", ...relayArgs, "--state-dir", baseStateDir];
-      const sidecarArgsLookLikeDaemon = sidecarArgs.length > 0 && sidecarArgs[0] === "daemon";
-      const sidecarHasAutoAcceptFlag = sidecarArgs.includes("--auto-accept-welcomes");
-      if (resolved.config.autoAcceptWelcomes && sidecarArgsLookLikeDaemon && !sidecarHasAutoAcceptFlag) {
-        sidecarArgs = [...sidecarArgs, "--auto-accept-welcomes"];
-      }
-      const sidecarAutoAcceptWelcomes =
-        sidecarArgsLookLikeDaemon && sidecarArgs.includes("--auto-accept-welcomes");
 
       ctx.log?.info?.(
-        `[${resolved.accountId}] 🦞 MOLTATHON PIKACHAT v0.2.0 — starting sidecar cmd=${JSON.stringify(sidecarCmd)} args=${JSON.stringify(sidecarArgs)}`,
+        `[${resolved.accountId}] 🦞 MOLTATHON PIKACHAT v0.2.0 — starting daemon backend=${daemonLaunch.backend} cmd=${JSON.stringify(daemonLaunch.cmd)} args=${JSON.stringify(daemonLaunch.args)}`,
       );
 
-      const sidecar = new PikachatSidecar({ cmd: sidecarCmd, args: sidecarArgs });
-      const ready = await sidecar.waitForReady(15_000);
-      activeSidecars.set(resolved.accountId, {
-        sidecar,
+      const daemon = new PikachatDaemonClient({ cmd: daemonLaunch.cmd, args: daemonLaunch.args });
+      const ready = await daemon.waitForReady(15_000);
+      activeDaemons.set(resolved.accountId, {
+        daemon,
         pubkey: ready.pubkey,
         npub: ready.npub,
       });
@@ -964,12 +924,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       });
 
       // Ensure the daemon has the full relay list (even if started with a single relay).
-      await sidecar.setRelays(relays);
-      await sidecar.publishKeypackage(relays);
+      await daemon.setRelays(relays);
+      await daemon.publishKeypackage(relays);
 
       // Fetch hypernote component catalog for agent prompt injection.
       try {
-        const catalog = await sidecar.hypernoteCatalog();
+        const catalog = await daemon.hypernoteCatalog();
         const catalogText = typeof catalog === "string" ? catalog : JSON.stringify(catalog);
         if (catalogText) hypernoteCatalogs.set(resolved.accountId, catalogText);
       } catch {
@@ -986,7 +946,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
           : undefined;
         void (async () => {
           try {
-            const groupsResult = (await sidecar.listGroups()) as any;
+            const groupsResult = (await daemon.listGroups()) as any;
             const groups: any[] = groupsResult?.groups ?? [];
             // Seed member count cache for all groups
             for (const g of groups) {
@@ -998,7 +958,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               ctx.log?.info?.(
                 `[${resolved.accountId}] no groups found, creating DM with owner ${ownerPk}`,
               );
-              const created = await sidecar.initGroup(ownerPk);
+              const created = await daemon.initGroup(ownerPk);
               ctx.log?.info?.(
                 `[${resolved.accountId}] owner DM created nostr_group_id=${created.nostr_group_id}`,
               );
@@ -1065,9 +1025,9 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         );
 
         if (!resolved.config.autoAcceptWelcomes) return;
-        if (sidecarAutoAcceptWelcomes) {
+        if (daemonLaunch.autoAcceptWelcomes) {
           ctx.log?.debug?.(
-            `[${resolved.accountId}] auto-accept welcomes handled by sidecar count=${batch.length}`,
+            `[${resolved.accountId}] auto-accept welcomes handled by daemon launch count=${batch.length}`,
           );
           return;
         }
@@ -1076,7 +1036,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         let failed = 0;
         for (const w of batch) {
           try {
-            await sidecar.acceptWelcome(w.wrapperId);
+            await daemon.acceptWelcome(w.wrapperId);
             accepted++;
           } catch {
             failed++;
@@ -1093,7 +1053,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         }
       };
 
-      sidecar.onEvent(async (ev) => {
+      daemon.onEvent(async (ev) => {
         if (ev.type === "welcome_received") {
           // Cache group name for later use in GroupSubject
           if (ev.group_name && ev.nostr_group_id) {
@@ -1129,14 +1089,14 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             ctx.log?.debug?.(
               `[${resolved.accountId}] reject call invite (group not allowed) group=${ev.nostr_group_id} call_id=${ev.call_id}`,
             );
-            await sidecar.rejectCall(ev.call_id, "group_not_allowed");
+            await daemon.rejectCall(ev.call_id, "group_not_allowed");
             return;
           }
           if (!isSenderAllowed(ev.from_pubkey)) {
             ctx.log?.debug?.(
               `[${resolved.accountId}] reject call invite (sender not allowed) sender=${ev.from_pubkey} call_id=${ev.call_id}`,
             );
-            await sidecar.rejectCall(ev.call_id, "sender_not_allowed");
+            await daemon.rejectCall(ev.call_id, "sender_not_allowed");
             return;
           }
           // Per-group user allowlist check (same layered logic as messages — see below).
@@ -1147,14 +1107,14 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               ctx.log?.debug?.(
                 `[${resolved.accountId}] reject call invite (sender not in group users) sender=${ev.from_pubkey} group=${ev.nostr_group_id} call_id=${ev.call_id}`,
               );
-              await sidecar.rejectCall(ev.call_id, "sender_not_allowed_in_group");
+              await daemon.rejectCall(ev.call_id, "sender_not_allowed_in_group");
               return;
             }
           }
           ctx.log?.info?.(
             `[${resolved.accountId}] accept call invite group=${ev.nostr_group_id} from=${ev.from_pubkey} call_id=${ev.call_id}`,
           );
-          await sidecar.acceptCall(ev.call_id);
+          await daemon.acceptCall(ev.call_id);
           return;
         }
 	        if (ev.type === "call_session_started") {
@@ -1173,7 +1133,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
 	            const callId = ev.call_id;
 	            setTimeout(() => {
 	              // Fire-and-forget: we don't want this to block the event loop.
-	              void sidecar
+	              void daemon
 	                .sendAudioResponse(callId, callStartTtsText)
 	                .then((stats) => {
 	                  const publish = stats.publish_path ? ` publish_path=${stats.publish_path}` : "";
@@ -1259,7 +1219,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 );
                 // Use openclaw's config-driven TTS (OpenAI, ElevenLabs, Edge)
                 // to get raw PCM, write to temp file, send via sendAudioFile.
-                // Falls back to sidecar's built-in TTS on failure.
+                // Falls back to the daemon's built-in TTS on failure.
                 try {
                   const ttsResult = await runtime.tts.textToSpeechTelephony({
                     text: responseText,
@@ -1276,15 +1236,15 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   }, 5 * 60 * 1000);
                   (timer as any).unref?.();
                   const sampleRate = ttsResult.sampleRate ?? 24000;
-                  await sidecar.sendAudioFile(ev.call_id, pcmPath, sampleRate);
+                  await daemon.sendAudioFile(ev.call_id, pcmPath, sampleRate);
                   ctx.log?.info?.(
                     `[${resolved.accountId}] call audio sent call_id=${ev.call_id} path=${pcmPath} sample_rate=${sampleRate} provider=${ttsResult.provider ?? "unknown"}`,
                   );
                 } catch (openclawTtsErr) {
                   ctx.log?.info?.(
-                    `[${resolved.accountId}] openclaw_tts error call_id=${ev.call_id}: ${openclawTtsErr}, falling back to sidecar TTS`,
+                    `[${resolved.accountId}] openclaw_tts error call_id=${ev.call_id}: ${openclawTtsErr}, falling back to daemon TTS`,
                   );
-                  await sidecar.sendAudioResponse(ev.call_id, responseText);
+                  await daemon.sendAudioResponse(ev.call_id, responseText);
                 }
               },
               log: ctx.log,
@@ -1300,7 +1260,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
         }
         if (ev.type === "message_received") {
           // Self-message filter: skip our own messages echoed back
-          const handle = activeSidecars.get(resolved.accountId);
+          const handle = activeDaemons.get(resolved.accountId);
           if (handle && ev.from_pubkey.toLowerCase() === handle.pubkey.toLowerCase()) {
             ctx.log?.debug?.(
               `[${resolved.accountId}] skip self-message group=${ev.nostr_group_id}`,
@@ -1380,9 +1340,9 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             return;
           }
 
-          // Debug: if a call signal fails to parse in the sidecar, it will fall back to
+          // Debug: if a call signal fails to parse in the daemon, it will fall back to
           // `message_received` and the bot will treat it as plain text. Surface the raw
-          // content (with basic redaction) so we can patch the sidecar parser.
+          // content (with basic redaction) so we can patch the daemon parser.
           //
           // Note: we key off either explicit `pika.call` markers or "looks like JSON" to avoid
           // missing shape mismatches (e.g. JSON envelopes without expected substrings).
@@ -1405,13 +1365,13 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
             ctx.log?.info?.(
               `[${resolved.accountId}] e2e ping/pong hook reply group=${ev.nostr_group_id} from=${ev.from_pubkey} nonce=${e2ePingNonce}`,
             );
-            await sidecar.sendMessage(ev.nostr_group_id, ack);
+            await daemon.sendMessage(ev.nostr_group_id, ack);
             return;
           }
 
           const directive = parseReplyExactly(ev.content);
           if (directive !== null) {
-            await sidecar.sendMessage(ev.nostr_group_id, directive);
+            await daemon.sendMessage(ev.nostr_group_id, directive);
             return;
           }
 
@@ -1475,7 +1435,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               // We limit to a single fire to avoid notification spam on Apple
               // (encrypted MLS messages are indistinguishable from real messages).
               let groupTypingSent = false;
-              setTimeout(() => { if (!groupTypingSent) { groupTypingSent = true; sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
+              setTimeout(() => { if (!groupTypingSent) { groupTypingSent = true; daemon.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
 
               const pendingHistory = flushPendingHistory(historyKey);
               ctx.log?.info?.(
@@ -1494,17 +1454,17 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                 wasMentioned: wasMentioned || isHypernoteActionResponse,
                 inboundHistory: pendingHistory.length > 0 ? pendingHistory : undefined,
                 groupName: groupNames.get(groupId),
-                stateDir: baseStateDir,
+                stateDir: daemonLaunch.stateDir,
                 deliverText: async (responseText: string) => {
                   ctx.log?.info?.(
                     `[${resolved.accountId}] send group=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await daemon.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   if (groupTypingSent) return; // only fire once per inbound message
                   groupTypingSent = true;
-                  await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
+                  await daemon.sendTyping(ev.nostr_group_id).catch((err) => {
                     ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed group=${ev.nostr_group_id}: ${err}`);
                   });
                 },
@@ -1514,7 +1474,7 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
               // DM / OWNER FLOW — route to main session (existing behavior)
               // Fire typing indicator once (avoid notification spam on Apple).
               let dmTypingSent = false;
-              setTimeout(() => { if (!dmTypingSent) { dmTypingSent = true; sidecar.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
+              setTimeout(() => { if (!dmTypingSent) { dmTypingSent = true; daemon.sendTyping(ev.nostr_group_id).catch(() => {}); } }, 500);
               await dispatchInboundToAgent({
                 runtime,
                 accountId: resolved.accountId,
@@ -1528,12 +1488,12 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
                   ctx.log?.info?.(
                     `[${resolved.accountId}] send dm=${ev.nostr_group_id} len=${responseText.length}`,
                   );
-                  await sidecar.sendMessage(ev.nostr_group_id, responseText);
+                  await daemon.sendMessage(ev.nostr_group_id, responseText);
                 },
                 sendTyping: async () => {
                   if (dmTypingSent) return; // only fire once per inbound message
                   dmTypingSent = true;
-                  await sidecar.sendTyping(ev.nostr_group_id).catch((err) => {
+                  await daemon.sendTyping(ev.nostr_group_id).catch((err) => {
                     ctx.log?.debug?.(`[${resolved.accountId}] typing indicator failed dm=${ev.nostr_group_id}: ${err}`);
                   });
                 },
@@ -1562,21 +1522,21 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
       });
 
       // Return a long-lived Promise so the framework keeps the channel
-      // as "running". Resolves when the sidecar exits or abort fires.
+      // as "running". Resolves when the daemon exits or abort fires.
       return new Promise<void>((resolve) => {
         const finish = () => resolve();
         ctx.abortSignal.addEventListener("abort", () => {
-          const handle = activeSidecars.get(resolved.accountId);
+          const handle = activeDaemons.get(resolved.accountId);
           if (handle) {
-            activeSidecars.delete(resolved.accountId);
-            void handle.sidecar.shutdown();
+            activeDaemons.delete(resolved.accountId);
+            void handle.daemon.shutdown();
           }
-          ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar stopped`);
+          ctx.log?.info?.(`[${resolved.accountId}] pikachat daemon stopped`);
           finish();
         }, { once: true });
-        sidecar.waitForExit().then(() => {
-          activeSidecars.delete(resolved.accountId);
-          ctx.log?.info?.(`[${resolved.accountId}] pikachat sidecar exited`);
+        daemon.waitForExit().then(() => {
+          activeDaemons.delete(resolved.accountId);
+          ctx.log?.info?.(`[${resolved.accountId}] pikachat daemon exited`);
           finish();
         });
       });
@@ -1596,10 +1556,10 @@ type ToolContext = {
   [key: string]: unknown;
 };
 
-function resolveToolTarget(ctx: ToolContext): { handle: PikachatSidecarHandle; groupId: string } | null {
+function resolveToolTarget(ctx: ToolContext): { handle: PikachatDaemonHandle; groupId: string } | null {
   const session = ctx.sessionKey ? sessionGroupMap.get(ctx.sessionKey) : null;
   if (!session) return null;
-  const handle = activeSidecars.get(session.accountId);
+  const handle = activeDaemons.get(session.accountId);
   if (!handle) return null;
   return { handle, groupId: session.groupId };
 }
@@ -1623,11 +1583,11 @@ export function createSendHypernoteToolFactory(): (ctx: ToolContext) => AnyAgent
         const target = resolveToolTarget(ctx);
         if (!target) {
           return {
-            content: [{ type: "text" as const, text: "Sidecar not running or no target group." }],
-            details: { ok: false, reason: "sidecar_not_running_or_missing_target" },
+            content: [{ type: "text" as const, text: "Daemon not running or no target group." }],
+            details: { ok: false, reason: "daemon_not_running_or_missing_target" },
           };
         }
-        const result = await target.handle.sidecar.sendHypernote(target.groupId, params.content, {
+        const result = await target.handle.daemon.sendHypernote(target.groupId, params.content, {
           title: params.title,
           state: params.state,
         });
@@ -1663,11 +1623,11 @@ export function createSubmitHypernoteActionToolFactory(): (ctx: ToolContext) => 
         const target = resolveToolTarget(ctx);
         if (!target) {
           return {
-            content: [{ type: "text" as const, text: "Sidecar not running or no target group." }],
-            details: { ok: false, reason: "sidecar_not_running_or_missing_target" },
+            content: [{ type: "text" as const, text: "Daemon not running or no target group." }],
+            details: { ok: false, reason: "daemon_not_running_or_missing_target" },
           };
         }
-        const result = await target.handle.sidecar.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
+        const result = await target.handle.daemon.submitHypernoteAction(target.groupId, params.event_id, params.action, params.form ?? {});
         const eventIdNote = result?.event_id ? ` [pikachat_event_id: ${result.event_id}]` : "";
         return {
           content: [{ type: "text" as const, text: `Hypernote action submitted.${eventIdNote}` }],

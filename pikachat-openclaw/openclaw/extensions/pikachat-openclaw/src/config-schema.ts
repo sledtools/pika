@@ -8,6 +8,19 @@ export const pikachatPluginConfigSchema = {
       minItems: 1,
     },
     stateDir: { type: "string" },
+    daemonCmd: { type: "string" },
+    daemonArgs: {
+      type: "array",
+      items: { type: "string" },
+    },
+    daemonVersion: { type: "string" },
+    daemonBackend: {
+      type: "string",
+      enum: ["native", "acp"],
+      default: "native",
+    },
+    daemonAcpExec: { type: "string" },
+    daemonAcpCwd: { type: "string" },
     sidecarCmd: { type: "string" },
     sidecarArgs: {
       type: "array",

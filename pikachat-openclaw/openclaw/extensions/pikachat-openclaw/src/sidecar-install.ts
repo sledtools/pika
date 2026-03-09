@@ -460,22 +460,22 @@ async function ensureInstalledBinary(params: {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function resolvePikachatSidecarCommand(params: {
+export async function resolvePikachatDaemonCommand(params: {
   requestedCmd: string;
   log?: PikachatLog;
   pinnedVersion?: string;
 }): Promise<string> {
   const log: PikachatLog = params.log ?? {};
 
-  // If a custom sidecarCmd was explicitly configured (not the default "pikachat"),
+  // If a custom daemonCmd was explicitly configured (not the default "pikachat"),
   // resolve it directly — the user is in control.
   if (params.requestedCmd !== DEFAULT_BINARY_NAME) {
     const existing = await resolveExistingCommand(params.requestedCmd);
     if (existing) {
-      log.info?.(`[pikachat] using configured sidecar command: ${existing}`);
+      log.info?.(`[pikachat] using configured daemon command: ${existing}`);
       return existing;
     }
-    log.warn?.(`[pikachat] configured sidecar command not found: ${params.requestedCmd}, falling back to auto-install`);
+    log.warn?.(`[pikachat] configured daemon command not found: ${params.requestedCmd}, falling back to auto-install`);
   }
 
   // Always use the managed binary location — download/update as needed.
@@ -488,6 +488,8 @@ export async function resolvePikachatSidecarCommand(params: {
     repo,
     pinnedVersion: pinnedVersion && pinnedVersion !== "latest" ? pinnedVersion : undefined,
   });
-  log.info?.(`[pikachat] installed sidecar ${version} at ${binaryPath}`);
+  log.info?.(`[pikachat] installed daemon binary ${version} at ${binaryPath}`);
   return binaryPath;
 }
+
+export const resolvePikachatSidecarCommand = resolvePikachatDaemonCommand;

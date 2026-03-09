@@ -664,16 +664,22 @@ Phase 6 staged Linux target pivot notes:
 - The first prewarm/feed slice produced a narrower operational result:
   - a checked-in prewarm entrypoint now realizes the direct `workspaceDeps` input closure and copies it to `ssh://pika-build` with `nix copy --substitute-on-destination`,
   - and a proof rerun used an explicit `NIX_BUILDERS=... 12 ...` override instead of changing `/etc/nix/machines` in-repo.
-- That prewarm/feed proof moved the bottleneck, but did not finish the job:
-  - the post-warm real build dropped from roughly 442 remaining derivations to roughly 44 remaining derivations before the main staged derivation,
-  - so the cold pre-compile tail got materially smaller,
-  - but short remote observation still did not show visible `cargo` / `rustc`,
-  - and `pika-build` CPU utilization still did not become materially high during the observed window.
+- The next rerun made the remaining bottleneck much sharper:
+  - a completed destination-side prewarm collapsed the post-warm dry-run tail all the way down to the main `workspaceDeps` derivation itself,
+  - the earlier rough "44 derivations left" state was therefore still an incomplete prewarm/feed result, not evidence that `pika-build` substituters or trust settings were fundamentally wrong,
+  - and the real build immediately transitioned into the main remote derivation on `pika-build`.
+- The first visible remote compile transition has now happened:
+  - builder logs showed `building '/nix/store/...-pika-linux-rust-workspace-deps-deps-0.1.0.drv' on 'ssh://justin@100.73.239.5'`,
+  - then `cargo test --locked -j 16 -p pika_core --lib --tests --no-run --message-format json-render-diagnostics`,
+  - followed by real `Compiling ...` output for the staged dependency build on the remote host,
+  - and the `workspaceDeps` derivation completed successfully after roughly 30 seconds of actual compile once the cold pre-compile closure was ready.
+- The current operational follow-up is now explicit:
+  - keep the checked-in prewarm entrypoint,
+  - add a checked-in wrapper that pairs that prewarm with the proven `NIX_BUILDERS=... 12 ...` override while the local `/etc/nix/machines` entry still advertises only `4` jobs,
+  - and treat the next optimization target as steady-state feed/config cleanup plus the real `pikaci` path, not more blind speculation about missing remote compile.
 - Next recommended slice:
-  - make the prewarm path more complete or more destination-driven so the remaining 44-derivation tail also clears before the real build,
   - decide whether the x86_64 builder job-count increase should stay as an explicit wrapper override or move into the local machine configuration,
-  - then rerun and re-measure time-to-first-compile before returning to more dependency pruning,
-  - rerun the real `pikaci` path once the prepare side is acceptably fast,
+  - rerun the real `pikaci` path now that `workspaceDeps` has reached and completed remote compile on `pika-build`,
   - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture.
 
 ## Deferred Until Proven Necessary
@@ -719,7 +725,7 @@ We have at least one important Linux Rust lane where:
   - prefer `ci.x86_64-linux.*` staged outputs for the Linux Rust lane,
   - use `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` to prove where pre-compile time is going on the remote builder path,
   - keep the staged source snapshot tight and Cargo job handling explicit,
-  - prewarm the exact pre-compile closure on `pika-build` and raise the effective x86_64 builder feed rate for proof,
-  - treat the remaining 442-derivation vendored Cargo closure as the current cold-start bottleneck until the prewarm/feed experiment says otherwise,
-  - note that the first warmup proof cut the remaining real-build tail to about 44 derivations without yet surfacing visible remote compile,
+  - use the checked-in prewarm plus x86_64 builder-override wrapper when proving the fast path on `pika-build`,
+  - note that a completed destination-side prewarm eliminated the post-warm tail down to the main derivation and did surface real remote `cargo` compile on `pika-build`,
+  - keep the local `/etc/nix/machines` underfeed noted: the default spec still advertises only `4` jobs even though the proven override used `12`,
   - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the later end-to-end blocker once prepare performance is acceptable.

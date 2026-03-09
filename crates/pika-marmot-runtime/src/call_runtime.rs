@@ -494,7 +494,6 @@ mod tests {
             peer_pubkey_hex: &inviter_keys.public_key().to_hex(),
         })
         .expect("derive relay auth after evolution");
-
         let incoming = PendingIncomingCall {
             call_id: "call-runtime-test".to_string(),
             target_id: "chat1".to_string(),

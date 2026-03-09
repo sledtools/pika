@@ -74,6 +74,41 @@
           ./uniffi-bindgen
         ];
       };
+      mkPikaciSrc = lib: lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./Cargo.lock
+          ./flake.nix
+          ./flake.lock
+          ./cli
+          ./crates
+          ./nix
+          ./rust
+          ./uniffi-bindgen
+        ];
+      };
+      mkPikaciPkg = pkgs: src:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "pikaci";
+          version = "0.1.0";
+          inherit src;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+              "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            };
+          };
+          cargoBuildFlags = [ "-p" "pikaci" ];
+          cargoTestFlags = [ "-p" "pikaci" ];
+          doCheck = false;
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          meta = {
+            mainProgram = "pikaci";
+          };
+        };
 
       pikaServerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "pika-server";
@@ -147,24 +182,7 @@
         buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];
       };
 
-      pikaciServerPkg = serverPkgs.rustPlatform.buildRustPackage {
-        pname = "pikaci";
-        version = "0.1.0";
-        src = rustWorkspaceSrc;
-        cargoLock = {
-          lockFile = ./Cargo.lock;
-          outputHashes = {
-            "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
-            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
-            "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
-          };
-        };
-        cargoBuildFlags = [ "-p" "pikaci" ];
-        doCheck = false;
-        meta = {
-          mainProgram = "pikaci";
-        };
-      };
+      pikaciServerPkg = mkPikaciPkg serverPkgs (mkPikaciSrc serverPkgs.lib);
 
       piAgentPkg = serverPkgs.buildNpmPackage rec {
         pname = "pi-coding-agent-runtime";
@@ -364,40 +382,7 @@
         linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
         linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
         linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
-        pikaciSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./Cargo.toml
-            ./Cargo.lock
-            ./flake.nix
-            ./flake.lock
-            ./cli
-            ./crates
-            ./nix
-            ./rust
-            ./uniffi-bindgen
-          ];
-        };
-        pikaciPkg = pkgs.rustPlatform.buildRustPackage {
-          pname = "pikaci";
-          version = "0.1.0";
-          src = pikaciSrc;
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
-              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
-              "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
-            };
-          };
-          cargoBuildFlags = [ "-p" "pikaci" ];
-          cargoTestFlags = [ "-p" "pikaci" ];
-          doCheck = false;
-          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
-          meta = {
-            mainProgram = "pikaci";
-          };
-        };
+        pikaciPkg = mkPikaciPkg pkgs (mkPikaciSrc pkgs.lib);
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [

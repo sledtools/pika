@@ -580,7 +580,7 @@ Phase 6 linux-builder health repair notes:
   - deleting that invalid local path is safe and repeatable,
   - and a new `just linux-builder-repair` entrypoint now codifies the repair steps we proved out on the host side.
 - The new repair entrypoint was exercised for real:
-  - `just linux-builder-repair` reseeded `cargo-src-linux-raw-sys-0.4.15`, deleted the invalid local `cargo-package-linux-raw-sys-0.4.15` copy, and reran `nix build .#ci.aarch64-linux.workspaceDeps`,
+  - `just linux-builder-repair` first reproduces the current `workspaceDeps` failure to derive the current bad `cargo-src` / `cargo-package` paths, then reseeds the matching cargo source path, deletes the invalid local cargo-package copy, and reruns `nix build .#ci.aarch64-linux.workspaceDeps`,
   - `workspaceDeps` still failed at the same builder-produced `cargo-package-linux-raw-sys-0.4.15` hash mismatch,
   - so the host-side repair is repeatable and useful, but not sufficient to restore full builder health by itself.
 - The remaining blocker is now clearly privileged builder maintenance:

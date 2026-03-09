@@ -208,7 +208,7 @@ EOF
     '';
     socket = socketPath;
   } // {
-    interfaces = [
+    interfaces = lib.optionals (hypervisor != "cloud-hypervisor") [
       {
         type = "user";
         id = "pikaci";

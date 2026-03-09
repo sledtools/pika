@@ -738,11 +738,28 @@ Phase 6 staged Linux target pivot notes:
   - but the real `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun now fails before execute because the local host cannot materialize a fresh `.pikaci/runs/.../snapshot`,
   - the host log shows `error: writing to file: No space left on device` while fetching the snapshot input for `path:.../snapshot#ci.x86_64-linux.workspaceDeps`,
   - and repeated local `df -h` checks stayed below roughly `1 GiB` free even after deleting old generated `.pikaci/runs` directories.
+- The next operational rerun cleared that disk blocker:
+  - local free space was restored from under `1 GiB` to roughly `32 GiB` before the next rerun and later rose above `100 GiB` during the same slice,
+  - `cargo test -p pikaci` passed,
+  - `just pikaci-pre-merge-pika-rust-prepares-remote-build` succeeded again,
+  - and the real `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun got past both staged prepares and both remote fulfillments without snapshot-space failure.
+- That first post-disk rerun produced the first real microVM-specific blocker:
+  - the generated `x86_64-linux` runner build failed under `cloud-hypervisor` with `Unsupported interface type user for Cloud-Hypervisor`,
+  - so the remaining problem was the shared guest module still hard-coding the vfkit-style `microvm.interfaces = [{ type = "user"; ... }]` network shape,
+  - not runner architecture selection or prepared-output transport.
+- One narrow execute-side fix addressed that exact blocker:
+  - the guest module now omits the unsupported `user` interface when `hypervisor == "cloud-hypervisor"`,
+  - leaving the old vfkit path unchanged while letting the staged remote microVM runner build proceed further.
+- After that fix, the next rerun got further again but still did not reach actual execute inside this slice:
+  - the old `Unsupported interface type user for Cloud-Hypervisor` error disappeared,
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` once again passed both staged prepares and both remote fulfillments,
+  - and the active wait moved into `nix build ... nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner` for the staged runner itself,
+  - with repeated local `nix-daemon __build-remote` plus `ssh ... nix-store --serve --write` activity but still no observed `microvm-run` / `cloud-hypervisor` process for the staged lane yet.
 - Next recommended slice:
-  - keep the corrected staged manifest normalization, slimmer `workspaceBuild` output, `workspaceBuild.src = workspaceDeps.src`, and the new remote `x86_64-linux` microVM runner path,
-  - reclaim enough local disk to let `pikaci` create a fresh run snapshot again,
-  - rerun `just pikaci-pre-merge-pika-rust-prepares-remote-build` and then `just pikaci-remote-fulfill-pre-merge-pika-rust`,
-  - and use that first post-disk rerun to prove whether the lane reaches actual remote `microvm-run` on `pika-build` or exposes a narrower microVM runtime blocker.
+  - keep the corrected staged manifest normalization, slimmer `workspaceBuild` output, `workspaceBuild.src = workspaceDeps.src`, and the remote `x86_64-linux` microVM runner path,
+  - keep the new `cloud-hypervisor` interface guard in the guest module,
+  - rerun or directly instrument the staged runner build long enough to determine whether it eventually reaches `microvm-run` or is bottlenecked in remote runner realization,
+  - and treat that runner-build/launch boundary as the new active place to sharpen, not the old disk or prepare path.
 
 ## Deferred Until Proven Necessary
 
@@ -787,5 +804,6 @@ We have at least one important Linux Rust lane where:
   - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
   - keep using the checked-in prewarm plus dual-prepare wrappers to ensure prepare is not the intentional bottleneck,
   - note that the generated runner is no longer `aarch64-linux`: the staged `pika_core` lane now renders an `x86_64-linux` `cloud-hypervisor` microVM runner for `pika-build`,
-  - note that the current blocker is local disk exhaustion while materializing a fresh `.pikaci` run snapshot, not runner architecture selection,
-  - and treat the first successful post-disk rerun as the point where we can finally observe actual remote `microvm-run` execution or the first narrower runtime blocker on `pika-build`.
+  - note that local disk exhaustion is no longer the active blocker,
+  - note that the first post-disk runtime blocker was the unsupported `user` network interface under `cloud-hypervisor`, and that narrow guest-module fix is now in,
+  - and treat the still-running staged runner build / first eventual `microvm-run` launch on `pika-build` as the next boundary to sharpen.

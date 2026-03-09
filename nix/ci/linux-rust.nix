@@ -39,14 +39,15 @@ let
     esac
     echo "[pikaci] building pika_core with cargo jobs=$cargoJobs" >&2
     target_root="''${CARGO_TARGET_DIR:-target}"
+    target_root_abs="$(pwd)/$target_root/"
     cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
     cargo test --locked -j "$cargoJobs" -p pika_core --lib --tests --no-run --message-format json-render-diagnostics >"$cargoBuildLog"
-    ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" '
+    ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
       select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
       | [
           .target.name,
           (.target.kind | join(",")),
-          (.executable | sub("^" + $target_root; ""))
+          (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
         ]
       | @tsv
     ' <"$cargoBuildLog" >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
@@ -96,13 +97,48 @@ rec {
     cargoArtifacts = workspaceDeps;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
-    doInstallCargoArtifacts = true;
-    installCargoArtifactsMode = "use-symlink";
+    doInstallCargoArtifacts = false;
     installPhaseCommand = ''
-      mkdir -p "$out/bin" "$out/share/pikaci"
+      target_root="''${CARGO_TARGET_DIR:-target}"
+      mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
       cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/pikaci/pika-core-lib-tests.manifest"
       cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/pikaci/pika-core-lib-app-flows.manifest"
       cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/pikaci/pika-core-messaging-e2e.manifest"
+
+      copy_target_relative() {
+        local relative="$1"
+        if [ ! -e "$target_root/$relative" ]; then
+          echo "missing staged pika_core runtime artifact at $target_root/$relative" >&2
+          exit 1
+        fi
+        (
+          cd "$target_root"
+          cp --parents -P "$relative" "$out/target"
+        )
+      }
+
+      staged_runtime_manifest="$TMPDIR/pika-core-staged-runtime.manifest"
+      cat \
+        "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" \
+        "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" \
+        "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" \
+        | sort -u >"$staged_runtime_manifest"
+
+      while IFS= read -r relative; do
+        [ -n "$relative" ] || continue
+        copy_target_relative "$relative"
+      done <"$staged_runtime_manifest"
+
+      if [ -d "$target_root/debug/deps" ]; then
+        while IFS= read -r shared_object; do
+          copy_target_relative "''${shared_object#$target_root/}"
+        done < <(
+          find "$target_root/debug/deps" -maxdepth 1 -type f \
+            \( -name '*.so' -o -name '*.so.*' \) \
+            | sort
+        )
+      fi
+
       cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
       #!${pkgs.bash}/bin/bash
       set -euo pipefail

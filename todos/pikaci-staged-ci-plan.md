@@ -692,11 +692,23 @@ Phase 6 staged Linux target pivot notes:
   - this slice did not yet reach the real execute nodes because `workspaceBuild` still spent a long tail finalizing/copying its large realized output back to the local store,
   - so the known `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch remains the likely next blocker,
   - but it was not yet re-proven by a completed real run in this slice.
+- The next rerun exposed and fixed a more specific `workspaceBuild` correctness problem before execute:
+  - the staged test manifests emitted by `workspaceBuild` were still recording absolute `/build/.../target/...` executable paths instead of target-relative paths,
+  - which meant the staged wrapper contract was only appearing to work because the earlier `workspaceBuild` output carried the full cargo-artifacts tree.
+- The follow-up trim on `workspaceBuild` is now concrete:
+  - `workspaceBuild` no longer installs the implicit full cargo-artifacts archive into its staged output,
+  - it copies only the manifest-selected staged test executables plus adjacent `*.so` runtime files,
+  - and the observed realized output on the local host dropped from roughly `1.6 GiB` to roughly `673 MiB`.
+- That improvement was real but did not yet finish the clean rerun inside this slice:
+  - a fresh `just pikaci-pre-merge-pika-rust-prepares-remote-build` rerun compiled the corrected `workspaceBuild` remotely on `pika-build`,
+  - but the corrected `workspaceBuild` output still had a long local import/registration tail after the remote build completed,
+  - so the slice still did not reach the true post-prepare execute boundary,
+  - and the expected `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch therefore remains likely but still not freshly re-proven here.
 - Next recommended slice:
-  - decide whether the x86_64 builder job-count increase should stay as an explicit wrapper override or move into the local machine configuration,
-  - rerun the real `pikaci` path with both staged prepare outputs already hot via the checked-in dual-prepare entrypoint,
-  - confirm whether the next completed run finally reaches the execute boundary,
-  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture if the expected vfkit mismatch becomes the active blocker.
+  - keep the corrected staged manifest normalization and slimmer `workspaceBuild` output,
+  - finish or instrument the remaining local import tail for the corrected `workspaceBuild` output,
+  - rerun the real `pikaci` path with both staged prepare outputs hot once that import tail is no longer the active wait,
+  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) if the expected vfkit mismatch becomes the active blocker.
 
 ## Deferred Until Proven Necessary
 
@@ -745,4 +757,6 @@ We have at least one important Linux Rust lane where:
   - use the checked-in dual-prepare entrypoint when the goal is to force the real pre-merge lane past both staged prepare nodes,
   - note that completed destination-side prewarm collapsed both `workspaceDeps` and `workspaceBuild` down to their main derivations and did surface real remote `cargo` compile on `pika-build`,
   - keep the local `/etc/nix/machines` underfeed noted: the default spec still advertises only `4` jobs even though the proven override used `12`,
-  - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the likely next end-to-end blocker once the completed real rerun gets past `workspaceBuild`.
+  - note that the staged `workspaceBuild` wrapper manifests are now normalized to target-relative paths instead of absolute `/build/...` paths,
+  - note that the staged `workspaceBuild` output itself is now intentionally slimmer and was observed at roughly `673 MiB` instead of roughly `1.6 GiB`,
+  - and keep the remaining local import tail plus the likely later `aarch64-linux` vfkit execute mismatch separate: the import tail is still the active wait, while the execute mismatch remains the likely next end-to-end blocker after prepare finally clears.

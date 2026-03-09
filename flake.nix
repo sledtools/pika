@@ -82,6 +82,8 @@
       ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
         mkdir -p "$out/crates"
         cp -R ${./rust} "$out/rust"
+        chmod -R u+w "$out/rust"
+        rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
         cp -R ${./crates/pika-marmot-runtime} "$out/crates/pika-marmot-runtime"
         cp -R ${./crates/pika-media} "$out/crates/pika-media"

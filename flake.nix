@@ -109,6 +109,43 @@
             mainProgram = "pikaci";
           };
         };
+      mkPikachatPkg = pkgs: src:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "pikachat";
+          version = "0.1.0";
+          inherit src;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "hypernote-mdx-0.3.0" = "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+              "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            };
+          };
+          cargoBuildFlags = [ "-p" "pikachat" ];
+          doCheck = false;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.openssl ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          meta = {
+            mainProgram = "pikachat";
+          };
+        };
+      mkPikachatOpenclawExtensionSrc = lib: lib.fileset.toSource {
+        root = ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw;
+        fileset = lib.fileset.unions [
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/openclaw.plugin.json
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/index.ts
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/CHANGELOG.md
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/tsconfig.json
+          ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src
+        ];
+      };
+      mkPikachatOpenclawExtensionPkg = pkgs: src:
+        pkgs.runCommand "pikachat-openclaw-extension" { } ''
+          mkdir -p "$out/extensions/pikachat-openclaw"
+          cp -R ${src}/. "$out/extensions/pikachat-openclaw/"
+        '';
 
       pikaServerPkg = serverPkgs.rustPlatform.buildRustPackage {
         pname = "pika-server";
@@ -383,6 +420,21 @@
         linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
         linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
         pikaciPkg = mkPikaciPkg pkgs (mkPikaciSrc pkgs.lib);
+        pikachatPkgHost = mkPikachatPkg pkgs (
+          pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./config
+              ./crates
+              ./rust
+              ./cli
+              ./uniffi-bindgen
+            ];
+          }
+        );
+        pikachatOpenclawExtensionPkg = mkPikachatOpenclawExtensionPkg pkgs (mkPikachatOpenclawExtensionSrc pkgs.lib);
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [
@@ -627,6 +679,8 @@ EOF
             pikaci = pikaciPkg;
             default = pikaciPkg;
             rustToolchain = rustToolchain;
+            pikachat = pikachatPkgHost;
+            pikachat-openclaw-extension = pikachatOpenclawExtensionPkg;
           }
           // pkgs.lib.optionalAttrs hasAndroidSdk {
             androidSdk = androidSdk;
@@ -648,6 +702,22 @@ EOF
         };
       }
     )) {
+      openclawPlugin =
+        system:
+        {
+          name = "pikachat-openclaw";
+          skills = [ ];
+          packages = [ self.packages.${system}.pikachat ];
+          needs = {
+            stateDirs = [ ];
+            requiredEnv = [ ];
+          };
+        };
+
+      homeManagerModules = {
+        pikachat-openclaw = import ./nix/openclaw/home-manager.nix { inherit self; };
+      };
+
       lib = {
         pikaci = {
           mkGuestModule = import ./nix/pikaci/guest-module.nix;

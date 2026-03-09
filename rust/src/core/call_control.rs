@@ -8,7 +8,6 @@ use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome, InboundSignalContext,
     PendingIncomingCall, PendingOutgoingCall, PreparedAcceptedCall,
 };
-use pika_marmot_runtime::runtime::MarmotRuntime;
 
 pub(super) use pika_marmot_runtime::call::{
     CallCryptoDeriveContext, CallSessionParams, CallTrackSpec, ParsedCallSignal,
@@ -140,9 +139,7 @@ impl AppCore {
             .groups
             .get(chat_id)
             .ok_or_else(|| "chat not found".to_string())?;
-        let local_pubkey_hex = self
-            .current_pubkey_hex()
-            .ok_or_else(|| "no local pubkey for call runtime".to_string())?;
+        let local_pubkey_hex = sess.host_context().current_pubkey_hex();
         let peer_pubkey_hex = PublicKey::parse(&active.peer_npub)
             .map_err(|e| format!("Peer pubkey parse failed: {e}"))?
             .to_hex();
@@ -153,7 +150,7 @@ impl AppCore {
             session: session.clone(),
             is_video_call: active.is_video_call,
         };
-        MarmotRuntime::with_client(&sess.mdk, &sess.client).prepare_accept_incoming_call(
+        sess.host_context().prepare_accept_incoming_call(
             &incoming,
             GroupCallContext {
                 mls_group_id: &group.mls_group_id,
@@ -398,9 +395,12 @@ impl AppCore {
         self.emit_call_state_with_previous(previous);
 
         let payload = match self.session.as_ref() {
-            Some(sess) => match MarmotRuntime::with_client(&sess.mdk, &sess.client)
-                .prepare_outgoing_call_invite(chat_id, &peer_pubkey_hex, &call_id, &session)
-            {
+            Some(sess) => match sess.host_context().prepare_outgoing_call_invite(
+                chat_id,
+                &peer_pubkey_hex,
+                &call_id,
+                &session,
+            ) {
                 Ok((_, signal)) => signal.payload_json,
                 Err(err) => {
                     self.toast(format!("Serialize invite failed: {err}"));
@@ -489,7 +489,8 @@ impl AppCore {
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::Declined);
         let payload = match self.session.as_ref() {
-            Some(sess) => match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+            Some(sess) => match sess
+                .host_context()
                 .prepare_reject_call_signal(&active.call_id, "declined")
             {
                 Ok(signal) => signal.payload_json,
@@ -522,7 +523,8 @@ impl AppCore {
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::UserHangup);
         let payload = match self.session.as_ref() {
-            Some(sess) => match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+            Some(sess) => match sess
+                .host_context()
                 .prepare_end_call_signal(&active.call_id, "user_hangup")
             {
                 Ok(signal) => signal.payload_json,
@@ -550,7 +552,7 @@ impl AppCore {
         tracing::info!("call_offer_timeout: ending unanswered call");
         self.end_call_local(CallEndReason::Timeout);
         let payload = self.session.as_ref().and_then(|sess| {
-            MarmotRuntime::with_client(&sess.mdk, &sess.client)
+            sess.host_context()
                 .prepare_end_call_signal(&active.call_id, "timeout")
                 .ok()
                 .map(|signal| signal.payload_json)
@@ -604,7 +606,8 @@ impl AppCore {
     fn send_call_reject(&mut self, chat_id: &str, call_id: &str, reason: &str) {
         let payload = match self.session.as_ref() {
             Some(sess) => {
-                match MarmotRuntime::with_client(&sess.mdk, &sess.client)
+                match sess
+                    .host_context()
                     .prepare_reject_call_signal(call_id, reason)
                 {
                     Ok(signal) => signal.payload_json,
@@ -662,7 +665,7 @@ impl AppCore {
                     })
             });
 
-        match MarmotRuntime::with_client(&sess.mdk, &sess.client).handle_inbound_call_signal(
+        match sess.host_context().handle_inbound_call_signal(
             InboundSignalContext {
                 target_id: chat_id,
                 sender_pubkey_hex: &peer_pubkey_hex,

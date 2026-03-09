@@ -5,6 +5,7 @@ use ::image::GenericImageView as _;
 use base64::Engine;
 use mdk_core::encrypted_media::types::MediaReference;
 use pika_marmot_runtime::media::{upload_encrypted_blob, UploadedBlob, MAX_CHAT_MEDIA_BYTES};
+#[cfg(test)]
 use pika_marmot_runtime::runtime::MarmotRuntime;
 use sha2::{Digest, Sha256};
 
@@ -337,6 +338,7 @@ pub(super) fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn prepare_chat_media_upload(
     mdk: &PikaMdk,
     group_id: &GroupId,
@@ -347,6 +349,7 @@ fn prepare_chat_media_upload(
     MarmotRuntime::new(mdk).prepare_upload(group_id, bytes, Some(mime_type), Some(filename))
 }
 
+#[cfg(test)]
 fn finalize_chat_media_upload(
     mdk: &PikaMdk,
     group_id: &GroupId,
@@ -365,6 +368,7 @@ fn finalize_chat_media_upload(
     )
 }
 
+#[cfg(test)]
 fn decrypt_chat_media_download(
     mdk: &PikaMdk,
     group_id: &GroupId,
@@ -815,12 +819,11 @@ impl AppCore {
         // --- Encrypt (still on main thread — needs MDK) ---
         let (request_id, encrypted_data, expected_hash_hex, upload_mime, blossom_servers) = {
             let sess = self.session.as_mut().unwrap();
-            let prepared = match prepare_chat_media_upload(
-                &sess.mdk,
+            let prepared = match sess.host_context().prepare_upload(
                 &group.mls_group_id,
                 &media_data,
-                &media_mime,
-                &local_filename,
+                Some(&media_mime),
+                Some(&local_filename),
             ) {
                 Ok(prepared) => prepared,
                 Err(e) => {
@@ -1224,12 +1227,11 @@ impl AppCore {
             };
 
             for (i, pp) in preprocessed.iter().enumerate() {
-                let prepared = match prepare_chat_media_upload(
-                    &sess.mdk,
+                let prepared = match sess.host_context().prepare_upload(
                     &group.mls_group_id,
                     &pp.media_data,
-                    &pp.media_mime,
-                    &pp.local_filename,
+                    Some(&pp.media_mime),
+                    Some(&pp.local_filename),
                 ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
@@ -1477,12 +1479,14 @@ impl AppCore {
             return;
         };
 
-        let completed = finalize_chat_media_upload(
-            &sess.mdk,
+        let completed = sess.host_context().finish_upload(
             &group.mls_group_id,
             &pending.upload,
-            uploaded_url,
-            descriptor_hash,
+            UploadedBlob {
+                blossom_server: "app-local".to_string(),
+                uploaded_url,
+                descriptor_sha256_hex: descriptor_hash,
+            },
         );
 
         if let Some(conn) = self.chat_media_db.as_ref() {
@@ -1706,12 +1710,14 @@ impl AppCore {
                 .items
                 .iter()
                 .map(|item| {
-                    let completed = finalize_chat_media_upload(
-                        &sess.mdk,
+                    let completed = sess.host_context().finish_upload(
                         &group.mls_group_id,
                         &item.upload,
-                        item.uploaded_url.as_deref().unwrap().to_string(),
-                        hex::encode(item.upload.encrypted_hash),
+                        UploadedBlob {
+                            blossom_server: "app-local".to_string(),
+                            uploaded_url: item.uploaded_url.as_deref().unwrap().to_string(),
+                            descriptor_sha256_hex: hex::encode(item.upload.encrypted_hash),
+                        },
                     );
                     UploadedMedia {
                         imeta_tag: completed.imeta_tag,
@@ -1842,18 +1848,16 @@ impl AppCore {
                     },
                 );
 
-            let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
-                .prepare_outbound_action_for_group_ids(
-                    sess.pubkey,
-                    group.mls_group_id.clone(),
-                    chat_id.clone(),
-                    OutboundConversationAction::Message {
-                        kind,
-                        content: content.clone(),
-                        tags,
-                        created_at: Timestamp::from(ts as u64),
-                    },
-                ) {
+            let prepared = match sess.host_context().prepare_outbound_action_for_group_ids(
+                group.mls_group_id.clone(),
+                chat_id.clone(),
+                OutboundConversationAction::Message {
+                    kind,
+                    content: content.clone(),
+                    tags,
+                    created_at: Timestamp::from(ts as u64),
+                },
+            ) {
                 Ok(prepared) => prepared,
                 Err(e) => {
                     self.toast(format!("Encrypt failed: {e}"));
@@ -2126,8 +2130,7 @@ impl AppCore {
             return;
         };
 
-        let downloaded = match decrypt_chat_media_download(
-            &sess.mdk,
+        let downloaded = match sess.host_context().decrypt_downloaded_media(
             &pending.group_id,
             &pending.reference,
             &encrypted_data,

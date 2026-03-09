@@ -46,10 +46,16 @@ use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
+use pika_marmot_runtime::call::ParsedCallSignal;
+use pika_marmot_runtime::call_runtime::{
+    GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
+};
 use pika_marmot_runtime::conversation::{
     ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate, RuntimeGroupUpdateKind,
 };
-use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
+use pika_marmot_runtime::membership::{
+    EvolutionPublishStatus, MembershipUpdateResult, PreparedMembershipEvolution,
+};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 use pika_marmot_runtime::message::{
@@ -619,6 +625,189 @@ struct Session {
     groups: HashMap<String, GroupIndexEntry>,
 }
 
+pub(super) struct AppHostContext<'a> {
+    session: &'a Session,
+}
+
+impl Session {
+    pub(super) fn runtime(&self) -> MarmotRuntime<'_> {
+        MarmotRuntime::with_client(&self.mdk, &self.client)
+    }
+
+    pub(super) fn host_context(&self) -> AppHostContext<'_> {
+        AppHostContext { session: self }
+    }
+}
+
+impl<'a> AppHostContext<'a> {
+    fn runtime(&self) -> MarmotRuntime<'a> {
+        self.session.runtime()
+    }
+
+    fn group_entry(&self, chat_id: &str) -> anyhow::Result<&'a GroupIndexEntry> {
+        self.session.groups.get(chat_id).context("chat not found")
+    }
+
+    pub(super) fn current_pubkey_hex(&self) -> String {
+        self.session.pubkey.to_hex()
+    }
+
+    pub(super) fn prepare_outbound_action_for_chat(
+        &self,
+        chat_id: &str,
+        action: OutboundConversationAction,
+    ) -> anyhow::Result<PreparedConversationAction> {
+        let group = self.group_entry(chat_id)?;
+        self.prepare_outbound_action_for_group_ids(
+            group.mls_group_id.clone(),
+            chat_id.to_string(),
+            action,
+        )
+    }
+
+    pub(super) fn prepare_outbound_action_for_group_ids(
+        &self,
+        mls_group_id: GroupId,
+        nostr_group_id_hex: String,
+        action: OutboundConversationAction,
+    ) -> anyhow::Result<PreparedConversationAction> {
+        self.runtime().prepare_outbound_action_for_group_ids(
+            self.session.pubkey,
+            mls_group_id,
+            nostr_group_id_hex,
+            action,
+        )
+    }
+
+    pub(super) fn prepare_membership_evolution_for_chat(
+        &self,
+        chat_id: &str,
+        key_package_events: &[Event],
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        let group = self.group_entry(chat_id)?;
+        self.runtime()
+            .prepare_add_members(&group.mls_group_id, key_package_events)
+    }
+
+    pub(super) fn prepare_evolution(
+        &self,
+        mls_group_id: GroupId,
+        evolution_event: Event,
+        welcome_rumors: Option<Vec<UnsignedEvent>>,
+        added_pubkeys: Vec<PublicKey>,
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        self.runtime().prepare_evolution(
+            mls_group_id,
+            evolution_event,
+            welcome_rumors,
+            added_pubkeys,
+        )
+    }
+
+    pub(super) fn finalize_published_evolution(
+        &self,
+        prepared: PreparedMembershipEvolution,
+    ) -> MembershipUpdateResult {
+        self.runtime().finalize_published_evolution(prepared)
+    }
+
+    pub(super) fn process_event(&self, event: &Event) -> anyhow::Result<Option<ConversationEvent>> {
+        self.runtime().process_event(event)
+    }
+
+    pub(super) fn interpret_processing_result(
+        &self,
+        result: MessageProcessingResult,
+    ) -> Option<ConversationEvent> {
+        self.runtime().interpret_processing_result(result)
+    }
+
+    pub(super) fn prepare_upload(
+        &self,
+        mls_group_id: &GroupId,
+        bytes: &[u8],
+        mime_type: Option<&str>,
+        filename: Option<&str>,
+    ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
+        self.runtime()
+            .prepare_upload(mls_group_id, bytes, mime_type, filename)
+    }
+
+    pub(super) fn finish_upload(
+        &self,
+        mls_group_id: &GroupId,
+        upload: &EncryptedMediaUpload,
+        uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
+    ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
+        self.runtime()
+            .finish_upload(mls_group_id, upload, uploaded_blob)
+    }
+
+    pub(super) fn decrypt_downloaded_media(
+        &self,
+        mls_group_id: &GroupId,
+        reference: &MediaReference,
+        encrypted_data: &[u8],
+        expected_encrypted_hash_hex: Option<&str>,
+    ) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
+        self.runtime().decrypt_downloaded_media(
+            mls_group_id,
+            reference,
+            encrypted_data,
+            expected_encrypted_hash_hex,
+        )
+    }
+
+    pub(super) fn prepare_outgoing_call_invite(
+        &self,
+        target_id: &str,
+        peer_pubkey_hex: &str,
+        call_id: &str,
+        session: &call_control::CallSessionParams,
+    ) -> Result<
+        (
+            pika_marmot_runtime::call_runtime::PendingOutgoingCall,
+            pika_marmot_runtime::call_runtime::PreparedCallSignal,
+        ),
+        String,
+    > {
+        self.runtime()
+            .prepare_outgoing_call_invite(target_id, peer_pubkey_hex, call_id, session)
+    }
+
+    pub(super) fn prepare_accept_incoming_call(
+        &self,
+        incoming: &pika_marmot_runtime::call_runtime::PendingIncomingCall,
+        group: GroupCallContext<'_>,
+    ) -> Result<PreparedAcceptedCall, String> {
+        self.runtime().prepare_accept_incoming_call(incoming, group)
+    }
+
+    pub(super) fn prepare_reject_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+        self.runtime().prepare_reject_call_signal(call_id, reason)
+    }
+
+    pub(super) fn prepare_end_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+        self.runtime().prepare_end_call_signal(call_id, reason)
+    }
+
+    pub(super) fn handle_inbound_call_signal(
+        &self,
+        ctx: InboundSignalContext<'_>,
+        signal: ParsedCallSignal,
+    ) -> InboundCallSignalOutcome {
+        self.runtime().handle_inbound_call_signal(ctx, signal)
+    }
+}
+
 /// Cancellable one-shot timer based on a monotonically increasing token.
 ///
 /// Schedule fires a tokio sleep that sends an `InternalEvent` after the delay.
@@ -1023,23 +1212,20 @@ impl AppCore {
         }
     }
 
+    pub(super) fn host_context(&self) -> anyhow::Result<AppHostContext<'_>> {
+        self.session
+            .as_ref()
+            .map(Session::host_context)
+            .context("not logged in")
+    }
+
     fn prepare_outbound_action_for_chat(
         &self,
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        let sess = self.session.as_ref().context("not logged in")?;
-        let group = sess
-            .groups
-            .get(chat_id)
-            .cloned()
-            .context("chat not found")?;
-        MarmotRuntime::with_client(&sess.mdk, &sess.client).prepare_outbound_action_for_group_ids(
-            sess.pubkey,
-            group.mls_group_id,
-            chat_id.to_string(),
-            action,
-        )
+        self.host_context()?
+            .prepare_outbound_action_for_chat(chat_id, action)
     }
 
     fn prepare_membership_evolution_for_chat(
@@ -1047,14 +1233,8 @@ impl AppCore {
         chat_id: &str,
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        let sess = self.session.as_ref().context("not logged in")?;
-        let group = sess
-            .groups
-            .get(chat_id)
-            .cloned()
-            .context("chat not found")?;
-        MarmotRuntime::with_client(&sess.mdk, &sess.client)
-            .prepare_add_members(&group.mls_group_id, key_package_events)
+        self.host_context()?
+            .prepare_membership_evolution_for_chat(chat_id, key_package_events)
     }
 
     fn prune_local_outbox(&mut self, chat_id: &str) {
@@ -4202,8 +4382,7 @@ impl AppCore {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
-        let finalized = MarmotRuntime::with_client(&sess.mdk, &sess.client)
-            .finalize_published_evolution(prepared);
+        let finalized = sess.host_context().finalize_published_evolution(prepared);
         if let Some(ref merge_error) = finalized.merge_error {
             tracing::error!(error = %merge_error, "merge_pending_commit failed");
         }
@@ -4438,7 +4617,7 @@ impl AppCore {
                 tracing::warn!("group_message but no session");
                 return;
             };
-            match MarmotRuntime::with_client(&sess.mdk, &sess.client).process_event(&event) {
+            match sess.host_context().process_event(&event) {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
@@ -4456,7 +4635,7 @@ impl AppCore {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
-            MarmotRuntime::with_client(&sess.mdk, &sess.client).interpret_processing_result(result)
+            sess.host_context().interpret_processing_result(result)
         };
         self.handle_conversation_event(outcome);
     }
@@ -5855,13 +6034,12 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
-                    .prepare_evolution(
-                        entry.mls_group_id.clone(),
-                        result.evolution_event,
-                        None,
-                        vec![],
-                    ) {
+                let prepared = match sess.host_context().prepare_evolution(
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Remove members failed: {e}"));
@@ -5892,13 +6070,12 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
-                    .prepare_evolution(
-                        entry.mls_group_id.clone(),
-                        result.evolution_event,
-                        None,
-                        vec![],
-                    ) {
+                let prepared = match sess.host_context().prepare_evolution(
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Leave group failed: {e}"));
@@ -5945,13 +6122,12 @@ impl AppCore {
                     }
                 };
 
-                let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client)
-                    .prepare_evolution(
-                        entry.mls_group_id.clone(),
-                        result.evolution_event,
-                        None,
-                        vec![],
-                    ) {
+                let prepared = match sess.host_context().prepare_evolution(
+                    entry.mls_group_id.clone(),
+                    result.evolution_event,
+                    None,
+                    vec![],
+                ) {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Rename failed: {e}"));
@@ -6774,6 +6950,36 @@ mod tests {
                 keys.public_key(),
                 core.session.as_ref().expect("session").pubkey
             );
+        }
+
+        #[test]
+        fn app_host_context_prepares_outbound_action_for_chat() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            core.session.as_mut().expect("session").groups.insert(
+                chat_id.clone(),
+                GroupIndexEntry {
+                    mls_group_id: group_id,
+                    is_group: false,
+                    group_name: Some("Test".to_string()),
+                    members: vec![],
+                    admin_pubkeys: vec![],
+                },
+            );
+
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Typing {
+                        created_at: Timestamp::from(222_u64),
+                        expires_at: Timestamp::from(232_u64),
+                    },
+                )
+                .expect("prepare outbound action");
+
+            assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
+            assert_eq!(prepared.kind, TYPING_INDICATOR_KIND);
         }
 
         #[test]

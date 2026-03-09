@@ -1,6 +1,5 @@
 use base64::Engine;
 use pika_marmot_runtime::media::upload_encrypted_blob;
-use pika_marmot_runtime::runtime::MarmotRuntime;
 
 use super::*;
 
@@ -95,7 +94,7 @@ impl AppCore {
         let my_hex = sess.pubkey.to_hex();
 
         // Encrypt the image using MLS group media encryption.
-        let prepared = match MarmotRuntime::with_client(&sess.mdk, &sess.client).prepare_upload(
+        let prepared = match sess.host_context().prepare_upload(
             &group.mls_group_id,
             &image_bytes,
             Some(&mime_type),

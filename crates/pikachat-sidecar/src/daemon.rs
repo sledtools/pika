@@ -156,6 +156,259 @@ async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
     .await
 }
 
+struct DaemonHostContext<'a> {
+    client: &'a Client,
+    relay_urls: &'a [RelayUrl],
+    mdk: &'a MDK<MdkSqliteStorage>,
+    keys: &'a Keys,
+    pubkey_hex: String,
+}
+
+impl<'a> DaemonHostContext<'a> {
+    fn new(
+        client: &'a Client,
+        relay_urls: &'a [RelayUrl],
+        mdk: &'a MDK<MdkSqliteStorage>,
+        keys: &'a Keys,
+        pubkey_hex: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            relay_urls,
+            mdk,
+            keys,
+            pubkey_hex: pubkey_hex.into(),
+        }
+    }
+
+    fn runtime(&self) -> MarmotRuntime<'a> {
+        MarmotRuntime::with_client(self.mdk, self.client)
+    }
+
+    fn resolve_group(&self, nostr_group_id: &str) -> anyhow::Result<GroupId> {
+        self.runtime()
+            .mls_group_id_for_nostr_group_id(nostr_group_id)
+    }
+
+    fn list_groups(
+        &self,
+    ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeGroupSummary>> {
+        self.runtime().list_groups()
+    }
+
+    fn get_messages(
+        &self,
+        nostr_group_id: &str,
+        pagination: Option<mdk_storage_traits::groups::Pagination>,
+    ) -> anyhow::Result<Vec<mdk_storage_traits::messages::types::Message>> {
+        self.runtime().get_messages(nostr_group_id, pagination)
+    }
+
+    fn parse_message_media_attachments(
+        &self,
+        message: &mdk_storage_traits::messages::types::Message,
+    ) -> Vec<ParsedMediaAttachment> {
+        self.runtime().parse_message_attachments(message)
+    }
+
+    async fn download_and_decrypt_media(
+        &self,
+        mls_group_id: &GroupId,
+        attachment: &ParsedMediaAttachment,
+        state_dir: &Path,
+    ) -> anyhow::Result<String> {
+        let downloaded = self
+            .runtime()
+            .download_media(mls_group_id, &attachment.reference, None)
+            .await?;
+
+        let media_dir = state_dir.join("media-tmp");
+        std::fs::create_dir_all(&media_dir).context("create media-tmp dir")?;
+        let filename = if attachment.attachment.filename.is_empty() {
+            "download.bin"
+        } else {
+            &attachment.attachment.filename
+        };
+        let dest = media_dir.join(format!(
+            "{}-{}",
+            &attachment.attachment.original_hash_hex[..16],
+            filename,
+        ));
+        std::fs::write(&dest, &downloaded.decrypted_data)
+            .with_context(|| format!("write decrypted media to {}", dest.display()))?;
+        Ok(dest.to_string_lossy().into_owned())
+    }
+
+    async fn publish_prepared(
+        &self,
+        prepared: &PreparedConversationAction,
+        label: &str,
+    ) -> anyhow::Result<Event> {
+        let signed = resign_wrapper_without_protected_tags(self.keys, &prepared.wrapper)?;
+        if self.relay_urls.is_empty() {
+            anyhow::bail!("no relays configured");
+        }
+        publish_and_confirm_multi(self.client, self.relay_urls, &signed, label).await?;
+        Ok(signed)
+    }
+
+    async fn sign_and_publish_rumor(
+        &self,
+        mls_group_id: &GroupId,
+        rumor: UnsignedEvent,
+        label: &str,
+    ) -> anyhow::Result<Event> {
+        let msg_event = self
+            .mdk
+            .create_message(mls_group_id, rumor)
+            .context("create_message")?;
+        let signed = resign_wrapper_without_protected_tags(self.keys, &msg_event)?;
+        if self.relay_urls.is_empty() {
+            anyhow::bail!("no relays configured");
+        }
+        publish_and_confirm_multi(self.client, self.relay_urls, &signed, label).await?;
+        Ok(signed)
+    }
+
+    async fn publish_group_event(
+        &self,
+        nostr_group_id: &str,
+        kind: Kind,
+        content: String,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        let mls_group_id = self.resolve_group(nostr_group_id)?;
+        let rumor = EventBuilder::new(kind, content).build(self.keys.public_key());
+        self.sign_and_publish_rumor(&mls_group_id, rumor, label)
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_call_payload(
+        &self,
+        nostr_group_id: &str,
+        payload_json: String,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        self.publish_group_event(nostr_group_id, CALL_SIGNAL_KIND, payload_json, label)
+            .await
+    }
+
+    fn prepare_outbound_action(
+        &self,
+        nostr_group_id: &str,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction, DaemonPrepareError> {
+        let target = self
+            .runtime()
+            .resolve_outbound_target(nostr_group_id)
+            .map_err(DaemonPrepareError::BadGroup)?;
+        self.runtime()
+            .prepare_outbound_action_for_target(self.keys.public_key(), target, action)
+            .map_err(DaemonPrepareError::Prepare)
+    }
+
+    fn derive_relay_auth_token(
+        &self,
+        nostr_group_id: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+        peer_pubkey_hex: &str,
+    ) -> anyhow::Result<String> {
+        let mls_group_id = self.resolve_group(nostr_group_id)?;
+        let derive_ctx = CallCryptoDeriveContext {
+            mdk: self.mdk,
+            mls_group_id: &mls_group_id,
+            group_epoch: 0,
+            call_id,
+            session,
+            local_pubkey_hex: &self.pubkey_hex,
+            peer_pubkey_hex,
+        };
+        derive_shared_relay_auth_token(&derive_ctx).map_err(anyhow::Error::msg)
+    }
+
+    fn prepare_call_invite(
+        &self,
+        nostr_group_id: &str,
+        peer_pubkey_hex: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+    ) -> anyhow::Result<(
+        PendingOutgoingCall,
+        pika_marmot_runtime::call_runtime::PreparedCallSignal,
+    )> {
+        self.runtime()
+            .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn prepare_accept_call(
+        &self,
+        invite: &PendingIncomingCall,
+    ) -> Result<pika_marmot_runtime::call_runtime::PreparedAcceptedCall, String> {
+        let mls_group_id = self
+            .resolve_group(&invite.target_id)
+            .map_err(|e| format!("resolve call group failed: {e:#}"))?;
+        self.runtime().prepare_accept_incoming_call(
+            invite,
+            GroupCallContext {
+                mls_group_id: &mls_group_id,
+                local_pubkey_hex: &self.pubkey_hex,
+            },
+        )
+    }
+
+    fn prepare_reject_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+        self.runtime().prepare_reject_call_signal(call_id, reason)
+    }
+
+    fn prepare_end_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+        self.runtime().prepare_end_call_signal(call_id, reason)
+    }
+
+    fn process_event(&self, event: &Event) -> anyhow::Result<Option<ConversationEvent>> {
+        self.runtime().process_event(event)
+    }
+
+    fn handle_inbound_call_signal(
+        &self,
+        ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,
+        signal: ParsedCallSignal,
+    ) -> InboundCallSignalOutcome {
+        self.runtime().handle_inbound_call_signal(ctx, signal)
+    }
+
+    fn prepare_upload(
+        &self,
+        mls_group_id: &GroupId,
+        bytes: &[u8],
+        mime_type: Option<&str>,
+        filename: Option<&str>,
+    ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
+        self.runtime()
+            .prepare_upload(mls_group_id, bytes, mime_type, filename)
+    }
+
+    fn finish_upload(
+        &self,
+        mls_group_id: &GroupId,
+        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
+    ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
+        self.runtime()
+            .finish_upload(mls_group_id, upload, uploaded_blob)
+    }
+}
+
 fn map_init_group_error(err: &anyhow::Error) -> (&'static str, String) {
     if chain_has_message(err, "init_group_build_welcome")
         || chain_has_message(err, "build welcome giftwrap")
@@ -518,43 +771,6 @@ fn media_attachment_to_out(attachment: RuntimeMediaAttachment) -> MediaAttachmen
     }
 }
 
-fn parse_daemon_message_media_attachments(
-    mdk: &crate::PikaMdk,
-    message: &mdk_storage_traits::messages::types::Message,
-) -> Vec<ParsedMediaAttachment> {
-    MarmotRuntime::new(mdk).parse_message_attachments(message)
-}
-
-/// Download encrypted media from Blossom, decrypt it, and write to a temp file.
-/// Returns the local file path on success.
-async fn download_and_decrypt_media(
-    mdk: &MDK<MdkSqliteStorage>,
-    mls_group_id: &GroupId,
-    attachment: &ParsedMediaAttachment,
-    state_dir: &Path,
-) -> anyhow::Result<String> {
-    let downloaded = MarmotRuntime::new(mdk)
-        .download_media(mls_group_id, &attachment.reference, None)
-        .await?;
-
-    // Write to a temp directory under the state dir
-    let media_dir = state_dir.join("media-tmp");
-    std::fs::create_dir_all(&media_dir).context("create media-tmp dir")?;
-    let filename = if attachment.attachment.filename.is_empty() {
-        "download.bin"
-    } else {
-        &attachment.attachment.filename
-    };
-    let dest = media_dir.join(format!(
-        "{}-{}",
-        &attachment.attachment.original_hash_hex[..16],
-        filename,
-    ));
-    std::fs::write(&dest, &downloaded.decrypted_data)
-        .with_context(|| format!("write decrypted media to {}", dest.display()))?;
-    Ok(dest.to_string_lossy().into_owned())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveCallMode {
     Audio,
@@ -722,11 +938,6 @@ fn out_ok(request_id: Option<String>, result: Option<serde_json::Value>) -> OutM
     OutMsg::Ok { request_id, result }
 }
 
-/// Decode a hex nostr_group_id, validate it, and return the matching MLS group ID.
-fn resolve_group(mdk: &MDK<MdkSqliteStorage>, nostr_group_id: &str) -> anyhow::Result<GroupId> {
-    MarmotRuntime::new(mdk).mls_group_id_for_nostr_group_id(nostr_group_id)
-}
-
 fn resign_wrapper_without_protected_tags(keys: &Keys, wrapper: &Event) -> anyhow::Result<Event> {
     let msg_tags: Tags = wrapper
         .tags
@@ -738,57 +949,6 @@ fn resign_wrapper_without_protected_tags(keys: &Keys, wrapper: &Event) -> anyhow
         .tags(msg_tags)
         .sign_with_keys(keys)
         .context("sign event")
-}
-
-/// Create an MLS message from a rumor, strip protected tags, sign, and publish.
-async fn sign_and_publish(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    mdk: &MDK<MdkSqliteStorage>,
-    keys: &Keys,
-    mls_group_id: &GroupId,
-    rumor: UnsignedEvent,
-    label: &str,
-) -> anyhow::Result<Event> {
-    let msg_event = mdk
-        .create_message(mls_group_id, rumor)
-        .context("create_message")?;
-    let signed = resign_wrapper_without_protected_tags(keys, &msg_event)?;
-    if relay_urls.is_empty() {
-        anyhow::bail!("no relays configured");
-    }
-    publish_and_confirm_multi(client, relay_urls, &signed, label).await?;
-    Ok(signed)
-}
-
-async fn sign_and_publish_prepared(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    keys: &Keys,
-    prepared: &PreparedConversationAction,
-    label: &str,
-) -> anyhow::Result<Event> {
-    let signed = resign_wrapper_without_protected_tags(keys, &prepared.wrapper)?;
-    if relay_urls.is_empty() {
-        anyhow::bail!("no relays configured");
-    }
-    publish_and_confirm_multi(client, relay_urls, &signed, label).await?;
-    Ok(signed)
-}
-
-fn prepare_daemon_outbound_action(
-    mdk: &MDK<MdkSqliteStorage>,
-    sender: PublicKey,
-    nostr_group_id: &str,
-    action: OutboundConversationAction,
-) -> Result<PreparedConversationAction, DaemonPrepareError> {
-    let runtime = MarmotRuntime::new(mdk);
-    let target = runtime
-        .resolve_outbound_target(nostr_group_id)
-        .map_err(DaemonPrepareError::BadGroup)?;
-    runtime
-        .prepare_outbound_action_for_target(sender, target, action)
-        .map_err(DaemonPrepareError::Prepare)
 }
 
 #[derive(Debug)]
@@ -957,43 +1117,6 @@ fn parse_call_signal(content: &str) -> Option<ParsedCallSignal> {
     None
 }
 
-fn derive_relay_auth_token(
-    mdk: &MDK<MdkSqliteStorage>,
-    nostr_group_id: &str,
-    call_id: &str,
-    session: &CallSessionParams,
-    local_pubkey_hex: &str,
-    peer_pubkey_hex: &str,
-) -> anyhow::Result<String> {
-    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
-    let derive_ctx = CallCryptoDeriveContext {
-        mdk,
-        mls_group_id: &mls_group_id,
-        group_epoch: 0,
-        call_id,
-        session,
-        local_pubkey_hex,
-        peer_pubkey_hex,
-    };
-
-    derive_shared_relay_auth_token(&derive_ctx).map_err(anyhow::Error::msg)
-}
-
-fn prepare_call_invite_for_daemon(
-    mdk: &MDK<MdkSqliteStorage>,
-    nostr_group_id: &str,
-    peer_pubkey_hex: &str,
-    call_id: &str,
-    session: &CallSessionParams,
-) -> anyhow::Result<(
-    PendingOutgoingCall,
-    pika_marmot_runtime::call_runtime::PreparedCallSignal,
-)> {
-    MarmotRuntime::new(mdk)
-        .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
-        .map_err(anyhow::Error::msg)
-}
-
 fn active_call_mode(session: &CallSessionParams) -> ActiveCallMode {
     if call_audio_track_spec(session).is_some() {
         ActiveCallMode::Audio
@@ -1010,74 +1133,8 @@ fn call_primary_track_name(session: &CallSessionParams) -> anyhow::Result<&str> 
         .ok_or_else(|| anyhow!("call session must include at least one track"))
 }
 
-#[allow(dead_code)]
-async fn publish_group_message(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    mdk: &MDK<MdkSqliteStorage>,
-    keys: &Keys,
-    nostr_group_id: &str,
-    content: String,
-    label: &str,
-) -> anyhow::Result<()> {
-    publish_group_event(
-        client,
-        relay_urls,
-        mdk,
-        keys,
-        nostr_group_id,
-        Kind::ChatMessage,
-        content,
-        label,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn publish_group_event(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    mdk: &MDK<MdkSqliteStorage>,
-    keys: &Keys,
-    nostr_group_id: &str,
-    kind: Kind,
-    content: String,
-    label: &str,
-) -> anyhow::Result<()> {
-    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
-    let rumor = EventBuilder::new(kind, content).build(keys.public_key());
-    sign_and_publish(client, relay_urls, mdk, keys, &mls_group_id, rumor, label).await?;
-    Ok(())
-}
-
-async fn publish_call_payload(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    mdk: &MDK<MdkSqliteStorage>,
-    keys: &Keys,
-    nostr_group_id: &str,
-    payload_json: String,
-    label: &str,
-) -> anyhow::Result<()> {
-    publish_group_event(
-        client,
-        relay_urls,
-        mdk,
-        keys,
-        nostr_group_id,
-        CALL_SIGNAL_KIND,
-        payload_json,
-        label,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn send_call_invite_with_retry(
-    client: &Client,
-    relay_urls: &[RelayUrl],
-    mdk: &MDK<MdkSqliteStorage>,
-    keys: &Keys,
+    host: &DaemonHostContext<'_>,
     nostr_group_id: &str,
     payload_json: &str,
     call_id: &str,
@@ -1085,16 +1142,9 @@ async fn send_call_invite_with_retry(
 ) -> anyhow::Result<()> {
     let attempts = max_attempts.max(1);
     for attempt in 1..=attempts {
-        match publish_call_payload(
-            client,
-            relay_urls,
-            mdk,
-            keys,
-            nostr_group_id,
-            payload_json.to_string(),
-            "call_invite",
-        )
-        .await
+        match host
+            .publish_call_payload(nostr_group_id, payload_json.to_string(), "call_invite")
+            .await
         {
             Ok(()) => return Ok(()),
             Err(err) => {
@@ -2616,6 +2666,13 @@ pub async fn daemon_main(
                                 .await
                                 {
                                     Ok(accepted) => {
+                                        let host = DaemonHostContext::new(
+                                            &client,
+                                            &relay_urls,
+                                            &mdk,
+                                            &keys,
+                                            &pubkey_hex,
+                                        );
                                         if let Some((sid, nostr_group_id_hex)) = subscribed_group
                                             .lock()
                                             .expect("subscription lock")
@@ -2633,7 +2690,7 @@ pub async fn daemon_main(
                                                 continue;
                                             }
                                             let media: Vec<MediaAttachmentOut> = {
-                                                parse_daemon_message_media_attachments(&mdk, &msg)
+                                                host.parse_message_media_attachments(&msg)
                                                     .into_iter()
                                                     .map(|attachment| media_attachment_to_out(attachment.attachment))
                                                     .collect()
@@ -2674,7 +2731,8 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::ListGroups { request_id } => {
-                        match MarmotRuntime::new(&mdk).list_groups() {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        match host.list_groups() {
                             Ok(groups) => {
                                 let out = groups
                                     .iter()
@@ -2699,9 +2757,8 @@ pub async fn daemon_main(
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
-                        match MarmotRuntime::new(&mdk)
-                            .get_messages(&nostr_group_id, Some(pagination))
-                        {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        match host.get_messages(&nostr_group_id, Some(pagination)) {
                             Ok(msgs) => {
                                 let out: Vec<serde_json::Value> = msgs.iter().map(|m| {
                                     json!({
@@ -2724,9 +2781,8 @@ pub async fn daemon_main(
                         }))));
                     }
                     InCmd::SendMessage { request_id, nostr_group_id, content } => {
-                        let prepared = match prepare_daemon_outbound_action(
-                            &mdk,
-                            keys.public_key(),
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Message {
                                 kind: Kind::ChatMessage,
@@ -2746,7 +2802,7 @@ pub async fn daemon_main(
                             }
                         };
                         let inner_id = prepared.rumor_id.to_hex();
-                        match sign_and_publish_prepared(&client, &relay_urls, &keys, &prepared, "daemon_send").await {
+                        match host.publish_prepared(&prepared, "daemon_send").await {
                             Ok(_) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
@@ -2762,9 +2818,8 @@ pub async fn daemon_main(
                         title,
                         state,
                     } => {
-                        let prepared = match prepare_daemon_outbound_action(
-                            &mdk,
-                            keys.public_key(),
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Hypernote {
                                 content,
@@ -2787,7 +2842,7 @@ pub async fn daemon_main(
                         // that receivers see in message_received.event_id and that
                         // submit_hypernote_action must reference.
                         let inner_id = prepared.rumor_id.to_hex();
-                        match sign_and_publish_prepared(&client, &relay_urls, &keys, &prepared, "daemon_send_hypernote").await {
+                        match host.publish_prepared(&prepared, "daemon_send_hypernote").await {
                             Ok(_) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({"event_id": inner_id}))));
                             }
@@ -2822,9 +2877,8 @@ pub async fn daemon_main(
                                 .ok();
                             continue;
                         }
-                        let prepared = match prepare_daemon_outbound_action(
-                            &mdk,
-                            keys.public_key(),
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Reaction {
                                 target_event_id: target,
@@ -2846,15 +2900,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match sign_and_publish_prepared(
-                            &client,
-                            &relay_urls,
-                            &keys,
-                            &prepared,
-                            "daemon_react",
-                        )
-                        .await
-                        {
+                        match host.publish_prepared(&prepared, "daemon_react").await {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(
                                     request_id,
@@ -2899,9 +2945,8 @@ pub async fn daemon_main(
                             continue;
                         }
                         let payload = hn::build_action_response_payload(action, &form).to_string();
-                        let prepared = match prepare_daemon_outbound_action(
-                            &mdk,
-                            keys.public_key(),
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Message {
                                 kind: Kind::Custom(hn::HYPERNOTE_ACTION_RESPONSE_KIND),
@@ -2924,14 +2969,9 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match sign_and_publish_prepared(
-                            &client,
-                            &relay_urls,
-                            &keys,
-                            &prepared,
-                            "daemon_submit_hypernote_action",
-                        )
-                        .await
+                        match host
+                            .publish_prepared(&prepared, "daemon_submit_hypernote_action")
+                            .await
                         {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(
@@ -2954,7 +2994,8 @@ pub async fn daemon_main(
                         caption,
                         blossom_servers,
                     } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let mls_group_id = match host.resolve_group(&nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
                                 reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
@@ -2981,8 +3022,7 @@ pub async fn daemon_main(
                         }
 
                         let resolved = resolve_upload_metadata(path, mime_type.as_deref(), filename.as_deref());
-                        let runtime = MarmotRuntime::new(&mdk);
-                        let prepared = match runtime.prepare_upload(
+                        let prepared = match host.prepare_upload(
                             &mls_group_id,
                             &bytes,
                             Some(&resolved.mime_type),
@@ -3016,13 +3056,13 @@ pub async fn daemon_main(
                         };
 
                         let result =
-                            runtime.finish_upload(&mls_group_id, &prepared.upload, uploaded.clone());
+                            host.finish_upload(&mls_group_id, &prepared.upload, uploaded.clone());
 
                         // Build imeta tag and message
                         let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
                             .tag(result.imeta_tag.clone())
                             .build(keys.public_key());
-                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media").await {
+                        match host.sign_and_publish_rumor(&mls_group_id, rumor, "daemon_send_media").await {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
@@ -3046,7 +3086,8 @@ pub async fn daemon_main(
                         caption,
                         blossom_servers,
                     } => {
-                        let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let mls_group_id = match host.resolve_group(&nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
                                 reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
@@ -3064,8 +3105,6 @@ pub async fn daemon_main(
                         }
 
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
-                        let runtime = MarmotRuntime::new(&mdk);
-
                         // Process all files: read, encrypt, upload sequentially.
                         #[allow(clippy::type_complexity)]
                         let batch_result: Result<(Vec<Tag>, Vec<String>, Vec<String>), ()> = async {
@@ -3092,7 +3131,7 @@ pub async fn daemon_main(
                                 }
 
                                 let resolved = resolve_upload_metadata(path, None, None);
-                                let prepared = match runtime.prepare_upload(
+                                let prepared = match host.prepare_upload(
                                     &mls_group_id,
                                     &bytes,
                                     Some(&resolved.mime_type),
@@ -3123,7 +3162,7 @@ pub async fn daemon_main(
                                         return Err(());
                                     }
                                 };
-                                let result = runtime.finish_upload(
+                                let result = host.finish_upload(
                                     &mls_group_id,
                                     &prepared.upload,
                                     uploaded.clone(),
@@ -3156,7 +3195,7 @@ pub async fn daemon_main(
                             builder = builder.tag(tag.clone());
                         }
                         let rumor = builder.build(keys.public_key());
-                        match sign_and_publish(&client, &relay_urls, &mdk, &keys, &mls_group_id, rumor, "daemon_send_media_batch").await {
+                        match host.sign_and_publish_rumor(&mls_group_id, rumor, "daemon_send_media_batch").await {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
@@ -3171,9 +3210,8 @@ pub async fn daemon_main(
                     }
                     InCmd::SendTyping { request_id, nostr_group_id } => {
                         let expires_at = Timestamp::from_secs(Timestamp::now().as_secs() + 10);
-                        let prepared = match prepare_daemon_outbound_action(
-                            &mdk,
-                            keys.public_key(),
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Typing {
                                 created_at: Timestamp::now(),
@@ -3225,6 +3263,7 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let peer_pubkey = match PublicKey::parse(peer_pubkey.trim()) {
                             Ok(pk) => pk,
                             Err(e) => {
@@ -3268,14 +3307,14 @@ pub async fn daemon_main(
                             }],
                         };
                         if session.relay_auth.trim().is_empty() {
-                            match derive_relay_auth_token(
-                                &mdk,
-                                &nostr_group_id,
-                                &call_id,
-                                &session,
-                                &pubkey_hex,
-                                &peer_pubkey_hex,
-                            ) {
+                            match host
+                                .derive_relay_auth_token(
+                                    &nostr_group_id,
+                                    &call_id,
+                                    &session,
+                                    &peer_pubkey_hex,
+                                )
+                            {
                                 Ok(token) => {
                                     session.relay_auth = token;
                                 }
@@ -3289,8 +3328,7 @@ pub async fn daemon_main(
                                 }
                             }
                         }
-                        let (pending, prepared_invite) = match prepare_call_invite_for_daemon(
-                            &mdk,
+                        let (pending, prepared_invite) = match host.prepare_call_invite(
                             &nostr_group_id,
                             &peer_pubkey_hex,
                             &call_id,
@@ -3307,10 +3345,7 @@ pub async fn daemon_main(
                             }
                         };
                         match send_call_invite_with_retry(
-                            &client,
-                            &relay_urls,
-                            &mdk,
-                            &keys,
+                            &host,
                             &nostr_group_id,
                             &prepared_invite.payload_json,
                             &call_id,
@@ -3339,59 +3374,38 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
-                        let mls_group_id = match resolve_group(&mdk, &invite.target_id) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(
-                                    request_id,
-                                    "runtime_error",
-                                    format!("resolve call group failed: {e:#}"),
-                                ));
-                                continue;
-                            }
-                        };
-                        let runtime = MarmotRuntime::new(&mdk);
-                        let prepared = match runtime.prepare_accept_incoming_call(
-                            &invite,
-                            GroupCallContext {
-                                mls_group_id: &mls_group_id,
-                                local_pubkey_hex: &pubkey_hex,
-                            },
-                        ) {
+                        let prepared = match host.prepare_accept_call(&invite) {
                             Ok(v) => v,
                             Err(err) => {
                                 if let Ok(signal) =
-                                    runtime.prepare_reject_call_signal(&invite.call_id, "auth_failed")
+                                    host.prepare_reject_call_signal(&invite.call_id, "auth_failed")
                                 {
-                                    let _ = publish_call_payload(
-                                        &client,
-                                        &relay_urls,
-                                        &mdk,
-                                        &keys,
-                                        &invite.target_id,
-                                        signal.payload_json,
-                                        "call_reject_auth_failed",
-                                    )
-                                    .await;
+                                    let _ = host
+                                        .publish_call_payload(
+                                            &invite.target_id,
+                                            signal.payload_json,
+                                            "call_reject_auth_failed",
+                                        )
+                                        .await;
                                 }
                                 let _ = reply_tx.send(out_error(request_id, "auth_failed", err));
                                 continue;
                             }
                         };
 
-                        match publish_call_payload(
-                            &client,
-                            &relay_urls,
-                            &mdk,
-                            &keys,
-                            &invite.target_id,
-                            prepared.signal.payload_json,
-                            "call_accept",
-                        ).await {
+                        match host
+                            .publish_call_payload(
+                                &invite.target_id,
+                                prepared.signal.payload_json,
+                                "call_accept",
+                            )
+                            .await
+                        {
                             Ok(()) => {}
                             Err(e) => {
                                 let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
@@ -3493,13 +3507,12 @@ pub async fn daemon_main(
                         call_id,
                         reason,
                     } => {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
-                        let signal = match MarmotRuntime::new(&mdk)
-                            .prepare_reject_call_signal(&invite.call_id, &reason)
-                        {
+                        let signal = match host.prepare_reject_call_signal(&invite.call_id, &reason) {
                             Ok(signal) => signal,
                             Err(e) => {
                                 let _ = reply_tx.send(out_error(
@@ -3510,15 +3523,10 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match publish_call_payload(
-                            &client,
-                            &relay_urls,
-                            &mdk,
-                            &keys,
-                            &invite.target_id,
-                            signal.payload_json,
-                            "call_reject",
-                        ).await {
+                        match host
+                            .publish_call_payload(&invite.target_id, signal.payload_json, "call_reject")
+                            .await
+                        {
                             Ok(()) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": invite.call_id }))));
                             }
@@ -3532,6 +3540,7 @@ pub async fn daemon_main(
                         call_id,
                         reason,
                     } => {
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let Some(current) = active_call.take() else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
@@ -3542,19 +3551,15 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        if let Ok(signal) =
-                            MarmotRuntime::new(&mdk).prepare_end_call_signal(&call_id, &reason)
+                        if let Ok(signal) = host.prepare_end_call_signal(&call_id, &reason)
                         {
-                            let _ = publish_call_payload(
-                                &client,
-                                &relay_urls,
-                                &mdk,
-                                &keys,
-                                &current.nostr_group_id,
-                                signal.payload_json,
-                                "call_end",
-                            )
-                            .await;
+                            let _ = host
+                                .publish_call_payload(
+                                    &current.nostr_group_id,
+                                    signal.payload_json,
+                                    "call_end",
+                                )
+                                .await;
                         }
                         current.worker.stop().await;
                         let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": call_id }))));
@@ -4041,6 +4046,7 @@ pub async fn daemon_main(
                 }
 
                 if event.kind == Kind::MlsGroupMessage {
+                    let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                     // Only process messages for subscriptions we created.
                     if !group_subs.contains_key(&subscription_id) {
                         continue;
@@ -4049,7 +4055,7 @@ pub async fn daemon_main(
                         continue;
                     }
 
-                    match MarmotRuntime::new(&mdk).process_event(&event) {
+                    match host.process_event(&event) {
                         Ok(Some(ConversationEvent::Application(runtime_msg))) => {
                             let classification = runtime_msg.classification;
                             let nostr_group_id = runtime_msg.nostr_group_id_hex;
@@ -4060,7 +4066,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                             if let Some(signal) = parse_call_signal(&msg.content) {
-                                let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                                let mls_group_id = match host.resolve_group(&nostr_group_id) {
                                     Ok(group_id) => group_id,
                                     Err(err) => {
                                         warn!(
@@ -4076,7 +4082,7 @@ pub async fn daemon_main(
                                     }
                                     _ => None,
                                 };
-                                match MarmotRuntime::new(&mdk).handle_inbound_call_signal(
+                                match host.handle_inbound_call_signal(
                                     pika_marmot_runtime::call_runtime::InboundSignalContext {
                                         target_id: &nostr_group_id,
                                         sender_pubkey_hex: &sender_hex,
@@ -4106,16 +4112,13 @@ pub async fn daemon_main(
                                                 rejected.call_id, rejected.reason_code, err
                                             );
                                         }
-                                        let _ = publish_call_payload(
-                                            &client,
-                                            &relay_urls,
-                                            &mdk,
-                                            &keys,
-                                            &nostr_group_id,
-                                            rejected.signal.payload_json,
-                                            label,
-                                        )
-                                        .await;
+                                        let _ = host
+                                            .publish_call_payload(
+                                                &nostr_group_id,
+                                                rejected.signal.payload_json,
+                                                label,
+                                            )
+                                            .await;
                                     }
                                     InboundCallSignalOutcome::IncomingInvite(invite) => {
                                         pending_call_invites.insert(
@@ -4240,10 +4243,17 @@ pub async fn daemon_main(
                             }
                             let mut media: Vec<MediaAttachmentOut> = Vec::new();
                             {
-                                let attachments = parse_daemon_message_media_attachments(&mdk, &msg);
+                                let attachments = host.parse_message_media_attachments(&msg);
                                 for attachment in attachments {
                                     let mut att = media_attachment_to_out(attachment.attachment.clone());
-                                    match download_and_decrypt_media(&mdk, &msg.mls_group_id, &attachment, state_dir).await {
+                                    match host
+                                        .download_and_decrypt_media(
+                                            &msg.mls_group_id,
+                                            &attachment,
+                                            state_dir,
+                                        )
+                                        .await
+                                    {
                                         Ok(path) => att.local_path = Some(path),
                                         Err(e) => warn!("[pikachat] media download failed url={}: {e:#}", attachment.attachment.url),
                                     }
@@ -4304,6 +4314,15 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    fn test_host<'a>(
+        mdk: &'a crate::PikaMdk,
+        keys: &'a Keys,
+        client: &'a Client,
+        relay_urls: &'a [RelayUrl],
+    ) -> DaemonHostContext<'a> {
+        DaemonHostContext::new(client, relay_urls, mdk, keys, keys.public_key().to_hex())
     }
 
     fn make_test_message(
@@ -4411,7 +4430,11 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
-        let resolved = resolve_group(&inviter_mdk, &hex::encode(created.group.nostr_group_id))
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let resolved = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+            .resolve_group(&hex::encode(created.group.nostr_group_id))
             .expect("resolve group");
         assert_eq!(resolved, created.group.mls_group_id);
     }
@@ -4439,17 +4462,19 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
-        let prepared = prepare_daemon_outbound_action(
-            &inviter_mdk,
-            inviter_keys.public_key(),
-            &hex::encode(created.group.nostr_group_id),
-            OutboundConversationAction::Reaction {
-                target_event_id: EventId::all_zeros(),
-                emoji: "👍".to_string(),
-                created_at: Timestamp::from(123_u64),
-            },
-        )
-        .expect("prepare outbound action");
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let prepared = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+            .prepare_outbound_action(
+                &hex::encode(created.group.nostr_group_id),
+                OutboundConversationAction::Reaction {
+                    target_event_id: EventId::all_zeros(),
+                    emoji: "👍".to_string(),
+                    created_at: Timestamp::from(123_u64),
+                },
+            )
+            .expect("prepare outbound action");
 
         assert_eq!(
             prepared.target.nostr_group_id_hex,
@@ -4799,20 +4824,24 @@ mod tests {
     }
 
     #[test]
-    fn daemon_prepare_call_invite_uses_shared_runtime_service() {
+    fn daemon_prepare_call_invite_uses_shared_runtime_facade() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
         let peer = Keys::generate();
         let session = default_audio_call_session("550e8400-e29b-41d4-a716-446655440010");
 
-        let (pending, prepared) = prepare_call_invite_for_daemon(
-            &mdk,
-            "deadbeef",
-            &peer.public_key().to_hex(),
-            "550e8400-e29b-41d4-a716-446655440010",
-            &session,
-        )
-        .expect("prepare daemon call invite");
+        let (pending, prepared) = test_host(&mdk, &keys, &client, &relay_urls)
+            .prepare_call_invite(
+                "deadbeef",
+                &peer.public_key().to_hex(),
+                "550e8400-e29b-41d4-a716-446655440010",
+                &session,
+            )
+            .expect("prepare daemon call invite");
 
         assert_eq!(pending.target_id, "deadbeef");
         assert_eq!(pending.peer_pubkey_hex, peer.public_key().to_hex());
@@ -5066,7 +5095,11 @@ mod tests {
             Tags::from_list(vec![completed.imeta_tag]),
         );
 
-        let attachments = parse_daemon_message_media_attachments(&inviter_mdk, &message);
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let attachments = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+            .parse_message_media_attachments(&message);
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment.filename, "daemon.txt");

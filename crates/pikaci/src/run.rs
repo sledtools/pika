@@ -2915,17 +2915,36 @@ fn realize_nix_build_output(
     output_name: &str,
     log_paths: &[PathBuf],
 ) -> anyhow::Result<PathBuf> {
+    let disable_builder_substitutes =
+        should_disable_builder_substitutes_for_nix_prepare(output_name);
+    let option_suffix = if disable_builder_substitutes {
+        " --option builders-use-substitutes false"
+    } else {
+        ""
+    };
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
+            "[pikaci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths{option_suffix} {installable}"
         ),
     )?;
-    let output = Command::new("nix")
+    let mut command = Command::new("nix");
+    command
         .arg("build")
         .arg("--accept-flake-config")
         .arg("--no-link")
-        .arg("--print-out-paths")
+        .arg("--print-out-paths");
+    if disable_builder_substitutes {
+        // The local `linux-builder` has shown persistent binary-cache corruption
+        // while substituting cargo source paths. Force source builds for the
+        // staged Linux Rust prepare boundary so the real remote-fulfillment path
+        // can keep moving without broadening the workaround elsewhere.
+        command
+            .arg("--option")
+            .arg("builders-use-substitutes")
+            .arg("false");
+    }
+    let output = command
         .arg(installable)
         .output()
         .with_context(|| format!("run staged prepare `{output_name}`"))?;
@@ -2948,6 +2967,13 @@ fn realize_nix_build_output(
         .find(|line| !line.trim().is_empty())
         .ok_or_else(|| anyhow!("nix build for `{output_name}` did not return an output path"))?;
     Ok(PathBuf::from(path.trim()))
+}
+
+fn should_disable_builder_substitutes_for_nix_prepare(output_name: &str) -> bool {
+    matches!(
+        output_name,
+        "ci.aarch64-linux.workspaceDeps" | "ci.aarch64-linux.workspaceBuild"
+    )
 }
 
 fn upsert_prepared_output_record(
@@ -3532,8 +3558,8 @@ mod tests {
         resolve_run_prepared_output_launcher_transport_remote_helper_program,
         resolve_run_prepared_output_launcher_transport_remote_launcher_program,
         resolve_run_prepared_output_launcher_transport_remote_work_dir,
-        selected_prepared_output_consumer, upsert_prepared_output_record,
-        validate_prepared_output_consumer_for_jobs, write_json,
+        selected_prepared_output_consumer, should_disable_builder_substitutes_for_nix_prepare,
+        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
         write_prepared_output_fulfillment_result, write_run_plan_record,
     };
     use crate::model::{
@@ -4599,6 +4625,26 @@ mod tests {
             .expect("ignore wrapper path in direct mode"),
             None
         );
+    }
+
+    #[test]
+    fn staged_linux_rust_prepares_disable_builder_substitutes() {
+        assert!(should_disable_builder_substitutes_for_nix_prepare(
+            "ci.aarch64-linux.workspaceDeps"
+        ));
+        assert!(should_disable_builder_substitutes_for_nix_prepare(
+            "ci.aarch64-linux.workspaceBuild"
+        ));
+    }
+
+    #[test]
+    fn unrelated_nix_prepares_keep_builder_substitutes_enabled() {
+        assert!(!should_disable_builder_substitutes_for_nix_prepare(
+            "packages.x86_64-linux.pikaci"
+        ));
+        assert!(!should_disable_builder_substitutes_for_nix_prepare(
+            "nixosConfigurations.builder.config.system.build.toplevel"
+        ));
     }
 
     #[test]

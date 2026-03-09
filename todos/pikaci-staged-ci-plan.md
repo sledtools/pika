@@ -531,8 +531,34 @@ Phase 6 first real `pika-build` remote-fulfillment notes:
   - the local host delegated that Linux staged build to the existing `linux-builder`,
   - and that builder hit cargo vendor/source hash mismatches while importing crates such as `tracing-log-0.2.0` and `tracing-subscriber-0.3.22`.
 - What this slice proves: the ssh-style launcher transport is no longer just unit-tested; there is now one repeatable developer command path intended to exercise it against the real `pika-build` host with the existing local execute path unchanged.
+- The immediate blocker is now explicit:
+  - the failure is in staged Linux Rust `workspaceDeps` host prepare on the local `linux-builder`,
+  - the observed symptom is cargo-source hash mismatch while importing paths from `ssh-ng://builder@linux-builder`,
+  - and the ssh remote-fulfillment transport is not the failing edge in the first real experiment.
 - What is still missing: the run is still remote-fulfillment-only, not remote execute orchestration, and the host-side staged Linux Rust prepare must succeed before the ssh fulfillment path can be exercised end-to-end on a real run.
 - Next recommended slice: fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure first, then rerun the new `pika-build` entrypoint before adding any more remote-launcher abstraction.
+
+Phase 6 staged Linux Rust prepare-integrity fix notes:
+
+- This next follow-up slice is now complete and landed.
+- The root cause was narrowed to the local `linux-builder` environment, not the staged flake outputs or the ssh transport:
+  - plain `nix build .#ci.aarch64-linux.workspaceDeps` reproduced the same failure outside the real `pikaci` run,
+  - the mismatch happened while importing cargo-source paths back from `ssh-ng://builder@linux-builder`,
+  - and the builder was simultaneously logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`.
+- The landed fix is intentionally narrow:
+  - staged Linux Rust prepares (`ci.aarch64-linux.workspaceDeps` and `ci.aarch64-linux.workspaceBuild`) now pass `--option builders-use-substitutes false`,
+  - which avoids the corrupted builder substitute cache for this path and forces those prepared outputs to be built from source on the existing builder instead of imported through the broken cache state,
+  - and unrelated `PrepareNode::NixBuild` paths keep their previous behavior.
+- A real rerun of `just pikaci-remote-fulfill-pre-merge-pika-rust` was attempted after the fix:
+  - the host logs now show the narrowed `builders-use-substitutes = false` path for `workspaceDeps`,
+  - the broad cargo-source mismatch churn seen in the first run no longer reproduced,
+  - but `workspaceDeps` still failed while importing one specific remote store path: `cargo-src-linux-raw-sys-0.4.15`.
+- The next blocker is now sharper and appears environmental:
+  - `nix build` of that exact derivation still reproduces a hash mismatch when copying `/nix/store/81553n28hv3nqj9v1226qc16dvlqxh9y-cargo-src-linux-raw-sys-0.4.15` back from `ssh-ng://builder@linux-builder`,
+  - the same builder is still logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`,
+  - and this no longer looks like a staged flake-output or ssh-transport bug.
+- What this slice proves: the current blocker was narrowed inside the real run path without changing the Nix-backed prepare/execute contract or adding more remote-launcher abstraction, but the remaining failure is now a concrete local `linux-builder` store-health issue.
+- Next recommended slice: repair or recreate the local `linux-builder` state (at minimum the corrupt `cargo-src-linux-raw-sys-0.4.15` path, and likely the malformed `/root/.cache/nix/binary-cache-v7.sqlite`) and then rerun the same `pika-build` entrypoint before changing any more `pikaci` architecture.
 
 ## Deferred Until Proven Necessary
 
@@ -572,4 +598,4 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up driven by the first real `pika-build` experiment: keep the new dev entrypoint, preserve the Nix-backed contract, and fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure before doing more remote-fulfillment work.
+- Current recommended slice is one narrow builder-health follow-up driven by the real `pika-build` rerun: keep the new dev entrypoint, preserve the Nix-backed contract, and repair or recreate the local `linux-builder` state so `workspaceDeps` can finish before doing more remote-fulfillment work.

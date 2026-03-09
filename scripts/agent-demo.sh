@@ -41,6 +41,34 @@ export PIKA_AGENT_API_NSEC="$AGENT_API_NSEC"
 export PIKA_AGENT_MICROVM_KIND="$AGENT_KIND"
 export PIKA_AGENT_MICROVM_BACKEND="$MICROVM_BACKEND"
 
+current_json="$("$ROOT/scripts/pikachat-cli.sh" agent me --api-base-url "$AGENT_API_BASE_URL" 2>/dev/null || true)"
+current_vm_id=""
+if [[ -n "$current_json" ]]; then
+  current_vm_id="$(printf '%s\n' "$current_json" | python3 -c 'import json, sys
+try:
+    data = json.load(sys.stdin)
+    value = data.get("agent", {}).get("vm_id") or ""
+    print(value)
+except Exception:
+    pass
+')"
+fi
+
+if [[ -n "$current_vm_id" ]]; then
+  echo "Deleting current VM on pika-build: $current_vm_id"
+  ssh pika-build "curl -fsS -X DELETE http://127.0.0.1:8080/vms/$current_vm_id" >/dev/null
+else
+  echo "No current VM found via pika-server; skipping delete"
+fi
+
+if [[ -n "$current_json" ]]; then
+  echo "Recovering agent via pika-server..."
+  "$ROOT/scripts/pikachat-cli.sh" agent recover --api-base-url "$AGENT_API_BASE_URL"
+else
+  echo "No existing agent row visible; creating a new agent via pika-server..."
+  "$ROOT/scripts/pikachat-cli.sh" agent new --api-base-url "$AGENT_API_BASE_URL"
+fi
+
 rm -rf "$STATE_DIR"
 mkdir -p "$STATE_DIR"
 

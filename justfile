@@ -1008,6 +1008,10 @@ agent-pi-ensure *ARGS="":
 agent-claw-ensure *ARGS="":
     PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
+# Ensure/reuse agent, send one message, then optionally listen for reply.
+agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
+    ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
+
 # Tail local pika-server logs from the pikahut backend state dir.
 agent-microvm-server-logs STATE_DIR=".pikahut":
     cargo run -p pikahut -- logs --state-dir {{ STATE_DIR }} --follow --component server
@@ -1072,7 +1076,6 @@ linux-builder-recreate:
 # Reset the current test account's VM on pika-build, recover/create a Pi ACP guest, then chat.
 agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_KIND=pi PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
-
 # Reset the current test account's VM on pika-build, recover/create an OpenClaw guest, then chat.
 agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-demo.sh "{{ MESSAGE }}"

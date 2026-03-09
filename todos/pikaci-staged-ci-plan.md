@@ -594,6 +594,31 @@ Phase 6 linux-builder health repair notes:
 - What this slice proves: the real `pika-build` remote-fulfillment experiment is still blocked before ssh fulfillment, but the host now has one repeatable repair entrypoint for the non-privileged side of the builder failure and the remaining work is sharply isolated to privileged `linux-builder` health repair.
 - Next recommended slice: do one explicit privileged `linux-builder` reset/recreate step on the development machine, then rerun `nix build .#ci.aarch64-linux.workspaceDeps` and `just pikaci-remote-fulfill-pre-merge-pika-rust` before changing any more remote CI architecture.
 
+Phase 6 linux-builder privileged reset/recreate notes:
+
+- This follow-up slice is now prepared and reviewable, but the actual privileged recreate is still pending local sudo input.
+- The focus stays strictly on the existing local builder lifecycle:
+  - the scope is the stock `org.nixos.linux-builder` launchd service, its builder image, and its runtime directories,
+  - not more `pikaci` transport or scheduler changes.
+- The new reset path is now codified locally:
+  - `just linux-builder-recreate` delegates to `scripts/linux-builder-recreate.sh`,
+  - `scripts/linux-builder-recreate.sh --help` documents the exact service name, plist path, work dir, run dir, and host ssh port,
+  - the script rejects unexpected args, guards the destructive path targets explicitly, and keeps the flow limited to the builder reset/recreate itself.
+- A real recreate attempt was made from this worktree:
+  - `just linux-builder-recreate` ran the new script,
+  - the script reached the expected privilege boundary,
+  - and because this session had no non-interactive sudo credential it stopped with the exact handoff command:
+    - `cd /Users/justin/code/pika/worktrees/pika-ci && sudo ./scripts/linux-builder-recreate.sh`
+- Because the privileged recreate did not actually run yet in this session:
+  - `nix build --no-link -L .#ci.aarch64-linux.workspaceDeps` was not rerun afterward,
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` was not rerun afterward,
+  - and the live local `linux-builder` remains the next operational blocker to clear.
+- The immediate next step is now concrete:
+  - run the exact privileged recreate command above on the development machine,
+  - then rerun `nix build --no-link -L .#ci.aarch64-linux.workspaceDeps`,
+  - then rerun `just pikaci-remote-fulfill-pre-merge-pika-rust`,
+  - and record whether builder corruption cleared or changed before touching more remote CI architecture.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -632,4 +657,4 @@ We have at least one important Linux Rust lane where:
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
-- Current recommended slice is one narrow privileged builder-health follow-up: keep the new `just linux-builder-repair` entrypoint, perform an explicit local `linux-builder` reset/recreate, and rerun `workspaceDeps` plus the real `pika-build` remote-fulfillment path before doing more remote-architecture work.
+- Current recommended slice is one narrow privileged builder-health follow-up: run `cd /Users/justin/code/pika/worktrees/pika-ci && sudo ./scripts/linux-builder-recreate.sh`, then rerun `workspaceDeps` plus the real `pika-build` remote-fulfillment path before doing more remote-architecture work.

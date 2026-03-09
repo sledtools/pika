@@ -184,6 +184,9 @@ Privileged local builder reset/recreate likely needs to touch:
 - $builder_disk
 - $builder_store_img
 - launchd service $service_label
+
+Next step:
+- just linux-builder-recreate
 EOF
 
 exit 1

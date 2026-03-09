@@ -1056,6 +1056,10 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
 linux-builder-repair:
     ./scripts/linux-builder-repair.sh
 
+# Fully recreate the local linux-builder VM/store state via the existing launchd service after `just linux-builder-repair` still points at live builder corruption.
+linux-builder-recreate:
+    ./scripts/linux-builder-recreate.sh
+
 # Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
 agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     ./scripts/agent-demo.sh "{{ MESSAGE }}"

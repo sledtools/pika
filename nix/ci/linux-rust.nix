@@ -13,6 +13,7 @@ let
     strictDeps = true;
 
     nativeBuildInputs = [
+      pkgs.coreutils
       pkgs.pkg-config
     ];
 
@@ -30,9 +31,16 @@ let
     export PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST="$TMPDIR/pika-core-lib-tests.manifest"
     export PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST="$TMPDIR/pika-core-lib-app-flows.manifest"
     export PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST="$TMPDIR/pika-core-messaging-e2e.manifest"
+    cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+    case "$cargoJobs" in
+      ""|0)
+        cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+        ;;
+    esac
+    echo "[pikaci] building pika_core with cargo jobs=$cargoJobs" >&2
     target_root="''${CARGO_TARGET_DIR:-target}"
     cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo test --locked -p pika_core --lib --tests --no-run --message-format json-render-diagnostics >"$cargoBuildLog"
+    cargo test --locked -j "$cargoJobs" -p pika_core --lib --tests --no-run --message-format json-render-diagnostics >"$cargoBuildLog"
     ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" '
       select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
       | [

@@ -3,6 +3,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Legacy helper for the local aarch64-linux linux-builder path. The preferred
+# staged Linux Rust target is now ci.x86_64-linux, but the current vfkit execute
+# guest still hard-codes aarch64-linux and may require this repair flow.
 workspace_target="${LINUX_BUILDER_REPAIR_WORKSPACE_TARGET:-.#ci.aarch64-linux.workspaceDeps}"
 service_label="org.nixos.linux-builder"
 builder_disk="/private/var/lib/linux-builder/nixos.qcow2"

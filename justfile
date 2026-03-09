@@ -64,7 +64,7 @@ info:
     @echo "    just pikaci-remote-fulfill-deploy"
     @echo "  Run staged Rust lane with remote fulfillment on pika-build:"
     @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
-    @echo "  Repair the current local linux-builder staged-Rust cargo-path failure:"
+    @echo "  Repair the legacy local aarch64-linux linux-builder staged-Rust cargo-path failure:"
     @echo "    just linux-builder-repair"
     @echo
     @echo "RMP (new)"
@@ -1052,7 +1052,7 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
     export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
     exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
 
-# Repair the currently-known local linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
+# Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
 linux-builder-repair:
     ./scripts/linux-builder-repair.sh
 

@@ -138,7 +138,7 @@ impl StagedLinuxRustLane {
     pub fn workspace_deps_output_name(self) -> &'static str {
         match self {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                "ci.aarch64-linux.workspaceDeps"
+                "ci.x86_64-linux.workspaceDeps"
             }
         }
     }
@@ -146,8 +146,14 @@ impl StagedLinuxRustLane {
     pub fn workspace_build_output_name(self) -> &'static str {
         match self {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                "ci.aarch64-linux.workspaceBuild"
+                "ci.x86_64-linux.workspaceBuild"
             }
+        }
+    }
+
+    pub fn workspace_output_system(self) -> &'static str {
+        match self {
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => "x86_64-linux",
         }
     }
 

@@ -52,6 +52,7 @@ const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
 const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
+const VFKIT_GUEST_SYSTEM: &str = "aarch64-linux";
 
 struct TartRunProcess {
     child: std::process::Child,
@@ -68,6 +69,7 @@ pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Job
 
 pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     ensure_supported_host()?;
+    ensure_staged_linux_rust_lane_matches_vfkit_guest(job)?;
     ensure_linux_builder()?;
 
     let vm_dir = ctx.job_dir.join("vm");
@@ -479,10 +481,25 @@ fn ensure_linux_builder() -> anyhow::Result<()> {
     }
 
     bail!(
-        "no aarch64-linux builder available for this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
+        "no aarch64-linux builder available for the current vfkit execute guest on this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
         builders.trim(),
         extra_platforms.trim()
     )
+}
+
+fn ensure_staged_linux_rust_lane_matches_vfkit_guest(job: &JobSpec) -> anyhow::Result<()> {
+    if let Some(lane) = job.staged_linux_rust_lane()
+        && lane.workspace_output_system() != VFKIT_GUEST_SYSTEM
+    {
+        bail!(
+            "staged Linux Rust lane `{}` now targets `{}` prepared outputs, but the current vfkit execute guest is `{}`; the mounted staged wrappers run target-native test binaries and cannot execute cross-architecture. Move execute to an x86_64-linux host such as pika-build before enabling this lane end-to-end.",
+            job.id,
+            lane.workspace_output_system(),
+            VFKIT_GUEST_SYSTEM
+        );
+    }
+
+    Ok(())
 }
 
 fn ensure_tart_installed() -> anyhow::Result<()> {
@@ -1002,7 +1019,7 @@ fn render_guest_flake(
 
   outputs = {{ self, nixpkgs, microvm, pika }}: {{
     nixosConfigurations.pikaci-wave1 = nixpkgs.lib.nixosSystem {{
-      system = "aarch64-linux";
+      system = "{VFKIT_GUEST_SYSTEM}";
       modules = [
         microvm.nixosModules.microvm
         (pika.lib.pikaci.mkGuestModule {{
@@ -1017,12 +1034,12 @@ fn render_guest_flake(
           stagedLinuxRustWorkspaceDepsDir = {staged_linux_rust_workspace_deps_dir};
           stagedLinuxRustWorkspaceBuildDir = {staged_linux_rust_workspace_build_dir};
           socketPath = "{socket_path}";
-          rustToolchain = pika.packages.aarch64-linux.rustToolchain;
-          moqRelay = if pika.packages.aarch64-linux ? moqRelay then pika.packages.aarch64-linux.moqRelay else null;
-          androidSdk = if pika.packages.aarch64-linux ? androidSdk then pika.packages.aarch64-linux.androidSdk else null;
-          androidJdk = if pika.packages.aarch64-linux ? androidJdk then pika.packages.aarch64-linux.androidJdk else null;
-          androidGradle = if pika.packages.aarch64-linux ? androidGradle then pika.packages.aarch64-linux.androidGradle else null;
-          androidCargoNdk = if pika.packages.aarch64-linux ? androidCargoNdk then pika.packages.aarch64-linux.androidCargoNdk else null;
+          rustToolchain = pika.packages.{VFKIT_GUEST_SYSTEM}.rustToolchain;
+          moqRelay = if pika.packages.{VFKIT_GUEST_SYSTEM} ? moqRelay then pika.packages.{VFKIT_GUEST_SYSTEM}.moqRelay else null;
+          androidSdk = if pika.packages.{VFKIT_GUEST_SYSTEM} ? androidSdk then pika.packages.{VFKIT_GUEST_SYSTEM}.androidSdk else null;
+          androidJdk = if pika.packages.{VFKIT_GUEST_SYSTEM} ? androidJdk then pika.packages.{VFKIT_GUEST_SYSTEM}.androidJdk else null;
+          androidGradle = if pika.packages.{VFKIT_GUEST_SYSTEM} ? androidGradle then pika.packages.{VFKIT_GUEST_SYSTEM}.androidGradle else null;
+          androidCargoNdk = if pika.packages.{VFKIT_GUEST_SYSTEM} ? androidCargoNdk then pika.packages.{VFKIT_GUEST_SYSTEM}.androidCargoNdk else null;
           guestCommand = "{guest_command}";
           runAsRoot = {run_as_root};
           timeoutSecs = {timeout_secs};
@@ -1122,7 +1139,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        GuestFlakePaths, builders_supports_aarch64_linux, render_guest_flake, vfkit_socket_path,
+        GuestFlakePaths, builders_supports_aarch64_linux,
+        ensure_staged_linux_rust_lane_matches_vfkit_guest, render_guest_flake, vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec};
 
@@ -1173,6 +1191,26 @@ mod tests {
         assert!(!builders_supports_aarch64_linux(
             "ssh://builder x86_64-linux /tmp/key 8 1 benchmark - -"
         ));
+    }
+
+    #[test]
+    fn staged_linux_rust_lane_rejects_x86_64_outputs_in_aarch64_vfkit_guest() {
+        let spec = JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand { command: "ignored" },
+        };
+
+        let error = ensure_staged_linux_rust_lane_matches_vfkit_guest(&spec)
+            .expect_err("staged x86_64 lane should not execute in an aarch64 vfkit guest");
+
+        assert!(
+            error
+                .to_string()
+                .contains("targets `x86_64-linux` prepared outputs")
+        );
     }
 
     #[test]

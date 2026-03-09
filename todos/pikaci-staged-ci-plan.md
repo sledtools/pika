@@ -28,7 +28,7 @@ Establish the exact Linux Rust lane to migrate first, the required success crite
 Deliverables:
 
 - Choose one concrete lane as the first staged-build consumer.
-- Document the proposed `ci.aarch64-linux.*` flake output names.
+- Document the proposed `ci.x86_64-linux.*` flake output names.
 - Document what is explicitly out of scope for the first slice.
 - Document how phase reviews will decide whether to continue, pivot, or stop.
 
@@ -91,9 +91,9 @@ Add checked-in Nix outputs for staged Linux Rust builds in a Fedimint/Flakebox-l
 Scope:
 
 - Add a checked-in Nix module or flake wiring for Linux Rust staged outputs.
-- Expose outputs in a `ci.aarch64-linux` namespace, likely along the lines of:
-  - `.#ci.aarch64-linux.workspaceDeps`
-  - `.#ci.aarch64-linux.workspaceBuild`
+- Expose outputs in a `ci.x86_64-linux` namespace, likely along the lines of:
+  - `.#ci.x86_64-linux.workspaceDeps`
+  - `.#ci.x86_64-linux.workspaceBuild`
 - Do not wire these outputs into `pikaci` yet.
 - Keep the implementation focused on one deterministic Linux Rust lane family.
 - Reuse Crane-style staged build boundaries where practical.
@@ -277,7 +277,7 @@ Rationale from the current migrated lane:
 
 - Current execute startup is conceptually cheap after prepare completes. The staged Rust execute nodes run small wrappers from `workspaceBuild` (`/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests` and `/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests`) that read manifest files and invoke already-built test binaries. The expensive work we can see locally is still VM bring-up, vfkit runner preparation, and guest-side test execution, not Rust recompilation inside execute.
 - The current shared prepared-build model already supports meaningful fanout on the reference lane. One `workspaceDeps` node and one `workspaceBuild` node feed multiple execute nodes, and the plan/log output makes the reuse boundary obvious. That is enough to keep pushing on scheduler and lane-shape work without introducing a second Rust artifact format yet.
-- The current friction is mostly about moving prepared state across machine boundaries, not about local lane fanout. The staged path is snapshot-scoped (`path:<snapshot>#ci.aarch64-linux.workspace*`) and consumed through host-local mount repointing plus read-only virtiofs shares into the guest. That works well on one orchestrating host, but it does not yet define how another host would discover, realize, transfer, or mount the prepared outputs.
+- The current friction is mostly about moving prepared state across machine boundaries, not about local lane fanout. The staged path is snapshot-scoped (`path:<snapshot>#ci.x86_64-linux.workspace*`) and consumed through host-local mount repointing plus read-only virtiofs shares into the guest. That works well on one orchestrating host, but it does not yet define how another host would discover, realize, transfer, or mount the prepared outputs.
 - `nextest` archive would buy us a more explicit Rust-test payload for cross-machine or high-fanout execution: archive export/import, a stable inventory of runnable tests, and a cleaner transport boundary than host-local mount repointing. Those are real advantages, but they are not the current bottleneck in the migrated lane.
 - `nextest` archive would also add immediate complexity that is not justified by today’s lane: new toolchain surface in the flake/guest environment, a second compile/execute contract alongside the current Crane outputs, archive packaging/import logic, and a sharper semantic shift away from the existing `cargo test --no-run` + manifest-wrapper path that already works for the first fanout slice.
 
@@ -619,6 +619,46 @@ Phase 6 linux-builder privileged reset/recreate notes:
   - then rerun `just pikaci-remote-fulfill-pre-merge-pika-rust`,
   - and record whether builder corruption cleared or changed before touching more remote CI architecture.
 
+Phase 6 staged Linux target pivot notes:
+
+- The preferred staged Linux Rust target is now `x86_64-linux`, not `aarch64-linux`.
+- The immediate goal is to align staged Linux Rust prepare outputs with `pika-build`:
+  - preferred outputs are `.#ci.x86_64-linux.workspaceDeps` and `.#ci.x86_64-linux.workspaceBuild`,
+  - `ci.aarch64-linux.*` remains only as a temporary compatibility namespace while the local vfkit execute path still hard-codes an `aarch64-linux` guest.
+- This pivot is operational, not architectural churn:
+  - the intent is to stop forcing staged Linux Rust prepares through the local nix-darwin `linux-builder`,
+  - and instead let the preferred staged outputs target the same `x86_64-linux` world that `pika-build` already runs.
+- The current blocker is now sharper and should not be confused with the old builder-corruption issue:
+  - the staged prepare outputs can pivot to `x86_64-linux`,
+  - but the current local execute path still renders a vfkit guest with `system = "aarch64-linux"` and runs staged wrapper binaries directly inside that guest,
+  - so an end-to-end `pre-merge-pika-rust` run cannot safely consume `x86_64-linux` staged binaries until execute also moves to an `x86_64-linux` host or another explicit cross-arch strategy is added.
+- That blocker is real and should be treated as such:
+  - `pika-build` is a natural candidate for the Linux side because it is already `x86_64-linux`,
+  - but the missing piece is execute-host alignment, not more staged-output naming work and not more ssh transport abstraction.
+- The current optimization pivot is also explicit now:
+  - stop focusing on local `linux-builder` recovery as the active path,
+  - focus on making `.#ci.x86_64-linux.workspaceDeps` execute efficiently on `pika-build`,
+  - and treat low remote CPU before `cargo`/`rustc` starts as a build-path efficiency problem, not a target-selection problem.
+- The first concrete performance finding for that path:
+  - `workspaceDeps` is scheduled onto the remote `x86_64-linux` builder as intended,
+  - but the slow front-loaded work is dominated by Nix realizing and shipping the vendored Cargo dependency closure before the main `cargo test -p pika_core --no-run` compile begins,
+  - so the first pragmatic improvement is to narrow the staged source snapshot to the actual `pika_core` path-crate closure and make Cargo job count explicit once compile starts.
+- The first rerun after that focused improvement clarified the next bottleneck:
+  - trimming the staged source snapshot was safe, but it did not reduce the vendored Cargo closure fan-in,
+  - `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` still began with roughly 703 `cargo-package-*` / vendor derivations,
+  - and short remote observation on `pika-build` still showed no visible `cargo` / `rustc`, only low-utilization Nix/store-prep activity.
+- The next focused vendoring slice did make a real dent:
+  - the staged lane now builds from a synthetic narrow workspace root plus a lane-specific `Cargo.lock`,
+  - and the `workspaceDeps` dry-run fan-in dropped from roughly 703 derivations to roughly 442 derivations.
+- That improvement was real but not sufficient yet:
+  - a real `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` still spent its first observed minute on `cargo-package-*` / vendor realization,
+  - short remote process checks on `pika-build` still showed no visible `cargo` / `rustc`,
+  - and load stayed low enough that the machine still was not doing meaningful compile work yet.
+- Next recommended slice:
+  - inspect the remaining lane lock for obvious non-`pika_core` families and either prune the narrow workspace further or split the staged lane so `workspaceDeps` stops pulling optional/mobile/test-only dependency families up front,
+  - rerun the real `pikaci` path once the prepare side is acceptably fast,
+  - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture.
+
 ## Deferred Until Proven Necessary
 
 - Generic artifact publishing from arbitrary commands into the Nix store.
@@ -656,5 +696,11 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
-- Current recommended slice is one narrow privileged builder-health follow-up: run `cd /Users/justin/code/pika/worktrees/pika-ci && sudo ./scripts/linux-builder-recreate.sh`, then rerun `workspaceDeps` plus the real `pika-build` remote-fulfillment path before doing more remote-architecture work.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms, and is now pivoting target-system alignment away from `aarch64-linux`.
+- Current recommended slice is a narrow `x86_64-linux` efficiency follow-up on `pika-build`:
+  - stop spending more slices on local `linux-builder` recovery,
+  - prefer `ci.x86_64-linux.*` staged outputs for the Linux Rust lane,
+  - use `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` to prove where pre-compile time is going on the remote builder path,
+  - keep the staged source snapshot tight and Cargo job handling explicit,
+  - treat the remaining 442-derivation vendored Cargo closure as the current pre-compile bottleneck that still has to be narrowed further,
+  - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the later end-to-end blocker once prepare performance is acceptable.

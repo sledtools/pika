@@ -19,7 +19,8 @@ use pika_media::tracks::{broadcast_path, TrackAddress};
 use crate::updates::{CoreMsg, InternalEvent};
 use crate::VideoFrameReceiver;
 
-use super::call_control::{CallMediaCryptoContext, CallSessionParams};
+use super::call_control::CallSessionParams;
+use pika_marmot_runtime::call::CallMediaCryptoContext;
 
 const SAMPLE_RATE: u32 = 48_000;
 const FRAME_DURATION_MS: u32 = 20;

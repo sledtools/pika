@@ -1,16 +1,16 @@
 use super::*;
 use crate::state::CallStatus;
 use pika_marmot_runtime::call::{
-    build_call_signal_json,
-    derive_call_media_crypto_context as derive_shared_call_media_crypto_context,
     derive_relay_auth_token as derive_shared_relay_auth_token, parse_call_signal,
-    validate_relay_auth_token as validate_shared_relay_auth_token, OutgoingCallSignal,
     DEFAULT_CALL_BROADCAST_PREFIX,
+};
+use pika_marmot_runtime::call_runtime::{
+    CallWorkflowRuntime, GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome,
+    InboundSignalContext, PendingIncomingCall, PendingOutgoingCall, PreparedAcceptedCall,
 };
 
 pub(super) use pika_marmot_runtime::call::{
-    CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
-    ParsedCallSignal,
+    CallCryptoDeriveContext, CallSessionParams, CallTrackSpec, ParsedCallSignal,
 };
 
 #[cfg(test)]
@@ -125,46 +125,43 @@ impl AppCore {
         self.session.as_ref().map(|s| s.pubkey.to_hex())
     }
 
-    fn derive_mls_media_crypto_context(
+    pub(super) fn prepare_call_accept_for_chat(
         &self,
         chat_id: &str,
-        call_id: &str,
+        active: &crate::state::CallState,
         session: &CallSessionParams,
-        local_pubkey_hex: &str,
-        peer_pubkey_hex: &str,
-    ) -> Result<CallMediaCryptoContext, String> {
+    ) -> Result<PreparedAcceptedCall, String> {
         let sess = self
             .session
             .as_ref()
             .ok_or_else(|| "no active session".to_string())?;
-        let group_entry = sess
+        let group = sess
             .groups
             .get(chat_id)
-            .ok_or_else(|| "chat group not found".to_string())?;
-        let group = sess
-            .mdk
-            .get_group(&group_entry.mls_group_id)
-            .map_err(|e| format!("load mls group failed: {e}"))?
-            .ok_or_else(|| "mls group not found".to_string())?;
-        let video_track = session
-            .tracks
-            .iter()
-            .any(|t| t.name == "video0")
-            .then_some("video0");
-        let derive_ctx = CallCryptoDeriveContext {
-            mdk: &sess.mdk,
-            mls_group_id: &group_entry.mls_group_id,
-            group_epoch: group.epoch,
-            call_id,
-            session,
-            local_pubkey_hex,
-            peer_pubkey_hex,
+            .ok_or_else(|| "chat not found".to_string())?;
+        let local_pubkey_hex = self
+            .current_pubkey_hex()
+            .ok_or_else(|| "no local pubkey for call runtime".to_string())?;
+        let peer_pubkey_hex = PublicKey::parse(&active.peer_npub)
+            .map_err(|e| format!("Peer pubkey parse failed: {e}"))?
+            .to_hex();
+        let incoming = PendingIncomingCall {
+            call_id: active.call_id.clone(),
+            target_id: chat_id.to_string(),
+            from_pubkey_hex: peer_pubkey_hex,
+            session: session.clone(),
+            is_video_call: active.is_video_call,
         };
-
-        derive_shared_call_media_crypto_context(&derive_ctx, "audio0", video_track)
+        CallWorkflowRuntime::new(&sess.mdk).prepare_accept_incoming(
+            &incoming,
+            GroupCallContext {
+                mls_group_id: &group.mls_group_id,
+                local_pubkey_hex: &local_pubkey_hex,
+            },
+        )
     }
 
-    fn derive_relay_auth_token(
+    pub(super) fn derive_relay_auth_token(
         &self,
         chat_id: &str,
         call_id: &str,
@@ -191,35 +188,6 @@ impl AppCore {
         };
 
         derive_shared_relay_auth_token(&derive_ctx)
-    }
-
-    fn validate_relay_auth_token(
-        &self,
-        chat_id: &str,
-        call_id: &str,
-        session: &CallSessionParams,
-        local_pubkey_hex: &str,
-        peer_pubkey_hex: &str,
-    ) -> Result<(), String> {
-        let sess = self
-            .session
-            .as_ref()
-            .ok_or_else(|| "no active session".to_string())?;
-        let group_entry = sess
-            .groups
-            .get(chat_id)
-            .ok_or_else(|| "chat group not found".to_string())?;
-        let derive_ctx = CallCryptoDeriveContext {
-            mdk: &sess.mdk,
-            mls_group_id: &group_entry.mls_group_id,
-            group_epoch: 0,
-            call_id,
-            session,
-            local_pubkey_hex,
-            peer_pubkey_hex,
-        };
-
-        validate_shared_relay_auth_token(&derive_ctx)
     }
 
     fn publish_call_signal(
@@ -428,11 +396,23 @@ impl AppCore {
         self.schedule_call_offer_timeout();
         self.emit_call_state_with_previous(previous);
 
-        let payload = match build_call_signal_json(&call_id, OutgoingCallSignal::Invite(&session)) {
-            Ok(v) => v,
-            Err(e) => {
-                self.toast(format!("Serialize invite failed: {e}"));
-                self.end_call_local(CallEndReason::SerializeFailed);
+        let payload = match self.session.as_ref() {
+            Some(sess) => match CallWorkflowRuntime::new(&sess.mdk).prepare_outgoing_invite(
+                chat_id,
+                &peer_pubkey_hex,
+                &call_id,
+                &session,
+            ) {
+                Ok((_, signal)) => signal.payload_json,
+                Err(err) => {
+                    self.toast(format!("Serialize invite failed: {err}"));
+                    self.end_call_local(CallEndReason::SerializeFailed);
+                    return;
+                }
+            },
+            None => {
+                self.toast("No active session".to_string());
+                self.end_call_local(CallEndReason::RuntimeError);
                 return;
             }
         };
@@ -465,62 +445,27 @@ impl AppCore {
             self.toast("Missing call session parameters");
             return;
         };
-
-        let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
-            self.toast("No local pubkey for call runtime");
-            self.end_call_local(CallEndReason::RuntimeError);
-            return;
-        };
-        let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
-            Ok(pk) => pk.to_hex(),
-            Err(e) => {
-                self.toast(format!("Peer pubkey parse failed: {e}"));
-                self.end_call_local(CallEndReason::RuntimeError);
+        let prepared = match self.prepare_call_accept_for_chat(chat_id, &active, &session) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                self.toast(format!("Call accept setup failed: {err}"));
+                self.send_call_reject(chat_id, &active.call_id, "auth_failed");
+                self.end_call_local(CallEndReason::AuthFailed);
                 return;
             }
         };
-        if let Err(err) = self.validate_relay_auth_token(
+        if let Err(e) = self.publish_call_signal(
             chat_id,
-            &active.call_id,
-            &session,
-            &local_pubkey_hex,
-            &peer_pubkey_hex,
+            prepared.signal.payload_json,
+            "Call accept publish failed",
         ) {
-            self.toast(format!("Call relay auth verification failed: {err}"));
-            self.send_call_reject(chat_id, &active.call_id, "auth_failed");
-            self.end_call_local(CallEndReason::AuthFailed);
-            return;
-        }
-        let payload =
-            match build_call_signal_json(&active.call_id, OutgoingCallSignal::Accept(&session)) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.toast(format!("Serialize accept failed: {e}"));
-                    return;
-                }
-            };
-        if let Err(e) = self.publish_call_signal(chat_id, payload, "Call accept publish failed") {
             self.toast(e);
             return;
         }
-        let media_crypto = match self.derive_mls_media_crypto_context(
-            chat_id,
-            &active.call_id,
-            &session,
-            &local_pubkey_hex,
-            &peer_pubkey_hex,
-        ) {
-            Ok(ctx) => ctx,
-            Err(err) => {
-                self.toast(format!("Call media key setup failed: {err}"));
-                self.end_call_local(CallEndReason::RuntimeError);
-                return;
-            }
-        };
         if let Err(e) = self.call_runtime.on_call_connecting(
             &active.call_id,
-            &session,
-            media_crypto,
+            &prepared.incoming.session,
+            prepared.media_crypto,
             self.config.call_audio_backend.as_deref(),
             self.core_sender.clone(),
         ) {
@@ -528,7 +473,7 @@ impl AppCore {
             self.end_call_local(CallEndReason::RuntimeError);
             return;
         }
-        self.call_session_params = Some(session);
+        self.call_session_params = Some(prepared.incoming.session);
         self.update_call_status(CallStatus::Connecting);
     }
 
@@ -545,15 +490,17 @@ impl AppCore {
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::Declined);
-        let payload = match build_call_signal_json(
-            &active.call_id,
-            OutgoingCallSignal::Reject { reason: "declined" },
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                self.toast(format!("Serialize reject failed: {e}"));
-                return;
-            }
+        let payload = match self.session.as_ref() {
+            Some(sess) => match CallWorkflowRuntime::new(&sess.mdk)
+                .prepare_reject_signal(&active.call_id, "declined")
+            {
+                Ok(signal) => signal.payload_json,
+                Err(err) => {
+                    self.toast(format!("Serialize reject failed: {err}"));
+                    return;
+                }
+            },
+            None => return,
         };
         if let Err(e) = self.publish_call_signal(chat_id, payload, "Call reject publish failed") {
             self.toast(e);
@@ -576,17 +523,17 @@ impl AppCore {
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::UserHangup);
-        let payload = match build_call_signal_json(
-            &active.call_id,
-            OutgoingCallSignal::End {
-                reason: "user_hangup",
+        let payload = match self.session.as_ref() {
+            Some(sess) => match CallWorkflowRuntime::new(&sess.mdk)
+                .prepare_end_signal(&active.call_id, "user_hangup")
+            {
+                Ok(signal) => signal.payload_json,
+                Err(err) => {
+                    self.toast(format!("Serialize end failed: {err}"));
+                    return;
+                }
             },
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                self.toast(format!("Serialize end failed: {e}"));
-                return;
-            }
+            None => return,
         };
         if let Err(e) =
             self.publish_call_signal(&active.chat_id, payload, "Call end publish failed")
@@ -604,11 +551,13 @@ impl AppCore {
         }
         tracing::info!("call_offer_timeout: ending unanswered call");
         self.end_call_local(CallEndReason::Timeout);
-        let payload = build_call_signal_json(
-            &active.call_id,
-            OutgoingCallSignal::End { reason: "timeout" },
-        );
-        if let Ok(payload) = payload {
+        let payload = self.session.as_ref().and_then(|sess| {
+            CallWorkflowRuntime::new(&sess.mdk)
+                .prepare_end_signal(&active.call_id, "timeout")
+                .ok()
+                .map(|signal| signal.payload_json)
+        });
+        if let Some(payload) = payload {
             let _ = self.publish_call_signal(
                 &active.chat_id,
                 payload,
@@ -655,15 +604,16 @@ impl AppCore {
     }
 
     fn send_call_reject(&mut self, chat_id: &str, call_id: &str, reason: &str) {
-        let payload = match build_call_signal_json(call_id, OutgoingCallSignal::Reject { reason }) {
-            Ok(v) => v,
-            Err(_) => return,
+        let payload = match self.session.as_ref() {
+            Some(sess) => {
+                match CallWorkflowRuntime::new(&sess.mdk).prepare_reject_signal(call_id, reason) {
+                    Ok(signal) => signal.payload_json,
+                    Err(_) => return,
+                }
+            }
+            None => return,
         };
         let _ = self.publish_call_signal(chat_id, payload, "Call reject publish failed");
-    }
-
-    fn send_busy_reject(&mut self, chat_id: &str, call_id: &str) {
-        self.send_call_reject(chat_id, call_id, "busy");
     }
 
     pub(super) fn handle_incoming_call_signal(
@@ -684,112 +634,84 @@ impl AppCore {
         let peer_npub = sender_pubkey
             .to_bech32()
             .unwrap_or_else(|_| sender_pubkey.to_hex());
+        let Some(sess) = self.session.as_ref() else {
+            return;
+        };
+        let Some(group) = sess.groups.get(chat_id) else {
+            return;
+        };
+        let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
+            self.toast("No local pubkey for incoming call");
+            return;
+        };
+        let peer_pubkey_hex = sender_pubkey.to_hex();
+        let pending_outgoing = self
+            .state
+            .active_call
+            .as_ref()
+            .filter(|active| matches!(active.status, CallStatus::Offering))
+            .and_then(|active| {
+                self.call_session_params
+                    .as_ref()
+                    .map(|session| PendingOutgoingCall {
+                        call_id: active.call_id.clone(),
+                        target_id: active.chat_id.clone(),
+                        peer_pubkey_hex: peer_pubkey_hex.clone(),
+                        session: session.clone(),
+                        is_video_call: active.is_video_call,
+                    })
+            });
 
-        match signal {
-            ParsedCallSignal::Invite { call_id, session } => {
-                if is_group_chat {
-                    self.send_call_reject(chat_id, &call_id, "unsupported_group");
-                    return;
-                }
-                if self.has_live_call() {
-                    self.send_busy_reject(chat_id, &call_id);
-                    return;
-                }
-                let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
-                    self.toast("No local pubkey for incoming call");
-                    self.send_call_reject(chat_id, &call_id, "auth_failed");
-                    return;
-                };
-                let peer_pubkey_hex = sender_pubkey.to_hex();
-                if let Err(err) = self.validate_relay_auth_token(
-                    chat_id,
-                    &call_id,
-                    &session,
-                    &local_pubkey_hex,
-                    &peer_pubkey_hex,
-                ) {
+        match CallWorkflowRuntime::new(&sess.mdk).handle_inbound_signal(
+            InboundSignalContext {
+                target_id: chat_id,
+                sender_pubkey_hex: &peer_pubkey_hex,
+                group: GroupCallContext {
+                    mls_group_id: &group.mls_group_id,
+                    local_pubkey_hex: &local_pubkey_hex,
+                },
+                policy: InboundCallPolicy {
+                    allow_group_calls: !is_group_chat,
+                    allow_video_calls: true,
+                },
+                has_live_call: self.has_live_call(),
+                pending_outgoing: pending_outgoing.as_ref(),
+            },
+            signal,
+        ) {
+            InboundCallSignalOutcome::Ignore => {}
+            InboundCallSignalOutcome::RejectIncoming(rejected) => {
+                if let Some(err) = rejected.error {
                     self.toast(format!("Rejected call invite: {err}"));
-                    self.send_call_reject(chat_id, &call_id, "auth_failed");
-                    return;
                 }
-                let is_video_call = session.tracks.iter().any(|t| t.name == "video0");
-                self.call_session_params = Some(session);
+                let _ = self.publish_call_signal(
+                    chat_id,
+                    rejected.signal.payload_json,
+                    "Call reject publish failed",
+                );
+            }
+            InboundCallSignalOutcome::IncomingInvite(incoming) => {
+                self.call_session_params = Some(incoming.session.clone());
                 let previous = self.state.active_call.clone();
                 self.cancel_call_duration_ticks();
                 self.state.active_call = Some(crate::state::CallState::new(
-                    call_id,
+                    incoming.call_id.clone(),
                     chat_id.to_string(),
                     peer_npub,
                     CallStatus::Ringing,
                     None,
                     false,
-                    is_video_call,
+                    incoming.is_video_call,
                     None,
                 ));
                 self.schedule_call_offer_timeout();
                 self.emit_call_state_with_previous(previous);
             }
-            ParsedCallSignal::Accept { call_id, session } => {
-                let Some(active) = self.state.active_call.clone() else {
-                    return;
-                };
-                if active.call_id != call_id
-                    || active.chat_id != chat_id
-                    || !matches!(active.status, CallStatus::Offering)
-                {
-                    return;
-                }
-                let Some(local_pubkey_hex) = self.current_pubkey_hex() else {
-                    self.toast("No local pubkey for call runtime");
-                    self.end_call_local(CallEndReason::RuntimeError);
-                    return;
-                };
-                let peer_pubkey_hex = match PublicKey::parse(&active.peer_npub) {
-                    Ok(pk) => pk.to_hex(),
-                    Err(e) => {
-                        self.toast(format!("Peer pubkey parse failed: {e}"));
-                        self.end_call_local(CallEndReason::RuntimeError);
-                        return;
-                    }
-                };
-                if let Some(expected) = self.call_session_params.as_ref() {
-                    if expected.relay_auth != session.relay_auth {
-                        self.toast("Call relay auth mismatch between invite and accept");
-                        self.end_call_local(CallEndReason::AuthFailed);
-                        return;
-                    }
-                }
-                if let Err(err) = self.validate_relay_auth_token(
-                    chat_id,
-                    &call_id,
-                    &session,
-                    &local_pubkey_hex,
-                    &peer_pubkey_hex,
-                ) {
-                    self.toast(format!("Call relay auth verification failed: {err}"));
-                    self.end_call_local(CallEndReason::AuthFailed);
-                    return;
-                }
-                self.call_session_params = Some(session.clone());
-                let params = session;
-                let media_crypto = match self.derive_mls_media_crypto_context(
-                    chat_id,
-                    &call_id,
-                    &params,
-                    &local_pubkey_hex,
-                    &peer_pubkey_hex,
-                ) {
-                    Ok(ctx) => ctx,
-                    Err(err) => {
-                        self.toast(format!("Call media key setup failed: {err}"));
-                        self.end_call_local(CallEndReason::RuntimeError);
-                        return;
-                    }
-                };
+            InboundCallSignalOutcome::OutgoingAccepted(accepted) => {
                 if let Err(e) = self.call_runtime.on_call_connecting(
-                    &call_id,
-                    &params,
-                    media_crypto,
+                    &accepted.pending.call_id,
+                    &accepted.session,
+                    accepted.media_crypto,
                     self.config.call_audio_backend.as_deref(),
                     self.core_sender.clone(),
                 ) {
@@ -797,25 +719,35 @@ impl AppCore {
                     self.end_call_local(CallEndReason::RuntimeError);
                     return;
                 }
+                self.call_session_params = Some(accepted.session);
                 self.update_call_status(CallStatus::Connecting);
             }
-            ParsedCallSignal::Reject { call_id, reason } => {
-                let Some(active) = self.state.active_call.as_ref() else {
-                    return;
-                };
-                if active.call_id != call_id || active.chat_id != chat_id {
-                    return;
-                }
-                self.end_call_local(CallEndReason::Remote(reason));
+            InboundCallSignalOutcome::IncomingAcceptFailed(failure) => {
+                self.toast(match failure.kind {
+                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::RelayAuth => {
+                        format!("Call relay auth verification failed: {}", failure.error)
+                    }
+                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::MediaCrypto => {
+                        format!("Call media key setup failed: {}", failure.error)
+                    }
+                });
+                self.end_call_local(match failure.kind {
+                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::RelayAuth => {
+                        CallEndReason::AuthFailed
+                    }
+                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::MediaCrypto => {
+                        CallEndReason::RuntimeError
+                    }
+                });
             }
-            ParsedCallSignal::End { call_id, reason } => {
+            InboundCallSignalOutcome::RemoteTermination(ended) => {
                 let Some(active) = self.state.active_call.as_ref() else {
                     return;
                 };
-                if active.call_id != call_id || active.chat_id != chat_id {
+                if active.call_id != ended.call_id || active.chat_id != chat_id {
                     return;
                 }
-                self.end_call_local(CallEndReason::Remote(reason));
+                self.end_call_local(CallEndReason::Remote(ended.reason));
             }
         }
     }
@@ -836,6 +768,7 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_marmot_runtime::call::{build_call_signal_json, OutgoingCallSignal};
 
     #[test]
     fn parses_invite_signal() {

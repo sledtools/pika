@@ -12,11 +12,12 @@ use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::call::{
     CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
-    OutgoingCallSignal, ParsedCallSignal, build_call_signal_json,
-    derive_call_media_crypto_context as derive_shared_call_media_crypto_context,
-    derive_relay_auth_token as derive_shared_relay_auth_token,
+    ParsedCallSignal, derive_relay_auth_token as derive_shared_relay_auth_token,
     parse_call_signal as parse_shared_call_signal,
-    validate_relay_auth_token as validate_shared_relay_auth_token,
+};
+use pika_marmot_runtime::call_runtime::{
+    CallWorkflowRuntime, GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome,
+    PendingIncomingCall, PendingOutgoingCall,
 };
 use pika_marmot_runtime::conversation::{ConversationEvent, ConversationRuntime};
 use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes};
@@ -556,21 +557,6 @@ async fn download_and_decrypt_media(
     Ok(dest.to_string_lossy().into_owned())
 }
 
-#[derive(Debug, Clone)]
-struct PendingCallInvite {
-    call_id: String,
-    from_pubkey: String,
-    nostr_group_id: String,
-    session: CallSessionParams,
-}
-
-#[derive(Debug, Clone)]
-struct PendingOutgoingCallInvite {
-    call_id: String,
-    peer_pubkey: String,
-    nostr_group_id: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveCallMode {
     Audio,
@@ -995,52 +981,18 @@ fn derive_relay_auth_token(
     derive_shared_relay_auth_token(&derive_ctx).map_err(anyhow::Error::msg)
 }
 
-fn validate_relay_auth_token(
+fn prepare_call_invite_for_daemon(
     mdk: &MDK<MdkSqliteStorage>,
     nostr_group_id: &str,
+    peer_pubkey_hex: &str,
     call_id: &str,
     session: &CallSessionParams,
-    local_pubkey_hex: &str,
-    peer_pubkey_hex: &str,
-) -> anyhow::Result<()> {
-    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
-    let derive_ctx = CallCryptoDeriveContext {
-        mdk,
-        mls_group_id: &mls_group_id,
-        group_epoch: 0,
-        call_id,
-        session,
-        local_pubkey_hex,
-        peer_pubkey_hex,
-    };
-    validate_shared_relay_auth_token(&derive_ctx).map_err(anyhow::Error::msg)
-}
-
-fn derive_mls_media_crypto_context(
-    mdk: &MDK<MdkSqliteStorage>,
-    nostr_group_id: &str,
-    call_id: &str,
-    session: &CallSessionParams,
-    local_pubkey_hex: &str,
-    peer_pubkey_hex: &str,
-) -> anyhow::Result<CallMediaCryptoContext> {
-    let mls_group_id = resolve_group(mdk, nostr_group_id)?;
-    let group = mdk
-        .get_group(&mls_group_id)
-        .map_err(|e| anyhow!("load mls group failed: {e}"))?
-        .ok_or_else(|| anyhow!("mls group not found"))?;
-    let primary_track = call_primary_track_name(session)?;
-    let derive_ctx = CallCryptoDeriveContext {
-        mdk,
-        mls_group_id: &mls_group_id,
-        group_epoch: group.epoch,
-        call_id,
-        session,
-        local_pubkey_hex,
-        peer_pubkey_hex,
-    };
-
-    derive_shared_call_media_crypto_context(&derive_ctx, primary_track, None)
+) -> anyhow::Result<(
+    PendingOutgoingCall,
+    pika_marmot_runtime::call_runtime::PreparedCallSignal,
+)> {
+    CallWorkflowRuntime::new(mdk)
+        .prepare_outgoing_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
         .map_err(anyhow::Error::msg)
 }
 
@@ -1100,18 +1052,15 @@ async fn publish_group_event(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_call_signal(
+async fn publish_call_payload(
     client: &Client,
     relay_urls: &[RelayUrl],
     mdk: &MDK<MdkSqliteStorage>,
     keys: &Keys,
     nostr_group_id: &str,
-    call_id: &str,
-    signal: OutgoingCallSignal<'_>,
+    payload_json: String,
     label: &str,
 ) -> anyhow::Result<()> {
-    let payload = build_call_signal_json(call_id, signal)?;
     publish_group_event(
         client,
         relay_urls,
@@ -1119,7 +1068,7 @@ async fn send_call_signal(
         keys,
         nostr_group_id,
         CALL_SIGNAL_KIND,
-        payload,
+        payload_json,
         label,
     )
     .await
@@ -1132,20 +1081,19 @@ async fn send_call_invite_with_retry(
     mdk: &MDK<MdkSqliteStorage>,
     keys: &Keys,
     nostr_group_id: &str,
+    payload_json: &str,
     call_id: &str,
-    session: &CallSessionParams,
     max_attempts: usize,
 ) -> anyhow::Result<()> {
     let attempts = max_attempts.max(1);
     for attempt in 1..=attempts {
-        match send_call_signal(
+        match publish_call_payload(
             client,
             relay_urls,
             mdk,
             keys,
             nostr_group_id,
-            call_id,
-            OutgoingCallSignal::Invite(session),
+            payload_json.to_string(),
             "call_invite",
         )
         .await
@@ -2342,9 +2290,8 @@ pub async fn daemon_main(
     let mut group_subs: HashMap<SubscriptionId, String> =
         subscribe_group_messages_individual(&client, &bootstrapped.startup.existing_group_ids)
             .await?;
-    let mut pending_call_invites: HashMap<String, PendingCallInvite> = HashMap::new();
-    let mut pending_outgoing_call_invites: HashMap<String, PendingOutgoingCallInvite> =
-        HashMap::new();
+    let mut pending_call_invites: HashMap<String, PendingIncomingCall> = HashMap::new();
+    let mut pending_outgoing_call_invites: HashMap<String, PendingOutgoingCall> = HashMap::new();
     let mut active_call: Option<ActiveCall> = None;
     let (call_evt_tx, mut call_evt_rx) = mpsc::unbounded_channel::<CallWorkerEvent>();
 
@@ -3344,26 +3291,36 @@ pub async fn daemon_main(
                                 }
                             }
                         }
+                        let (pending, prepared_invite) = match prepare_call_invite_for_daemon(
+                            &mdk,
+                            &nostr_group_id,
+                            &peer_pubkey_hex,
+                            &call_id,
+                            &session,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "runtime_error",
+                                    format!("prepare call invite failed: {e}"),
+                                ));
+                                continue;
+                            }
+                        };
                         match send_call_invite_with_retry(
                             &client,
                             &relay_urls,
                             &mdk,
                             &keys,
                             &nostr_group_id,
+                            &prepared_invite.payload_json,
                             &call_id,
-                            &session,
                             3,
                         )
                         .await {
                             Ok(()) => {
-                                pending_outgoing_call_invites.insert(
-                                    call_id.clone(),
-                                    PendingOutgoingCallInvite {
-                                        call_id: call_id.clone(),
-                                        peer_pubkey: peer_pubkey_hex,
-                                        nostr_group_id: nostr_group_id.clone(),
-                                    },
-                                );
+                                pending_outgoing_call_invites.insert(call_id.clone(), pending);
                                 let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({
@@ -3388,51 +3345,52 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
-                        if let Err(err) = validate_relay_auth_token(
-                            &mdk,
-                            &invite.nostr_group_id,
-                            &invite.call_id,
-                            &invite.session,
-                            &pubkey_hex,
-                            &invite.from_pubkey,
-                        ) {
-                            let _ = send_call_signal(
-                                &client,
-                                &relay_urls,
-                                &mdk,
-                                &keys,
-                                &invite.nostr_group_id,
-                                &invite.call_id,
-                                OutgoingCallSignal::Reject { reason: "auth_failed" },
-                                "call_reject_auth_failed",
-                            )
-                            .await;
-                            let _ = reply_tx.send(out_error(request_id, "auth_failed", format!("{err:#}")));
-                            continue;
-                        }
-                        let media_crypto = match derive_mls_media_crypto_context(
-                            &mdk,
-                            &invite.nostr_group_id,
-                            &invite.call_id,
-                            &invite.session,
-                            &pubkey_hex,
-                            &invite.from_pubkey,
-                        ) {
+                        let mls_group_id = match resolve_group(&mdk, &invite.target_id) {
                             Ok(v) => v,
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "runtime_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "runtime_error",
+                                    format!("resolve call group failed: {e:#}"),
+                                ));
+                                continue;
+                            }
+                        };
+                        let prepared = match CallWorkflowRuntime::new(&mdk).prepare_accept_incoming(
+                            &invite,
+                            GroupCallContext {
+                                mls_group_id: &mls_group_id,
+                                local_pubkey_hex: &pubkey_hex,
+                            },
+                        ) {
+                            Ok(v) => v,
+                            Err(err) => {
+                                if let Ok(signal) = CallWorkflowRuntime::new(&mdk)
+                                    .prepare_reject_signal(&invite.call_id, "auth_failed")
+                                {
+                                    let _ = publish_call_payload(
+                                        &client,
+                                        &relay_urls,
+                                        &mdk,
+                                        &keys,
+                                        &invite.target_id,
+                                        signal.payload_json,
+                                        "call_reject_auth_failed",
+                                    )
+                                    .await;
+                                }
+                                let _ = reply_tx.send(out_error(request_id, "auth_failed", err));
                                 continue;
                             }
                         };
 
-                        match send_call_signal(
+                        match publish_call_payload(
                             &client,
                             &relay_urls,
                             &mdk,
                             &keys,
-                            &invite.nostr_group_id,
-                            &invite.call_id,
-                            OutgoingCallSignal::Accept(&invite.session),
+                            &invite.target_id,
+                            prepared.signal.payload_json,
                             "call_accept",
                         ).await {
                             Ok(()) => {}
@@ -3442,14 +3400,14 @@ pub async fn daemon_main(
                             }
                         }
 
-                        let mode = active_call_mode(&invite.session);
+                        let mode = active_call_mode(&prepared.incoming.session);
                         let worker = match mode {
                             ActiveCallMode::Audio => {
                                 if echo_mode_enabled() {
                                     match start_echo_worker(
-                                        &invite.call_id,
-                                        &invite.session,
-                                        media_crypto.clone(),
+                                        &prepared.incoming.call_id,
+                                        &prepared.incoming.session,
+                                        prepared.media_crypto.clone(),
                                         out_tx.clone(),
                                     ) {
                                         Ok(v) => v,
@@ -3464,9 +3422,9 @@ pub async fn daemon_main(
                                     }
                                 } else {
                                     match start_stt_worker(
-                                        &invite.call_id,
-                                        &invite.session,
-                                        media_crypto.clone(),
+                                        &prepared.incoming.call_id,
+                                        &prepared.incoming.session,
+                                        prepared.media_crypto.clone(),
                                         out_tx.clone(),
                                         call_evt_tx.clone(),
                                     ) {
@@ -3483,9 +3441,9 @@ pub async fn daemon_main(
                                 }
                             }
                             ActiveCallMode::Data => match start_data_worker(
-                                &invite.call_id,
-                                &invite.session,
-                                media_crypto.clone(),
+                                &prepared.incoming.call_id,
+                                &prepared.incoming.session,
+                                prepared.media_crypto.clone(),
                                 call_evt_tx.clone(),
                             ) {
                                 Ok(v) => v,
@@ -3501,11 +3459,11 @@ pub async fn daemon_main(
                         };
 
                         active_call = Some(ActiveCall {
-                            call_id: invite.call_id.clone(),
-                            nostr_group_id: invite.nostr_group_id.clone(),
-                            session: invite.session.clone(),
+                            call_id: prepared.incoming.call_id.clone(),
+                            nostr_group_id: invite.target_id.clone(),
+                            session: prepared.incoming.session.clone(),
                             mode,
-                            media_crypto,
+                            media_crypto: prepared.media_crypto,
                             next_voice_seq: 0,
                             next_data_seq: 0,
                             worker,
@@ -3522,13 +3480,13 @@ pub async fn daemon_main(
                             );
                         }
                         let _ = reply_tx.send(out_ok(request_id, Some(json!({
-                            "call_id": invite.call_id,
-                            "nostr_group_id": invite.nostr_group_id,
+                            "call_id": prepared.incoming.call_id,
+                            "nostr_group_id": invite.target_id,
                         }))));
                         let _ = out_tx.send(OutMsg::CallSessionStarted {
-                            call_id: invite.call_id,
-                            nostr_group_id: invite.nostr_group_id,
-                            from_pubkey: invite.from_pubkey,
+                            call_id: prepared.incoming.call_id,
+                            nostr_group_id: invite.target_id,
+                            from_pubkey: invite.from_pubkey_hex,
                         });
                     }
                     InCmd::RejectCall {
@@ -3540,14 +3498,26 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
                         };
-                        match send_call_signal(
+                        let signal = match CallWorkflowRuntime::new(&mdk)
+                            .prepare_reject_signal(&invite.call_id, &reason)
+                        {
+                            Ok(signal) => signal,
+                            Err(e) => {
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "runtime_error",
+                                    format!("prepare call reject failed: {e}"),
+                                ));
+                                continue;
+                            }
+                        };
+                        match publish_call_payload(
                             &client,
                             &relay_urls,
                             &mdk,
                             &keys,
-                            &invite.nostr_group_id,
-                            &invite.call_id,
-                            OutgoingCallSignal::Reject { reason: &reason },
+                            &invite.target_id,
+                            signal.payload_json,
                             "call_reject",
                         ).await {
                             Ok(()) => {
@@ -3573,17 +3543,20 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        let _ = send_call_signal(
-                            &client,
-                            &relay_urls,
-                            &mdk,
-                            &keys,
-                            &current.nostr_group_id,
-                            &call_id,
-                            OutgoingCallSignal::End { reason: &reason },
-                            "call_end",
-                        )
-                        .await;
+                        if let Ok(signal) =
+                            CallWorkflowRuntime::new(&mdk).prepare_end_signal(&call_id, &reason)
+                        {
+                            let _ = publish_call_payload(
+                                &client,
+                                &relay_urls,
+                                &mdk,
+                                &keys,
+                                &current.nostr_group_id,
+                                signal.payload_json,
+                                "call_end",
+                            )
+                            .await;
+                        }
                         current.worker.stop().await;
                         let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": call_id }))));
                         let _ = out_tx.send(OutMsg::CallSessionEnded {
@@ -4088,121 +4061,104 @@ pub async fn daemon_main(
                                 continue;
                             }
                             if let Some(signal) = parse_call_signal(&msg.content) {
-                                match signal {
-                                    ParsedCallSignal::Invite { call_id, session } => {
-                                        // Reject video calls — pikachat only supports audio.
-                                        if session.tracks.iter().any(|t| t.name == "video0") {
-                                            tracing::info!(call_id = %call_id, "rejecting video call (unsupported)");
-                                            let _ = send_call_signal(
-                                                &client,
-                                                &relay_urls,
-                                                &mdk,
-                                                &keys,
-                                                &nostr_group_id,
-                                                &call_id,
-                                                OutgoingCallSignal::Reject { reason: "unsupported_video" },
-                                                "call_video_reject",
-                                            )
-                                            .await;
-                                            continue;
+                                let mls_group_id = match resolve_group(&mdk, &nostr_group_id) {
+                                    Ok(group_id) => group_id,
+                                    Err(err) => {
+                                        warn!(
+                                            "[pikachat] resolve call group failed group={} err={err:#}",
+                                            nostr_group_id
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let pending_outgoing = match &signal {
+                                    ParsedCallSignal::Accept { call_id, .. } => {
+                                        pending_outgoing_call_invites.get(call_id)
+                                    }
+                                    _ => None,
+                                };
+                                match CallWorkflowRuntime::new(&mdk).handle_inbound_signal(
+                                    pika_marmot_runtime::call_runtime::InboundSignalContext {
+                                        target_id: &nostr_group_id,
+                                        sender_pubkey_hex: &sender_hex,
+                                        group: GroupCallContext {
+                                            mls_group_id: &mls_group_id,
+                                            local_pubkey_hex: &pubkey_hex,
+                                        },
+                                        policy: InboundCallPolicy {
+                                            allow_group_calls: true,
+                                            allow_video_calls: false,
+                                        },
+                                        has_live_call: active_call.is_some(),
+                                        pending_outgoing,
+                                    },
+                                    signal,
+                                ) {
+                                    InboundCallSignalOutcome::Ignore => {}
+                                    InboundCallSignalOutcome::RejectIncoming(rejected) => {
+                                        let label = match rejected.reason_code.as_str() {
+                                            "unsupported_video" => "call_video_reject",
+                                            "busy" => "call_busy_reject",
+                                            _ => "call_reject",
+                                        };
+                                        if let Some(err) = rejected.error {
+                                            warn!(
+                                                "[pikachat] reject incoming call call_id={} reason={} err={}",
+                                                rejected.call_id, rejected.reason_code, err
+                                            );
                                         }
-                                        if active_call.is_some() {
-                                            let _ = send_call_signal(
-                                                &client,
-                                                &relay_urls,
-                                                &mdk,
-                                                &keys,
-                                                &nostr_group_id,
-                                                &call_id,
-                                                OutgoingCallSignal::Reject { reason: "busy" },
-                                                "call_busy_reject",
-                                            )
-                                            .await;
-                                            continue;
-                                        }
+                                        let _ = publish_call_payload(
+                                            &client,
+                                            &relay_urls,
+                                            &mdk,
+                                            &keys,
+                                            &nostr_group_id,
+                                            rejected.signal.payload_json,
+                                            label,
+                                        )
+                                        .await;
+                                    }
+                                    InboundCallSignalOutcome::IncomingInvite(invite) => {
                                         pending_call_invites.insert(
-                                            call_id.clone(),
-                                            PendingCallInvite {
-                                                call_id: call_id.clone(),
-                                                from_pubkey: sender_hex.clone(),
-                                                nostr_group_id: nostr_group_id.clone(),
-                                                session,
-                                            },
+                                            invite.call_id.clone(),
+                                            (*invite).clone(),
                                         );
                                         out_tx
                                             .send(OutMsg::CallInviteReceived {
-                                                call_id,
-                                                from_pubkey: sender_hex,
-                                                nostr_group_id,
+                                                call_id: invite.call_id.clone(),
+                                                from_pubkey: invite.from_pubkey_hex.clone(),
+                                                nostr_group_id: invite.target_id.clone(),
                                             })
                                             .ok();
                                     }
-                                    ParsedCallSignal::Accept { call_id, session } => {
-                                        let Some(pending) = pending_outgoing_call_invites.get(&call_id).cloned() else {
-                                            continue;
-                                        };
+                                    InboundCallSignalOutcome::OutgoingAccepted(accepted) => {
                                         if active_call.is_some() {
                                             continue;
                                         }
-                                        if sender_hex != pending.peer_pubkey {
-                                            warn!(
-                                                "[pikachat] call.accept sender mismatch call_id={} expected={} got={}",
-                                                call_id, pending.peer_pubkey, sender_hex
-                                            );
-                                            continue;
-                                        }
-                                        if let Err(err) = validate_relay_auth_token(
-                                            &mdk,
-                                            &pending.nostr_group_id,
-                                            &pending.call_id,
-                                            &session,
-                                            &pubkey_hex,
-                                            &sender_hex,
-                                        ) {
-                                            warn!("[pikachat] call.accept auth failed call_id={} err={err:#}", call_id);
-                                            continue;
-                                        }
-                                        let media_crypto = match derive_mls_media_crypto_context(
-                                            &mdk,
-                                            &pending.nostr_group_id,
-                                            &pending.call_id,
-                                            &session,
-                                            &pubkey_hex,
-                                            &sender_hex,
-                                        ) {
-                                            Ok(v) => v,
-                                            Err(err) => {
-                                                warn!(
-                                                    "[pikachat] call.accept derive media context failed call_id={} err={err:#}",
-                                                    call_id
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        let mode = active_call_mode(&session);
+                                        let mode = active_call_mode(&accepted.session);
                                         let worker = match mode {
                                             ActiveCallMode::Audio => {
                                                 if echo_mode_enabled() {
                                                     match start_echo_worker(
-                                                        &pending.call_id,
-                                                        &session,
-                                                        media_crypto.clone(),
+                                                        &accepted.pending.call_id,
+                                                        &accepted.session,
+                                                        accepted.media_crypto.clone(),
                                                         out_tx.clone(),
                                                     ) {
                                                         Ok(v) => v,
                                                         Err(err) => {
                                                             warn!(
                                                                 "[pikachat] start echo worker failed call_id={} err={err:#}",
-                                                                call_id
+                                                                accepted.pending.call_id
                                                             );
                                                             continue;
                                                         }
                                                     }
                                                 } else {
                                                     match start_stt_worker(
-                                                        &pending.call_id,
-                                                        &session,
-                                                        media_crypto.clone(),
+                                                        &accepted.pending.call_id,
+                                                        &accepted.session,
+                                                        accepted.media_crypto.clone(),
                                                         out_tx.clone(),
                                                         call_evt_tx.clone(),
                                                     ) {
@@ -4210,7 +4166,7 @@ pub async fn daemon_main(
                                                         Err(err) => {
                                                             warn!(
                                                                 "[pikachat] start stt worker failed call_id={} err={err:#}",
-                                                                call_id
+                                                                accepted.pending.call_id
                                                             );
                                                             continue;
                                                         }
@@ -4218,69 +4174,62 @@ pub async fn daemon_main(
                                                 }
                                             }
                                             ActiveCallMode::Data => match start_data_worker(
-                                                &pending.call_id,
-                                                &session,
-                                                media_crypto.clone(),
+                                                &accepted.pending.call_id,
+                                                &accepted.session,
+                                                accepted.media_crypto.clone(),
                                                 call_evt_tx.clone(),
                                             ) {
                                                 Ok(v) => v,
                                                 Err(err) => {
                                                     warn!(
                                                         "[pikachat] start data worker failed call_id={} err={err:#}",
-                                                        call_id
+                                                        accepted.pending.call_id
                                                     );
                                                     continue;
                                                 }
                                             },
                                         };
                                         active_call = Some(ActiveCall {
-                                            call_id: pending.call_id.clone(),
-                                            nostr_group_id: pending.nostr_group_id.clone(),
-                                            session: session.clone(),
+                                            call_id: accepted.pending.call_id.clone(),
+                                            nostr_group_id: accepted.pending.target_id.clone(),
+                                            session: accepted.session.clone(),
                                             mode,
-                                            media_crypto,
+                                            media_crypto: accepted.media_crypto,
                                             next_voice_seq: 0,
                                             next_data_seq: 0,
                                             worker,
                                         });
-                                        pending_outgoing_call_invites.remove(&call_id);
+                                        pending_outgoing_call_invites.remove(&accepted.pending.call_id);
                                         out_tx
                                             .send(OutMsg::CallSessionStarted {
-                                                call_id: pending.call_id,
+                                                call_id: accepted.pending.call_id,
                                                 from_pubkey: sender_hex,
-                                                nostr_group_id: pending.nostr_group_id,
+                                                nostr_group_id: accepted.pending.target_id,
                                             })
                                             .ok();
                                     }
-                                    ParsedCallSignal::Reject { call_id, reason } => {
-                                        pending_call_invites.remove(&call_id);
-                                        pending_outgoing_call_invites.remove(&call_id);
-                                        if active_call
-                                            .as_ref()
-                                            .map(|c| c.call_id == call_id)
-                                            .unwrap_or(false)
-                                        {
-                                            if let Some(current) = active_call.take() {
-                                                current.worker.stop().await;
-                                            }
-                                            out_tx
-                                                .send(OutMsg::CallSessionEnded { call_id, reason })
-                                                .ok();
-                                        }
+                                    InboundCallSignalOutcome::IncomingAcceptFailed(failure) => {
+                                        warn!(
+                                            "[pikachat] call.accept failed call_id={} kind={:?} err={}",
+                                            failure.call_id, failure.kind, failure.error
+                                        );
                                     }
-                                    ParsedCallSignal::End { call_id, reason } => {
-                                        pending_call_invites.remove(&call_id);
-                                        pending_outgoing_call_invites.remove(&call_id);
+                                    InboundCallSignalOutcome::RemoteTermination(ended) => {
+                                        pending_call_invites.remove(&ended.call_id);
+                                        pending_outgoing_call_invites.remove(&ended.call_id);
                                         if active_call
                                             .as_ref()
-                                            .map(|c| c.call_id == call_id)
+                                            .map(|c| c.call_id == ended.call_id)
                                             .unwrap_or(false)
                                         {
                                             if let Some(current) = active_call.take() {
                                                 current.worker.stop().await;
                                             }
                                             out_tx
-                                                .send(OutMsg::CallSessionEnded { call_id, reason })
+                                                .send(OutMsg::CallSessionEnded {
+                                                    call_id: ended.call_id,
+                                                    reason: ended.reason,
+                                                })
                                                 .ok();
                                         }
                                     }
@@ -4848,6 +4797,27 @@ mod tests {
             }
             other => panic!("expected accept signal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn daemon_prepare_call_invite_uses_shared_runtime_service() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let peer = Keys::generate();
+        let session = default_audio_call_session("550e8400-e29b-41d4-a716-446655440010");
+
+        let (pending, prepared) = prepare_call_invite_for_daemon(
+            &mdk,
+            "deadbeef",
+            &peer.public_key().to_hex(),
+            "550e8400-e29b-41d4-a716-446655440010",
+            &session,
+        )
+        .expect("prepare daemon call invite");
+
+        assert_eq!(pending.target_id, "deadbeef");
+        assert_eq!(pending.peer_pubkey_hex, peer.public_key().to_hex());
+        assert!(prepared.payload_json.contains("call.invite"));
     }
 
     #[test]

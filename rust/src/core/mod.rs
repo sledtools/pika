@@ -8283,9 +8283,11 @@ mod tests {
     }
 
     mod welcome_lifecycle_characterization {
+        use super::super::{GroupIndexEntry, GroupMember};
         use super::*;
         use crate::updates::InternalEvent;
         use mdk_core::prelude::NostrGroupConfigData;
+        use nostr_sdk::nips::nip19::ToBech32;
         use nostr_sdk::prelude::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
         use std::sync::Arc;
 
@@ -8419,6 +8421,81 @@ mod tests {
                     .is_empty(),
                 "re-delivered welcomes should stay skipped once the group is active"
             );
+        }
+
+        #[test]
+        fn app_prepare_call_accept_uses_shared_runtime_service() {
+            let (mut core, _tmp, keys) = make_logged_in_core();
+            let peer = Keys::generate();
+            let pubkey = keys.public_key();
+            let peer_pubkey = peer.public_key();
+            let sess = core.session.as_mut().expect("session");
+            let config = NostrGroupConfigData::new(
+                "App call test".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                vec![pubkey],
+            );
+            let created = sess
+                .mdk
+                .create_group(&pubkey, vec![], config)
+                .expect("create group");
+            sess.mdk
+                .merge_pending_commit(&created.group.mls_group_id)
+                .expect("merge pending commit");
+            let chat_id = hex::encode(created.group.nostr_group_id);
+            sess.groups.insert(
+                chat_id.clone(),
+                GroupIndexEntry {
+                    mls_group_id: created.group.mls_group_id.clone(),
+                    is_group: false,
+                    group_name: Some("App call test".to_string()),
+                    members: vec![GroupMember {
+                        pubkey: peer_pubkey,
+                        name: None,
+                        picture_url: None,
+                    }],
+                    admin_pubkeys: vec![],
+                },
+            );
+
+            let call_id = "550e8400-e29b-41d4-a716-446655440042";
+            let mut session = crate::core::call_control::CallSessionParams {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                broadcast_base: format!("pika/calls/{call_id}"),
+                relay_auth: String::new(),
+                tracks: vec![crate::core::call_control::CallTrackSpec::audio0_opus_default()],
+            };
+            session.relay_auth = core
+                .derive_relay_auth_token(
+                    &chat_id,
+                    call_id,
+                    &session,
+                    &pubkey.to_hex(),
+                    &peer_pubkey.to_hex(),
+                )
+                .expect("derive relay auth");
+
+            let active = crate::state::CallState::new(
+                call_id.to_string(),
+                chat_id.clone(),
+                peer_pubkey.to_bech32().expect("peer npub"),
+                crate::state::CallStatus::Ringing,
+                None,
+                false,
+                false,
+                None,
+            );
+            let prepared = core
+                .prepare_call_accept_for_chat(&chat_id, &active, &session)
+                .expect("prepare call accept");
+
+            assert_eq!(prepared.incoming.call_id, call_id);
+            assert_eq!(prepared.incoming.target_id, chat_id);
+            assert!(prepared.signal.payload_json.contains("call.accept"));
         }
     }
 

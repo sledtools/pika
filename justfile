@@ -64,6 +64,8 @@ info:
     @echo "    just pikaci-remote-fulfill-deploy"
     @echo "  Run staged Rust lane with remote fulfillment on pika-build:"
     @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
+    @echo "  Prewarm the cold workspaceDeps closure onto pika-build before the real build:"
+    @echo "    just pikaci-workspace-deps-prewarm"
     @echo "  Repair the legacy local aarch64-linux linux-builder staged-Rust cargo-path failure:"
     @echo "    just linux-builder-repair"
     @echo
@@ -1051,6 +1053,10 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
     export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$PWD/target/debug/pikaci-fulfill-prepared-output"
     export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
     exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
+
+# Prewarm the exact `ci.x86_64-linux.workspaceDeps` pre-compile closure onto pika-build.
+pikaci-workspace-deps-prewarm:
+    ./scripts/pika-build-prewarm-workspace-deps.sh
 
 # Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
 linux-builder-repair:

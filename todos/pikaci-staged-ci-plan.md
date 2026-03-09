@@ -654,8 +654,25 @@ Phase 6 staged Linux target pivot notes:
   - a real `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` still spent its first observed minute on `cargo-package-*` / vendor realization,
   - short remote process checks on `pika-build` still showed no visible `cargo` / `rustc`,
   - and load stayed low enough that the machine still was not doing meaningful compile work yet.
+- The current cold-start slice should focus on prewarming and feed rate, not on more architecture churn:
+  - prewarm the exact `workspaceDeps` pre-compile closure onto `pika-build` before the real build,
+  - and prove any higher x86_64 builder job count with an explicit override before asking for an `/etc/nix/machines` edit.
+- The current builder-feed mismatch is concrete:
+  - `/etc/nix/machines` still advertises the x86_64 remote builder with only `4` jobs,
+  - while `pika-build` itself reports `32` CPUs,
+  - so the expected proof path is to use a temporary `NIX_BUILDERS=... 16 ...` or similar override during the staged build and document the recommended steady-state setting.
+- The first prewarm/feed slice produced a narrower operational result:
+  - a checked-in prewarm entrypoint now realizes the direct `workspaceDeps` input closure and copies it to `ssh://pika-build` with `nix copy --substitute-on-destination`,
+  - and a proof rerun used an explicit `NIX_BUILDERS=... 12 ...` override instead of changing `/etc/nix/machines` in-repo.
+- That prewarm/feed proof moved the bottleneck, but did not finish the job:
+  - the post-warm real build dropped from roughly 442 remaining derivations to roughly 44 remaining derivations before the main staged derivation,
+  - so the cold pre-compile tail got materially smaller,
+  - but short remote observation still did not show visible `cargo` / `rustc`,
+  - and `pika-build` CPU utilization still did not become materially high during the observed window.
 - Next recommended slice:
-  - inspect the remaining lane lock for obvious non-`pika_core` families and either prune the narrow workspace further or split the staged lane so `workspaceDeps` stops pulling optional/mobile/test-only dependency families up front,
+  - make the prewarm path more complete or more destination-driven so the remaining 44-derivation tail also clears before the real build,
+  - decide whether the x86_64 builder job-count increase should stay as an explicit wrapper override or move into the local machine configuration,
+  - then rerun and re-measure time-to-first-compile before returning to more dependency pruning,
   - rerun the real `pikaci` path once the prepare side is acceptably fast,
   - and then decide the smallest way to move execute for this lane onto `x86_64-linux` (most likely `pika-build`) without broadening the architecture.
 
@@ -702,5 +719,7 @@ We have at least one important Linux Rust lane where:
   - prefer `ci.x86_64-linux.*` staged outputs for the Linux Rust lane,
   - use `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` to prove where pre-compile time is going on the remote builder path,
   - keep the staged source snapshot tight and Cargo job handling explicit,
-  - treat the remaining 442-derivation vendored Cargo closure as the current pre-compile bottleneck that still has to be narrowed further,
+  - prewarm the exact pre-compile closure on `pika-build` and raise the effective x86_64 builder feed rate for proof,
+  - treat the remaining 442-derivation vendored Cargo closure as the current cold-start bottleneck until the prewarm/feed experiment says otherwise,
+  - note that the first warmup proof cut the remaining real-build tail to about 44 derivations without yet surfacing visible remote compile,
   - and keep the remaining local `aarch64-linux` vfkit execute guest noted as the later end-to-end blocker once prepare performance is acceptable.

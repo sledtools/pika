@@ -314,6 +314,8 @@ Likely work:
 Current status:
 - first session-facing slice landed: shared subscription-target planning now derives joined-group IDs plus group relay requirements from runtime/MDK state
 - app recompute and daemon startup/init-group paths both consume that shared planner while keeping subscribe/unsubscribe operations and loop ownership local
+- second session-facing slice landed: shared runtime relay-role planning now separates long-lived session relays, active group relays, and temporary key-package relays
+- app startup/recompute plus key-package lookup/publish now consume that separation while keeping actual client ownership, connect/subscribe execution, and session lifecycle local
 
 Important caution:
 this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction

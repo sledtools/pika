@@ -222,6 +222,15 @@ pub struct RuntimeGroupSubscriptionPlan {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeRelayRolePlan {
+    pub long_lived_session_relays: Vec<RelayUrl>,
+    pub active_group_relays: Vec<RelayUrl>,
+    pub temporary_key_package_relays: Vec<RelayUrl>,
+    pub session_connect_relays: Vec<RelayUrl>,
+    pub key_package_operation_relays: Vec<RelayUrl>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeStartupState {
     pub group_subscriptions: RuntimeGroupSubscriptionState,
     pub seen_welcomes: HashSet<EventId>,
@@ -705,6 +714,17 @@ pub async fn connect_runtime_relays(
     }
 }
 
+pub async fn temporary_client_from_session_signer(
+    session_client: &Client,
+    purpose: &str,
+) -> Result<Client> {
+    let signer = session_client
+        .signer()
+        .await
+        .with_context(|| format!("{purpose} signer unavailable"))?;
+    Ok(Client::new(signer))
+}
+
 pub async fn subscribe_welcome_inbox(
     client: &Client,
     pubkey: PublicKey,
@@ -807,6 +827,37 @@ where
             .collect(),
         current,
     })
+}
+
+pub fn plan_runtime_relay_roles<I, J, K>(
+    long_lived_session_relays: I,
+    active_group_relays: J,
+    temporary_key_package_relays: K,
+) -> RuntimeRelayRolePlan
+where
+    I: IntoIterator<Item = RelayUrl>,
+    J: IntoIterator<Item = RelayUrl>,
+    K: IntoIterator<Item = RelayUrl>,
+{
+    let long_lived_session_relays: BTreeSet<RelayUrl> =
+        long_lived_session_relays.into_iter().collect();
+    let active_group_relays: BTreeSet<RelayUrl> = active_group_relays.into_iter().collect();
+    let temporary_key_package_relays: BTreeSet<RelayUrl> =
+        temporary_key_package_relays.into_iter().collect();
+
+    let mut session_connect_relays = long_lived_session_relays.clone();
+    session_connect_relays.extend(active_group_relays.iter().cloned());
+
+    let mut key_package_operation_relays = long_lived_session_relays.clone();
+    key_package_operation_relays.extend(temporary_key_package_relays.iter().cloned());
+
+    RuntimeRelayRolePlan {
+        long_lived_session_relays: long_lived_session_relays.into_iter().collect(),
+        active_group_relays: active_group_relays.into_iter().collect(),
+        temporary_key_package_relays: temporary_key_package_relays.into_iter().collect(),
+        session_connect_relays: session_connect_relays.into_iter().collect(),
+        key_package_operation_relays: key_package_operation_relays.into_iter().collect(),
+    }
 }
 
 pub fn bootstrap_runtime_session<F>(
@@ -1208,6 +1259,62 @@ mod tests {
         assert_eq!(plan.current.relay_urls, vec![relay_url]);
         assert_eq!(plan.added_group_ids, vec![expected_group_id]);
         assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn plan_runtime_relay_roles_separates_session_group_and_temporary_relays() {
+        let plan = plan_runtime_relay_roles(
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ],
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ],
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ],
+        );
+
+        assert_eq!(
+            plan.long_lived_session_relays,
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.active_group_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.temporary_key_package_relays,
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(
+            plan.key_package_operation_relays,
+            vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://message-2.example").expect("message relay"),
+            ]
+        );
     }
 
     #[test]

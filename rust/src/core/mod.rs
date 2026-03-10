@@ -70,7 +70,8 @@ pub(crate) use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+    temporary_client_from_session_signer, RuntimeApplicationMessageInterpretation,
+    RuntimeConversationEventInterpretation, RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
@@ -149,14 +150,37 @@ struct FetchedKeyPackages {
 }
 
 async fn fetch_key_packages_for_peers(
-    client: &Client,
+    session_client: &Client,
     peer_pubkeys: &[PublicKey],
-    fallback_kp_relays: &[RelayUrl],
-    fallback_popular_relays: &[RelayUrl],
+    relay_roles: &RuntimeRelayRolePlan,
 ) -> FetchedKeyPackages {
     let mut key_package_events: Vec<Event> = Vec::new();
     let mut failed: Vec<(PublicKey, String)> = Vec::new();
     let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+    let lookup_client =
+        match temporary_client_from_session_signer(session_client, "key package lookup").await {
+            Ok(client) => client,
+            Err(err) => {
+                return FetchedKeyPackages {
+                    key_package_events,
+                    failed_peers: peer_pubkeys
+                        .iter()
+                        .map(|pk| (*pk, format!("Key package lookup client failed: {err:#}")))
+                        .collect(),
+                    candidate_kp_relays: all_candidate_relays,
+                };
+            }
+        };
+
+    for relay in relay_roles.key_package_operation_relays.iter().cloned() {
+        let _ = lookup_client.add_relay(relay).await;
+    }
+    if !relay_roles.key_package_operation_relays.is_empty() {
+        lookup_client.connect().await;
+        lookup_client
+            .wait_for_connection(Duration::from_secs(4))
+            .await;
+    }
 
     for pk in peer_pubkeys {
         let kp_relay_filter = Filter::new()
@@ -164,7 +188,7 @@ async fn fetch_key_packages_for_peers(
             .kind(Kind::MlsKeyPackageRelays)
             .limit(5);
         let mut candidate_relays: Vec<RelayUrl> = Vec::new();
-        if let Ok(events) = client
+        if let Ok(events) = lookup_client
             .fetch_events(kp_relay_filter, Duration::from_secs(6))
             .await
         {
@@ -173,26 +197,21 @@ async fn fetch_key_packages_for_peers(
             }
         }
         if candidate_relays.is_empty() {
-            let mut s: BTreeSet<RelayUrl> = BTreeSet::new();
-            for r in fallback_kp_relays.iter().cloned() {
-                s.insert(r);
-            }
-            for r in fallback_popular_relays.iter().cloned() {
-                s.insert(r);
-            }
-            candidate_relays = s.into_iter().collect();
+            candidate_relays = relay_roles.key_package_operation_relays.clone();
         }
         for r in candidate_relays.iter().cloned() {
-            let _ = client.add_relay(r).await;
+            let _ = lookup_client.add_relay(r).await;
         }
-        client.connect().await;
-        client.wait_for_connection(Duration::from_secs(4)).await;
+        lookup_client.connect().await;
+        lookup_client
+            .wait_for_connection(Duration::from_secs(4))
+            .await;
 
         let kp_filter = Filter::new()
             .author(*pk)
             .kind(Kind::MlsKeyPackage)
             .limit(10);
-        let res = match client
+        let res = match lookup_client
             .fetch_events_from(
                 candidate_relays.clone(),
                 kp_filter.clone(),
@@ -201,7 +220,11 @@ async fn fetch_key_packages_for_peers(
             .await
         {
             Ok(v) => Ok(v),
-            Err(_) => client.fetch_events(kp_filter, Duration::from_secs(8)).await,
+            Err(_) => {
+                lookup_client
+                    .fetch_events(kp_filter, Duration::from_secs(8))
+                    .await
+            }
         };
         match res {
             Ok(events) => {
@@ -219,6 +242,7 @@ async fn fetch_key_packages_for_peers(
             }
         }
     }
+    lookup_client.shutdown().await;
 
     FetchedKeyPackages {
         key_package_events,
@@ -5743,27 +5767,11 @@ impl AppCore {
                     };
                     (sess.client.clone(), self.core_sender.clone())
                 };
-                let fallback_kp_relays = self.key_package_relays();
-                let fallback_popular_relays = self.default_relays();
+                let relay_roles = self.relay_role_plan(Vec::new());
 
                 self.runtime.spawn(async move {
-                    // Ensure default relays are connected before any fetches.
-                    for r in fallback_kp_relays
-                        .iter()
-                        .chain(fallback_popular_relays.iter())
-                    {
-                        let _ = client.add_relay(r.clone()).await;
-                    }
-                    client.connect().await;
-                    client.wait_for_connection(Duration::from_secs(5)).await;
-
-                    let fetched = fetch_key_packages_for_peers(
-                        &client,
-                        &peer_pubkeys,
-                        &fallback_kp_relays,
-                        &fallback_popular_relays,
-                    )
-                    .await;
+                    let fetched =
+                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await;
 
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
@@ -5808,8 +5816,7 @@ impl AppCore {
                     };
                     (sess.client.clone(), self.core_sender.clone())
                 };
-                let fallback_kp_relays = self.key_package_relays();
-                let fallback_popular_relays = self.default_relays();
+                let relay_roles = self.relay_role_plan(Vec::new());
                 let chat_id_clone = chat_id.clone();
                 let peer_names: HashMap<PublicKey, String> = peer_pubkeys
                     .iter()
@@ -5818,23 +5825,8 @@ impl AppCore {
 
                 // Fetch key packages then add members.
                 self.runtime.spawn(async move {
-                    // Ensure relays are connected before fetches.
-                    for r in fallback_kp_relays
-                        .iter()
-                        .chain(fallback_popular_relays.iter())
-                    {
-                        let _ = client.add_relay(r.clone()).await;
-                    }
-                    client.connect().await;
-                    client.wait_for_connection(Duration::from_secs(5)).await;
-
-                    let fetched = fetch_key_packages_for_peers(
-                        &client,
-                        &peer_pubkeys,
-                        &fallback_kp_relays,
-                        &fallback_popular_relays,
-                    )
-                    .await;
+                    let fetched =
+                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await;
 
                     if !fetched.failed_peers.is_empty() {
                         let names: Vec<String> = fetched
@@ -8055,7 +8047,7 @@ mod tests {
         use crate::actions::AppAction;
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
-        use nostr_sdk::{Keys, ToBech32};
+        use nostr_sdk::{Client, Keys, RelayUrl, ToBech32};
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
         /// Create a core with a minimal session (logged in, no groups registered).
@@ -8131,6 +8123,29 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("Invalid npub"));
+        }
+
+        #[tokio::test]
+        async fn temporary_session_relay_client_keeps_lookup_relays_separate() {
+            let session_client = Client::builder().signer(Keys::generate()).build();
+            let lookup_client = super::super::temporary_client_from_session_signer(
+                &session_client,
+                "key package lookup",
+            )
+            .await
+            .expect("lookup client");
+            let relay = RelayUrl::parse("wss://kp-lookup.example").expect("relay url");
+
+            lookup_client
+                .add_relay(relay.clone())
+                .await
+                .expect("add relay to lookup client");
+
+            assert!(session_client.relays().await.is_empty());
+            assert!(lookup_client.relays().await.contains_key(&relay));
+
+            lookup_client.shutdown().await;
+            session_client.shutdown().await;
         }
 
         #[test]

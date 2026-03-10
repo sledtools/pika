@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use nostr_sdk::prelude::RelayUrl;
+use pika_marmot_runtime::runtime::{plan_runtime_relay_roles, RuntimeRelayRolePlan};
 use pika_relay_profiles::{
     app_default_key_package_relays, app_default_message_relays, LEGACY_APP_DEFAULT_MESSAGE_RELAYS,
 };
@@ -151,22 +152,27 @@ impl AppCore {
             .collect()
     }
 
+    pub(super) fn temporary_key_package_relays(&self) -> Vec<RelayUrl> {
+        self.key_package_relays()
+    }
+
     pub(super) fn blossom_servers(&self) -> Vec<String> {
         blossom_servers_or_default(self.config.blossom_servers.as_deref())
     }
 
-    pub(super) fn all_session_relays(&self) -> Vec<RelayUrl> {
-        // Ensure the single nostr-sdk client can publish/fetch both:
-        // - normal traffic on general relays
-        // - key packages (kind 443) on key-package relays
-        let mut set: BTreeSet<RelayUrl> = BTreeSet::new();
-        for r in self.default_relays() {
-            set.insert(r);
-        }
-        for r in self.key_package_relays() {
-            set.insert(r);
-        }
-        set.into_iter().collect()
+    pub(super) fn long_lived_session_relays(&self) -> Vec<RelayUrl> {
+        self.default_relays()
+    }
+
+    pub(super) fn relay_role_plan(
+        &self,
+        active_group_relays: Vec<RelayUrl>,
+    ) -> RuntimeRelayRolePlan {
+        plan_runtime_relay_roles(
+            self.long_lived_session_relays(),
+            active_group_relays,
+            self.temporary_key_package_relays(),
+        )
     }
 
     pub(super) fn external_signer_enabled(&self) -> bool {
@@ -186,6 +192,38 @@ mod tests {
     use pika_relay_profiles::{
         app_default_blossom_servers, legacy_app_default_message_relays, RELAY_PIKACHAT_US_EAST,
     };
+    use std::sync::{Arc, RwLock};
+
+    fn make_core_with_config(config: AppConfig) -> (AppCore, tempfile::TempDir) {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().to_string_lossy().into_owned();
+        let (update_tx, _update_rx) = flume::unbounded();
+        let (core_tx, _core_rx) = flume::unbounded();
+        let external_signer_bridge: crate::external_signer::SharedExternalSignerBridge =
+            Arc::new(RwLock::new(None));
+        let bunker_signer_connector: crate::bunker_signer::SharedBunkerSignerConnector =
+            Arc::new(RwLock::new(Arc::new(
+                crate::bunker_signer::NostrConnectBunkerSignerConnector::default(),
+            )));
+        let mut core = AppCore::new(
+            update_tx,
+            core_tx,
+            data_dir,
+            String::new(),
+            String::new(),
+            Arc::new(RwLock::new(crate::state::AppState::empty())),
+            external_signer_bridge,
+            bunker_signer_connector,
+        );
+        core.config = config;
+        (core, tempdir)
+    }
+
+    fn relay_urls(urls: &[&str]) -> Vec<RelayUrl> {
+        urls.iter()
+            .map(|url| RelayUrl::parse(url).expect("relay url"))
+            .collect()
+    }
 
     #[test]
     fn default_app_config_json_uses_shared_profile_defaults() {
@@ -289,5 +327,45 @@ mod tests {
         urls.pop();
         urls.push(RELAY_PIKACHAT_US_EAST.to_string());
         assert!(!is_legacy_app_default_message_relays(&urls));
+    }
+
+    #[test]
+    fn long_lived_session_relays_follow_message_relay_config() {
+        let (core, _tempdir) = make_core_with_config(AppConfig {
+            relay_urls: Some(vec![
+                "wss://message-1.example".to_string(),
+                "wss://message-2.example".to_string(),
+            ]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..AppConfig::default()
+        });
+
+        let expected = relay_urls(&["wss://message-1.example", "wss://message-2.example"]);
+        assert_eq!(core.default_relays(), expected);
+        assert_eq!(core.long_lived_session_relays(), expected);
+    }
+
+    #[test]
+    fn long_lived_session_relays_do_not_include_temporary_key_package_relays() {
+        let (core, _tempdir) = make_core_with_config(AppConfig {
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec![
+                "wss://kp-1.example".to_string(),
+                "wss://kp-2.example".to_string(),
+            ]),
+            ..AppConfig::default()
+        });
+
+        let long_lived: BTreeSet<RelayUrl> = core.long_lived_session_relays().into_iter().collect();
+        let temporary: BTreeSet<RelayUrl> =
+            core.temporary_key_package_relays().into_iter().collect();
+
+        assert_eq!(
+            long_lived,
+            relay_urls(&["wss://message-1.example"])
+                .into_iter()
+                .collect()
+        );
+        assert!(long_lived.is_disjoint(&temporary));
     }
 }

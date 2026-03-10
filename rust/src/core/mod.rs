@@ -157,6 +157,11 @@ async fn fetch_key_packages_for_peers(
     let mut key_package_events: Vec<Event> = Vec::new();
     let mut failed: Vec<(PublicKey, String)> = Vec::new();
     let mut all_candidate_relays: Vec<RelayUrl> = Vec::new();
+    let mut connected_relays: BTreeSet<RelayUrl> = relay_roles
+        .key_package_operation_relays
+        .iter()
+        .cloned()
+        .collect();
     let lookup_client =
         match temporary_client_from_session_signer(session_client, "key package lookup").await {
             Ok(client) => client,
@@ -165,7 +170,7 @@ async fn fetch_key_packages_for_peers(
                     key_package_events,
                     failed_peers: peer_pubkeys
                         .iter()
-                        .map(|pk| (*pk, format!("Key package lookup client failed: {err:#}")))
+                        .map(|pk| (*pk, format!("Key package lookup unavailable: {err:#}")))
                         .collect(),
                     candidate_kp_relays: all_candidate_relays,
                 };
@@ -199,13 +204,19 @@ async fn fetch_key_packages_for_peers(
         if candidate_relays.is_empty() {
             candidate_relays = relay_roles.key_package_operation_relays.clone();
         }
+        let mut added_new_relay = false;
         for r in candidate_relays.iter().cloned() {
-            let _ = lookup_client.add_relay(r).await;
+            if connected_relays.insert(r.clone()) {
+                let _ = lookup_client.add_relay(r).await;
+                added_new_relay = true;
+            }
         }
-        lookup_client.connect().await;
-        lookup_client
-            .wait_for_connection(Duration::from_secs(4))
-            .await;
+        if added_new_relay {
+            lookup_client.connect().await;
+            lookup_client
+                .wait_for_connection(Duration::from_secs(4))
+                .await;
+        }
 
         let kp_filter = Filter::new()
             .author(*pk)

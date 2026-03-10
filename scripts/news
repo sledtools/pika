@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_MAX_PRS="2"
+
+# shellcheck source=scripts/lib/infra-env.sh
+source "$ROOT/scripts/lib/infra-env.sh"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/news [max-prs]
+
+Run pika-news with cargo-watch using .env plus the current gh auth token.
+EOF
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing command: $1" >&2
+    exit 1
+  fi
+}
+
+main() {
+  local max_prs="${1:-$DEFAULT_MAX_PRS}"
+
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    usage
+    return 0
+  fi
+  if [ "$#" -gt 1 ]; then
+    usage >&2
+    return 2
+  fi
+
+  need_cmd gh
+  need_cmd cargo
+
+  cd "$ROOT"
+  load_repo_env_override "$ROOT"
+  export GITHUB_TOKEN="$(gh auth token)"
+
+  exec cargo watch -w crates/pika-news -x "run -p pika-news -- serve --config crates/pika-news/pika-news.toml --db .tmp/pika-news.db --max-prs $max_prs"
+}
+
+main "$@"

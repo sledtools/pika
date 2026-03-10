@@ -247,6 +247,28 @@ Requirements:
 - CI still runs through stable entrypoints.
 - Agents still have an expanded discovery path through `agent-brief` or submodule listing.
 
+## Good Enough / Stop Criteria
+
+This is good enough when:
+
+- `just` and `just --list` stay intentionally small and human-scannable.
+- the root `justfile` is mostly routing, grouping, and help text instead of long shell blocks,
+- each major area has one obvious owner for env/default logic,
+- hidden compatibility commands still work but no longer dominate discovery,
+- and new simplification ideas mostly feel cosmetic rather than clarifying.
+
+At this point, stop doing broad cleanup and switch to a maintenance rule:
+
+- new public recipes should be rare,
+- new implementation should live in `scripts/` or a real CLI,
+- and new low-signal helpers should default to module-local or hidden unless they are true public entrypoints.
+
+Current recommendation:
+
+- Prompt 9 is still worth doing because `just/infra.just` still contains a few shell-heavy recipes that do not match the target shape.
+- After Prompt 9, only continue if another bounded slice is obviously high-signal.
+- If the next ideas are mostly renames, tiny wrapper moves, or aesthetic reshuffling, treat the cleanup as complete.
+
 ## Prompt Backlog
 
 ### Prompt 1
@@ -886,6 +908,83 @@ Deliverable:
 - a short note on what was simplified and any remaining release-packaging risks.
 ```
 
+### Prompt 9
+
+Workstream E2: extract the remaining shell-heavy local infra helpers out of `just/infra.just` so the module becomes routing-only and env ownership is clearer.
+
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream E2 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Move the remaining shell-heavy local infra/helper implementations out of `just/infra.just` and into scripts so the `just` module is mostly routing/orchestration, while preserving the current command surface and behavior.
+
+Scope:
+- `just/infra.just`
+- new or updated helper scripts under `scripts/`
+- small shared helpers under `scripts/lib/` only if they clearly reduce duplication
+- docs only if command discovery or ownership becomes materially clearer
+
+Primary objectives:
+- Remove inline bash blocks from `just/infra.just` where they own real behavior.
+- Make env loading/default ownership clearer for local infra helpers.
+- Keep the visible/hidden command split from Prompt 6 intact.
+- Preserve the current entrypoints and semantics for the touched commands.
+
+Recommended targets:
+- `run-relay-dev`
+- `pikaci-remote-fulfill-pre-merge-pika-rust`
+- `news`
+- optionally make the simpler infra recipes thin wrappers too if that improves consistency:
+  - `run-relay`
+  - `relay-build`
+  - `pikahut-up`
+  - `pikahut`
+
+Constraints:
+- Do not reopen command-surface / namespace policy; keep Prompt 6’s visibility decisions intact.
+- Do not change agent/demo, release, or mobile build behavior in this slice.
+- Preserve existing root aliases and existing call sites.
+- Avoid changing the actual infra workflows unless required by correctness.
+- Be conservative about env behavior:
+  - if `.env` is loaded today for a helper, preserve that behavior unless you can clearly centralize it without drift,
+  - do not silently change default hosts, paths, or fulfillment transports.
+
+Implementation guidance:
+- Prefer making `just/infra.just` wrapper-only for the touched commands.
+- If multiple infra helpers need the same env/bootstrap logic, introduce one shared shell helper instead of duplicating more bash.
+- Keep each extracted script focused on one job; do not replace several small inline recipes with one giant opaque script unless the command/subcommand structure is clearly better.
+- If `news` still needs `.env` plus `gh auth token`, make that ownership explicit in the script rather than leaving it buried in `just`.
+- Keep the hidden/manual nature of low-signal commands intact after extraction.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Run `bash -n` on any new or changed shell scripts.
+- Smoke-check representative preserved entrypoints with `just --dry-run` where appropriate, including:
+  - `just --dry-run run-relay-dev`
+  - `just --dry-run news`
+  - `just --dry-run pikaci-remote-fulfill-pre-merge-pika-rust`
+- If you create direct script entrypoints, run `--help` where supported or otherwise validate basic dispatch.
+- Verify the visible/hidden discovery surface still looks right with:
+  - `just`
+  - `just --list`
+  - `JUST_UNSTABLE=1 just --list --list-submodules`
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 9 complete,
+  - add a short review note under the Review Log,
+  - add Prompt 10 only if another similarly bounded cleanup slice clearly remains.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on what moved out of `just/infra.just`, what stayed inline, and any remaining infra-script ambiguity.
+```
+
 ## Review Log
 
 ### 2026-03-09
@@ -933,3 +1032,7 @@ Deliverable:
 - Completed Prompt 8 by restructuring `scripts/build-macos-release` into small helpers with a guarded `main`, moving the bundle metadata into a checked-in Info.plist template, and deriving per-target binary paths through cargo target helpers instead of raw `target/<triple>/release/...` strings.
 - Review note: the macOS packager is now easier to audit because version/git/deployment metadata loading, Rust target builds, icon generation, plist rendering, nix-store validation, and DMG packaging each live in a focused helper with the same workflow entrypoint.
 - Review tradeoff: the external script interface, DMG artifact shape, and nix-store link guard all stayed intact; no Prompt 9 was added because the remaining cleanup work is not yet shaped into another similarly bounded slice.
+- Shaped Prompt 9 after Prompt 8 review: the remaining inline shell in `just/infra.just` is still a good bounded simplification target, especially `run-relay-dev`, `news`, and the `pikaci` remote-fulfill helper.
+- Completed Prompt 9 by moving the remaining shell-heavy infra recipe bodies into `scripts/run-relay-dev` and `scripts/news`, while routing the `pikaci` remote lane through the canonical `scripts/pikaci-pre-merge-pika-rust-remote.sh` entrypoint and keeping `.env` loading for `news` in `scripts/lib/infra-env.sh`.
+- Review note: `just/infra.just` is now wrapper-only for the extracted commands, `news` makes its `.env` + `gh auth token` behavior explicit in the script layer, and the remote `pikaci` lane now routes through the existing canonical helper instead of an inline bash block.
+- Review tradeoff: `run-relay`, `relay-build`, `pikahut-up`, and `pikahut` stayed inline because they are already single-step wrappers with little embedded shell logic; no Prompt 10 was added because the next cleanup slice is not yet clearly bounded.

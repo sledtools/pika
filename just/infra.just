@@ -8,14 +8,7 @@ run-relay *ARGS:
 
 # Run pika-relay with custom data/media dirs (persistent local dev).
 run-relay-dev:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p .pika-relay/data .pika-relay/media
-    cd cmd/pika-relay && \
-      DATA_DIR=../../.pika-relay/data \
-      MEDIA_DIR=../../.pika-relay/media \
-      SERVICE_URL=http://localhost:3334 \
-      go run .
+    ./scripts/run-relay-dev
 
 # Build pika-relay binary.
 [private]
@@ -63,11 +56,4 @@ linux-builder-recreate:
 # Run pika-news with auto-rebuild on source changes.
 [private]
 news MAX_PRS="2":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    set -a; source .env; set +a
-    export GITHUB_TOKEN="$(gh auth token)"
-    cargo watch -w crates/pika-news -x "run -p pika-news -- serve \
-      --config crates/pika-news/pika-news.toml \
-      --db .tmp/pika-news.db \
-      --max-prs {{ MAX_PRS }}"
+    ./scripts/news {{ MAX_PRS }}

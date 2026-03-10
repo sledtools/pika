@@ -218,7 +218,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                 Button(
                     onClick = {
                         showAgentChooser = false
-                        manager.ensureAgent(AgentKind.Openclaw)
+                        manager.ensureAgent(AgentKind.OPENCLAW)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -227,7 +227,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                 Button(
                     onClick = {
                         showAgentChooser = false
-                        manager.ensureAgent(AgentKind.Pi)
+                        manager.ensureAgent(AgentKind.PI)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {

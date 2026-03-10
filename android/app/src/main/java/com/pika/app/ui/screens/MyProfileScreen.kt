@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
@@ -88,6 +89,7 @@ fun MyProfileSheet(
     var isLoadingPhoto by remember { mutableStateOf(false) }
     var buildNumberTapCount by remember { mutableStateOf(0) }
     val developerModeEnabled = manager.state.developerMode
+    var showAgentMarketplace by remember { mutableStateOf(manager.state.showAgentMarketplace) }
 
     val nsec = remember { manager.getNsec() }
 
@@ -117,6 +119,10 @@ fun MyProfileSheet(
             aboutDraft = profile.about
             didSyncDrafts = true
         }
+    }
+
+    LaunchedEffect(manager.state.showAgentMarketplace) {
+        showAgentMarketplace = manager.state.showAgentMarketplace
     }
 
     val photoLauncher = rememberLauncherForActivityResult(
@@ -330,6 +336,32 @@ fun MyProfileSheet(
             if (developerModeEnabled) {
                 item {
                     ProfileSectionCard(title = "Developer Mode") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Show Agent Marketplace",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    "Show experimental agent choices when creating a new agent.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = showAgentMarketplace,
+                                onCheckedChange = { enabled ->
+                                    showAgentMarketplace = enabled
+                                    manager.setShowAgentMarketplaceEnabled(enabled)
+                                },
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = { manager.dispatch(AppAction.WipeProfileCache) },
                             modifier = Modifier.fillMaxWidth(),

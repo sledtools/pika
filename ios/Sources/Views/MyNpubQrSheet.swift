@@ -12,6 +12,8 @@ struct MyNpubQrSheet: View {
     let onLogout: @MainActor () -> Void
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
+    let isShowAgentMarketplaceEnabledProvider: @MainActor () -> Bool
+    let onSetShowAgentMarketplace: @MainActor (Bool) -> Void
     let onWipeProfileCache: @MainActor () -> Void
     let onWipeMediaCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
@@ -25,6 +27,7 @@ struct MyNpubQrSheet: View {
     @State private var isLoadingPhoto = false
     @State private var appVersionTapCount = 0
     @State private var developerModeEnabled = false
+    @State private var showAgentMarketplace = false
     @State private var nameDraft = ""
     @State private var aboutDraft = ""
     @State private var didSyncDrafts = false
@@ -47,6 +50,8 @@ struct MyNpubQrSheet: View {
         onLogout: @MainActor @escaping () -> Void,
         isDeveloperModeEnabledProvider: @MainActor @escaping () -> Bool,
         onEnableDeveloperMode: @MainActor @escaping () -> Void,
+        isShowAgentMarketplaceEnabledProvider: @MainActor @escaping () -> Bool,
+        onSetShowAgentMarketplace: @MainActor @escaping (Bool) -> Void,
         onWipeProfileCache: @MainActor @escaping () -> Void,
         onWipeMediaCache: @MainActor @escaping () -> Void,
         onWipeLocalData: @MainActor @escaping () -> Void,
@@ -61,6 +66,8 @@ struct MyNpubQrSheet: View {
         self.onLogout = onLogout
         self.isDeveloperModeEnabledProvider = isDeveloperModeEnabledProvider
         self.onEnableDeveloperMode = onEnableDeveloperMode
+        self.isShowAgentMarketplaceEnabledProvider = isShowAgentMarketplaceEnabledProvider
+        self.onSetShowAgentMarketplace = onSetShowAgentMarketplace
         self.onWipeProfileCache = onWipeProfileCache
         self.onWipeMediaCache = onWipeMediaCache
         self.onWipeLocalData = onWipeLocalData
@@ -200,6 +207,10 @@ struct MyNpubQrSheet: View {
     private var developerSection: some View {
         if developerModeEnabled {
             Section {
+                Toggle("Show Agent Marketplace", isOn: $showAgentMarketplace)
+                    .onChange(of: showAgentMarketplace) { _, enabled in
+                        onSetShowAgentMarketplace(enabled)
+                    }
                 developerButton("Wipe Profile Cache") {
                     onWipeProfileCache()
                 }
@@ -212,7 +223,7 @@ struct MyNpubQrSheet: View {
             } header: {
                 Text("Developer Mode")
             } footer: {
-                Text("Wipe Profile Cache clears cached profiles and pictures. Wipe Media Cache clears the media DB and downloaded files. Wipe All Local Data deletes everything and logs out.")
+                Text("Show Agent Marketplace reveals experimental agent choices when creating a new agent. Wipe Profile Cache clears cached profiles and pictures. Wipe Media Cache clears the media DB and downloaded files. Wipe All Local Data deletes everything and logs out.")
             }
         }
     }
@@ -255,6 +266,7 @@ struct MyNpubQrSheet: View {
             }
             .task {
                 developerModeEnabled = isDeveloperModeEnabledProvider()
+                showAgentMarketplace = isShowAgentMarketplaceEnabledProvider()
                 onRefreshProfile()
                 syncDraftsIfNeeded(force: false)
             }
@@ -581,6 +593,8 @@ struct MyNpubQrSheet: View {
         onLogout: {},
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
+        isShowAgentMarketplaceEnabledProvider: { false },
+        onSetShowAgentMarketplace: { _ in },
         onWipeProfileCache: {},
         onWipeMediaCache: {},
         onWipeLocalData: {}
@@ -598,6 +612,8 @@ struct MyNpubQrSheet: View {
         onLogout: {},
         isDeveloperModeEnabledProvider: { false },
         onEnableDeveloperMode: {},
+        isShowAgentMarketplaceEnabledProvider: { false },
+        onSetShowAgentMarketplace: { _ in },
         onWipeProfileCache: {},
         onWipeMediaCache: {},
         onWipeLocalData: {},

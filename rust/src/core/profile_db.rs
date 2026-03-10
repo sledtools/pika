@@ -253,6 +253,28 @@ pub fn save_developer_mode(conn: &Connection, enabled: bool) {
     }
 }
 
+pub fn load_show_agent_marketplace(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'show_agent_marketplace'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+    .unwrap_or(false)
+}
+
+pub fn save_show_agent_marketplace(conn: &Connection, enabled: bool) {
+    let value = if enabled { "1" } else { "0" };
+    if let Err(e) = conn.execute(
+        "INSERT INTO app_settings (key, value)
+         VALUES ('show_agent_marketplace', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [value],
+    ) {
+        tracing::warn!(%e, enabled, "failed to save show agent marketplace setting");
+    }
+}
+
 // ── Follow cache ─────────────────────────────────────────────────────
 
 pub fn load_follows(conn: &Connection) -> Vec<String> {
@@ -602,6 +624,18 @@ mod tests {
 
         save_developer_mode(&conn, false);
         assert!(!load_developer_mode(&conn));
+    }
+
+    #[test]
+    fn show_agent_marketplace_roundtrip() {
+        let conn = test_db();
+        assert!(!load_show_agent_marketplace(&conn));
+
+        save_show_agent_marketplace(&conn, true);
+        assert!(load_show_agent_marketplace(&conn));
+
+        save_show_agent_marketplace(&conn, false);
+        assert!(!load_show_agent_marketplace(&conn));
     }
 
     #[test]

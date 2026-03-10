@@ -86,6 +86,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             callTimeline = emptyList(),
             toast = null,
             developerMode = false,
+            showAgentMarketplace = false,
             updateRequired = false,
             agentButton = null,
             agentProvisioning = null,
@@ -203,6 +204,20 @@ class AppManager private constructor(context: Context) : AppReconciler {
 
     fun enableDeveloperMode() {
         rust.dispatch(AppAction.EnableDeveloperMode)
+    }
+
+    fun isShowAgentMarketplaceEnabled(): Boolean = state.showAgentMarketplace
+
+    fun setShowAgentMarketplaceEnabled(enabled: Boolean) {
+        rust.dispatch(AppAction.SetShowAgentMarketplace(enabled))
+    }
+
+    fun ensureAgent() {
+        rust.dispatch(AppAction.EnsureAgent)
+    }
+
+    fun ensureAgent(kind: AgentKind) {
+        rust.dispatch(AppAction.EnsureAgentKind(kind))
     }
 
     fun wipeLocalDataForDeveloperTools() {

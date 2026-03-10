@@ -8,17 +8,21 @@ struct ChatListView: View {
     let onArchiveChat: @MainActor (String) -> Void
     let onNewChat: @MainActor () -> Void
     let onNewGroupChat: @MainActor () -> Void
-    let onEnsureAgent: @MainActor () -> Void
+    let onEnsureOpenclawAgent: @MainActor () -> Void
+    let onEnsurePiAgent: @MainActor () -> Void
     let onRefreshProfile: @MainActor () -> Void
     let onSaveProfile: @MainActor (_ name: String, _ about: String) -> Void
     let onUploadProfilePhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
     let isDeveloperModeEnabledProvider: @MainActor () -> Bool
     let onEnableDeveloperMode: @MainActor () -> Void
+    let isShowAgentMarketplaceEnabledProvider: @MainActor () -> Bool
+    let onSetShowAgentMarketplace: @MainActor (Bool) -> Void
     let onWipeProfileCache: @MainActor () -> Void
     let onWipeMediaCache: @MainActor () -> Void
     let onWipeLocalData: @MainActor () -> Void
     let nsecProvider: @MainActor () -> String?
     @State private var showMyNpub = false
+    @State private var showAgentMarketplaceDialog = false
 
     var body: some View {
         List(state.chats, id: \.chatId) { chat in
@@ -99,6 +103,8 @@ struct ChatListView: View {
                             onLogout: onLogout,
                             isDeveloperModeEnabledProvider: isDeveloperModeEnabledProvider,
                             onEnableDeveloperMode: onEnableDeveloperMode,
+                            isShowAgentMarketplaceEnabledProvider: isShowAgentMarketplaceEnabledProvider,
+                            onSetShowAgentMarketplace: onSetShowAgentMarketplace,
                             onWipeProfileCache: onWipeProfileCache,
                             onWipeMediaCache: onWipeMediaCache,
                             onWipeLocalData: onWipeLocalData
@@ -120,7 +126,11 @@ struct ChatListView: View {
                     }
                     if let agent = state.agentButton {
                         Button {
-                            onEnsureAgent()
+                            if state.showAgentMarketplace {
+                                showAgentMarketplaceDialog = true
+                            } else {
+                                onEnsureOpenclawAgent()
+                            }
                         } label: {
                             Label(agent.title, systemImage: "sparkles")
                         }
@@ -133,6 +143,21 @@ struct ChatListView: View {
                 .accessibilityLabel("New Chat")
                 .accessibilityIdentifier(TestIds.chatListNewChat)
             }
+        }
+        .confirmationDialog(
+            "Choose Agent",
+            isPresented: $showAgentMarketplaceDialog,
+            titleVisibility: .visible
+        ) {
+            Button("OpenClaw") {
+                onEnsureOpenclawAgent()
+            }
+            Button("Pi") {
+                onEnsurePiAgent()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Show experimental agent choices when creating a new agent.")
         }
     }
 
@@ -157,19 +182,23 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListEmpty.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListEmpty.myProfile,
-                agentButton: nil
+                agentButton: nil,
+                showAgentMarketplace: false
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureAgent: {},
+            onEnsureOpenclawAgent: {},
+            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            isShowAgentMarketplaceEnabledProvider: { false },
+            onSetShowAgentMarketplace: { _ in },
             onWipeProfileCache: {},
             onWipeMediaCache: {},
             onWipeLocalData: {},
@@ -185,19 +214,23 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListPopulated.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListPopulated.myProfile,
-                agentButton: nil
+                agentButton: nil,
+                showAgentMarketplace: false
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureAgent: {},
+            onEnsureOpenclawAgent: {},
+            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            isShowAgentMarketplaceEnabledProvider: { false },
+            onSetShowAgentMarketplace: { _ in },
             onWipeProfileCache: {},
             onWipeMediaCache: {},
             onWipeLocalData: {},
@@ -213,19 +246,23 @@ struct ChatListView: View {
                 chats: PreviewAppState.chatListLongNames.chatList,
                 myNpub: PreviewAppState.sampleNpub,
                 myProfile: PreviewAppState.chatListLongNames.myProfile,
-                agentButton: nil
+                agentButton: nil,
+                showAgentMarketplace: false
             ),
             onLogout: {},
             onOpenChat: { _ in },
             onArchiveChat: { _ in },
             onNewChat: {},
             onNewGroupChat: {},
-            onEnsureAgent: {},
+            onEnsureOpenclawAgent: {},
+            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
             isDeveloperModeEnabledProvider: { false },
             onEnableDeveloperMode: {},
+            isShowAgentMarketplaceEnabledProvider: { false },
+            onSetShowAgentMarketplace: { _ in },
             onWipeProfileCache: {},
             onWipeMediaCache: {},
             onWipeLocalData: {},

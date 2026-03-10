@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
-use pika_agent_control_plane::AgentStartupPhase;
+use pika_agent_control_plane::{
+    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
+};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -123,6 +125,7 @@ async fn send_agent_request(
     keys: &Keys,
     method: Method,
     url: &str,
+    body: Option<&serde_json::Value>,
 ) -> Result<reqwest::Response, AgentFlowError> {
     let auth = build_nip98_authorization_header_with_keys(keys, &method, url)
         .ok_or(AgentFlowError::SigningFailed)?;
@@ -131,9 +134,10 @@ async fn send_agent_request(
         .header("Authorization", auth)
         .header("Accept", "application/json");
     if method == Method::POST {
+        let request_body = body.cloned().unwrap_or_else(|| serde_json::json!({}));
         request = request
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({}));
+            .json(&request_body);
     }
     request
         .send()
@@ -145,12 +149,25 @@ async fn ensure_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
+    agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
+    let body = serde_json::to_value(AgentProvisionRequest {
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            kind: Some(match agent_kind {
+                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
+                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
+            }),
+            backend: None,
+        }),
+    })
+    .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
         Method::POST,
         &endpoint(base_url, "/v1/agents/ensure"),
+        Some(&body),
     )
     .await?;
     match response.status().as_u16() {
@@ -191,6 +208,7 @@ async fn get_my_agent(
         keys,
         Method::GET,
         &endpoint(base_url, "/v1/agents/me"),
+        None,
     )
     .await?;
     match response.status().as_u16() {
@@ -230,6 +248,7 @@ async fn recover_my_agent(
         keys,
         Method::POST,
         &endpoint(base_url, "/v1/agents/me/recover"),
+        None,
     )
     .await?;
     match response.status().as_u16() {
@@ -263,6 +282,7 @@ async fn probe_agent_allowlist(
         keys,
         Method::GET,
         &endpoint(base_url, "/v1/agents/me"),
+        None,
     )
     .await?;
     match response.status().as_u16() {
@@ -323,10 +343,11 @@ async fn run_agent_flow(
     client: reqwest::Client,
     keys: Keys,
     base_url: String,
+    agent_kind: crate::state::AgentKind,
     tx: flume::Sender<CoreMsg>,
     flow_token: u64,
 ) -> Result<String, AgentFlowError> {
-    ensure_agent(&client, &keys, &base_url).await?;
+    ensure_agent(&client, &keys, &base_url, agent_kind).await?;
 
     send_progress(
         &tx,
@@ -469,6 +490,18 @@ impl AppCore {
     }
 
     pub(super) fn ensure_agent(&mut self) {
+        let retry_kind = self
+            .state
+            .agent_provisioning
+            .as_ref()
+            .and_then(|provisioning| {
+                (provisioning.phase == crate::state::AgentProvisioningPhase::Error)
+                    .then_some(provisioning.agent_kind)
+            });
+        self.ensure_agent_kind(retry_kind.unwrap_or(crate::state::AgentKind::Openclaw));
+    }
+
+    pub(super) fn ensure_agent_kind(&mut self, agent_kind: crate::state::AgentKind) {
         if !self.is_logged_in() {
             self.toast("Please log in first");
             return;
@@ -530,6 +563,7 @@ impl AppCore {
         self.agent_flow_start = Some(std::time::Instant::now());
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            agent_kind,
             phase: crate::state::AgentProvisioningPhase::Ensuring,
             agent_npub: None,
             status_message: "Requesting agent...".to_string(),
@@ -549,19 +583,21 @@ impl AppCore {
 
         let progress_tx = tx.clone();
         let handle = self.runtime.spawn(async move {
-            let event = match run_agent_flow(client, keys, base_url, progress_tx, flow_token).await
-            {
-                Ok(agent_id) => InternalEvent::AgentFlowCompleted {
-                    flow_token,
-                    agent_id: Some(agent_id),
-                    error: None,
-                },
-                Err(err) => InternalEvent::AgentFlowCompleted {
-                    flow_token,
-                    agent_id: None,
-                    error: Some(err.to_user_message()),
-                },
-            };
+            let event =
+                match run_agent_flow(client, keys, base_url, agent_kind, progress_tx, flow_token)
+                    .await
+                {
+                    Ok(agent_id) => InternalEvent::AgentFlowCompleted {
+                        flow_token,
+                        agent_id: Some(agent_id),
+                        error: None,
+                    },
+                    Err(err) => InternalEvent::AgentFlowCompleted {
+                        flow_token,
+                        agent_id: None,
+                        error: Some(err.to_user_message()),
+                    },
+                };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
         });
         self.agent_flow_task = Some(handle);
@@ -584,6 +620,12 @@ impl AppCore {
         let status_message = provisioning_status_message(&phase);
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            agent_kind: self
+                .state
+                .agent_provisioning
+                .as_ref()
+                .map(|state| state.agent_kind)
+                .unwrap_or(crate::state::AgentKind::Openclaw),
             phase,
             agent_npub,
             status_message,
@@ -690,12 +732,12 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    type CapturedAgentRequest = (String, String);
+    type CapturedAgentRequest = (String, String, String);
     type AgentFlowMockJoinHandle = thread::JoinHandle<anyhow::Result<Vec<CapturedAgentRequest>>>;
 
     fn read_http_request(
         stream: &mut std::net::TcpStream,
-    ) -> anyhow::Result<(String, Option<String>)> {
+    ) -> anyhow::Result<(String, Option<String>, String)> {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .context("set read timeout")?;
@@ -731,13 +773,19 @@ mod tests {
         }
 
         let already_body = buf.len().saturating_sub(header_end);
+        let mut body = buf[header_end..].to_vec();
         if content_length > already_body {
             let mut remaining = vec![0u8; content_length - already_body];
             stream
                 .read_exact(&mut remaining)
                 .context("read request body")?;
+            body.extend_from_slice(&remaining);
         }
-        Ok((request_line, authorization))
+        Ok((
+            request_line,
+            authorization,
+            String::from_utf8_lossy(&body).to_string(),
+        ))
     }
 
     fn respond_json(
@@ -768,7 +816,7 @@ mod tests {
             let mut captured = Vec::new();
             for (expected_prefix, response_body) in scripted {
                 let (mut stream, _) = listener.accept().context("accept request")?;
-                let (request_line, authorization) = read_http_request(&mut stream)?;
+                let (request_line, authorization, body) = read_http_request(&mut stream)?;
                 let authorization =
                     authorization.ok_or_else(|| anyhow!("missing Authorization header"))?;
                 if !request_line.starts_with(expected_prefix) {
@@ -787,7 +835,7 @@ mod tests {
                     "200 OK"
                 };
                 respond_json(&mut stream, status, response_body)?;
-                captured.push((request_line, authorization));
+                captured.push((request_line, authorization, body));
             }
             Ok(captured)
         });
@@ -877,9 +925,16 @@ mod tests {
         let keys = Keys::generate();
 
         let (tx, _rx) = flume::unbounded();
-        let agent_id = run_agent_flow(client, keys, base_url, tx, 1)
-            .await
-            .expect("run agent flow");
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
         assert_eq!(agent_id, "npub1testagent");
 
         let captured = handle
@@ -892,6 +947,7 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
+        assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
     }
 
     #[tokio::test]
@@ -919,9 +975,16 @@ mod tests {
         let keys = Keys::generate();
 
         let (tx, _rx) = flume::unbounded();
-        let agent_id = run_agent_flow(client, keys, base_url, tx, 1)
-            .await
-            .expect("run agent flow");
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
         assert_eq!(agent_id, "npub1testagent");
 
         let captured = handle
@@ -932,6 +995,6 @@ mod tests {
         assert_eq!(captured.len(), 4);
         assert!(captured
             .iter()
-            .all(|(request_line, _)| !request_line.starts_with("POST /v1/agents/me/recover ")));
+            .all(|(request_line, _, _)| !request_line.starts_with("POST /v1/agents/me/recover ")));
     }
 }

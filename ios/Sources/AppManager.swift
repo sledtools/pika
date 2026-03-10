@@ -378,6 +378,18 @@ final class AppManager: AppReconciler {
         dispatch(.ensureAgent)
     }
 
+    func ensureAgent(kind: AgentKind) {
+        dispatch(.ensureAgentKind(kind: kind))
+    }
+
+    var isShowAgentMarketplaceEnabled: Bool {
+        state.showAgentMarketplace
+    }
+
+    func setShowAgentMarketplaceEnabled(_ enabled: Bool) {
+        dispatch(.setShowAgentMarketplace(enabled: enabled))
+    }
+
     /// Moves existing data from the old app-private Application Support directory
     /// to the shared App Group container. Runs once; a sentinel file prevents re-runs.
     private static func migrateDataDirIfNeeded(fm: FileManager, newDir: URL) {

@@ -831,6 +831,10 @@ impl AppCore {
             .as_ref()
             .map(profile_db::load_developer_mode)
             .unwrap_or(false);
+        let show_agent_marketplace = profile_db
+            .as_ref()
+            .map(profile_db::load_show_agent_marketplace)
+            .unwrap_or(false);
 
         let push_device_id = Self::load_or_create_push_device_id(&data_dir);
         let push_subscribed_chat_ids = Self::load_push_subscriptions(&data_dir);
@@ -902,6 +906,7 @@ impl AppCore {
             agent_flow_start: None,
         };
         this.state.developer_mode = developer_mode;
+        this.state.show_agent_marketplace = show_agent_marketplace;
 
         if run_moq_probe {
             if let Some(moq_url) = moq_probe_url {
@@ -3095,6 +3100,7 @@ impl AppCore {
         self.push_apns_token = None;
         self.state.toast = None;
         self.state.developer_mode = false;
+        self.state.show_agent_marketplace = false;
         self.state.voice_recording = None;
         self.cancel_call_duration_ticks();
         self.cancel_call_offer_timeout();
@@ -4859,6 +4865,16 @@ impl AppCore {
                 }
                 self.emit_state();
             }
+            AppAction::SetShowAgentMarketplace { enabled } => {
+                if self.state.show_agent_marketplace == enabled {
+                    return;
+                }
+                self.state.show_agent_marketplace = enabled;
+                if let Some(conn) = self.profile_db.as_ref() {
+                    profile_db::save_show_agent_marketplace(conn, enabled);
+                }
+                self.emit_state();
+            }
             AppAction::WipeProfileCache => {
                 if let Some(conn) = self.profile_db.as_ref() {
                     profile_db::clear_all(conn);
@@ -5141,6 +5157,9 @@ impl AppCore {
             // Chat
             AppAction::EnsureAgent => {
                 self.ensure_agent();
+            }
+            AppAction::EnsureAgentKind { kind } => {
+                self.ensure_agent_kind(kind);
             }
             AppAction::CreateChat { peer_npub } => {
                 if !self.is_logged_in() {
@@ -7955,6 +7974,7 @@ mod tests {
             core.state.busy.creating_chat = true;
             core.key_package_publish_token = 7;
             core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                agent_kind: crate::state::AgentKind::Openclaw,
                 phase: crate::state::AgentProvisioningPhase::PublishingKeyPackage,
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Publishing key package...".into(),
@@ -8009,6 +8029,7 @@ mod tests {
             core.direct_chat_creation_token = 5;
             core.state.busy.creating_chat = true;
             core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                agent_kind: crate::state::AgentKind::Openclaw,
                 phase: crate::state::AgentProvisioningPhase::CreatingChat,
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Creating encrypted chat...".into(),
@@ -8040,6 +8061,7 @@ mod tests {
             core.direct_chat_creation_token = 8;
             core.state.busy.creating_chat = true;
             core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                agent_kind: crate::state::AgentKind::Openclaw,
                 phase: crate::state::AgentProvisioningPhase::CreatingChat,
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Creating encrypted chat...".into(),
@@ -8092,6 +8114,76 @@ mod tests {
                 super::super::AgentAllowlistState::Allowlisted
             );
             assert!(core.state.agent_button.is_some());
+        }
+
+        #[test]
+        fn ensure_agent_defaults_to_openclaw_when_marketplace_hidden() {
+            let (mut core, _tmp) = make_logged_in_core();
+            core.agent_allowlist_state = super::super::AgentAllowlistState::Allowlisted;
+            core.state.show_agent_marketplace = false;
+            let pubkey = core.session.as_ref().expect("session").pubkey;
+            core.state.auth = AuthState::LoggedIn {
+                npub: pubkey.to_bech32().expect("npub"),
+                pubkey: pubkey.to_hex(),
+                mode: AuthMode::LocalNsec,
+            };
+
+            core.handle_action(AppAction::EnsureAgent);
+
+            let provisioning = core
+                .state
+                .agent_provisioning
+                .as_ref()
+                .expect("provisioning started");
+            assert_eq!(provisioning.agent_kind, crate::state::AgentKind::Openclaw);
+            assert_eq!(
+                provisioning.phase,
+                crate::state::AgentProvisioningPhase::Ensuring
+            );
+        }
+
+        #[test]
+        fn set_show_agent_marketplace_persists_setting() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            assert!(!core.state.show_agent_marketplace);
+            assert!(!profile_db::load_show_agent_marketplace(
+                core.profile_db.as_ref().expect("profile db")
+            ));
+
+            core.handle_action(AppAction::SetShowAgentMarketplace { enabled: true });
+
+            assert!(core.state.show_agent_marketplace);
+            assert!(profile_db::load_show_agent_marketplace(
+                core.profile_db.as_ref().expect("profile db")
+            ));
+        }
+
+        #[test]
+        fn ensure_agent_kind_can_start_pi_provisioning() {
+            let (mut core, _tmp) = make_logged_in_core();
+            core.agent_allowlist_state = super::super::AgentAllowlistState::Allowlisted;
+            let pubkey = core.session.as_ref().expect("session").pubkey;
+            core.state.auth = AuthState::LoggedIn {
+                npub: pubkey.to_bech32().expect("npub"),
+                pubkey: pubkey.to_hex(),
+                mode: AuthMode::LocalNsec,
+            };
+
+            core.handle_action(AppAction::EnsureAgentKind {
+                kind: crate::state::AgentKind::Pi,
+            });
+
+            let provisioning = core
+                .state
+                .agent_provisioning
+                .as_ref()
+                .expect("provisioning started");
+            assert_eq!(provisioning.agent_kind, crate::state::AgentKind::Pi);
+            assert_eq!(
+                provisioning.phase,
+                crate::state::AgentProvisioningPhase::Ensuring
+            );
         }
 
         #[test]
@@ -8795,6 +8887,7 @@ mod tests {
                 let (mut core, _tmp) = make_logged_in_core();
                 core.agent_flow_token = 7;
                 core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    agent_kind: crate::state::AgentKind::Openclaw,
                     phase: crate::state::AgentProvisioningPhase::ProvisioningVm,
                     agent_npub: None,
                     status_message: "Provisioning microVM...".into(),
@@ -8821,6 +8914,7 @@ mod tests {
                 let (mut core, _tmp) = make_logged_in_core();
                 core.agent_flow_token = 3;
                 core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    agent_kind: crate::state::AgentKind::Openclaw,
                     phase: crate::state::AgentProvisioningPhase::Ensuring,
                     agent_npub: None,
                     status_message: "Requesting agent...".into(),
@@ -8849,6 +8943,7 @@ mod tests {
                 });
                 core.state.busy.starting_agent = true;
                 core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+                    agent_kind: crate::state::AgentKind::Openclaw,
                     phase: crate::state::AgentProvisioningPhase::CreatingChat,
                     agent_npub: Some("npub1agent".into()),
                     status_message: "Creating encrypted chat...".into(),

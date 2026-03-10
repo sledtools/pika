@@ -21,6 +21,7 @@ pub struct AppState {
     pub call_timeline: Vec<CallTimelineEvent>,
     pub toast: Option<String>,
     pub developer_mode: bool,
+    pub show_agent_marketplace: bool,
     pub update_required: bool,
     pub agent_button: Option<AgentMenuItemState>,
     pub agent_provisioning: Option<AgentProvisioningState>,
@@ -47,6 +48,7 @@ impl AppState {
             call_timeline: vec![],
             toast: None,
             developer_mode: false,
+            show_agent_marketplace: false,
             update_required: false,
             agent_button: None,
             agent_provisioning: None,
@@ -60,6 +62,12 @@ impl AppState {
 pub struct AgentMenuItemState {
     pub title: String,
     pub is_busy: bool,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentKind {
+    Openclaw,
+    Pi,
 }
 
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
@@ -81,6 +89,7 @@ pub enum AgentProvisioningPhase {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AgentProvisioningState {
+    pub agent_kind: AgentKind,
     pub phase: AgentProvisioningPhase,
     pub agent_npub: Option<String>,
     pub status_message: String,

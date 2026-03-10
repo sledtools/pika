@@ -2,35 +2,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+# shellcheck source=scripts/lib/pika-env.sh
+source "$ROOT/scripts/lib/pika-env.sh"
 
-AGENT_API_BASE_URL="${PIKA_AGENT_API_BASE_URL:-${PIKA_SERVER_URL:-http://127.0.0.1:8080}}"
-AGENT_API_NSEC="${PIKA_AGENT_API_NSEC:-${PIKA_TEST_NSEC:-${AGENT_API_NSEC:-}}}"
-AGENT_KIND="${PIKA_AGENT_MICROVM_KIND:-pi}"
-MICROVM_BACKEND="${PIKA_AGENT_MICROVM_BACKEND:-}"
+load_local_env "$ROOT"
+set_agent_api_base_url_default local
+require_agent_api_nsec
+set_agent_microvm_backend_default acp
+export PIKA_AGENT_MICROVM_KIND="${PIKA_AGENT_MICROVM_KIND:-pi}"
 
-if [[ -z "$AGENT_API_NSEC" ]]; then
-  echo "PIKA_AGENT_API_NSEC (or PIKA_TEST_NSEC / AGENT_API_NSEC) is required." >&2
-  exit 1
-fi
-
-echo "Agent ensure kind: $AGENT_KIND"
-if [[ -n "$MICROVM_BACKEND" ]]; then
-  echo "Agent ensure microVM backend override: $MICROVM_BACKEND"
-fi
-
-cmd=(
-  just cli
-  agent new
-  --api-base-url "$AGENT_API_BASE_URL"
-)
-
-cmd+=("$@")
-
+echo "Agent ensure API base URL: $PIKA_AGENT_API_BASE_URL"
+echo "Agent ensure microVM backend: $PIKA_AGENT_MICROVM_BACKEND"
+echo "Agent ensure kind: $PIKA_AGENT_MICROVM_KIND"
 echo "Running agent HTTP ensure demo..."
-export PIKA_AGENT_API_NSEC="$AGENT_API_NSEC"
-export PIKA_AGENT_MICROVM_KIND="$AGENT_KIND"
-if [[ -n "$MICROVM_BACKEND" ]]; then
-  export PIKA_AGENT_MICROVM_BACKEND="$MICROVM_BACKEND"
-fi
-exec "${cmd[@]}"
+exec "$ROOT/scripts/pikachat-cli.sh" agent new "$@"

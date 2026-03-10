@@ -15,7 +15,11 @@ descs=()
 
 titles+=("just commands")
 cmds+=("just --list")
-descs+=("Available tasks.")
+descs+=("Curated root task surface for humans.")
+
+titles+=("just command tree")
+cmds+=("JUST_UNSTABLE=1 just --list --list-submodules")
+descs+=("Expanded task tree with module recipes for agent discovery.")
 
 # --- Docs ---
 

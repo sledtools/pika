@@ -2939,8 +2939,6 @@ impl AppCore {
         if let Some(ref mut prov) = self.state.agent_provisioning {
             prov.phase = phase.clone();
             prov.status_message = crate::core::agent::provisioning_status_message(&phase);
-            prov.poll_attempt = None;
-            prov.poll_max = None;
             self.emit_state();
         }
     }
@@ -2949,8 +2947,6 @@ impl AppCore {
         if let Some(ref mut prov) = self.state.agent_provisioning {
             prov.phase = crate::state::AgentProvisioningPhase::Error;
             prov.status_message = message;
-            prov.poll_attempt = None;
-            prov.poll_max = None;
             self.emit_state();
         }
     }
@@ -7963,8 +7959,6 @@ mod tests {
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Publishing key package...".into(),
                 elapsed_secs: 0,
-                poll_attempt: None,
-                poll_max: None,
             });
 
             core.handle_internal(InternalEvent::KeyPackagePublished {
@@ -7982,8 +7976,6 @@ mod tests {
                 .expect("provisioning should remain visible");
             assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
             assert_eq!(prov.status_message, "Key package publish failed: boom");
-            assert_eq!(prov.poll_attempt, None);
-            assert_eq!(prov.poll_max, None);
             assert!(core.state.toast.is_none());
         }
 
@@ -8021,8 +8013,6 @@ mod tests {
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Creating encrypted chat...".into(),
                 elapsed_secs: 0,
-                poll_attempt: None,
-                poll_max: None,
             });
 
             core.handle_internal(InternalEvent::PeerKeyPackageFetched {
@@ -8040,8 +8030,6 @@ mod tests {
                 .expect("provisioning should remain visible");
             assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
             assert_eq!(prov.status_message, "Fetch peer key package failed: boom");
-            assert_eq!(prov.poll_attempt, None);
-            assert_eq!(prov.poll_max, None);
             assert!(core.state.toast.is_none());
         }
 
@@ -8056,8 +8044,6 @@ mod tests {
                 agent_npub: Some("npub1agent".into()),
                 status_message: "Creating encrypted chat...".into(),
                 elapsed_secs: 0,
-                poll_attempt: None,
-                poll_max: None,
             });
 
             core.handle_internal(InternalEvent::PeerKeyPackageFetched {
@@ -8787,8 +8773,6 @@ mod tests {
                     crate::state::AgentProvisioningPhase::BootingGuest
                 );
                 assert_eq!(prov.agent_npub.as_deref(), Some("npub1agent"));
-                assert_eq!(prov.poll_attempt, None);
-                assert_eq!(prov.poll_max, None);
                 assert_eq!(prov.status_message, "Booting guest...");
             }
 
@@ -8815,8 +8799,6 @@ mod tests {
                     agent_npub: None,
                     status_message: "Provisioning microVM...".into(),
                     elapsed_secs: 0,
-                    poll_attempt: None,
-                    poll_max: None,
                 });
 
                 core.handle_internal(InternalEvent::AgentFlowCompleted {
@@ -8843,8 +8825,6 @@ mod tests {
                     agent_npub: None,
                     status_message: "Requesting agent...".into(),
                     elapsed_secs: 0,
-                    poll_attempt: None,
-                    poll_max: None,
                 });
                 core.state.router.screen_stack = vec![Screen::AgentProvisioning];
 
@@ -8873,8 +8853,6 @@ mod tests {
                     agent_npub: Some("npub1agent".into()),
                     status_message: "Creating encrypted chat...".into(),
                     elapsed_secs: 0,
-                    poll_attempt: None,
-                    poll_max: None,
                 });
                 core.state.router.screen_stack = vec![Screen::AgentProvisioning];
 

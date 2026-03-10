@@ -1804,10 +1804,6 @@ data class AgentProvisioningState (
     var `statusMessage`: kotlin.String
     , 
     var `elapsedSecs`: kotlin.UInt
-    , 
-    var `pollAttempt`: kotlin.UInt?
-    , 
-    var `pollMax`: kotlin.UInt?
     
 ){
     
@@ -1828,8 +1824,6 @@ public object FfiConverterTypeAgentProvisioningState: FfiConverterRustBuffer<Age
             FfiConverterOptionalString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterUInt.read(buf),
-            FfiConverterOptionalUInt.read(buf),
-            FfiConverterOptionalUInt.read(buf),
         )
     }
 
@@ -1837,9 +1831,7 @@ public object FfiConverterTypeAgentProvisioningState: FfiConverterRustBuffer<Age
             FfiConverterTypeAgentProvisioningPhase.allocationSize(value.`phase`) +
             FfiConverterOptionalString.allocationSize(value.`agentNpub`) +
             FfiConverterString.allocationSize(value.`statusMessage`) +
-            FfiConverterUInt.allocationSize(value.`elapsedSecs`) +
-            FfiConverterOptionalUInt.allocationSize(value.`pollAttempt`) +
-            FfiConverterOptionalUInt.allocationSize(value.`pollMax`)
+            FfiConverterUInt.allocationSize(value.`elapsedSecs`)
     )
 
     override fun write(value: AgentProvisioningState, buf: ByteBuffer) {
@@ -1847,8 +1839,6 @@ public object FfiConverterTypeAgentProvisioningState: FfiConverterRustBuffer<Age
             FfiConverterOptionalString.write(value.`agentNpub`, buf)
             FfiConverterString.write(value.`statusMessage`, buf)
             FfiConverterUInt.write(value.`elapsedSecs`, buf)
-            FfiConverterOptionalUInt.write(value.`pollAttempt`, buf)
-            FfiConverterOptionalUInt.write(value.`pollMax`, buf)
     }
 }
 
@@ -7193,5 +7183,4 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     )
     }
     
-
 

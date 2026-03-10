@@ -24,6 +24,7 @@ enum AgentAppState {
 struct AgentStateResponse {
     agent_id: String,
     state: AgentAppState,
+    #[serde(default = "default_agent_startup_phase")]
     startup_phase: AgentStartupPhase,
 }
 
@@ -67,6 +68,10 @@ fn endpoint(base: &str, path: &str) -> String {
         base.trim().trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+fn default_agent_startup_phase() -> AgentStartupPhase {
+    AgentStartupPhase::ProvisioningVm
 }
 
 fn resolve_agent_api_url(
@@ -293,6 +298,9 @@ fn send_progress(
 fn provisioning_phase_from_startup(
     startup_phase: AgentStartupPhase,
 ) -> crate::state::AgentProvisioningPhase {
+    // Keep this app-side subset mapping in sync with `AgentProvisioningPhase`.
+    // The app owns a couple of extra local phases after the shared startup
+    // lifecycle reaches `Ready`.
     match startup_phase {
         AgentStartupPhase::Requested => crate::state::AgentProvisioningPhase::Requested,
         AgentStartupPhase::ProvisioningVm => crate::state::AgentProvisioningPhase::ProvisioningVm,
@@ -300,7 +308,13 @@ fn provisioning_phase_from_startup(
         AgentStartupPhase::WaitingForServiceReady => {
             crate::state::AgentProvisioningPhase::WaitingForServiceReady
         }
-        AgentStartupPhase::Ready => crate::state::AgentProvisioningPhase::WaitingForServiceReady,
+        AgentStartupPhase::Ready => {
+            debug_assert!(
+                false,
+                "ready startup phase should be handled by AgentAppState::Ready before app mapping"
+            );
+            crate::state::AgentProvisioningPhase::CreatingChat
+        }
         AgentStartupPhase::Failed => crate::state::AgentProvisioningPhase::Error,
     }
 }
@@ -520,8 +534,6 @@ impl AppCore {
             agent_npub: None,
             status_message: "Requesting agent...".to_string(),
             elapsed_secs: 0,
-            poll_attempt: None,
-            poll_max: None,
         });
         // Only push the screen if it isn't already on the stack (e.g. retry from error state).
         let already_on_stack = self
@@ -576,8 +588,6 @@ impl AppCore {
             agent_npub,
             status_message,
             elapsed_secs,
-            poll_attempt: None,
-            poll_max: None,
         });
         self.emit_state();
     }
@@ -848,6 +858,16 @@ mod tests {
             provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
             "Booting guest..."
         );
+    }
+
+    #[test]
+    fn legacy_agent_state_response_without_startup_phase_still_deserializes() {
+        let response: AgentStateResponse =
+            serde_json::from_str(r#"{"agent_id":"npub1legacy","state":"creating"}"#)
+                .expect("legacy response should deserialize");
+        assert_eq!(response.agent_id, "npub1legacy");
+        assert!(matches!(response.state, AgentAppState::Creating));
+        assert_eq!(response.startup_phase, AgentStartupPhase::ProvisioningVm);
     }
 
     #[tokio::test]

@@ -65,6 +65,10 @@ pub struct AgentMenuItemState {
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
 pub enum AgentProvisioningPhase {
     Ensuring,
+    // Mirrors the shared control-plane startup subset in `AgentStartupPhase`.
+    // Keep `provisioning_phase_from_startup` in sync when adding variants here
+    // or in the control-plane enum. The remaining variants are app-local phases
+    // after the guest service is already ready.
     Requested,
     ProvisioningVm,
     BootingGuest,
@@ -81,8 +85,6 @@ pub struct AgentProvisioningState {
     pub agent_npub: Option<String>,
     pub status_message: String,
     pub elapsed_secs: u32,
-    pub poll_attempt: Option<u32>,
-    pub poll_max: Option<u32>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

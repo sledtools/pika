@@ -3,14 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_ENCRYPTED="$ROOT/secrets/zapstore-signing.env.age"
-OUTPUT_ENCRYPTED_NEXT="$ROOT/secrets/zapstore-signing.env.age.next"
-
-# shellcheck source=./release-age-recipients
-source "$ROOT/scripts/release-age-recipients"
-
-YUBIKEY_PRIMARY="${PIKA_YUBIKEY_PRIMARY_RECIPIENT:-$PIKA_RELEASE_YUBIKEY_PRIMARY_RECIPIENT_DEFAULT}"
-YUBIKEY_BACKUP="${PIKA_YUBIKEY_BACKUP_RECIPIENT:-$PIKA_RELEASE_YUBIKEY_BACKUP_RECIPIENT_DEFAULT}"
-CI_RECIPIENT="${PIKA_CI_AGE_RECIPIENT:-$PIKA_RELEASE_CI_RECIPIENT_DEFAULT}"
+# shellcheck source=scripts/lib/release-secrets.sh
+source "$ROOT/scripts/lib/release-secrets.sh"
 
 usage() {
   cat <<'USAGE'
@@ -33,18 +27,6 @@ Environment overrides:
 USAGE
 }
 
-need_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: missing command: $1" >&2
-    exit 1
-  fi
-}
-
-cleanup() {
-  rm -f "$OUTPUT_ENCRYPTED_NEXT"
-}
-trap cleanup EXIT INT TERM
-
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
@@ -54,12 +36,8 @@ if [ "$#" -ne 0 ]; then
   exit 2
 fi
 
-need_cmd age
-
-if ! printf '%s\n' "$CI_RECIPIENT" | grep -Eq '^age1[023456789acdefghjklmnpqrstuvwxyz]+$'; then
-  echo "error: invalid CI recipient format (expected age1...)" >&2
-  exit 1
-fi
+release_secret_load_recipients "$ROOT"
+release_secret_validate_age_recipient "$RELEASE_SECRET_CI_RECIPIENT" "CI recipient"
 
 sign_with="${PIKA_ZAPSTORE_SIGN_WITH:-}"
 if [ -z "$sign_with" ]; then
@@ -79,21 +57,12 @@ fi
 mkdir -p "$ROOT/secrets"
 umask 077
 
-{
-  printf 'ZAPSTORE_SIGN_WITH=%s\n' "$sign_with"
-} | age -e \
-  -r "$YUBIKEY_PRIMARY" \
-  -r "$YUBIKEY_BACKUP" \
-  -r "$CI_RECIPIENT" \
-  -o "$OUTPUT_ENCRYPTED_NEXT"
-
-chmod 600 "$OUTPUT_ENCRYPTED_NEXT"
-mv "$OUTPUT_ENCRYPTED_NEXT" "$OUTPUT_ENCRYPTED"
+release_secret_encrypt_env_value "$OUTPUT_ENCRYPTED" "ZAPSTORE_SIGN_WITH" "$sign_with"
 
 unset sign_with
 
 echo "ok: wrote $OUTPUT_ENCRYPTED"
 echo "ok: recipients:"
-echo "  - $YUBIKEY_PRIMARY"
-echo "  - $YUBIKEY_BACKUP"
-echo "  - $CI_RECIPIENT (CI)"
+echo "  - $RELEASE_SECRET_YUBIKEY_PRIMARY"
+echo "  - $RELEASE_SECRET_YUBIKEY_BACKUP"
+echo "  - $RELEASE_SECRET_CI_RECIPIENT (CI)"

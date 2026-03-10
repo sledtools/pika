@@ -740,7 +740,7 @@ Deliverable:
 
 Workstream C2: consolidate release-secret helpers and shared age/YubiKey handling.
 
-Status: ready
+Status: complete
 
 Prompt text:
 
@@ -855,3 +855,6 @@ Deliverable:
 - Post-rebase Prompt 6 cleanup: re-hid the rebased `pikaci-workspace-deps-*` and `linux-builder-*` operational helpers in `infra`, kept their compatibility aliases intact, and removed them from `just info` so the curated human-facing surface stayed consistent.
 - Reviewed the post-rebase Prompt 6 cleanup and found no remaining regressions in the curated command surface; hidden infra helpers still resolve through their preserved root aliases.
 - Next step is Prompt 7: consolidate the release-secret helper scripts now that the release/version flow, agent/demo env logic, and command-surface cleanup have all landed.
+- Completed Prompt 7 by moving age decryption, `AGE_SECRET_KEY` temp-file handling, YubiKey identity-file selection, encrypted env parsing, and release recipient loading into `scripts/lib/release-secrets.sh`, with the existing public scripts reduced to thin wrappers.
+- Review note: `read-keystore-password`, `read-zapstore-sign-with`, `decrypt-keystore`, `encrypt-zapstore-signing`, and the decrypt/test portions of `init-release-secrets` now all share the same helper surface, and `init-release-secrets` no longer uses a fixed temp path for the generated CI private key.
+- Review tradeoff: the external script entrypoints and env overrides stayed intact; no Prompt 8 was added because the remaining cleanup work is not yet shaped into a comparably bounded slice.

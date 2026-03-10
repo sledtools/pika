@@ -81,6 +81,276 @@ pub enum MicrovmAgentBackend {
     },
 }
 
+pub const GUEST_AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
+pub const GUEST_AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
+pub const GUEST_STARTUP_PLAN_PATH: &str = "workspace/pika-agent/startup-plan.json";
+pub const GUEST_AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
+pub const GUEST_READY_MARKER_PATH: &str = "workspace/pika-agent/service-ready.json";
+pub const GUEST_FAILED_MARKER_PATH: &str = "workspace/pika-agent/service-failed.json";
+pub const GUEST_LOG_PATH: &str = "workspace/pika-agent/agent.log";
+pub const GUEST_PID_PATH: &str = "workspace/pika-agent/agent.pid";
+pub const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
+pub const GUEST_OPENCLAW_EXTENSION_ROOT: &str =
+    "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuestServiceKind {
+    PikachatDaemon,
+    OpenclawGateway,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuestServiceBackendMode {
+    Native,
+    Acp,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GuestStartupPlan {
+    pub agent_kind: MicrovmAgentKind,
+    pub service_kind: GuestServiceKind,
+    /// Authoritative for the guest service startup contract.
+    ///
+    /// `service` must encode a backend-specific payload that agrees with this mode for both
+    /// `PikachatDaemon` and `OpenclawGateway`.
+    pub backend_mode: GuestServiceBackendMode,
+    pub daemon_state_dir: String,
+    pub service: GuestServiceLaunch,
+    pub readiness_check: GuestServiceReadinessCheck,
+    /// Persisted for debugging/inspection and kept explicit in the startup contract.
+    ///
+    /// These paths are fixed to the shared guest layout today. Host-side status handling
+    /// still reads the canonical marker paths directly, so callers must not treat these as
+    /// free-form overrides.
+    #[serde(default)]
+    pub artifacts: GuestStartupArtifacts,
+    pub exit_failure_reason: String,
+}
+
+impl GuestStartupPlan {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.service.kind() != self.service_kind {
+            return Err(format!(
+                "guest startup plan service_kind mismatch: {:?} vs {:?}",
+                self.service_kind,
+                self.service.kind()
+            ));
+        }
+
+        match (self.agent_kind, self.service_kind) {
+            (MicrovmAgentKind::Pi, GuestServiceKind::PikachatDaemon)
+            | (MicrovmAgentKind::Openclaw, GuestServiceKind::OpenclawGateway) => {}
+            (agent_kind, service_kind) => {
+                return Err(format!(
+                    "guest startup plan agent_kind/service_kind mismatch: {:?} vs {:?}",
+                    agent_kind, service_kind
+                ));
+            }
+        }
+
+        match (&self.service, self.backend_mode) {
+            (
+                GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(_),
+                },
+                GuestServiceBackendMode::Acp,
+            )
+            | (
+                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+                GuestServiceBackendMode::Native,
+            ) => {}
+            (
+                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+                GuestServiceBackendMode::Acp,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=acp requires PikachatDaemon.acp_backend"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(_),
+                },
+                GuestServiceBackendMode::Native,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=native requires PikachatDaemon.acp_backend to be absent"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
+                    ..
+                },
+                GuestServiceBackendMode::Acp,
+            )
+            | (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Native,
+                    ..
+                },
+                GuestServiceBackendMode::Native,
+            ) => {}
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Native,
+                    ..
+                },
+                GuestServiceBackendMode::Acp,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=acp requires OpenclawGateway.daemon_backend=acp"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
+                    ..
+                },
+                GuestServiceBackendMode::Native,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=native requires OpenclawGateway.daemon_backend=native"
+                        .to_string(),
+                );
+            }
+        }
+
+        self.artifacts.validate_canonical_paths()?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuestServiceLaunch {
+    PikachatDaemon {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        acp_backend: Option<GuestAcpBackend>,
+    },
+    OpenclawGateway {
+        exec_command: String,
+        state_dir: String,
+        config_path: String,
+        gateway_port: u16,
+        daemon_backend: GuestOpenclawDaemonBackend,
+    },
+}
+
+impl GuestServiceLaunch {
+    pub fn kind(&self) -> GuestServiceKind {
+        match self {
+            Self::PikachatDaemon { .. } => GuestServiceKind::PikachatDaemon,
+            Self::OpenclawGateway { .. } => GuestServiceKind::OpenclawGateway,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GuestAcpBackend {
+    pub exec_command: String,
+    pub cwd: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuestOpenclawDaemonBackend {
+    Native,
+    Acp {
+        #[serde(flatten)]
+        acp_backend: GuestAcpBackend,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuestServiceReadinessCheck {
+    LogContains {
+        path: String,
+        pattern: String,
+        ready_probe: String,
+        timeout_failure_reason: String,
+    },
+    HttpGetOk {
+        url: String,
+        ready_probe: String,
+        timeout_failure_reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GuestStartupArtifacts {
+    pub startup_plan_path: String,
+    pub identity_seed_path: String,
+    pub ready_marker_path: String,
+    pub failed_marker_path: String,
+    pub log_path: String,
+    pub pid_path: String,
+}
+
+impl Default for GuestStartupArtifacts {
+    fn default() -> Self {
+        Self {
+            startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
+            identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
+            ready_marker_path: GUEST_READY_MARKER_PATH.to_string(),
+            failed_marker_path: GUEST_FAILED_MARKER_PATH.to_string(),
+            log_path: GUEST_LOG_PATH.to_string(),
+            pid_path: GUEST_PID_PATH.to_string(),
+        }
+    }
+}
+
+impl GuestStartupArtifacts {
+    pub fn validate_canonical_paths(&self) -> Result<(), String> {
+        let canonical = Self::default();
+        for (field, actual, expected) in [
+            (
+                "startup_plan_path",
+                self.startup_plan_path.as_str(),
+                canonical.startup_plan_path.as_str(),
+            ),
+            (
+                "identity_seed_path",
+                self.identity_seed_path.as_str(),
+                canonical.identity_seed_path.as_str(),
+            ),
+            (
+                "ready_marker_path",
+                self.ready_marker_path.as_str(),
+                canonical.ready_marker_path.as_str(),
+            ),
+            (
+                "failed_marker_path",
+                self.failed_marker_path.as_str(),
+                canonical.failed_marker_path.as_str(),
+            ),
+            (
+                "log_path",
+                self.log_path.as_str(),
+                canonical.log_path.as_str(),
+            ),
+            (
+                "pid_path",
+                self.pid_path.as_str(),
+                canonical.pid_path.as_str(),
+            ),
+        ] {
+            if actual != expected {
+                return Err(format!(
+                    "guest startup plan artifacts.{field} must use canonical path {expected:?}, got {actual:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct AgentProvisionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,6 +369,8 @@ pub struct SpawnerGuestAutostartRequest {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub files: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_plan: Option<GuestStartupPlan>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -513,6 +785,217 @@ mod tests {
     fn spawner_create_vm_request_requires_guest_autostart() {
         let json = json!({});
         assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
+    }
+
+    #[test]
+    fn guest_startup_artifacts_default_to_shared_paths() {
+        let artifacts = GuestStartupArtifacts::default();
+        assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
+        assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
+        assert_eq!(artifacts.ready_marker_path, GUEST_READY_MARKER_PATH);
+        assert_eq!(artifacts.failed_marker_path, GUEST_FAILED_MARKER_PATH);
+        assert_eq!(artifacts.log_path, GUEST_LOG_PATH);
+        assert_eq!(artifacts.pid_path, GUEST_PID_PATH);
+    }
+
+    #[test]
+    fn guest_startup_plan_round_trips_through_guest_autostart_request() {
+        let plan = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::PikachatDaemon,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::PikachatDaemon {
+                acp_backend: Some(GuestAcpBackend {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                }),
+            },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: GUEST_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        };
+        let request = SpawnerGuestAutostartRequest {
+            command: GUEST_AUTOSTART_COMMAND.to_string(),
+            env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
+            files: BTreeMap::from([(GUEST_STARTUP_PLAN_PATH.to_string(), "{}".to_string())]),
+            startup_plan: Some(plan.clone()),
+        };
+
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: SpawnerGuestAutostartRequest =
+            serde_json::from_str(&encoded).expect("decode request");
+
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.startup_plan, Some(plan));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_mismatched_service_kind() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::OpenclawGateway,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: GUEST_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject mismatched service kind");
+        assert!(err.contains("service_kind mismatch"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_acp_backend_mode_without_acp_payload() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::PikachatDaemon,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: GUEST_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject ACP mode without ACP payload");
+        assert!(err.contains("backend_mode=acp"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_native_backend_mode_with_acp_payload() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::PikachatDaemon,
+            backend_mode: GuestServiceBackendMode::Native,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::PikachatDaemon {
+                acp_backend: Some(GuestAcpBackend {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                }),
+            },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: GUEST_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject native mode with ACP payload");
+        assert!(err.contains("backend_mode=native"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_openclaw_acp_mode_with_native_daemon_backend() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Openclaw,
+            service_kind: GuestServiceKind::OpenclawGateway,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::OpenclawGateway {
+                exec_command: "npx -y openclaw".to_string(),
+                state_dir: "/root/pika-agent/openclaw".to_string(),
+                config_path: GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                gateway_port: 18789,
+                daemon_backend: GuestOpenclawDaemonBackend::Native,
+            },
+            readiness_check: GuestServiceReadinessCheck::HttpGetOk {
+                url: "http://127.0.0.1:18789/health".to_string(),
+                ready_probe: "openclaw_gateway_health".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "openclaw_gateway_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject OpenClaw ACP mode without ACP daemon backend");
+        assert!(err.contains("backend_mode=acp"));
+        assert!(err.contains("OpenclawGateway.daemon_backend=acp"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_openclaw_native_mode_with_acp_daemon_backend() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Openclaw,
+            service_kind: GuestServiceKind::OpenclawGateway,
+            backend_mode: GuestServiceBackendMode::Native,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::OpenclawGateway {
+                exec_command: "npx -y openclaw".to_string(),
+                state_dir: "/root/pika-agent/openclaw".to_string(),
+                config_path: GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                gateway_port: 18789,
+                daemon_backend: GuestOpenclawDaemonBackend::Acp {
+                    acp_backend: GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    },
+                },
+            },
+            readiness_check: GuestServiceReadinessCheck::HttpGetOk {
+                url: "http://127.0.0.1:18789/health".to_string(),
+                ready_probe: "openclaw_gateway_health".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+            },
+            artifacts: GuestStartupArtifacts::default(),
+            exit_failure_reason: "openclaw_gateway_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject OpenClaw native mode with ACP daemon backend");
+        assert!(err.contains("backend_mode=native"));
+        assert!(err.contains("OpenclawGateway.daemon_backend=native"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_non_canonical_artifact_paths() {
+        let err = GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::PikachatDaemon,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: "/root/pika-agent/state".to_string(),
+            service: GuestServiceLaunch::PikachatDaemon {
+                acp_backend: Some(GuestAcpBackend {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                }),
+            },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: GUEST_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts: GuestStartupArtifacts {
+                ready_marker_path: "workspace/custom/service-ready.json".to_string(),
+                ..GuestStartupArtifacts::default()
+            },
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        }
+        .validate()
+        .expect_err("plan should reject non-canonical artifact paths");
+        assert!(err.contains("artifacts.ready_marker_path"));
+        assert!(err.contains(GUEST_READY_MARKER_PATH));
     }
 
     #[test]

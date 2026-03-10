@@ -470,7 +470,8 @@ struct AgentMicrovmArgs {
     #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
     microvm_kind: Option<AgentMicrovmKindCli>,
 
-    /// Select the microVM guest backend used for agent replies.
+    /// Override the microVM guest backend used for agent replies.
+    /// When omitted, the backend defaults from --microvm-kind.
     #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
     microvm_backend: Option<AgentMicrovmBackendCli>,
 
@@ -2785,6 +2786,66 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_requested_kind_and_typed_startup_phase_drive_waiting_text() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating",
+            "startup_phase": "waiting_for_service_ready"
+        });
+        let phase = parse_agent_startup_phase(&payload).expect("startup phase");
+
+        let pi_cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "chat",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "pi",
+            "hello",
+        ])
+        .expect("parse pi chat args");
+        let pi_kind = match pi_cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::Chat { microvm, .. },
+            } => agent_provision_request(&microvm)
+                .and_then(|request| request.microvm)
+                .and_then(|microvm| microvm.kind),
+            _ => panic!("expected agent chat command"),
+        };
+        assert_eq!(pi_kind, Some(MicrovmAgentKind::Pi));
+        assert!(
+            agent_startup_status_message(pi_kind, phase).contains("ACP"),
+            "pi waiting text should mention ACP readiness"
+        );
+
+        let openclaw_cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "chat",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "openclaw",
+            "hello",
+        ])
+        .expect("parse openclaw chat args");
+        let openclaw_kind = match openclaw_cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::Chat { microvm, .. },
+            } => agent_provision_request(&microvm)
+                .and_then(|request| request.microvm)
+                .and_then(|microvm| microvm.kind),
+            _ => panic!("expected agent chat command"),
+        };
+        assert_eq!(openclaw_kind, Some(MicrovmAgentKind::Openclaw));
+        assert!(
+            agent_startup_status_message(openclaw_kind, phase).contains("OpenClaw"),
+            "openclaw waiting text should mention OpenClaw readiness"
+        );
+    }
+
+    #[test]
     fn agent_new_http_parse() {
         let parsed = parse_agent_new(&[
             "pikachat",
@@ -2896,6 +2957,30 @@ mod tests {
                 cmd: AgentCommand::New { microvm, .. },
             } => {
                 assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
+                assert!(microvm.microvm_backend.is_none());
+            }
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    #[test]
+    fn agent_new_parses_pi_kind_without_backend() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "pi",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Pi));
                 assert!(microvm.microvm_backend.is_none());
             }
             _ => panic!("expected agent new command"),

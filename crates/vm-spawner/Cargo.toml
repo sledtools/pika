@@ -20,4 +20,6 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+nostr-sdk = { workspace = true }
+pika-agent-microvm = { path = "../pika-agent-microvm" }
 tempfile = { workspace = true }

@@ -4,26 +4,32 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use nostr_sdk::prelude::PublicKey;
 use pika_agent_control_plane::{
+    GuestAcpBackend, GuestOpenclawDaemonBackend, GuestServiceBackendMode, GuestServiceKind,
+    GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan,
     MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
 
+pub use pika_agent_control_plane::{
+    GUEST_AUTOSTART_COMMAND as AUTOSTART_COMMAND,
+    GUEST_AUTOSTART_IDENTITY_PATH as AUTOSTART_IDENTITY_PATH,
+    GUEST_AUTOSTART_SCRIPT_PATH as AUTOSTART_SCRIPT_PATH,
+    GUEST_FAILED_MARKER_PATH as AGENT_FAILED_PATH, GUEST_LOG_PATH as AGENT_LOG_PATH,
+    GUEST_OPENCLAW_CONFIG_PATH as OPENCLAW_CONFIG_PATH,
+    GUEST_OPENCLAW_EXTENSION_ROOT as OPENCLAW_EXTENSION_ROOT, GUEST_PID_PATH as AGENT_PID_PATH,
+    GUEST_READY_MARKER_PATH as AGENT_READY_PATH, GUEST_STARTUP_PLAN_PATH as STARTUP_PLAN_PATH,
+};
+
 pub const DEFAULT_SPAWNER_URL: &str = "http://127.0.0.1:8080";
 
-pub const AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
-pub const AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
-pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
-pub const AGENT_READY_PATH: &str = "workspace/pika-agent/service-ready.json";
-pub const AGENT_FAILED_PATH: &str = "workspace/pika-agent/service-failed.json";
-pub const OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
-pub const OPENCLAW_EXTENSION_ROOT: &str =
-    "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
 pub const DEFAULT_ACP_EXEC_COMMAND: &str = "npx -y pi-acp";
 pub const DEFAULT_ACP_CWD: &str = "/root/pika-agent/acp";
 pub const DEFAULT_OPENCLAW_EXEC_COMMAND: &str = "npx -y openclaw";
 pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
+pub const DEFAULT_DAEMON_STATE_DIR: &str = "/root/pika-agent/state";
+pub const DEFAULT_OPENCLAW_STATE_DIR: &str = "/root/pika-agent/openclaw";
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -284,6 +290,7 @@ pub fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
 }
 
 pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams {
+    let kind = resolve_kind(params.kind);
     ResolvedMicrovmParams {
         spawner_url: params
             .spawner_url
@@ -292,8 +299,8 @@ pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams 
             .filter(|s| !s.is_empty())
             .unwrap_or(DEFAULT_SPAWNER_URL)
             .to_string(),
-        kind: resolve_kind(params.kind),
-        backend: resolve_backend(params.backend.as_ref()),
+        kind,
+        backend: resolve_backend(kind, params.backend.as_ref()),
     }
 }
 
@@ -307,6 +314,7 @@ pub fn validate_resolved_params(params: &ResolvedMicrovmParams) -> anyhow::Resul
     }
     Ok(())
 }
+
 fn resolve_kind(kind: Option<MicrovmAgentKind>) -> ResolvedMicrovmAgentKind {
     match kind.unwrap_or(MicrovmAgentKind::Pi) {
         MicrovmAgentKind::Pi => ResolvedMicrovmAgentKind::Pi,
@@ -314,9 +322,12 @@ fn resolve_kind(kind: Option<MicrovmAgentKind>) -> ResolvedMicrovmAgentKind {
     }
 }
 
-fn resolve_backend(backend: Option<&MicrovmAgentBackend>) -> ResolvedMicrovmAgentBackend {
+fn resolve_backend(
+    kind: ResolvedMicrovmAgentKind,
+    backend: Option<&MicrovmAgentBackend>,
+) -> ResolvedMicrovmAgentBackend {
     match backend {
-        Some(MicrovmAgentBackend::Native) | None => ResolvedMicrovmAgentBackend::Native,
+        Some(MicrovmAgentBackend::Native) => ResolvedMicrovmAgentBackend::Native,
         Some(MicrovmAgentBackend::Acp { exec_command, cwd }) => ResolvedMicrovmAgentBackend::Acp {
             exec_command: exec_command
                 .as_deref()
@@ -331,6 +342,13 @@ fn resolve_backend(backend: Option<&MicrovmAgentBackend>) -> ResolvedMicrovmAgen
                 .unwrap_or(DEFAULT_ACP_CWD)
                 .to_string(),
         },
+        None => match kind {
+            ResolvedMicrovmAgentKind::Pi => ResolvedMicrovmAgentBackend::Acp {
+                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                cwd: DEFAULT_ACP_CWD.to_string(),
+            },
+            ResolvedMicrovmAgentKind::Openclaw => ResolvedMicrovmAgentBackend::Native,
+        },
     }
 }
 
@@ -341,33 +359,12 @@ pub fn build_create_vm_request(
     bot_pubkey_hex: &str,
     params: &ResolvedMicrovmParams,
 ) -> CreateVmRequest {
+    let startup_plan = guest_startup_plan(params);
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), owner_pubkey.to_hex());
     env.insert("PIKA_RELAY_URLS".to_string(), relay_urls.join(","));
     env.insert("PIKA_BOT_PUBKEY".to_string(), bot_pubkey_hex.to_string());
-    env.insert(
-        "PIKA_AGENT_KIND".to_string(),
-        match params.kind {
-            ResolvedMicrovmAgentKind::Pi => "pi".to_string(),
-            ResolvedMicrovmAgentKind::Openclaw => "openclaw".to_string(),
-        },
-    );
-    match &params.backend {
-        ResolvedMicrovmAgentBackend::Native => {
-            env.insert("PIKA_AGENT_BACKEND_MODE".to_string(), "native".to_string());
-        }
-        ResolvedMicrovmAgentBackend::Acp { exec_command, cwd } => {
-            env.insert("PIKA_AGENT_BACKEND_MODE".to_string(), "acp".to_string());
-            env.insert("PIKA_AGENT_ACP_EXEC".to_string(), exec_command.clone());
-            env.insert("PIKA_AGENT_ACP_CWD".to_string(), cwd.clone());
-        }
-    }
-    for key in [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "PI_MODEL",
-        "PIKA_OPENCLAW_EXEC",
-    ] {
+    for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PI_MODEL"] {
         if let Ok(value) = std::env::var(key) {
             if value.trim().is_empty() {
                 continue;
@@ -379,7 +376,11 @@ pub fn build_create_vm_request(
     let mut files = BTreeMap::new();
     files.insert(
         AUTOSTART_SCRIPT_PATH.to_string(),
-        microvm_autostart_script().to_string(),
+        microvm_autostart_script(),
+    );
+    files.insert(
+        STARTUP_PLAN_PATH.to_string(),
+        startup_plan_file(&startup_plan),
     );
     files.insert(
         AUTOSTART_IDENTITY_PATH.to_string(),
@@ -388,7 +389,7 @@ pub fn build_create_vm_request(
     if matches!(params.kind, ResolvedMicrovmAgentKind::Openclaw) {
         files.insert(
             OPENCLAW_CONFIG_PATH.to_string(),
-            openclaw_gateway_config(relay_urls, &params.backend),
+            openclaw_gateway_config(relay_urls, &startup_plan),
         );
         files.extend(openclaw_extension_files());
     }
@@ -398,8 +399,118 @@ pub fn build_create_vm_request(
             command: AUTOSTART_COMMAND.to_string(),
             env,
             files,
+            startup_plan: Some(startup_plan),
         },
     }
+}
+
+fn guest_startup_plan(params: &ResolvedMicrovmParams) -> GuestStartupPlan {
+    let artifacts = GuestStartupArtifacts::default();
+    match (&params.kind, &params.backend) {
+        (ResolvedMicrovmAgentKind::Pi, ResolvedMicrovmAgentBackend::Acp { exec_command, cwd }) => {
+            GuestStartupPlan {
+                agent_kind: MicrovmAgentKind::Pi,
+                service_kind: GuestServiceKind::PikachatDaemon,
+                backend_mode: GuestServiceBackendMode::Acp,
+                daemon_state_dir: DEFAULT_DAEMON_STATE_DIR.to_string(),
+                service: GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(GuestAcpBackend {
+                        exec_command: exec_command.clone(),
+                        cwd: cwd.clone(),
+                    }),
+                },
+                readiness_check: GuestServiceReadinessCheck::LogContains {
+                    path: AGENT_LOG_PATH.to_string(),
+                    pattern: "\"type\":\"ready\"".to_string(),
+                    ready_probe: "daemon_ready_event".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+                },
+                artifacts,
+                exit_failure_reason: "pi_agent_exited".to_string(),
+            }
+        }
+        (ResolvedMicrovmAgentKind::Pi, ResolvedMicrovmAgentBackend::Native) => GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Pi,
+            service_kind: GuestServiceKind::PikachatDaemon,
+            backend_mode: GuestServiceBackendMode::Native,
+            daemon_state_dir: DEFAULT_DAEMON_STATE_DIR.to_string(),
+            service: GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+            readiness_check: GuestServiceReadinessCheck::LogContains {
+                path: AGENT_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            },
+            artifacts,
+            exit_failure_reason: "pi_agent_exited".to_string(),
+        },
+        (
+            ResolvedMicrovmAgentKind::Openclaw,
+            ResolvedMicrovmAgentBackend::Acp { exec_command, cwd },
+        ) => GuestStartupPlan {
+            agent_kind: MicrovmAgentKind::Openclaw,
+            service_kind: GuestServiceKind::OpenclawGateway,
+            backend_mode: GuestServiceBackendMode::Acp,
+            daemon_state_dir: DEFAULT_DAEMON_STATE_DIR.to_string(),
+            service: GuestServiceLaunch::OpenclawGateway {
+                exec_command: resolved_openclaw_exec_command(),
+                state_dir: DEFAULT_OPENCLAW_STATE_DIR.to_string(),
+                config_path: OPENCLAW_CONFIG_PATH.to_string(),
+                gateway_port: DEFAULT_OPENCLAW_GATEWAY_PORT,
+                daemon_backend: GuestOpenclawDaemonBackend::Acp {
+                    acp_backend: GuestAcpBackend {
+                        exec_command: exec_command.clone(),
+                        cwd: cwd.clone(),
+                    },
+                },
+            },
+            readiness_check: GuestServiceReadinessCheck::HttpGetOk {
+                url: format!("http://127.0.0.1:{DEFAULT_OPENCLAW_GATEWAY_PORT}/health"),
+                ready_probe: "openclaw_gateway_health".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+            },
+            artifacts,
+            exit_failure_reason: "openclaw_gateway_exited".to_string(),
+        },
+        (ResolvedMicrovmAgentKind::Openclaw, ResolvedMicrovmAgentBackend::Native) => {
+            GuestStartupPlan {
+                agent_kind: MicrovmAgentKind::Openclaw,
+                service_kind: GuestServiceKind::OpenclawGateway,
+                backend_mode: GuestServiceBackendMode::Native,
+                daemon_state_dir: DEFAULT_DAEMON_STATE_DIR.to_string(),
+                service: GuestServiceLaunch::OpenclawGateway {
+                    exec_command: resolved_openclaw_exec_command(),
+                    state_dir: DEFAULT_OPENCLAW_STATE_DIR.to_string(),
+                    config_path: OPENCLAW_CONFIG_PATH.to_string(),
+                    gateway_port: DEFAULT_OPENCLAW_GATEWAY_PORT,
+                    daemon_backend: GuestOpenclawDaemonBackend::Native,
+                },
+                readiness_check: GuestServiceReadinessCheck::HttpGetOk {
+                    url: format!("http://127.0.0.1:{DEFAULT_OPENCLAW_GATEWAY_PORT}/health"),
+                    ready_probe: "openclaw_gateway_health".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+                },
+                artifacts,
+                exit_failure_reason: "openclaw_gateway_exited".to_string(),
+            }
+        }
+    }
+}
+
+fn resolved_openclaw_exec_command() -> String {
+    std::env::var("PIKA_OPENCLAW_EXEC")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_OPENCLAW_EXEC_COMMAND.to_string())
+}
+
+fn startup_plan_file(startup_plan: &GuestStartupPlan) -> String {
+    startup_plan
+        .validate()
+        .expect("startup plan must be internally consistent");
+    let body = serde_json::to_string_pretty(startup_plan).expect("serialize startup plan");
+    format!("{body}\n")
 }
 
 pub fn spawner_create_error(spawner_url: &str, err: anyhow::Error) -> anyhow::Error {
@@ -420,55 +531,82 @@ pub fn bot_identity_file(secret_hex: &str, pubkey_hex: &str) -> String {
     format!("{body}\n")
 }
 
-pub fn microvm_autostart_script() -> &'static str {
-    r#"#!/usr/bin/env bash
+pub fn microvm_autostart_script() -> String {
+    format!(
+        r#"#!/usr/bin/env bash
 set -euo pipefail
 
-# Keep Marmot/MLS state under /root so VM restart/recovery preserves context.
-STATE_DIR="/root/pika-agent/state"
-READY_PATH="/workspace/pika-agent/service-ready.json"
-FAILED_PATH="/workspace/pika-agent/service-failed.json"
+STARTUP_PLAN_PATH="/{startup_plan_path}"
 agent_pid=""
-cleanup_agent() {
-  if [[ -n "${agent_pid:-}" ]]; then
+
+cleanup_agent() {{
+  if [[ -n "${{agent_pid:-}}" ]]; then
     kill "$agent_pid" 2>/dev/null || true
     wait "$agent_pid" 2>/dev/null || true
   fi
-}
-trap cleanup_agent EXIT TERM INT
-mkdir -p "$STATE_DIR"
-# Seed the durable state dir from the provisioned identity on first boot only.
-if [[ -f "/workspace/pika-agent/state/identity.json" && ! -f "$STATE_DIR/identity.json" ]]; then
-  cp "/workspace/pika-agent/state/identity.json" "$STATE_DIR/identity.json"
-fi
-rm -f "$READY_PATH" "$FAILED_PATH"
+}}
 
-if [[ -z "${PIKA_OWNER_PUBKEY:-}" ]]; then
+plan_value() {{
+  jq -er "$1" "$STARTUP_PLAN_PATH"
+}}
+
+workspace_path() {{
+  printf '/%s' "$1"
+}}
+
+trap cleanup_agent EXIT TERM INT
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "[microvm-agent] missing jq in guest image; startup plan runner requires jq" >&2
+  exit 1
+fi
+
+if [[ ! -f "$STARTUP_PLAN_PATH" ]]; then
+  echo "[microvm-agent] missing startup plan at $STARTUP_PLAN_PATH" >&2
+  exit 1
+fi
+
+agent_kind="$(plan_value '.agent_kind')"
+service_kind="$(plan_value '.service_kind')"
+backend_mode="$(plan_value '.backend_mode')"
+daemon_state_dir="$(plan_value '.daemon_state_dir')"
+ready_path="$(workspace_path "$(plan_value '.artifacts.ready_marker_path')")"
+failed_path="$(workspace_path "$(plan_value '.artifacts.failed_marker_path')")"
+identity_seed_path="$(workspace_path "$(plan_value '.artifacts.identity_seed_path')")"
+exit_failure_reason="$(plan_value '.exit_failure_reason')"
+
+mkdir -p "$daemon_state_dir"
+if [[ -f "$identity_seed_path" && ! -f "$daemon_state_dir/identity.json" ]]; then
+  cp "$identity_seed_path" "$daemon_state_dir/identity.json"
+fi
+rm -f "$ready_path" "$failed_path"
+
+if [[ -z "${{PIKA_OWNER_PUBKEY:-}}" ]]; then
   echo "[microvm-agent] missing PIKA_OWNER_PUBKEY" >&2
   exit 1
 fi
-if [[ -z "${PIKA_RELAY_URLS:-}" ]]; then
+if [[ -z "${{PIKA_RELAY_URLS:-}}" ]]; then
   echo "[microvm-agent] missing PIKA_RELAY_URLS" >&2
   exit 1
 fi
 
 relay_args=()
-IFS=',' read -r -a relay_values <<< "${PIKA_RELAY_URLS}"
-for relay in "${relay_values[@]}"; do
-  relay="${relay#"${relay%%[![:space:]]*}"}"
-  relay="${relay%"${relay##*[![:space:]]}"}"
+IFS=',' read -r -a relay_values <<< "${{PIKA_RELAY_URLS}}"
+for relay in "${{relay_values[@]}}"; do
+  relay="${{relay#"${{relay%%[![:space:]]*}}"}}"
+  relay="${{relay%"${{relay##*[![:space:]]}}"}}"
   if [[ -n "$relay" ]]; then
     relay_args+=(--relay "$relay")
   fi
 done
-if [[ ${#relay_args[@]} -eq 0 ]]; then
+if [[ ${{#relay_args[@]}} -eq 0 ]]; then
   echo "[microvm-agent] no valid relays in PIKA_RELAY_URLS" >&2
   exit 1
 fi
 
 bin=""
-if [[ -n "${PIKA_PIKACHAT_BIN:-}" && -x "${PIKA_PIKACHAT_BIN}" ]]; then
-  bin="${PIKA_PIKACHAT_BIN}"
+if [[ -n "${{PIKA_PIKACHAT_BIN:-}}" && -x "${{PIKA_PIKACHAT_BIN}}" ]]; then
+  bin="${{PIKA_PIKACHAT_BIN}}"
 elif command -v pikachat >/dev/null 2>&1; then
   bin="pikachat"
 fi
@@ -480,184 +618,205 @@ if [[ "$bin" != "pikachat" ]]; then
   export PATH="$(dirname "$bin"):$PATH"
 fi
 
-agent_kind="${PIKA_AGENT_KIND:-pi}"
-backend_mode="${PIKA_AGENT_BACKEND_MODE:-native}"
-
-write_ready_marker() {
+write_ready_marker() {{
   local probe="$1"
-  cat >"$READY_PATH" <<EOF
-{
+  cat >"$ready_path" <<EOF
+{{
   "ready": true,
-  "agent_kind": "${agent_kind}",
-  "backend_mode": "${backend_mode}",
-  "probe": "${probe}"
-}
+  "agent_kind": "${{agent_kind}}",
+  "backend_mode": "${{backend_mode}}",
+  "service_kind": "${{service_kind}}",
+  "probe": "${{probe}}"
+}}
 EOF
-  rm -f "$FAILED_PATH"
-}
+  rm -f "$failed_path"
+}}
 
-write_failed_marker() {
+write_failed_marker() {{
   local reason="$1"
-  cat >"$FAILED_PATH" <<EOF
-{
+  cat >"$failed_path" <<EOF
+{{
   "ready": false,
-  "agent_kind": "${agent_kind}",
-  "backend_mode": "${backend_mode}",
-  "reason": "${reason}"
-}
+  "agent_kind": "${{agent_kind}}",
+  "backend_mode": "${{backend_mode}}",
+  "service_kind": "${{service_kind}}",
+  "reason": "${{reason}}"
+}}
 EOF
-  rm -f "$READY_PATH"
-}
+  rm -f "$ready_path"
+}}
 
-wait_for_pi_ready() {
-  local agent_pid="$1"
-  local timeout_sec="${PIKA_AGENT_READY_TIMEOUT_SECS:-120}"
+wait_for_service_ready() {{
+  local service_pid="$1"
+  local timeout_sec="${{PIKA_AGENT_READY_TIMEOUT_SECS:-120}}"
   local deadline=$((SECONDS + timeout_sec))
+  local readiness_kind
+  local ready_probe
+  local timeout_failure_reason
+  local readiness_path=""
+  local readiness_pattern=""
+  local readiness_url=""
+
+  readiness_kind="$(plan_value '.readiness_check.kind')"
+  ready_probe="$(plan_value '.readiness_check.ready_probe')"
+  timeout_failure_reason="$(plan_value '.readiness_check.timeout_failure_reason')"
+
+  case "$readiness_kind" in
+    log_contains)
+      readiness_path="$(workspace_path "$(plan_value '.readiness_check.path')")"
+      readiness_pattern="$(plan_value '.readiness_check.pattern')"
+      ;;
+    http_get_ok)
+      readiness_url="$(plan_value '.readiness_check.url')"
+      ;;
+    *)
+      echo "[microvm-agent] unsupported readiness check kind: $readiness_kind" >&2
+      exit 1
+      ;;
+  esac
+
   while (( SECONDS < deadline )); do
-    if ! kill -0 "$agent_pid" 2>/dev/null; then
-      wait "$agent_pid"
+    if ! kill -0 "$service_pid" 2>/dev/null; then
+      wait "$service_pid"
       return $?
     fi
-    if [[ -f /workspace/pika-agent/agent.log ]] && grep -q '"type":"ready"' /workspace/pika-agent/agent.log; then
-      write_ready_marker "daemon_ready_event"
-      return 0
-    fi
-    sleep 1
-  done
-  write_failed_marker "timeout_waiting_for_daemon_ready"
-  kill "$agent_pid" 2>/dev/null || true
-  wait "$agent_pid" || true
-  return 1
-}
-
-wait_for_openclaw_ready() {
-  local agent_pid="$1"
-  local port="${PIKA_OPENCLAW_GATEWAY_PORT:-18789}"
-  local timeout_sec="${PIKA_AGENT_READY_TIMEOUT_SECS:-120}"
-  local deadline=$((SECONDS + timeout_sec))
-  while (( SECONDS < deadline )); do
-    if ! kill -0 "$agent_pid" 2>/dev/null; then
-      wait "$agent_pid"
-      return $?
-    fi
-    if curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-      write_ready_marker "openclaw_gateway_health"
-      return 0
-    fi
-    sleep 1
-  done
-  write_failed_marker "timeout_waiting_for_openclaw_health"
-  kill "$agent_pid" 2>/dev/null || true
-  wait "$agent_pid" || true
-  return 1
-}
-case "$agent_kind" in
-  pi)
-    echo "[microvm-agent] starting pi agent daemon via $bin" >&2
-    daemon_args=(
-      daemon
-      --state-dir "$STATE_DIR"
-      --auto-accept-welcomes
-      --allow-pubkey "${PIKA_OWNER_PUBKEY}"
-      "${relay_args[@]}"
-    )
-    case "$backend_mode" in
-      native)
-        ;;
-      acp)
-        acp_exec="${PIKA_AGENT_ACP_EXEC:-npx -y pi-acp}"
-        acp_cwd="${PIKA_AGENT_ACP_CWD:-/root/pika-agent/acp}"
-        if [[ -z "$acp_exec" ]]; then
-          echo "[microvm-agent] ACP backend requires a non-empty ACP exec command" >&2
-          exit 1
+    case "$readiness_kind" in
+      log_contains)
+        if [[ -f "$readiness_path" ]] && grep -q -- "$readiness_pattern" "$readiness_path"; then
+          write_ready_marker "$ready_probe"
+          return 0
         fi
-        mkdir -p "$acp_cwd"
-        daemon_args+=(--acp-exec "$acp_exec" --acp-cwd "$acp_cwd")
         ;;
-      *)
-        echo "[microvm-agent] unsupported backend mode for pi agent (expected native or acp): $backend_mode" >&2
-        exit 1
+      http_get_ok)
+        if curl -fsS --max-time 2 "$readiness_url" >/dev/null 2>&1; then
+          write_ready_marker "$ready_probe"
+          return 0
+        fi
         ;;
     esac
-    "$bin" "${daemon_args[@]}" &
-    agent_pid=$!
-    if ! wait_for_pi_ready "$agent_pid"; then
+    sleep 1
+  done
+
+  write_failed_marker "$timeout_failure_reason"
+  kill "$service_pid" 2>/dev/null || true
+  wait "$service_pid" || true
+  return 1
+}}
+
+start_service() {{
+  case "$service_kind" in
+    pikachat_daemon)
+      echo "[microvm-agent] starting pikachat daemon via $bin" >&2
+      daemon_args=(
+        daemon
+        --state-dir "$daemon_state_dir"
+        --auto-accept-welcomes
+        --allow-pubkey "${{PIKA_OWNER_PUBKEY}}"
+        "${{relay_args[@]}}"
+      )
+      # backend_mode is authoritative for the daemon launch contract; the ACP payload
+      # only supplies the extra launch arguments when ACP mode is selected.
+      case "$backend_mode" in
+        native)
+          if ! jq -e '.service.acp_backend == null' "$STARTUP_PLAN_PATH" >/dev/null; then
+            echo "[microvm-agent] invalid startup plan: backend_mode=native but ACP payload is present" >&2
+            exit 1
+          fi
+          ;;
+        acp)
+          if ! jq -e '.service.acp_backend != null' "$STARTUP_PLAN_PATH" >/dev/null; then
+            echo "[microvm-agent] invalid startup plan: backend_mode=acp but ACP payload is missing" >&2
+            exit 1
+          fi
+          acp_exec="$(plan_value '.service.acp_backend.exec_command')"
+          acp_cwd="$(plan_value '.service.acp_backend.cwd')"
+          if [[ -z "$acp_exec" ]]; then
+            echo "[microvm-agent] ACP backend requires a non-empty ACP exec command" >&2
+            exit 1
+          fi
+          mkdir -p "$acp_cwd"
+          daemon_args+=(--acp-exec "$acp_exec" --acp-cwd "$acp_cwd")
+          ;;
+        *)
+          echo "[microvm-agent] unsupported daemon backend mode: $backend_mode" >&2
+          exit 1
+          ;;
+      esac
+      "$bin" "${{daemon_args[@]}}" &
+      agent_pid=$!
+      ;;
+    openclaw_gateway)
+      openclaw_exec="$(plan_value '.service.exec_command')"
+      openclaw_state_dir="$(plan_value '.service.state_dir')"
+      openclaw_config_path="$(workspace_path "$(plan_value '.service.config_path')")"
+      gateway_port="$(plan_value '.service.gateway_port | tostring')"
+      if [[ -z "$openclaw_exec" ]]; then
+        echo "[microvm-agent] OpenClaw gateway requires a non-empty exec command" >&2
+        exit 1
+      fi
+      if [[ ! -f "$openclaw_config_path" ]]; then
+        echo "[microvm-agent] missing OpenClaw config at $openclaw_config_path" >&2
+        exit 1
+      fi
+      mkdir -p "$openclaw_state_dir"
+      export OPENCLAW_STATE_DIR="$openclaw_state_dir"
+      export OPENCLAW_CONFIG_PATH="$openclaw_config_path"
+      export OPENCLAW_SKIP_BROWSER_CONTROL_SERVER=1
+      export OPENCLAW_SKIP_GMAIL_WATCHER=1
+      export OPENCLAW_SKIP_CANVAS_HOST=1
+      export OPENCLAW_SKIP_CRON=1
+      export PIKA_OPENCLAW_GATEWAY_PORT="$gateway_port"
+      echo "[microvm-agent] starting OpenClaw gateway via $openclaw_exec" >&2
+      bash -lc "$openclaw_exec gateway --allow-unconfigured" &
+      agent_pid=$!
+      ;;
+    *)
+      echo "[microvm-agent] unsupported startup service kind: $service_kind" >&2
       exit 1
-    fi
-    wait "$agent_pid"
-    status=$?
-    rm -f "$READY_PATH"
-    if [[ $status -ne 0 ]]; then
-      write_failed_marker "pi_agent_exited"
-    else
-      rm -f "$FAILED_PATH"
-    fi
-    exit $status
-    ;;
-  openclaw)
-    openclaw_exec="${PIKA_OPENCLAW_EXEC:-npx -y openclaw}"
-    openclaw_state_dir="/root/pika-agent/openclaw"
-    openclaw_config_path="/workspace/pika-agent/openclaw/openclaw.json"
-    if [[ -z "$openclaw_exec" ]]; then
-      echo "[microvm-agent] openclaw agent requires a non-empty OpenClaw exec command" >&2
-      exit 1
-    fi
-    if [[ ! -f "$openclaw_config_path" ]]; then
-      echo "[microvm-agent] missing OpenClaw config at $openclaw_config_path" >&2
-      exit 1
-    fi
-    mkdir -p "$openclaw_state_dir"
-    export OPENCLAW_STATE_DIR="$openclaw_state_dir"
-    export OPENCLAW_CONFIG_PATH="$openclaw_config_path"
-    export OPENCLAW_SKIP_BROWSER_CONTROL_SERVER=1
-    export OPENCLAW_SKIP_GMAIL_WATCHER=1
-    export OPENCLAW_SKIP_CANVAS_HOST=1
-    export OPENCLAW_SKIP_CRON=1
-    # Keep this default in sync with DEFAULT_OPENCLAW_GATEWAY_PORT and
-    # openclaw_gateway_config() in this module.
-    export PIKA_OPENCLAW_GATEWAY_PORT="${PIKA_OPENCLAW_GATEWAY_PORT:-18789}"
-    echo "[microvm-agent] starting openclaw agent via $openclaw_exec" >&2
-    # Use a login shell so npx/openclaw installed via profile-managed Node setups
-    # are available in the guest PATH.
-    bash -lc "$openclaw_exec gateway --allow-unconfigured" &
-    agent_pid=$!
-    if ! wait_for_openclaw_ready "$agent_pid"; then
-      exit 1
-    fi
-    wait "$agent_pid"
-    status=$?
-    rm -f "$READY_PATH"
-    if [[ $status -ne 0 ]]; then
-      write_failed_marker "openclaw_gateway_exited"
-    else
-      rm -f "$FAILED_PATH"
-    fi
-    exit $status
-    ;;
-  *)
-    echo "[microvm-agent] unsupported agent kind (expected pi or openclaw): $agent_kind" >&2
-    exit 1
-    ;;
-esac
-"#
+      ;;
+  esac
+}}
+
+start_service
+if ! wait_for_service_ready "$agent_pid"; then
+  exit 1
+fi
+wait "$agent_pid"
+status=$?
+rm -f "$ready_path"
+if [[ $status -ne 0 ]]; then
+  write_failed_marker "$exit_failure_reason"
+else
+  rm -f "$failed_path"
+fi
+exit $status
+"#,
+        startup_plan_path = STARTUP_PLAN_PATH,
+    )
 }
 
-fn openclaw_gateway_config(relay_urls: &[String], backend: &ResolvedMicrovmAgentBackend) -> String {
+fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPlan) -> String {
+    startup_plan
+        .validate()
+        .expect("openclaw startup plan must be internally consistent");
+    let GuestServiceLaunch::OpenclawGateway { daemon_backend, .. } = &startup_plan.service else {
+        panic!("openclaw_gateway_config requires OpenClaw startup plan");
+    };
     let mut channel_config = json!({
         "relays": relay_urls,
-        "stateDir": "/root/pika-agent/state",
+        "stateDir": startup_plan.daemon_state_dir,
         "autoAcceptWelcomes": true,
         "groupPolicy": "open",
         "daemonCmd": "pikachat",
     });
-    match backend {
-        ResolvedMicrovmAgentBackend::Native => {
+    match daemon_backend {
+        GuestOpenclawDaemonBackend::Native => {
             channel_config["daemonBackend"] = json!("native");
         }
-        ResolvedMicrovmAgentBackend::Acp { exec_command, cwd } => {
+        GuestOpenclawDaemonBackend::Acp { acp_backend } => {
             channel_config["daemonBackend"] = json!("acp");
-            channel_config["daemonAcpExec"] = json!(exec_command);
-            channel_config["daemonAcpCwd"] = json!(cwd);
+            channel_config["daemonAcpExec"] = json!(acp_backend.exec_command);
+            channel_config["daemonAcpCwd"] = json!(acp_backend.cwd);
         }
     }
     // Keep the plugin entry config and channel config identical so either OpenClaw
@@ -772,6 +931,7 @@ fn expected_openclaw_extension_paths() -> &'static [&'static str] {
         "src/types.ts",
     ]
 }
+
 fn create_vm_timeout() -> Duration {
     let secs = std::env::var("PIKA_MICROVM_CREATE_TIMEOUT_SECS")
         .ok()
@@ -796,7 +956,23 @@ mod tests {
         let defaults = resolve_params(&MicrovmProvisionParams::default());
         assert_eq!(defaults.spawner_url, DEFAULT_SPAWNER_URL);
         assert_eq!(defaults.kind, ResolvedMicrovmAgentKind::Pi);
-        assert_eq!(defaults.backend, ResolvedMicrovmAgentBackend::Native);
+        assert_eq!(
+            defaults.backend,
+            ResolvedMicrovmAgentBackend::Acp {
+                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                cwd: DEFAULT_ACP_CWD.to_string(),
+            }
+        );
+
+        let openclaw_defaults = resolve_params(&MicrovmProvisionParams {
+            kind: Some(MicrovmAgentKind::Openclaw),
+            ..MicrovmProvisionParams::default()
+        });
+        assert_eq!(openclaw_defaults.kind, ResolvedMicrovmAgentKind::Openclaw);
+        assert_eq!(
+            openclaw_defaults.backend,
+            ResolvedMicrovmAgentBackend::Native
+        );
 
         let overridden = resolve_params(&MicrovmProvisionParams {
             spawner_url: Some("http://10.0.0.5:8080".to_string()),
@@ -843,7 +1019,10 @@ mod tests {
             &ResolvedMicrovmParams {
                 spawner_url: DEFAULT_SPAWNER_URL.to_string(),
                 kind: ResolvedMicrovmAgentKind::Pi,
-                backend: ResolvedMicrovmAgentBackend::Native,
+                backend: ResolvedMicrovmAgentBackend::Acp {
+                    exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                    cwd: DEFAULT_ACP_CWD.to_string(),
+                },
             },
         );
         let value = serde_json::to_value(req).expect("serialize create vm request");
@@ -857,15 +1036,23 @@ mod tests {
             value["guest_autostart"]["env"]["PIKA_RELAY_URLS"],
             "wss://relay-a.example.com,wss://relay-b.example.com"
         );
-        assert_eq!(value["guest_autostart"]["env"]["PIKA_AGENT_KIND"], "pi");
+        assert_eq!(value["guest_autostart"]["startup_plan"]["agent_kind"], "pi");
         assert_eq!(
-            value["guest_autostart"]["env"]["PIKA_AGENT_BACKEND_MODE"],
-            "native"
+            value["guest_autostart"]["startup_plan"]["service_kind"],
+            "pikachat_daemon"
         );
+        assert_eq!(
+            value["guest_autostart"]["startup_plan"]["backend_mode"],
+            "acp"
+        );
+        assert!(value["guest_autostart"]["files"][STARTUP_PLAN_PATH]
+            .as_str()
+            .expect("startup plan")
+            .contains("\"service_kind\": \"pikachat_daemon\""));
         assert!(value["guest_autostart"]["files"][AUTOSTART_SCRIPT_PATH]
             .as_str()
             .expect("autostart script")
-            .contains("starting pi agent daemon"));
+            .contains("service_kind"));
         let identity_text = value["guest_autostart"]["files"][AUTOSTART_IDENTITY_PATH]
             .as_str()
             .expect("identity file");
@@ -881,22 +1068,28 @@ mod tests {
     fn autostart_script_uses_root_backed_state_dir() {
         let script = microvm_autostart_script();
         assert!(
-            script.contains("STATE_DIR=\"/root/pika-agent/state\""),
+            script.contains("daemon_state_dir"),
             "autostart script must keep state under /root for restart durability"
         );
-        assert!(script.contains("READY_PATH=\"/workspace/pika-agent/service-ready.json\""));
-        assert!(script.contains("FAILED_PATH=\"/workspace/pika-agent/service-failed.json\""));
+        assert!(script.contains("STARTUP_PLAN_PATH=\"/workspace/pika-agent/startup-plan.json\""));
+        assert!(script.contains("ready_path"));
+        assert!(script.contains("failed_path"));
         assert!(script.contains("trap cleanup_agent EXIT TERM INT"));
-        assert!(script.contains("--state-dir \"$STATE_DIR\""));
+        assert!(script.contains("startup plan runner requires jq"));
+        assert!(script.contains("--state-dir \"$daemon_state_dir\""));
         assert!(script.contains("PIKA_PIKACHAT_BIN"));
-        assert!(script.contains("PIKA_AGENT_KIND"));
-        assert!(script.contains("PIKA_AGENT_BACKEND_MODE"));
-        assert!(script.contains("wait_for_pi_ready"));
-        assert!(script.contains("wait_for_openclaw_ready"));
-        assert!(script.contains("curl -fsS --max-time 2 \"http://127.0.0.1:${port}/health\""));
-        assert!(script.contains("openclaw)"));
-        assert!(script.contains("--acp-exec \"$acp_exec\""));
-        assert!(script.contains("npx -y openclaw"));
+        assert!(script.contains("plan_value '.agent_kind'"));
+        assert!(script.contains("plan_value '.backend_mode'"));
+        assert!(script.contains("wait_for_service_ready"));
+        assert!(script.contains("case \"$backend_mode\" in"));
+        assert!(script.contains("case \"$readiness_kind\""));
+        assert!(script.contains("curl -fsS --max-time 2 \"$readiness_url\""));
+        assert!(script.contains("openclaw_gateway)"));
+        assert!(script.contains("plan_value '.service.acp_backend.exec_command'"));
+        assert!(
+            script.contains("invalid startup plan: backend_mode=acp but ACP payload is missing")
+        );
+        assert!(script.contains("plan_value '.service.exec_command'"));
         assert!(
             !script.contains("marmotd"),
             "autostart script must only resolve pikachat daemon binary"
@@ -932,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn build_create_vm_request_includes_acp_backend_env() {
+    fn guest_startup_plan_selects_pi_acp_readiness() {
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -949,23 +1142,31 @@ mod tests {
                 },
             },
         );
-        let value = serde_json::to_value(req).expect("serialize create vm request");
+        let startup_plan = req.guest_autostart.startup_plan.expect("startup plan");
+        assert_eq!(startup_plan.service_kind, GuestServiceKind::PikachatDaemon);
+        assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
         assert_eq!(
-            value["guest_autostart"]["env"]["PIKA_AGENT_BACKEND_MODE"],
-            "acp"
+            startup_plan.readiness_check,
+            GuestServiceReadinessCheck::LogContains {
+                path: AGENT_LOG_PATH.to_string(),
+                pattern: "\"type\":\"ready\"".to_string(),
+                ready_probe: "daemon_ready_event".to_string(),
+                timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+            }
         );
         assert_eq!(
-            value["guest_autostart"]["env"]["PIKA_AGENT_ACP_EXEC"],
-            "npx -y pi-acp"
-        );
-        assert_eq!(
-            value["guest_autostart"]["env"]["PIKA_AGENT_ACP_CWD"],
-            "/root/pika-agent/acp"
+            startup_plan.service,
+            GuestServiceLaunch::PikachatDaemon {
+                acp_backend: Some(GuestAcpBackend {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                }),
+            }
         );
     }
 
     #[test]
-    fn build_create_vm_request_includes_openclaw_payload() {
+    fn build_create_vm_request_includes_openclaw_native_payload() {
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -979,10 +1180,31 @@ mod tests {
                 backend: ResolvedMicrovmAgentBackend::Native,
             },
         );
+        let startup_plan = req
+            .guest_autostart
+            .startup_plan
+            .clone()
+            .expect("startup plan");
+        assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Native);
+        assert_eq!(
+            startup_plan.service,
+            GuestServiceLaunch::OpenclawGateway {
+                exec_command: resolved_openclaw_exec_command(),
+                state_dir: DEFAULT_OPENCLAW_STATE_DIR.to_string(),
+                config_path: OPENCLAW_CONFIG_PATH.to_string(),
+                gateway_port: DEFAULT_OPENCLAW_GATEWAY_PORT,
+                daemon_backend: GuestOpenclawDaemonBackend::Native,
+            }
+        );
+
         let value = serde_json::to_value(req).expect("serialize create vm request");
         assert_eq!(
-            value["guest_autostart"]["env"]["PIKA_AGENT_KIND"],
+            value["guest_autostart"]["startup_plan"]["agent_kind"],
             "openclaw"
+        );
+        assert_eq!(
+            value["guest_autostart"]["startup_plan"]["service_kind"],
+            "openclaw_gateway"
         );
         let openclaw_config = value["guest_autostart"]["files"][OPENCLAW_CONFIG_PATH]
             .as_str()
@@ -999,10 +1221,74 @@ mod tests {
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
         );
+        assert_eq!(
+            value["guest_autostart"]["startup_plan"]["readiness_check"]["kind"],
+            "http_get_ok"
+        );
         assert!(value["guest_autostart"]["files"]
             .as_object()
             .expect("files map")
             .contains_key(&format!("{OPENCLAW_EXTENSION_ROOT}/package.json")));
+    }
+
+    #[test]
+    fn build_create_vm_request_includes_openclaw_acp_payload() {
+        let keys = Keys::generate();
+        let bot_keys = Keys::generate();
+        let req = build_create_vm_request(
+            &keys.public_key(),
+            &["wss://relay-a.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &ResolvedMicrovmParams {
+                spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+                kind: ResolvedMicrovmAgentKind::Openclaw,
+                backend: ResolvedMicrovmAgentBackend::Acp {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                },
+            },
+        );
+        let startup_plan = req
+            .guest_autostart
+            .startup_plan
+            .clone()
+            .expect("startup plan");
+        assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
+        assert_eq!(
+            startup_plan.service,
+            GuestServiceLaunch::OpenclawGateway {
+                exec_command: resolved_openclaw_exec_command(),
+                state_dir: DEFAULT_OPENCLAW_STATE_DIR.to_string(),
+                config_path: OPENCLAW_CONFIG_PATH.to_string(),
+                gateway_port: DEFAULT_OPENCLAW_GATEWAY_PORT,
+                daemon_backend: GuestOpenclawDaemonBackend::Acp {
+                    acp_backend: GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    },
+                },
+            }
+        );
+
+        let value = serde_json::to_value(req).expect("serialize create vm request");
+        let openclaw_config = value["guest_autostart"]["files"][OPENCLAW_CONFIG_PATH]
+            .as_str()
+            .expect("openclaw config");
+        let openclaw_json: serde_json::Value =
+            serde_json::from_str(openclaw_config).expect("parse openclaw config");
+        assert_eq!(
+            openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
+            "acp"
+        );
+        assert_eq!(
+            openclaw_json["channels"]["pikachat-openclaw"]["daemonAcpExec"],
+            "npx -y pi-acp"
+        );
+        assert_eq!(
+            openclaw_json["channels"]["pikachat-openclaw"]["daemonAcpCwd"],
+            "/root/pika-agent/acp"
+        );
     }
 
     #[test]
@@ -1055,6 +1341,7 @@ mod tests {
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "pubkey123".to_string())]),
                 files: BTreeMap::new(),
+                startup_plan: None,
             },
         };
 
@@ -1171,6 +1458,7 @@ mod tests {
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::new(),
                 files: BTreeMap::new(),
+                startup_plan: None,
             },
         };
 

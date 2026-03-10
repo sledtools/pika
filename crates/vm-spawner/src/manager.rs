@@ -15,6 +15,7 @@ use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+    GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH,
 };
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -62,8 +63,7 @@ struct VmCleanupState {
 }
 
 const CREATE_STAGING_PREFIX: &str = ".creating__";
-const GUEST_READY_MARKER_PATH: &str = "workspace/pika-agent/service-ready.json";
-const GUEST_FAILED_MARKER_PATH: &str = "workspace/pika-agent/service-failed.json";
+const AUTOSTART_STARTUP_PLAN_METADATA: &str = "autostart.startup-plan.json";
 
 #[derive(Debug, Clone, Copy)]
 struct CurrentVmMetadata {
@@ -1173,6 +1173,24 @@ fn write_guest_autostart_metadata(
     )
     .with_context(|| format!("write {}", metadata_dir.join("autostart.command").display()))?;
 
+    if let Some(startup_plan) = &autostart.startup_plan {
+        startup_plan
+            .validate()
+            .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
+        let plan_text =
+            serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
+        fs::write(
+            metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
+            format!("{plan_text}\n"),
+        )
+        .with_context(|| {
+            format!(
+                "write {}",
+                metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA).display()
+            )
+        })?;
+    }
+
     if !autostart.env.is_empty() {
         let mut env_text = String::new();
         for (key, value) in &autostart.env {
@@ -1289,6 +1307,11 @@ fn write_prebuilt_base_flake(
     let runtime_artifacts_host_dir = nix_escape(&runtime_artifacts_host_dir.display().to_string());
     let runtime_artifacts_guest_mount =
         nix_escape(&runtime_artifacts_guest_mount.display().to_string());
+    let guest_log_dir = Path::new(GUEST_LOG_PATH)
+        .parent()
+        .expect("guest log path should have a parent")
+        .display()
+        .to_string();
     let flake_nix = format!(
         r#"{{
   description = "prebuilt microvm agent base";
@@ -1333,6 +1356,7 @@ fn write_prebuilt_base_flake(
             curl
             cacert
             git
+            # Required by the typed GuestStartupPlan autostart script.
             jq
             nix
             nodejs
@@ -1442,9 +1466,9 @@ fn write_prebuilt_base_flake(
                 exit 0
               fi
 
-              mkdir -p /workspace/pika-agent
-              nohup bash -lc "$cmd" >/workspace/pika-agent/agent.log 2>&1 < /dev/null &
-              echo $! >/workspace/pika-agent/agent.pid
+              mkdir -p "/{guest_log_dir}"
+              nohup bash -lc "$cmd" >"/{GUEST_LOG_PATH}" 2>&1 < /dev/null &
+              echo $! >"/{GUEST_PID_PATH}"
             '';
           }};
 
@@ -1503,7 +1527,10 @@ fn write_prebuilt_base_flake(
     }};
   }};
 }}
-"#
+"#,
+        guest_log_dir = guest_log_dir,
+        GUEST_LOG_PATH = GUEST_LOG_PATH,
+        GUEST_PID_PATH = GUEST_PID_PATH,
     );
 
     fs::write(flake_dir.join("flake.nix"), flake_nix)
@@ -1744,6 +1771,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
+            startup_plan: None,
         };
         write_runtime_metadata(
             &vm_state_dir,
@@ -2037,6 +2065,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pi_startup_plan_contract_round_trips_from_request_through_spawner_status() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+
+        let resolved =
+            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                ..pika_agent_control_plane::MicrovmProvisionParams::default()
+            });
+        pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
+
+        let owner_keys = nostr_sdk::prelude::Keys::generate();
+        let bot_keys = nostr_sdk::prelude::Keys::generate();
+        let request = pika_agent_microvm::build_create_vm_request(
+            &owner_keys.public_key(),
+            &["wss://relay.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &resolved,
+        );
+        let startup_plan = request
+            .guest_autostart
+            .startup_plan
+            .clone()
+            .expect("startup plan");
+        startup_plan.validate().unwrap();
+        assert_eq!(
+            startup_plan.agent_kind,
+            pika_agent_control_plane::MicrovmAgentKind::Pi
+        );
+        assert_eq!(
+            startup_plan.service_kind,
+            pika_agent_control_plane::GuestServiceKind::PikachatDaemon
+        );
+        assert_eq!(
+            startup_plan.backend_mode,
+            pika_agent_control_plane::GuestServiceBackendMode::Acp
+        );
+
+        let startup_plan_file = request
+            .guest_autostart
+            .files
+            .get(pika_agent_control_plane::GUEST_STARTUP_PLAN_PATH)
+            .expect("startup plan file");
+        let serialized_plan: pika_agent_control_plane::GuestStartupPlan =
+            serde_json::from_str(startup_plan_file).unwrap();
+        assert_eq!(serialized_plan, startup_plan);
+
+        let vm_id = "vm-00000001";
+        let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
+        let ip = from_u32(to_u32(cfg.ip_start) + slot);
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_runtime_metadata(
+            &vm_state_dir,
+            vm_id,
+            &mac_for_guest_ip(ip),
+            ip,
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&request.guest_autostart),
+        )
+        .unwrap();
+
+        let persisted_plan_text = fs::read_to_string(
+            vm_state_dir
+                .join("metadata")
+                .join(AUTOSTART_STARTUP_PLAN_METADATA),
+        )
+        .unwrap();
+        let persisted_plan: pika_agent_control_plane::GuestStartupPlan =
+            serde_json::from_str(&persisted_plan_text).unwrap();
+        assert_eq!(persisted_plan, startup_plan);
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let initial_status = manager.status(vm_id).await.unwrap();
+        assert_eq!(initial_status.status, "running");
+        assert!(!initial_status.guest_ready);
+
+        let ready_path = vm_state_dir.join(&startup_plan.artifacts.ready_marker_path);
+        fs::create_dir_all(ready_path.parent().unwrap()).unwrap();
+        fs::write(
+            &ready_path,
+            serde_json::to_string(&serde_json::json!({
+                "service_kind": startup_plan.service_kind,
+                "ready": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let ready_status = manager.status(vm_id).await.unwrap();
+        assert_eq!(ready_status.status, "running");
+        assert!(ready_status.guest_ready);
+
+        let failed_path = vm_state_dir.join(&startup_plan.artifacts.failed_marker_path);
+        fs::write(
+            &failed_path,
+            serde_json::to_string(&serde_json::json!({
+                "reason": "test_failure",
+                "service_kind": startup_plan.service_kind,
+                "ready": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let failed_status = manager.status(vm_id).await.unwrap();
+        assert_eq!(failed_status.status, "running");
+        assert!(!failed_status.guest_ready);
+    }
+
+    #[tokio::test]
     async fn destroy_rejects_unsupported_vm_ids() {
         let root = tempfile::tempdir().unwrap();
         let scripts_dir = root.path().join("scripts");
@@ -2306,6 +2462,7 @@ mod tests {
                 command: "".to_string(),
                 env: BTreeMap::new(),
                 files: BTreeMap::new(),
+                startup_plan: None,
             },
         };
 
@@ -2370,6 +2527,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
+            startup_plan: None,
         };
 
         write_runtime_metadata(
@@ -2412,6 +2570,122 @@ mod tests {
                 "runtime.env",
             ]
         );
+    }
+
+    #[test]
+    fn write_runtime_metadata_persists_guest_startup_plan_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let vm_state_dir = root.path().join("vm-00000000");
+        let guest_autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
+                service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: pika_agent_control_plane::GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(pika_agent_control_plane::GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    }),
+                },
+                readiness_check:
+                    pika_agent_control_plane::GuestServiceReadinessCheck::LogContains {
+                        path: GUEST_LOG_PATH.to_string(),
+                        pattern: "\"type\":\"ready\"".to_string(),
+                        ready_probe: "daemon_ready_event".to_string(),
+                        timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+                    },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "pi_agent_exited".to_string(),
+            }),
+        };
+
+        write_runtime_metadata(
+            &vm_state_dir,
+            "vm-00000000",
+            "02:00:00:00:00:01",
+            Ipv4Addr::new(192, 168, 83, 10),
+            Ipv4Addr::new(192, 168, 83, 1),
+            Ipv4Addr::new(192, 168, 83, 1),
+            2,
+            4096,
+            Path::new("/opt/runtime-artifacts"),
+            None,
+            Some(&guest_autostart),
+        )
+        .unwrap();
+
+        let plan_text = fs::read_to_string(
+            vm_state_dir
+                .join("metadata")
+                .join(AUTOSTART_STARTUP_PLAN_METADATA),
+        )
+        .unwrap();
+        assert!(plan_text.contains("\"service_kind\": \"pikachat_daemon\""));
+        assert!(plan_text.contains("\"backend_mode\": \"acp\""));
+    }
+
+    #[test]
+    fn write_runtime_metadata_rejects_non_canonical_guest_startup_artifact_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let vm_state_dir = root.path().join("vm-00000000");
+        let guest_autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
+                service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: pika_agent_control_plane::GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(pika_agent_control_plane::GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    }),
+                },
+                readiness_check:
+                    pika_agent_control_plane::GuestServiceReadinessCheck::LogContains {
+                        path: GUEST_LOG_PATH.to_string(),
+                        pattern: "\"type\":\"ready\"".to_string(),
+                        ready_probe: "daemon_ready_event".to_string(),
+                        timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+                    },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts {
+                    ready_marker_path: "workspace/custom/service-ready.json".to_string(),
+                    ..pika_agent_control_plane::GuestStartupArtifacts::default()
+                },
+                exit_failure_reason: "pi_agent_exited".to_string(),
+            }),
+        };
+
+        let err = write_runtime_metadata(
+            &vm_state_dir,
+            "vm-00000000",
+            "02:00:00:00:00:01",
+            Ipv4Addr::new(192, 168, 83, 10),
+            Ipv4Addr::new(192, 168, 83, 1),
+            Ipv4Addr::new(192, 168, 83, 1),
+            2,
+            4096,
+            Path::new("/opt/runtime-artifacts"),
+            None,
+            Some(&guest_autostart),
+        )
+        .expect_err("non-canonical startup-plan artifact paths should be rejected");
+
+        let message = format!("{err:#}");
+        assert!(message.contains("guest_autostart.startup_plan invalid"));
+        assert!(message.contains("artifacts.ready_marker_path"));
     }
 
     #[test]

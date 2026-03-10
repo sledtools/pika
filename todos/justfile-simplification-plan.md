@@ -736,6 +736,86 @@ Deliverable:
 - a short note on what stayed visible, what was hidden/moved, and what was intentionally left alone.
 ```
 
+### Prompt 7
+
+Workstream C2: consolidate release-secret helpers and shared age/YubiKey handling.
+
+Status: ready
+
+Prompt text:
+
+```text
+You are working on Workstream C2 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Reduce duplication and ambiguity in the release-secret helper scripts by making one implementation surface the clear owner for age/YubiKey decryption, recipient handling, and encrypted release-secret reads/writes.
+
+Scope:
+- `scripts/read-keystore-password`
+- `scripts/read-zapstore-sign-with`
+- `scripts/decrypt-keystore`
+- `scripts/encrypt-zapstore-signing`
+- `scripts/init-release-secrets`
+- `scripts/release-age-recipients`
+- any thin just/module wiring only if needed to preserve existing command entrypoints
+
+Primary objectives:
+- Remove duplicated age decryption logic and duplicated YubiKey identity-file fallback logic.
+- Remove duplicated recipient-loading and encrypted env parsing logic.
+- Keep release-secret behavior auditable by making one helper or one small helper family the clear owner.
+- Preserve the current script entrypoints and the commands that already call them.
+
+Constraints:
+- Do not change the release policy or the encrypted file formats unless required by correctness.
+- Do not break existing callers such as:
+  - `scripts/android-build`
+  - `scripts/zapstore-publish`
+  - `scripts/post-release-announcement`
+  - `just ship::zapstore-encrypt-signing`
+- Preserve current override env vars unless there is a very strong compatibility-safe reason to remove one.
+- Keep the diff focused on release-secret handling; do not reopen general release/version flow cleanup.
+- Avoid unnecessary crypto or key-management redesign. This slice is about simplification and deduplication, not changing the trust model.
+
+Known duplication to target:
+- `AGE_SECRET_KEY` temp-file handling is duplicated.
+- YubiKey identity-file default/fallback logic is duplicated.
+- encrypted env parsing (`PIKA_KEYSTORE_PASSWORD=...`, `ZAPSTORE_SIGN_WITH=...`) is duplicated.
+- recipient loading from `scripts/release-age-recipients` is duplicated.
+- command/usage validation boilerplate is duplicated across these scripts.
+
+Implementation guidance:
+- Prefer introducing one shared helper, likely under `scripts/lib/`, or one owner script with subcommands plus thin compatibility wrappers.
+- Keep external script names working even if they become wrappers.
+- Be careful with temp-file safety and cleanup; avoid fixed temp paths.
+- If you can simplify `init-release-secrets` by reusing the same shared encrypt/decrypt helpers without making the flow harder to audit, do that.
+- Preserve human-readable help/usage for the existing script entrypoints.
+
+Verification:
+- Run `bash -n` on any new or changed shell scripts.
+- Run `JUST_UNSTABLE=1 just --fmt` if any just wiring changes.
+- Smoke-check preserved script entrypoints with `--help` where supported.
+- Validate the shared decrypt/read logic with lightweight, non-production fixtures if possible.
+- At minimum, verify that:
+  - `./scripts/read-keystore-password`
+  - `./scripts/read-zapstore-sign-with`
+  - `./scripts/decrypt-keystore`
+  - `./scripts/encrypt-zapstore-signing --help`
+  - `./scripts/init-release-secrets --help`
+  still behave consistently at the interface level.
+- If you cannot safely run real age/YubiKey/GitHub-secret operations, say exactly what you verified and what remains unverified.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 7 complete,
+  - add a short review note under the Review Log,
+  - add Prompt 8 only if another bounded cleanup slice clearly remains.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on compatibility tradeoffs and any remaining release-secret risks.
+```
+
 ## Review Log
 
 ### 2026-03-09
@@ -773,4 +853,5 @@ Deliverable:
 - Review note: `just --list --list-submodules` now keeps `infra`, `labs`, and `rmp_tools` focused on the few real entrypoints, while manual QA prompt pointers, rare debug helpers, remote fulfill plumbing, and local RMP scaffold QA commands remain callable through their established root names.
 - Review tradeoff: `pikahut-up`, `rmp`, relay entrypoints, `primal-ios-lab`, and the docs/workflow-facing RMP nightly commands stayed visible; the rest of the touched commands were hidden rather than renamed or deleted.
 - Post-rebase Prompt 6 cleanup: re-hid the rebased `pikaci-workspace-deps-*` and `linux-builder-*` operational helpers in `infra`, kept their compatibility aliases intact, and removed them from `just info` so the curated human-facing surface stayed consistent.
-- Review follow-up: no Prompt 7 was added because the remaining cleanup work is not yet shaped into a similarly bounded slice.
+- Reviewed the post-rebase Prompt 6 cleanup and found no remaining regressions in the curated command surface; hidden infra helpers still resolve through their preserved root aliases.
+- Next step is Prompt 7: consolidate the release-secret helper scripts now that the release/version flow, agent/demo env logic, and command-surface cleanup have all landed.

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::executor::{
     HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
-    prepare_vfkit_runner_link, run_job_on_runner,
+    prepare_vfkit_runner_link, run_job_on_runner, sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -706,6 +706,20 @@ struct PreparedOutputMaterialization<'a> {
     output_name: &'a str,
     protocol: PreparedOutputHandoffProtocol,
     realized_path: &'a Path,
+}
+
+#[derive(Clone, Debug)]
+struct RemotePreparedOutputRealization {
+    remote_host: String,
+    remote_snapshot_dir: PathBuf,
+    remote_installable: String,
+}
+
+fn is_strict_remote_staged_linux_rust_output(output_name: &str) -> bool {
+    matches!(
+        output_name,
+        "ci.x86_64-linux.workspaceDeps" | "ci.x86_64-linux.workspaceBuild"
+    )
 }
 
 #[derive(Debug)]
@@ -1904,6 +1918,28 @@ fn read_remote_file_via_ssh(
     Ok(output.stdout)
 }
 
+fn remote_path_exists_via_ssh(
+    ssh_program: &Path,
+    host: &str,
+    remote_path: &Path,
+) -> anyhow::Result<bool> {
+    let status = Command::new(ssh_program)
+        .arg(host)
+        .arg("test")
+        .arg("-e")
+        .arg(remote_path)
+        .status()
+        .with_context(|| {
+            format!(
+                "check remote path {} via {} on {}",
+                remote_path.display(),
+                ssh_program.display(),
+                host
+            )
+        })?;
+    Ok(status.success())
+}
+
 fn validate_remote_fulfillment_result(
     result: &PreparedOutputFulfillmentResult,
     expected_request_path: &Path,
@@ -2130,26 +2166,47 @@ impl PreparedOutputFulfillmentLauncherTransport
             output_name: launch_request.output_name.clone(),
         };
 
-        let nix_program = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV)
-            .unwrap_or_else(|_| "nix".to_string());
-        let nix_copy_status = Command::new(&nix_program)
-            .arg("copy")
-            .arg("--to")
-            .arg(format!("ssh://{host}"))
-            .arg(&helper_request.realized_path)
-            .status()
-            .with_context(|| {
-                format!(
-                    "copy {} to remote host {} via {}",
-                    helper_request.realized_path, host, nix_program
-                )
-            })?;
-        if !nix_copy_status.success() {
+        let realized_path = PathBuf::from(&helper_request.realized_path);
+        let remote_realized_path_exists =
+            remote_path_exists_via_ssh(&ssh_program, &host, &realized_path)?;
+        if !remote_realized_path_exists
+            && is_strict_remote_staged_linux_rust_output(&helper_request.output_name)
+        {
             return Err(anyhow!(
-                "nix copy of {} to {} failed with {:?}",
+                "prepared output {} is not available on remote host {}; refusing local nix copy fallback for staged Linux Rust output {}",
                 helper_request.realized_path,
                 host,
-                nix_copy_status.code()
+                helper_request.output_name
+            ));
+        }
+        if !remote_realized_path_exists && realized_path.exists() {
+            let nix_program = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV)
+                .unwrap_or_else(|_| "nix".to_string());
+            let nix_copy_status = Command::new(&nix_program)
+                .arg("copy")
+                .arg("--to")
+                .arg(format!("ssh://{host}"))
+                .arg(&helper_request.realized_path)
+                .status()
+                .with_context(|| {
+                    format!(
+                        "copy {} to remote host {} via {}",
+                        helper_request.realized_path, host, nix_program
+                    )
+                })?;
+            if !nix_copy_status.success() {
+                return Err(anyhow!(
+                    "nix copy of {} to {} failed with {:?}",
+                    helper_request.realized_path,
+                    host,
+                    nix_copy_status.code()
+                ));
+            }
+        } else if !remote_realized_path_exists {
+            return Err(anyhow!(
+                "prepared output {} is missing locally and on remote host {}",
+                helper_request.realized_path,
+                host
             ));
         }
 
@@ -2240,8 +2297,21 @@ impl PreparedOutputFulfillmentLauncherTransport
             return Ok(launch_output);
         }
 
-        let local_result =
-            fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path));
+        let local_result = if realized_path.exists() {
+            fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path))
+        } else {
+            PreparedOutputFulfillmentResult {
+                schema_version: 1,
+                request_path: launch_request.helper_request_path.clone(),
+                node_id: Some(helper_request.node_id.clone()),
+                output_name: Some(helper_request.output_name.clone()),
+                realized_path: Some(helper_request.realized_path.clone()),
+                status: PreparedOutputFulfillmentStatus::Succeeded,
+                fulfilled_exposures_count: helper_request.requested_exposures.len(),
+                fulfilled_exposures: helper_request.requested_exposures.clone(),
+                error: None,
+            }
+        };
         write_prepared_output_fulfillment_result(&helper_result_path, &local_result)?;
 
         Ok(launch_output)
@@ -2934,11 +3004,122 @@ fn prepared_output_consumer_kind_text(kind: PreparedOutputConsumerKind) -> &'sta
     }
 }
 
+fn staged_linux_rust_remote_realization(
+    run_dir: &Path,
+    installable: &str,
+    output_name: &str,
+    invocation: PreparedOutputInvocationConfig<'_>,
+) -> anyhow::Result<Option<RemotePreparedOutputRealization>> {
+    if !matches!(
+        output_name,
+        "ci.x86_64-linux.workspaceDeps" | "ci.x86_64-linux.workspaceBuild"
+    ) {
+        return Ok(None);
+    }
+    if invocation.launcher_transport_mode
+        != Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+    {
+        return Ok(None);
+    }
+    let remote_host = match invocation.launcher_transport_host {
+        Some(host) => host.to_string(),
+        None => return Ok(None),
+    };
+    let remote_work_dir = match invocation.launcher_transport_remote_work_dir {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    let Some((snapshot_dir, attr)) = installable
+        .strip_prefix("path:")
+        .and_then(|value| value.split_once('#'))
+    else {
+        return Ok(None);
+    };
+    let snapshot_dir = PathBuf::from(snapshot_dir);
+    let snapshot_relative = snapshot_dir.strip_prefix(run_dir).with_context(|| {
+        format!(
+            "translate staged Linux Rust installable {} into remote work dir {}",
+            installable,
+            remote_work_dir.display()
+        )
+    })?;
+    let remote_snapshot_dir = remote_work_dir
+        .join("runs")
+        .join(
+            run_dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?,
+        )
+        .join(snapshot_relative);
+    Ok(Some(RemotePreparedOutputRealization {
+        remote_host,
+        remote_snapshot_dir: remote_snapshot_dir.clone(),
+        remote_installable: format!("path:{}#{attr}", remote_snapshot_dir.display()),
+    }))
+}
+
 fn realize_nix_build_output(
+    run_dir: &Path,
     installable: &str,
     output_name: &str,
     log_paths: &[PathBuf],
+    invocation: PreparedOutputInvocationConfig<'_>,
 ) -> anyhow::Result<PathBuf> {
+    if let Some(remote) =
+        staged_linux_rust_remote_realization(run_dir, installable, output_name, invocation)?
+    {
+        let first_log_path = log_paths
+            .first()
+            .ok_or_else(|| anyhow!("missing log path for `{output_name}`"))?;
+        sync_snapshot_to_remote(
+            &run_dir.join("snapshot"),
+            &remote.remote_snapshot_dir,
+            &remote.remote_host,
+            first_log_path,
+        )?;
+        append_log_line_many(
+            log_paths,
+            &format!(
+                "[pikaci] prepare {output_name}: ssh {} nix build --accept-flake-config --no-link --print-out-paths {}",
+                remote.remote_host, remote.remote_installable
+            ),
+        )?;
+        let output = Command::new(
+            std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+                .unwrap_or_else(|_| "/usr/bin/ssh".to_string()),
+        )
+        .arg(&remote.remote_host)
+        .arg("nix")
+        .arg("build")
+        .arg("--accept-flake-config")
+        .arg("--no-link")
+        .arg("--print-out-paths")
+        .arg(&remote.remote_installable)
+        .output()
+        .with_context(|| format!("run staged remote prepare `{output_name}`"))?;
+        append_command_output_many(log_paths, &output.stdout, &output.stderr)?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "staged remote prepare `{output_name}` failed with {:?}; see {}",
+                output.status.code(),
+                log_paths
+                    .first()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<no log>".to_string())
+            ));
+        }
+        let stdout = String::from_utf8(output.stdout).context("decode remote nix build output")?;
+        let path = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow!("remote nix build for `{output_name}` did not return an output path")
+            })?;
+        return Ok(PathBuf::from(path.trim()));
+    }
+
     append_log_line_many(
         log_paths,
         &format!(
@@ -3164,11 +3345,17 @@ fn run_prepare_nodes(
                 mount_paths,
                 log_paths,
             } => {
-                let output_path = realize_nix_build_output(installable, output_name, log_paths)
-                    .map_err(|err| PrepareFailure {
-                        node_id: prepare.node_id.clone(),
-                        message: format!("{err:#}"),
-                    })?;
+                let output_path = realize_nix_build_output(
+                    run_dir,
+                    installable,
+                    output_name,
+                    log_paths,
+                    invocation,
+                )
+                .map_err(|err| PrepareFailure {
+                    node_id: prepare.node_id.clone(),
+                    message: format!("{err:#}"),
+                })?;
                 append_log_line_many(
                     log_paths,
                     &format!(
@@ -3571,8 +3758,8 @@ mod tests {
         resolve_run_prepared_output_launcher_transport_remote_helper_program,
         resolve_run_prepared_output_launcher_transport_remote_launcher_program,
         resolve_run_prepared_output_launcher_transport_remote_work_dir,
-        selected_prepared_output_consumer, upsert_prepared_output_record,
-        validate_prepared_output_consumer_for_jobs, write_json,
+        selected_prepared_output_consumer, staged_linux_rust_remote_realization,
+        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
         write_prepared_output_fulfillment_result, write_run_plan_record,
     };
     use crate::model::{
@@ -4502,6 +4689,37 @@ mod tests {
     }
 
     #[test]
+    fn staged_linux_rust_remote_realization_translates_run_snapshot_installable() {
+        let run_dir = Path::new("/tmp/pikaci/runs/run-123");
+        let remote_work_dir = Path::new("/var/tmp/pikaci-prepared-output");
+        let remote = staged_linux_rust_remote_realization(
+            run_dir,
+            "path:/tmp/pikaci/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild",
+            "ci.x86_64-linux.workspaceBuild",
+            PreparedOutputInvocationConfig {
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_work_dir: Some(remote_work_dir),
+                ..PreparedOutputInvocationConfig::default()
+            },
+        )
+        .expect("translate remote realization")
+        .expect("staged remote realization");
+
+        assert_eq!(remote.remote_host, "pika-build");
+        assert_eq!(
+            remote.remote_snapshot_dir,
+            Path::new("/var/tmp/pikaci-prepared-output/runs/run-123/snapshot")
+        );
+        assert_eq!(
+            remote.remote_installable,
+            "path:/var/tmp/pikaci-prepared-output/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild"
+        );
+    }
+
+    #[test]
     fn resolve_run_prepared_output_consumer_kind_enables_staged_subprocess_mode() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
@@ -5121,11 +5339,12 @@ result_path="$2"
 request_path="$3"
 realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+output_name=$(sed -n 's/.*"output_name": "\(.*\)",/\1/p' "$request_path" | head -n1)
 mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
 mkdir -p "$(dirname "$result_path")"
 cat >"$result_path" <<EOF
-{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"$output_name","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
 EOF
 "#,
         )
@@ -5141,7 +5360,7 @@ EOF
         fs::write(
             &ssh_path,
             format!(
-                "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\necho \"$host $*\" >> \"{}\"\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+                "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\necho \"$host $*\" >> \"{}\"\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  test)\n    exit 1\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
                 ssh_log_path.display()
             ),
         )
@@ -5169,8 +5388,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
-            output_name: "ci.x86_64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.generic-linux.workspaceBuild",
+            output_name: "ci.generic-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5297,6 +5516,382 @@ EOF
         assert!(log_body.contains("launcher_transport_mode=ssh_launcher_transport_v1"));
         assert!(log_body.contains("transport_host=pika-build"));
         assert!(log_body.contains("remote_helper_result="));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_can_reuse_remote_realized_path_without_local_copy() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-ssh-remote-realized-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = PathBuf::from("/nix/store/remote-only-workspace-build");
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_work_dir = root.join("remote-work");
+        let remote_mount_path =
+            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
+        let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
+        let ssh_path = root.join("fake-ssh.sh");
+        let nix_path = root.join("fake-nix.sh");
+        let ssh_log_path = root.join("ssh.log");
+        let nix_log_path = root.join("nix.log");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::create_dir_all(root.join("remote-bin")).expect("create remote bin root");
+        fs::write(
+            &helper_path,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ne 3 ] || [ "$1" != "--result-path" ]; then
+  echo "unexpected helper args: $*" >&2
+  exit 17
+fi
+result_path="$2"
+request_path="$3"
+realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mkdir -p "$(dirname "$mount_path")"
+ln -sfn "$realized_path" "$mount_path"
+mkdir -p "$(dirname "$result_path")"
+cat >"$result_path" <<EOF
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+EOF
+"#,
+        )
+        .expect("write remote helper");
+        fs::write(
+            &launcher_path,
+            "#!/bin/sh\nset -eu\nlaunch_request=\"$1\"\nhelper=$(sed -n 's/.*\"helper_program\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_request=$(sed -n 's/.*\"helper_request_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_result=$(sed -n 's/.*\"helper_result_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nexec \"$helper\" --result-path \"$helper_result\" \"$helper_request\"\n",
+        )
+        .expect("write remote launcher");
+        fs::write(
+            &ssh_path,
+            format!(
+                "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\necho \"$host $*\" >> \"{}\"\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  test)\n    if [ \"$1\" = \"-e\" ] && [ \"$2\" = \"{}\" ]; then\n      exit 0\n    fi\n    exit 1\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+                ssh_log_path.display(),
+                realized_path.display()
+            ),
+        )
+        .expect("write fake ssh");
+        fs::write(
+            &nix_path,
+            format!(
+                "#!/bin/sh\nset -eu\necho \"$*\" >> \"{}\"\nexit 41\n",
+                nix_log_path.display()
+            ),
+        )
+        .expect("write fake nix");
+        for path in [&helper_path, &launcher_path, &ssh_path, &nix_path] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set script executable");
+        }
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some(launcher_path.to_str().expect("launcher path utf8")),
+        );
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some(ssh_path.to_str().expect("ssh path utf8")),
+        );
+        let _nix_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+            Some(nix_path.to_str().expect("nix path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let result = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+            PreparedOutputInvocationConfig {
+                invocation_mode: Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                launcher_program: Some(&launcher_path),
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_program: Some(&ssh_path),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_launcher_program: Some(&launcher_path),
+                launcher_transport_remote_helper_program: Some(&helper_path),
+                launcher_transport_remote_work_dir: Some(&remote_work_dir),
+            },
+        )
+        .expect("consume remote authoritative handoff via ssh transport");
+
+        assert_eq!(result.kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(result.exposures, handoff.exposures);
+        assert!(!mount_path.exists());
+        assert_eq!(
+            fs::read_link(&remote_mount_path).expect("read remote symlink"),
+            realized_path
+        );
+        let ssh_log = fs::read_to_string(&ssh_log_path).expect("read ssh log");
+        assert!(ssh_log.contains(&format!("pika-build test -e {}", realized_path.display())));
+        assert!(!nix_log_path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_prefers_remote_realized_path_over_local_copy() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-ssh-prefer-remote-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_work_dir = root.join("remote-work");
+        let remote_mount_path =
+            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
+        let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
+        let ssh_path = root.join("fake-ssh.sh");
+        let nix_path = root.join("fake-nix.sh");
+        let ssh_log_path = root.join("ssh.log");
+        let nix_log_path = root.join("nix.log");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::create_dir_all(root.join("remote-bin")).expect("create remote bin root");
+        fs::write(
+            &helper_path,
+            r#"#!/bin/sh
+set -eu
+if [ "$#" -ne 3 ] || [ "$1" != "--result-path" ]; then
+  echo "unexpected helper args: $*" >&2
+  exit 17
+fi
+result_path="$2"
+request_path="$3"
+realized_path=$(sed -n 's/.*"realized_path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mount_path=$(sed -n 's/.*"path": "\(.*\)",/\1/p' "$request_path" | head -n1)
+mkdir -p "$(dirname "$mount_path")"
+ln -sfn "$realized_path" "$mount_path"
+mkdir -p "$(dirname "$result_path")"
+cat >"$result_path" <<EOF
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+EOF
+"#,
+        )
+        .expect("write remote helper");
+        fs::write(
+            &launcher_path,
+            "#!/bin/sh\nset -eu\nlaunch_request=\"$1\"\nhelper=$(sed -n 's/.*\"helper_program\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_request=$(sed -n 's/.*\"helper_request_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nhelper_result=$(sed -n 's/.*\"helper_result_path\": \"\\(.*\\)\",/\\1/p' \"$launch_request\" | head -n1)\nexec \"$helper\" --result-path \"$helper_result\" \"$helper_request\"\n",
+        )
+        .expect("write remote launcher");
+        fs::write(
+            &ssh_path,
+            format!(
+                "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\necho \"$host $*\" >> \"{}\"\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    path=\"$1\"\n    mkdir -p \"$(dirname \"$path\")\"\n    cat > \"$path\"\n    ;;\n  cat)\n    exec cat \"$1\"\n    ;;\n  test)\n    if [ \"$1\" = \"-e\" ] && [ \"$2\" = \"{}\" ]; then\n      exit 0\n    fi\n    exit 1\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+                ssh_log_path.display(),
+                realized_path.display()
+            ),
+        )
+        .expect("write fake ssh");
+        fs::write(
+            &nix_path,
+            format!(
+                "#!/bin/sh\nset -eu\necho \"$*\" >> \"{}\"\nexit 41\n",
+                nix_log_path.display()
+            ),
+        )
+        .expect("write fake nix");
+        for path in [&helper_path, &launcher_path, &ssh_path, &nix_path] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set script executable");
+        }
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some(launcher_path.to_str().expect("launcher path utf8")),
+        );
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some(ssh_path.to_str().expect("ssh path utf8")),
+        );
+        let _nix_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+            Some(nix_path.to_str().expect("nix path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let result = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+            PreparedOutputInvocationConfig {
+                invocation_mode: Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                launcher_program: Some(&launcher_path),
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_program: Some(&ssh_path),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_launcher_program: Some(&launcher_path),
+                launcher_transport_remote_helper_program: Some(&helper_path),
+                launcher_transport_remote_work_dir: Some(&remote_work_dir),
+            },
+        )
+        .expect("consume remote-preferred handoff via ssh transport");
+
+        assert_eq!(result.kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(result.exposures, handoff.exposures);
+        assert_eq!(
+            fs::read_link(&remote_mount_path).expect("read remote symlink"),
+            realized_path
+        );
+        let ssh_log = fs::read_to_string(&ssh_log_path).expect("read ssh log");
+        assert!(ssh_log.contains(&format!("pika-build test -e {}", realized_path.display())));
+        assert!(!nix_log_path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fulfill_request_cli_consumer_rejects_local_copy_fallback_for_staged_linux_rust_outputs() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-fulfill-request-cli-ssh-strict-remote-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let realized_path = first_test_nix_store_path();
+        let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_work_dir = root.join("remote-work");
+        let log_path = root.join("job.log");
+        let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
+        let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
+        let ssh_path = root.join("fake-ssh.sh");
+        let nix_path = root.join("fake-nix.sh");
+        let nix_log_path = root.join("nix.log");
+        fs::create_dir_all(root.join("jobs/job-1/staged-linux-rust")).expect("create mount root");
+        fs::create_dir_all(root.join("remote-bin")).expect("create remote bin root");
+        fs::write(
+            &helper_path,
+            "#!/bin/sh\nset -eu\necho \"helper should not run\" >&2\nexit 91\n",
+        )
+        .expect("write remote helper");
+        fs::write(
+            &launcher_path,
+            "#!/bin/sh\nset -eu\necho \"launcher should not run\" >&2\nexit 92\n",
+        )
+        .expect("write remote launcher");
+        fs::write(
+            &ssh_path,
+            "#!/bin/sh\nset -eu\nhost=\"$1\"\nshift\ncmd=\"$1\"\nshift\ncase \"$cmd\" in\n  mkdir)\n    exec mkdir \"$@\"\n    ;;\n  tee)\n    exit 93\n    ;;\n  cat)\n    exit 94\n    ;;\n  test)\n    exit 1\n    ;;\n  *)\n    exec \"$cmd\" \"$@\"\n    ;;\nesac\n",
+        )
+        .expect("write fake ssh");
+        fs::write(
+            &nix_path,
+            format!(
+                "#!/bin/sh\nset -eu\necho \"$*\" >> \"{}\"\nexit 41\n",
+                nix_log_path.display()
+            ),
+        )
+        .expect("write fake nix");
+        for path in [&helper_path, &launcher_path, &ssh_path, &nix_path] {
+            let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set script executable");
+        }
+        let handoff = PreparedOutputHandoff {
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            exposures: vec![PreparedOutputExposure {
+                kind: PreparedOutputExposureKind::HostSymlinkMount,
+                path: mount_path.display().to_string(),
+                access: PreparedOutputExposureAccess::ReadOnly,
+            }],
+        };
+        let materialization = PreparedOutputMaterialization {
+            node_id: "prepare-pika-core-linux-rust-workspace-build",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
+            protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            realized_path: &realized_path,
+        };
+        let _helper_guard = EnvVarGuard::set(
+            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            Some(helper_path.to_str().expect("helper path utf8")),
+        );
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some(launcher_path.to_str().expect("launcher path utf8")),
+        );
+        let _ssh_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV,
+            Some(ssh_path.to_str().expect("ssh path utf8")),
+        );
+        let _nix_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV,
+            Some(nix_path.to_str().expect("nix path utf8")),
+        );
+        let consumer = FulfillRequestCliPreparedOutputConsumer;
+
+        let err = consume_prepared_output_handoff(
+            &consumer,
+            &materialization,
+            &handoff,
+            &root,
+            std::slice::from_ref(&log_path),
+            PreparedOutputInvocationConfig {
+                invocation_mode: Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                launcher_program: Some(&launcher_path),
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_program: Some(&ssh_path),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_launcher_program: Some(&launcher_path),
+                launcher_transport_remote_helper_program: Some(&helper_path),
+                launcher_transport_remote_work_dir: Some(&remote_work_dir),
+            },
+        )
+        .expect_err("staged Linux Rust outputs should reject local copy fallback");
+
+        assert!(err.message.contains("refusing local nix copy fallback"));
+        assert!(!nix_log_path.exists());
 
         let _ = fs::remove_dir_all(&root);
     }

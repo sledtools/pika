@@ -1256,7 +1256,7 @@ fn ensure_remote_microvm_directories(
     )
 }
 
-fn sync_snapshot_to_remote(
+pub(crate) fn sync_snapshot_to_remote(
     local_snapshot_dir: &Path,
     remote_snapshot_dir: &Path,
     remote_host: &str,

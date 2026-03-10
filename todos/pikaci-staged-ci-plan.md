@@ -16,6 +16,8 @@ This is a phased plan, not a rigid contract. After each phase:
 - Prefer one narrow, real path over a generic framework.
 - Keep Linux Rust deterministic lanes first; defer Apple/Android generalization.
 - Reuse Nix/Crane-style staged build boundaries instead of inventing custom artifact formats early.
+- Treat setup simplicity for new projects as a first-class design constraint. Temporary wrappers, env overrides, and operational rituals are acceptable during prototyping, but they are scaffolding to collapse into reusable platform code, not part of the intended adopter interface.
+- Keep the long-term authoring surface language-agnostic. The eventual public interface should be something projects can drive from Rust, Python, TypeScript, or other languages via stable CLI/JSON contracts, and maybe a daemon later, without requiring per-language bindings that we have to maintain.
 - Land every viable phase to `master` quickly to minimize rebase pain against ongoing core-library refactors.
 - Treat test coverage as part of the migration, not a fixed constraint. If the current suite is low-value or flaky, improve or replace it as part of the work.
 - Treat this document as live. Update phase status, next-step recommendations, and review learnings after each landable slice.
@@ -856,6 +858,20 @@ We have at least one important Linux Rust lane where:
   - note that the old live dependency-build failures inside the guest are now gone:
     - the app-flows lane logs `[TestInfra] using staged pika-server binary at /staged/linux-rust/workspace-build/bin/pika-server` and no longer runs `cargo build -p pika-server`,
     - the messaging/group-profile lane launches `/staged/linux-rust/workspace-build/bin/pika-relay` for every relay fixture and no longer runs `go build pika-relay`,
+  - note that the Mac-side Linux artifact bounce was finally isolated precisely:
+    - the older operational helper `just pikaci-pre-merge-pika-rust-prepares-remote-build` still drives `nix build --no-link -L .#ci.x86_64-linux.workspaceBuild` locally and then imports the realized output back through `ssh ... nix-store --serve --write`,
+    - but the real `just pikaci-remote-fulfill-pre-merge-pika-rust` lane no longer does that for staged Linux Rust prepared outputs,
+    - instead, the run-scoped prepare path now syncs the snapshot to `pika-build`, runs `ssh pika-build nix build --accept-flake-config --no-link --print-out-paths path:/var/tmp/pikaci-prepared-output/runs/<run>/snapshot#ci.x86_64-linux.workspace{Deps,Build}`, and treats the returned remote `/nix/store/...` path as authoritative for fulfillment,
+    - the ssh fulfillment transport now hard-fails for `ci.x86_64-linux.workspaceDeps` and `ci.x86_64-linux.workspaceBuild` if the realized path is not already present on `pika-build`, instead of silently falling back to `nix copy --to ssh://pika-build ...`,
+    - and a fresh real rerun (`20260310T053556Z-187b5368`) confirmed the intended behavior: both staged prepared outputs were realized remotely, fulfilled remotely, and the run advanced straight into remote runner staging and guest boot without any local `nix-store --serve --write` / `nix copy` bounce for prepared-output fulfillment,
+  - note that the hardening changes still hold on that remote-authoritative path:
+    - the rerun still passed end-to-end on `pika-build`,
+    - both remote microVM jobs booted and passed,
+    - the guest logs continued to show local loopback relay usage (`ws://localhost:*`) rather than the old public-relay / API noise,
+    - and the remaining visible transport cost before execute is now the run snapshot tar sync itself, not multi-GB Linux prepared-output round-tripping through the Mac,
+  - note that the next narrow cleanup target is now explicit:
+    - either teach the checked-in dual-prepare helper to use the same remote-authoritative staged-output path,
+    - or stop treating that helper as representative for this lane and focus on shrinking the remaining run-snapshot sync cost instead of prepared-output bounce.
     - the guest logs no longer show `hypernote-mdx` git fetches or `proxy.golang.org` module fetches,
     - so this staged lane is now materially more self-contained and no longer depends on live Rust/Go dependency fetches inside the guest,
   - note that the first rerun after those offline fixture changes now passes end-to-end on the remote `x86_64-linux` microVM path:

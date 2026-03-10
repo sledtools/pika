@@ -7937,6 +7937,26 @@ mod tests {
         }
 
         #[test]
+        fn chat_list_refresh_uses_shared_joined_group_snapshots() {
+            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
+            let snapshots = core
+                .host_context()
+                .expect("host context")
+                .list_joined_group_snapshots()
+                .expect("list joined group snapshots");
+            assert_eq!(snapshots.len(), 1);
+
+            core.refresh_chat_list_from_storage();
+
+            let session = core.session.as_ref().expect("session");
+            let entry = session.groups.get(&chat_id).expect("group index entry");
+            let snapshot = &snapshots[0];
+            assert_eq!(entry.mls_group_id, snapshot.mls_group_id);
+            assert_eq!(entry.group_name.as_deref(), Some(snapshot.name.as_str()));
+            assert_eq!(core.state.chat_list[0].chat_id, snapshot.nostr_group_id_hex,);
+        }
+
+        #[test]
         fn stop_session_clears_group_profiles() {
             let (mut core, chat_id, _keys, _gid) = make_core_with_group();
 

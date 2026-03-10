@@ -4171,6 +4171,51 @@ mod tests {
     }
 
     #[test]
+    fn daemon_list_groups_uses_shared_joined_group_snapshots() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon list groups".to_string(),
+            "Shared snapshot projection".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let snapshots = host
+            .list_joined_group_snapshots()
+            .expect("list joined group snapshots");
+        let groups = host.list_groups().expect("list groups");
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].nostr_group_id_hex,
+            snapshots[0].nostr_group_id_hex
+        );
+        assert_eq!(groups[0].mls_group_id_hex, snapshots[0].mls_group_id_hex);
+        assert_eq!(groups[0].name, snapshots[0].name);
+        assert_eq!(groups[0].description, snapshots[0].description);
+        assert_eq!(groups[0].member_count, snapshots[0].member_count());
+    }
+
+    #[test]
     fn daemon_outbound_prepare_uses_shared_runtime_facade() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");

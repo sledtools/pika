@@ -121,8 +121,8 @@ impl AppCore {
             return;
         };
 
-        let groups = match sess.mdk.get_groups() {
-            Ok(gs) => gs,
+        let group_snapshots = match sess.host_context().list_joined_group_snapshots() {
+            Ok(snapshots) => snapshots,
             Err(e) => {
                 self.toast(format!("Storage error: {e}"));
                 return;
@@ -134,16 +134,15 @@ impl AppCore {
         let mut list: Vec<ChatSummary> = Vec::new();
         let mut missing_profile_pubkeys: HashSet<PublicKey> = HashSet::new();
 
-        for g in groups {
-            let chat_id = hex::encode(g.nostr_group_id);
+        for snapshot in group_snapshots {
+            let chat_id = snapshot.nostr_group_id_hex.clone();
 
             if self.archived_chats.contains(&chat_id) {
                 continue;
             }
 
             // Get all members except self.
-            let all_members: BTreeSet<PublicKey> =
-                sess.mdk.get_members(&g.mls_group_id).unwrap_or_default();
+            let all_members: BTreeSet<PublicKey> = snapshot.member_pubkeys.clone();
             let other_members: Vec<PublicKey> = all_members
                 .iter()
                 .filter(|p| *p != &my_pubkey)
@@ -152,8 +151,9 @@ impl AppCore {
 
             // A group chat is anything with >1 other member, or explicitly named (not "DM") with
             // at least one other member (so "Note to self" doesn't get treated as a group).
-            let explicit_name = if g.name != DEFAULT_GROUP_NAME && !g.name.is_empty() {
-                Some(g.name.clone())
+            let explicit_name = if snapshot.name != DEFAULT_GROUP_NAME && !snapshot.name.is_empty()
+            {
+                Some(snapshot.name.clone())
             } else {
                 None
             };
@@ -204,7 +204,8 @@ impl AppCore {
                 }
             }
 
-            let admin_pubkeys: Vec<String> = g.admin_pubkeys.iter().map(|p| p.to_hex()).collect();
+            let admin_pubkeys: Vec<String> =
+                snapshot.admin_pubkeys.iter().map(|p| p.to_hex()).collect();
 
             let members_for_state: Vec<MemberInfo> = member_infos
                 .iter()
@@ -216,7 +217,10 @@ impl AppCore {
             // Signal/control messages share the MLS app-message path; skip them in chat previews.
             let newest = sess
                 .mdk
-                .get_messages(&g.mls_group_id, Some(Pagination::new(Some(20), Some(0))))
+                .get_messages(
+                    &snapshot.mls_group_id,
+                    Some(Pagination::new(Some(20), Some(0))),
+                )
                 .ok()
                 .and_then(|v| {
                     v.into_iter()
@@ -227,7 +231,7 @@ impl AppCore {
             let stored_last_message_at = newest
                 .as_ref()
                 .map(|m| m.created_at.as_secs() as i64)
-                .or_else(|| g.last_message_at.map(|t| t.as_secs() as i64));
+                .or_else(|| snapshot.last_message_at.map(|t| t.as_secs() as i64));
 
             let local_last = self.local_outbox.get(&chat_id).and_then(|m| {
                 m.values()
@@ -304,7 +308,7 @@ impl AppCore {
             index.insert(
                 chat_id,
                 GroupIndexEntry {
-                    mls_group_id: g.mls_group_id,
+                    mls_group_id: snapshot.mls_group_id,
                     is_group,
                     group_name: explicit_name,
                     members: member_infos,

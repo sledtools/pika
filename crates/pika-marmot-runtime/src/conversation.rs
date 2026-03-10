@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -8,7 +8,7 @@ use mdk_storage_traits::{
     messages::types::Message,
 };
 use nostr_sdk::prelude::{
-    Alphabet, Client, Event, EventId, Filter, Kind, RelayUrl, SingleLetterTag,
+    Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
 };
 
 use crate::PikaMdk;
@@ -45,6 +45,24 @@ pub enum ConversationEvent {
     GroupUpdate(RuntimeGroupUpdate),
     UnresolvedGroup { mls_group_id: GroupId },
     PreviouslyFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeJoinedGroupSnapshot {
+    pub nostr_group_id_hex: String,
+    pub mls_group_id: GroupId,
+    pub mls_group_id_hex: String,
+    pub name: String,
+    pub description: String,
+    pub admin_pubkeys: BTreeSet<PublicKey>,
+    pub member_pubkeys: BTreeSet<PublicKey>,
+    pub last_message_at: Option<Timestamp>,
+}
+
+impl RuntimeJoinedGroupSnapshot {
+    pub fn member_count(&self) -> u32 {
+        self.member_pubkeys.len() as u32
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,20 +156,43 @@ impl<'a> ConversationRuntime<'a> {
         Ok(self.find_group(nostr_group_id_hex)?.mls_group_id)
     }
 
-    pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
+    pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
         let groups = self.mdk.get_groups().context("get_groups")?;
         Ok(groups
-            .iter()
-            .map(|group| RuntimeGroupSummary {
-                nostr_group_id_hex: hex::encode(group.nostr_group_id),
-                mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
-                name: group.name.clone(),
-                description: group.description.clone(),
-                member_count: self
+            .into_iter()
+            .map(|group| {
+                let member_pubkeys = self
                     .mdk
                     .get_members(&group.mls_group_id)
-                    .map(|members| members.len() as u32)
-                    .unwrap_or(0),
+                    .unwrap_or_default();
+                let mls_group_id = group.mls_group_id.clone();
+                RuntimeJoinedGroupSnapshot {
+                    nostr_group_id_hex: hex::encode(group.nostr_group_id),
+                    mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
+                    name: group.name,
+                    description: group.description,
+                    admin_pubkeys: group.admin_pubkeys,
+                    member_pubkeys,
+                    last_message_at: group.last_message_at,
+                    mls_group_id,
+                }
+            })
+            .collect())
+    }
+
+    pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
+        Ok(self
+            .list_joined_group_snapshots()?
+            .into_iter()
+            .map(|group| {
+                let member_count = group.member_count();
+                RuntimeGroupSummary {
+                    nostr_group_id_hex: group.nostr_group_id_hex,
+                    mls_group_id_hex: group.mls_group_id_hex,
+                    name: group.name,
+                    description: group.description,
+                    member_count,
+                }
             })
             .collect())
     }
@@ -322,6 +363,57 @@ mod tests {
     }
 
     #[test]
+    fn list_joined_group_snapshots_surface_current_group_membership_state() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "list groups test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let runtime = ConversationRuntime::new(&inviter_mdk);
+
+        let snapshots = runtime
+            .list_joined_group_snapshots()
+            .expect("list group snapshots");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(snapshots[0].mls_group_id, created.group.mls_group_id);
+        assert_eq!(snapshots[0].name, "list groups test");
+        assert!(
+            snapshots[0]
+                .admin_pubkeys
+                .contains(&inviter_keys.public_key())
+        );
+        assert!(
+            snapshots[0]
+                .member_pubkeys
+                .contains(&inviter_keys.public_key())
+        );
+        assert!(
+            snapshots[0]
+                .member_pubkeys
+                .contains(&invitee_keys.public_key())
+        );
+        assert_eq!(snapshots[0].member_count(), 2);
+    }
+
+    #[test]
     fn list_groups_and_get_messages_use_shared_lookup_rules() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
@@ -347,6 +439,7 @@ mod tests {
         let groups = runtime.list_groups().expect("list groups");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "list groups test");
+        assert_eq!(groups[0].member_count, 2);
         assert_eq!(
             runtime
                 .find_group(&hex::encode(created.group.nostr_group_id))

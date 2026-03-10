@@ -16,6 +16,7 @@ use crate::call_runtime::{
 };
 use crate::conversation::{
     ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupSummary,
+    RuntimeJoinedGroupSnapshot,
 };
 use crate::media::{
     MediaRuntime, ParsedMediaAttachment, PreparedMediaUpload, RuntimeDownloadedMedia,
@@ -527,6 +528,10 @@ impl<'a> MarmotRuntime<'a> {
 
     pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
         self.conversation().list_groups()
+    }
+
+    pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
+        self.conversation().list_joined_group_snapshots()
     }
 
     pub fn get_messages(

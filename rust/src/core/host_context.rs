@@ -42,6 +42,12 @@ impl<'a> AppHostContext<'a> {
         self.session.pubkey.to_hex()
     }
 
+    pub(super) fn list_joined_group_snapshots(
+        &self,
+    ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>> {
+        self.runtime().list_joined_group_snapshots()
+    }
+
     pub(super) fn prepare_outbound_action_for_chat(
         &self,
         chat_id: &str,

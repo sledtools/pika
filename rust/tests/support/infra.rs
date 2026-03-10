@@ -22,6 +22,19 @@ impl TestInfra {
     /// Pre-build pika-server so `cargo run -p pika-server` doesn't compile during the
     /// health-check timeout window.
     fn prebuild_server() {
+        if let Ok(server_bin) = std::env::var("PIKA_FIXTURE_SERVER_CMD") {
+            let path = std::path::Path::new(&server_bin);
+            assert!(
+                path.exists(),
+                "PIKA_FIXTURE_SERVER_CMD={} does not exist",
+                path.display()
+            );
+            eprintln!(
+                "[TestInfra] using staged pika-server binary at {}",
+                path.display()
+            );
+            return;
+        }
         eprintln!("[TestInfra] pre-building pika-server...");
         let status = std::process::Command::new("cargo")
             .args(["build", "-p", "pika-server"])

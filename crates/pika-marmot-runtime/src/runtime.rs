@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -209,8 +209,21 @@ pub struct RuntimeSession {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeGroupSubscriptionState {
+    pub target_group_ids: Vec<String>,
+    pub relay_urls: Vec<RelayUrl>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeGroupSubscriptionPlan {
+    pub current: RuntimeGroupSubscriptionState,
+    pub added_group_ids: Vec<String>,
+    pub removed_group_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeStartupState {
-    pub existing_group_ids: Vec<String>,
+    pub group_subscriptions: RuntimeGroupSubscriptionState,
     pub seen_welcomes: HashSet<EventId>,
     pub seen_group_events: HashSet<EventId>,
 }
@@ -257,12 +270,26 @@ impl RuntimeSession {
     pub async fn subscribe_existing_groups_individual(
         &self,
     ) -> Result<HashMap<SubscriptionId, String>> {
-        subscribe_group_messages_individual(&self.client, &existing_group_ids_from_mdk(&self.mdk)?)
-            .await
+        let state = group_subscription_state_from_mdk(&self.mdk)?;
+        subscribe_group_messages_individual(&self.client, &state.target_group_ids).await
     }
 
     pub fn existing_group_ids(&self) -> Result<Vec<String>> {
-        existing_group_ids_from_mdk(&self.mdk)
+        Ok(group_subscription_state_from_mdk(&self.mdk)?.target_group_ids)
+    }
+
+    pub fn group_subscription_state(&self) -> Result<RuntimeGroupSubscriptionState> {
+        group_subscription_state_from_mdk(&self.mdk)
+    }
+
+    pub fn plan_group_subscriptions<I>(
+        &self,
+        subscribed_group_ids: I,
+    ) -> Result<RuntimeGroupSubscriptionPlan>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        plan_group_subscriptions_from_mdk(&self.mdk, subscribed_group_ids)
     }
 }
 
@@ -402,6 +429,20 @@ impl<'a> MarmotRuntime<'a> {
                 }
             }
         }
+    }
+
+    pub fn group_subscription_state(&self) -> Result<RuntimeGroupSubscriptionState> {
+        group_subscription_state_from_mdk(self.mdk)
+    }
+
+    pub fn plan_group_subscriptions<I>(
+        &self,
+        subscribed_group_ids: I,
+    ) -> Result<RuntimeGroupSubscriptionPlan>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        plan_group_subscriptions_from_mdk(self.mdk, subscribed_group_ids)
     }
 
     pub fn interpret_processing_result(
@@ -703,7 +744,8 @@ pub async fn subscribe_existing_groups_individual(
     client: &Client,
     mdk: &PikaMdk,
 ) -> Result<HashMap<SubscriptionId, String>> {
-    subscribe_group_messages_individual(client, &existing_group_ids_from_mdk(mdk)?).await
+    let state = group_subscription_state_from_mdk(mdk)?;
+    subscribe_group_messages_individual(client, &state.target_group_ids).await
 }
 
 pub async fn subscribe_group_messages_individual(
@@ -728,12 +770,43 @@ pub async fn subscribe_group_messages_individual(
     Ok(out)
 }
 
-pub fn existing_group_ids_from_mdk(mdk: &PikaMdk) -> Result<Vec<String>> {
-    Ok(mdk
-        .get_groups()?
-        .into_iter()
-        .map(|group| hex::encode(group.nostr_group_id))
-        .collect())
+pub fn group_subscription_state_from_mdk(mdk: &PikaMdk) -> Result<RuntimeGroupSubscriptionState> {
+    let groups = mdk.get_groups()?;
+    let mut target_group_ids = BTreeSet::new();
+    let mut relay_urls = BTreeSet::new();
+    for group in groups {
+        target_group_ids.insert(hex::encode(group.nostr_group_id));
+        if let Ok(group_relays) = mdk.get_relays(&group.mls_group_id) {
+            relay_urls.extend(group_relays);
+        }
+    }
+    Ok(RuntimeGroupSubscriptionState {
+        target_group_ids: target_group_ids.into_iter().collect(),
+        relay_urls: relay_urls.into_iter().collect(),
+    })
+}
+
+pub fn plan_group_subscriptions_from_mdk<I>(
+    mdk: &PikaMdk,
+    subscribed_group_ids: I,
+) -> Result<RuntimeGroupSubscriptionPlan>
+where
+    I: IntoIterator<Item = String>,
+{
+    let current = group_subscription_state_from_mdk(mdk)?;
+    let subscribed_group_ids: BTreeSet<String> = subscribed_group_ids.into_iter().collect();
+    let current_group_ids: BTreeSet<String> = current.target_group_ids.iter().cloned().collect();
+    Ok(RuntimeGroupSubscriptionPlan {
+        added_group_ids: current_group_ids
+            .difference(&subscribed_group_ids)
+            .cloned()
+            .collect(),
+        removed_group_ids: subscribed_group_ids
+            .difference(&current_group_ids)
+            .cloned()
+            .collect(),
+        current,
+    })
 }
 
 pub fn bootstrap_runtime_session<F>(
@@ -752,7 +825,7 @@ where
         mdk,
     };
     let startup = RuntimeStartupState {
-        existing_group_ids: existing_group_ids_from_mdk(&session.mdk)?,
+        group_subscriptions: group_subscription_state_from_mdk(&session.mdk)?,
         seen_welcomes: HashSet::new(),
         seen_group_events: HashSet::new(),
     };
@@ -1100,7 +1173,45 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_runtime_session_surfaces_existing_group_ids() {
+    fn plan_group_subscriptions_surfaces_current_added_removed_and_relays() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let relay_url = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let config = NostrGroupConfigData::new(
+            "runtime subscription plan test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![relay_url.clone()],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let runtime = MarmotRuntime::new(&inviter_mdk);
+
+        let plan = runtime
+            .plan_group_subscriptions(vec!["stale-group".to_string()])
+            .expect("plan group subscriptions");
+
+        assert_eq!(
+            plan.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(plan.current.relay_urls, vec![relay_url]);
+        assert_eq!(plan.added_group_ids, vec![expected_group_id]);
+        assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn bootstrap_runtime_session_surfaces_group_subscription_state() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -1131,8 +1242,12 @@ mod tests {
 
         assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
         assert_eq!(
-            bootstrapped.startup.existing_group_ids,
+            bootstrapped.startup.group_subscriptions.target_group_ids,
             vec![expected_group_id]
+        );
+        assert_eq!(
+            bootstrapped.startup.group_subscriptions.relay_urls,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")]
         );
         assert!(bootstrapped.startup.seen_welcomes.is_empty());
         assert!(bootstrapped.startup.seen_group_events.is_empty());

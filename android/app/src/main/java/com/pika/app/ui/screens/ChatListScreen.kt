@@ -16,18 +16,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -198,32 +198,49 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     }
 
     if (showAgentChooser) {
-        AlertDialog(
+        ModalBottomSheet(
             onDismissRequest = { showAgentChooser = false },
-            title = { Text("Choose Agent") },
-            text = { Text("Show experimental agent choices when creating a new agent.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showAgentChooser = false
-                    manager.ensureAgent(AgentKind.Openclaw)
-                }) {
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Create Agent",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "Choose which agent to create.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(
+                    onClick = {
+                        showAgentChooser = false
+                        manager.ensureAgent(AgentKind.Openclaw)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("OpenClaw")
                 }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
+                Button(
+                    onClick = {
                         showAgentChooser = false
                         manager.ensureAgent(AgentKind.Pi)
-                    }) {
-                        Text("Pi")
-                    }
-                    OutlinedButton(onClick = { showAgentChooser = false }) {
-                        Text("Cancel")
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Pi")
                 }
-            },
-        )
+                TextButton(
+                    onClick = { showAgentChooser = false },
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text("Cancel")
+                }
+            }
+        }
     }
 }
 

@@ -231,6 +231,12 @@ pub fn clear_all(conn: &Connection) {
     }
 }
 
+pub fn clear_app_settings(conn: &Connection) {
+    if let Err(e) = conn.execute_batch("DELETE FROM app_settings;") {
+        tracing::warn!(%e, "failed to clear app settings db");
+    }
+}
+
 pub fn load_developer_mode(conn: &Connection) -> bool {
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = 'developer_mode'",
@@ -578,6 +584,18 @@ mod tests {
         assert!(load_profiles(&conn).is_empty());
         assert!(load_group_profiles(&conn, "chat1").is_empty());
         assert!(load_follows(&conn).is_empty());
+    }
+
+    #[test]
+    fn clear_app_settings_resets_developer_flags() {
+        let conn = test_db();
+        save_developer_mode(&conn, true);
+        save_show_agent_marketplace(&conn, true);
+
+        clear_app_settings(&conn);
+
+        assert!(!load_developer_mode(&conn));
+        assert!(!load_show_agent_marketplace(&conn));
     }
 
     #[test]

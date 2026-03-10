@@ -451,105 +451,21 @@ rust-build-host:
 
 # Generate Kotlin bindings via UniFFI.
 gen-kotlin: rust-build-host
-    mkdir -p android/app/src/main/java/com/pika/app/rust
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    TARGET_DIR="$TARGET_ROOT/$PROFILE"; \
-    LIB=""; \
-    for cand in "$TARGET_DIR/libpika_core.dylib" "$TARGET_DIR/libpika_core.so" "$TARGET_DIR/libpika_core.dll"; do \
-      if [ -f "$cand" ]; then LIB="$cand"; break; fi; \
-    done; \
-    if [ -z "$LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_core.*"; exit 1; fi; \
-    cargo run -q -p uniffi-bindgen -- generate \
-      --library "$LIB" \
-      --language kotlin \
-      --out-dir android/app/src/main/java \
-      --no-format \
-      --config rust/uniffi.toml
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    TARGET_DIR="$TARGET_ROOT/$PROFILE"; \
-    SHARE_LIB=""; \
-    for cand in "$TARGET_DIR/libpika_share.dylib" "$TARGET_DIR/libpika_share.so" "$TARGET_DIR/libpika_share.dll"; do \
-      if [ -f "$cand" ]; then SHARE_LIB="$cand"; break; fi; \
-    done; \
-    if [ -z "$SHARE_LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_share.*"; exit 1; fi; \
-    cargo run -q -p uniffi-bindgen -- generate \
-      --library "$SHARE_LIB" \
-      --language kotlin \
-      --out-dir android/app/src/main/java \
-      --no-format \
-      --config crates/pika-share/uniffi.toml
+    ./scripts/android-build gen-kotlin
 
 # Cross-compile Rust core for Android (arm64, armv7, x86_64).
 
 # Note: this clears `android/app/src/main/jniLibs` so output matches the requested ABI set.
 android-rust:
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    ABIS="${PIKA_ANDROID_ABIS:-arm64-v8a armeabi-v7a x86_64}"; \
-    case "$PROFILE" in \
-      release|debug) ;; \
-      *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
-    esac; \
-    ndk_help="$(cargo ndk --help 2>&1 || true)"; \
-    if ! echo "$ndk_help" | grep -q -- '--platform'; then \
-      echo "error: could not determine cargo-ndk platform flag from --help output"; \
-      exit 2; \
-    fi; \
-    ndk_platform_flag="-p"; \
-    if echo "$ndk_help" | grep -q -- '-P, --platform'; then ndk_platform_flag="-P"; fi; \
-    rm -rf android/app/src/main/jniLibs; \
-    mkdir -p android/app/src/main/jniLibs; \
-    cmd=(cargo ndk -o android/app/src/main/jniLibs "$ndk_platform_flag" 26); \
-    for abi in $ABIS; do cmd+=(-t "$abi"); done; \
-    cmd+=(build -p pika_core -p pika-share); \
-    if [ "$PROFILE" = "release" ]; then cmd+=(--release); fi; \
-    "${cmd[@]}"
+    ./scripts/android-build android-rust
 
 # Write android/local.properties with SDK path.
 android-local-properties:
-    SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"; \
-    if [ -z "$SDK" ]; then echo "ANDROID_HOME/ANDROID_SDK_ROOT not set (run inside nix develop)"; exit 1; fi; \
-    printf "sdk.dir=%s\n" "$SDK" > android/local.properties
+    ./scripts/android-build android-local-properties
 
 # Build signed Android release APK (arm64-v8a) and copy to dist/.
 android-release:
-    set -euo pipefail; \
-    abis="arm64-v8a"; \
-    version="$(./scripts/version-read --name)"; \
-    just gen-kotlin; \
-    rm -rf android/app/src/main/jniLibs; \
-    mkdir -p android/app/src/main/jniLibs; \
-    IFS=',' read -r -a abi_list <<<"$abis"; \
-    cargo_args=(); \
-    for abi in "${abi_list[@]}"; do \
-      abi="$(echo "$abi" | xargs)"; \
-      if [ -z "$abi" ]; then continue; fi; \
-      case "$abi" in \
-        arm64-v8a|armeabi-v7a|x86_64) cargo_args+=("-t" "$abi");; \
-        *) echo "error: unsupported ABI '$abi' (supported: arm64-v8a, armeabi-v7a, x86_64)"; exit 2;; \
-      esac; \
-    done; \
-    if [ "${#cargo_args[@]}" -eq 0 ]; then echo "error: no ABI targets configured"; exit 2; fi; \
-    ndk_help="$(cargo ndk --help 2>&1 || true)"; \
-    if ! echo "$ndk_help" | grep -q -- '--platform'; then \
-      echo "error: could not determine cargo-ndk platform flag from --help output"; \
-      exit 2; \
-    fi; \
-    ndk_platform_flag="-p"; \
-    if echo "$ndk_help" | grep -q -- '-P, --platform'; then ndk_platform_flag="-P"; fi; \
-    cargo ndk -o android/app/src/main/jniLibs "$ndk_platform_flag" 26 "${cargo_args[@]}" build -p pika_core -p pika-share --release; \
-    just android-local-properties; \
-    ./scripts/decrypt-keystore; \
-    keystore_password="$(./scripts/read-keystore-password)"; \
-    (cd android && PIKA_KEYSTORE_PASSWORD="$keystore_password" ./gradlew :app:assembleRelease); \
-    unset keystore_password; \
-    mkdir -p dist; \
-    cp android/app/build/outputs/apk/release/app-release.apk "dist/pika-${version}-${abis}.apk"; \
-    echo "ok: built dist/pika-${version}-${abis}.apk"
+    ./scripts/android-build android-release
 
 # Encrypt Zapstore signing value to `secrets/zapstore-signing.env.age`.
 zapstore-encrypt-signing:

@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ANDROID_DIR="$ROOT/android"
+ANDROID_JAVA_DIR="$ANDROID_DIR/app/src/main/java"
+ANDROID_RUST_PACKAGE_DIR="$ANDROID_JAVA_DIR/com/pika/app/rust"
+ANDROID_JNI_LIBS_DIR="$ANDROID_DIR/app/src/main/jniLibs"
+
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/mobile-build.sh"
+
+cd "$ROOT"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/android-build <gen-kotlin|android-rust|android-local-properties|android-release>
+EOF
+}
+
+android_rust_profile() {
+  printf '%s\n' "${PIKA_RUST_PROFILE:-release}"
+}
+
+android_ndk_api_level() {
+  printf '%s\n' "${PIKA_ANDROID_NDK_API_LEVEL:-26}"
+}
+
+cargo_ndk_platform_flag() {
+  local ndk_help
+
+  ndk_help="$(cargo ndk --help 2>&1 || true)"
+  if ! echo "$ndk_help" | grep -q -- '--platform'; then
+    echo "error: could not determine cargo-ndk platform flag from --help output" >&2
+    return 2
+  fi
+  if echo "$ndk_help" | grep -q -- '-P, --platform'; then
+    printf '%s\n' "-P"
+  else
+    printf '%s\n' "-p"
+  fi
+}
+
+reset_android_jni_libs_dir() {
+  rm -rf "$ANDROID_JNI_LIBS_DIR"
+  mkdir -p "$ANDROID_JNI_LIBS_DIR"
+}
+
+generate_kotlin_bindings() {
+  local lib_name="${1:?library name is required}"
+  local config_path="${2:?config path is required}"
+  local profile="${3:?profile is required}"
+  local lib_path
+
+  lib_path="$(find_host_dynamic_lib "$lib_name" "$profile")"
+  cargo run -q -p uniffi-bindgen -- generate \
+    --library "$lib_path" \
+    --language kotlin \
+    --out-dir "$ANDROID_JAVA_DIR" \
+    --no-format \
+    --config "$config_path"
+}
+
+run_gen_kotlin() {
+  local profile
+
+  profile="$(android_rust_profile)"
+  require_rust_profile "$profile"
+  ensure_default_host_rust_build "$profile"
+  mkdir -p "$ANDROID_RUST_PACKAGE_DIR"
+  generate_kotlin_bindings "pika_core" "rust/uniffi.toml" "$profile"
+  generate_kotlin_bindings "pika_share" "crates/pika-share/uniffi.toml" "$profile"
+}
+
+ANDROID_TARGET_ARGS=()
+
+set_android_target_args() {
+  local abi_spec="$1"
+  local abi
+
+  ANDROID_TARGET_ARGS=()
+  abi_spec="${abi_spec//,/ }"
+  for abi in $abi_spec; do
+    [ -n "$abi" ] || continue
+    ANDROID_TARGET_ARGS+=("-t" "$abi")
+  done
+}
+
+set_release_target_args() {
+  local abi_spec="$1"
+  local abi
+
+  ANDROID_TARGET_ARGS=()
+  abi_spec="${abi_spec//,/ }"
+  for abi in $abi_spec; do
+    abi="$(printf '%s' "$abi" | xargs)"
+    [ -n "$abi" ] || continue
+    case "$abi" in
+      arm64-v8a | armeabi-v7a | x86_64) ANDROID_TARGET_ARGS+=("-t" "$abi") ;;
+      *)
+        echo "error: unsupported ABI '$abi' (supported: arm64-v8a, armeabi-v7a, x86_64)" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [ "${#ANDROID_TARGET_ARGS[@]}" -eq 0 ]; then
+    echo "error: no ABI targets configured" >&2
+    return 2
+  fi
+}
+
+run_android_rust_build() {
+  local profile="${1:?profile is required}"
+  local ndk_platform_flag="${2:?platform flag is required}"
+  shift 2
+  local -a cmd
+
+  reset_android_jni_libs_dir
+  cmd=(cargo ndk -o "$ANDROID_JNI_LIBS_DIR" "$ndk_platform_flag" "$(android_ndk_api_level)")
+  if [ "$#" -gt 0 ]; then
+    cmd+=("$@")
+  fi
+  cmd+=(build -p pika_core -p pika-share)
+  if [ "$profile" = "release" ]; then
+    cmd+=(--release)
+  fi
+  "${cmd[@]}"
+}
+
+run_android_rust() {
+  local profile
+  local abis
+  local ndk_platform_flag
+
+  profile="$(android_rust_profile)"
+  abis="${PIKA_ANDROID_ABIS:-arm64-v8a armeabi-v7a x86_64}"
+  require_rust_profile "$profile"
+  set_android_target_args "$abis"
+  ndk_platform_flag="$(cargo_ndk_platform_flag)"
+  run_android_rust_build "$profile" "$ndk_platform_flag" "${ANDROID_TARGET_ARGS[@]}"
+}
+
+write_android_local_properties() {
+  local sdk
+
+  sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+  if [ -z "$sdk" ]; then
+    echo "ANDROID_HOME/ANDROID_SDK_ROOT not set (run inside nix develop)" >&2
+    return 1
+  fi
+  printf 'sdk.dir=%s\n' "$sdk" > "$ANDROID_DIR/local.properties"
+}
+
+run_android_release() {
+  local abis="arm64-v8a"
+  local version
+  local ndk_platform_flag
+  local keystore_password
+
+  version="$(./scripts/version-read --name)"
+  run_gen_kotlin
+  set_release_target_args "$abis"
+  ndk_platform_flag="$(cargo_ndk_platform_flag)"
+  run_android_rust_build "release" "$ndk_platform_flag" "${ANDROID_TARGET_ARGS[@]}"
+  write_android_local_properties
+  ./scripts/decrypt-keystore
+  keystore_password="$(./scripts/read-keystore-password)"
+  (
+    cd "$ANDROID_DIR"
+    PIKA_KEYSTORE_PASSWORD="$keystore_password" ./gradlew :app:assembleRelease
+  )
+  unset keystore_password
+  mkdir -p "$ROOT/dist"
+  cp "$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk" "$ROOT/dist/pika-${version}-${abis}.apk"
+  echo "ok: built dist/pika-${version}-${abis}.apk"
+}
+
+main() {
+  case "${1:-}" in
+    gen-kotlin)
+      run_gen_kotlin
+      ;;
+    android-rust)
+      run_android_rust
+      ;;
+    android-local-properties)
+      write_android_local_properties
+      ;;
+    android-release)
+      run_android_release
+      ;;
+    -h | --help | help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

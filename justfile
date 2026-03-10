@@ -1087,6 +1087,14 @@ agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
 agent-demo-acp MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
 
+# Reset the current test account's VM on pika-build, recover/create a Pi ACP guest, then chat.
+agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    PIKA_AGENT_MICROVM_KIND=pi PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
+# Reset the current test account's VM on pika-build, recover/create an OpenClaw guest, then chat.
+agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
 # Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
 agent-microvm-tunnel:
     nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel

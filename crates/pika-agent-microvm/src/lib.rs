@@ -307,7 +307,6 @@ pub fn validate_resolved_params(params: &ResolvedMicrovmParams) -> anyhow::Resul
     }
     Ok(())
 }
-
 fn resolve_kind(kind: Option<MicrovmAgentKind>) -> ResolvedMicrovmAgentKind {
     match kind.unwrap_or(MicrovmAgentKind::Pi) {
         MicrovmAgentKind::Pi => ResolvedMicrovmAgentKind::Pi,
@@ -552,7 +551,6 @@ wait_for_openclaw_ready() {
   wait "$agent_pid" || true
   return 1
 }
-
 case "$agent_kind" in
   pi)
     echo "[microvm-agent] starting pi agent daemon via $bin" >&2
@@ -774,7 +772,6 @@ fn expected_openclaw_extension_paths() -> &'static [&'static str] {
         "src/types.ts",
     ]
 }
-
 fn create_vm_timeout() -> Duration {
     let secs = std::env::var("PIKA_MICROVM_CREATE_TIMEOUT_SECS")
         .ok()
@@ -1048,7 +1045,6 @@ mod tests {
             "openclaw extension file list changed; update openclaw_extension_files()"
         );
     }
-
     #[tokio::test]
     async fn create_vm_contract_request_shape() {
         let (base_url, rx) =

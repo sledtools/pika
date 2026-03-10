@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+
 usage() {
   cat <<'EOF'
 Usage: pika-build-prewarm-workspace-deps.sh [--store-uri URI] [--installable INSTALLABLE]
@@ -40,6 +43,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+cd "$repo_root"
 
 tmp_json="$(mktemp)"
 tmp_output_selectors="$(mktemp)"

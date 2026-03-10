@@ -167,16 +167,14 @@ let
   '';
 in
 rec {
-  workspaceDeps = craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs [ "src" ]) // {
+  workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
     pname = "${commonArgs.pname}-deps";
-    dummySrc = src;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
   });
 
   workspaceBuild = craneLib.mkCargoDerivation (commonArgs // {
     pname = "${commonArgs.pname}-build";
-    src = workspaceDeps.src;
     cargoArtifacts = workspaceDeps;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;

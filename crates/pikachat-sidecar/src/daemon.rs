@@ -30,8 +30,8 @@ use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversa
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    bootstrap_runtime_session, classify_inbound_relay_event, subscribe_group_messages_individual,
-    subscribe_welcome_inbox,
+    RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session,
+    classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome, take_pending_welcome,
@@ -67,6 +67,7 @@ use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 const PROTOCOL_VERSION: u32 = 1;
 const ACCEPT_WELCOME_BACKLOG_LIMIT: usize = 200;
 const INIT_GROUP_WELCOME_EXPIRATION_SECS: u64 = 30 * 24 * 60 * 60;
+const DAEMON_WELCOME_SUBSCRIPTION_LIMIT: usize = 200;
 
 fn bootstrap_runtime_for_daemon(
     state_dir: &Path,
@@ -83,6 +84,29 @@ fn plan_daemon_group_subscriptions(
     subscribed_group_ids: Vec<String>,
 ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
     host.plan_group_subscriptions(subscribed_group_ids)
+}
+
+fn daemon_welcome_inbox_intent(
+    giftwrap_lookback_sec: u64,
+) -> RuntimeWelcomeInboxSubscriptionIntent {
+    RuntimeWelcomeInboxSubscriptionIntent {
+        lookback: Some(Duration::from_secs(giftwrap_lookback_sec)),
+        limit: Some(DAEMON_WELCOME_SUBSCRIPTION_LIMIT),
+    }
+}
+
+fn plan_daemon_session_sync(
+    host: &DaemonHostContext<'_>,
+    subscribed_group_ids: Vec<String>,
+    relay_urls: Vec<RelayUrl>,
+    giftwrap_lookback_sec: u64,
+) -> anyhow::Result<RuntimeSessionSyncPlan> {
+    host.plan_session_sync(
+        subscribed_group_ids,
+        relay_urls,
+        Vec::new(),
+        daemon_welcome_inbox_intent(giftwrap_lookback_sec),
+    )
 }
 
 async fn accept_welcome_with_backfill<F, Fut>(
@@ -1780,13 +1804,25 @@ pub async fn daemon_main(
     let bootstrapped = bootstrap_runtime_for_daemon(state_dir, &keys)?;
     let client = bootstrapped.session.client.clone();
     let mdk = bootstrapped.session.mdk;
+    let startup_host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+    let startup_sync = plan_daemon_session_sync(
+        &startup_host,
+        Vec::<String>::new(),
+        relay_urls.clone(),
+        giftwrap_lookback_sec,
+    )?;
 
     // Daemon keeps its primary-relay-first connect policy local.
     client
         .add_relay(primary_relay)
         .await
         .with_context(|| format!("add primary relay {primary_relay}"))?;
-    for r in relay_urls.iter().skip(1) {
+    for r in startup_sync
+        .relay_roles
+        .session_connect_relays
+        .iter()
+        .filter(|relay| relay.as_str() != primary_relay)
+    {
         let _ = client.add_relay(r.clone()).await;
     }
     client.connect().await;
@@ -1796,8 +1832,8 @@ pub async fn daemon_main(
     let gift_sub = subscribe_welcome_inbox(
         &client,
         keys.public_key(),
-        Some(Duration::from_secs(giftwrap_lookback_sec)),
-        Some(200),
+        startup_sync.welcome_inbox.lookback,
+        startup_sync.welcome_inbox.limit,
     )
     .await?;
 
@@ -1811,7 +1847,7 @@ pub async fn daemon_main(
     // Track group subscriptions.
     let mut group_subs: HashMap<SubscriptionId, String> = subscribe_group_messages_individual(
         &client,
-        &bootstrapped.startup.group_subscriptions.target_group_ids,
+        &startup_sync.group_subscriptions.current.target_group_ids,
     )
     .await?;
     let mut pending_call_invites: HashMap<String, PendingIncomingCall> = HashMap::new();
@@ -4440,6 +4476,66 @@ mod tests {
         assert_eq!(plan.current.relay_urls, relay_urls);
         assert_eq!(plan.added_group_ids, vec![expected_group_id]);
         assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn daemon_session_sync_planning_uses_shared_runtime_sync_plan() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://message-1.example").expect("relay url")];
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "Daemon session sync planning".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let sync_plan = plan_daemon_session_sync(
+            &host,
+            vec!["stale-group".to_string()],
+            relay_urls.clone(),
+            90,
+        )
+        .expect("plan daemon session sync");
+
+        assert_eq!(
+            sync_plan.group_subscriptions.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.added_group_ids,
+            vec![expected_group_id]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group".to_string()]
+        );
+        assert_eq!(
+            sync_plan.relay_roles.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("relay url"),
+            ]
+        );
+        assert_eq!(sync_plan.welcome_inbox, daemon_welcome_inbox_intent(90));
     }
 
     #[test]

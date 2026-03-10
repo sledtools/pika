@@ -3,11 +3,13 @@
 use std::future::Future;
 
 use super::*;
+#[cfg(test)]
+use pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan;
 use pika_marmot_runtime::runtime::{
     bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
     subscribe_group_messages_combined, subscribe_welcome_inbox,
     temporary_client_from_session_signer, BootstrappedRuntimeSession, InboundRelayEvent,
-    InboundRelaySeenCache, RuntimeGroupSubscriptionPlan,
+    InboundRelaySeenCache, RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
 };
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
 
@@ -38,9 +40,23 @@ async fn classify_app_notification_event(
     }
 }
 
+#[cfg(test)]
 fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<RuntimeGroupSubscriptionPlan> {
     sess.host_context()
         .plan_group_subscriptions(sess.groups.keys().cloned().collect())
+}
+
+fn app_welcome_inbox_intent() -> RuntimeWelcomeInboxSubscriptionIntent {
+    RuntimeWelcomeInboxSubscriptionIntent::default()
+}
+
+fn plan_app_session_sync(core: &AppCore, sess: &Session) -> anyhow::Result<RuntimeSessionSyncPlan> {
+    sess.host_context().plan_session_sync(
+        sess.groups.keys().cloned().collect(),
+        core.long_lived_session_relays(),
+        core.temporary_key_package_relays(),
+        app_welcome_inbox_intent(),
+    )
 }
 
 impl AppCore {
@@ -77,9 +93,13 @@ impl AppCore {
         tracing::info!("mdk opened");
 
         if self.network_enabled() {
-            let relays =
-                self.relay_role_plan(bootstrapped.startup.group_subscriptions.relay_urls.clone());
-            let relays = relays.session_connect_relays;
+            let sync_plan = bootstrapped.session.plan_session_sync(
+                Vec::<String>::new(),
+                self.long_lived_session_relays(),
+                self.temporary_key_package_relays(),
+                app_welcome_inbox_intent(),
+            )?;
+            let relays = sync_plan.relay_roles.session_connect_relays;
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let client = bootstrapped.session.client.clone();
             self.runtime.spawn(async move {
@@ -367,16 +387,14 @@ impl AppCore {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
-        let subscription_plan = match plan_app_group_subscriptions(sess) {
+        let sync_plan = match plan_app_session_sync(self, sess) {
             Ok(plan) => plan,
             Err(err) => {
-                tracing::warn!(%err, "failed to plan app group subscriptions");
+                tracing::warn!(%err, "failed to plan app session sync");
                 return;
             }
         };
-        let needed_relays = self
-            .relay_role_plan(subscription_plan.current.relay_urls.clone())
-            .session_connect_relays;
+        let needed_relays = sync_plan.relay_roles.session_connect_relays;
         let Some(sess) = self.session.as_mut() else {
             return;
         };
@@ -392,7 +410,8 @@ impl AppCore {
         let pubkey = sess.pubkey;
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
-        let h_values = subscription_plan.current.target_group_ids;
+        let h_values = sync_plan.group_subscriptions.current.target_group_ids;
+        let welcome_inbox = sync_plan.welcome_inbox;
         let alive = sess.alive.clone();
 
         self.runtime.spawn(async move {
@@ -432,9 +451,14 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let giftwrap_sub = subscribe_welcome_inbox(&client, pubkey, None, None)
-                .await
-                .ok();
+            let giftwrap_sub = subscribe_welcome_inbox(
+                &client,
+                pubkey,
+                welcome_inbox.lookback,
+                welcome_inbox.limit,
+            )
+            .await
+            .ok();
 
             // Group subscription: kind 445 filtered by #h for all joined groups.
             if !alive.load(Ordering::SeqCst) {
@@ -980,6 +1004,34 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, RwLock};
+
+    fn make_core_with_config(
+        config: crate::core::config::AppConfig,
+    ) -> (AppCore, tempfile::TempDir) {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().to_string_lossy().into_owned();
+        let (update_tx, _update_rx) = flume::unbounded();
+        let (core_tx, _core_rx) = flume::unbounded();
+        let external_signer_bridge: crate::external_signer::SharedExternalSignerBridge =
+            Arc::new(RwLock::new(None));
+        let bunker_signer_connector: crate::bunker_signer::SharedBunkerSignerConnector =
+            Arc::new(RwLock::new(Arc::new(
+                crate::bunker_signer::NostrConnectBunkerSignerConnector::default(),
+            )));
+        let mut core = AppCore::new(
+            update_tx,
+            core_tx,
+            data_dir,
+            String::new(),
+            String::new(),
+            Arc::new(RwLock::new(crate::state::AppState::empty())),
+            external_signer_bridge,
+            bunker_signer_connector,
+        );
+        core.config = config;
+        (core, tempdir)
+    }
 
     fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
         crate::mdk_support::open_mdk(
@@ -1099,6 +1151,81 @@ mod tests {
         );
         assert_eq!(plan.added_group_ids, vec![expected_group_id]);
         assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
+    fn app_session_sync_planning_uses_shared_runtime_sync_plan() {
+        let (core, inviter_dir) = make_core_with_config(crate::core::config::AppConfig {
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..crate::core::config::AppConfig::default()
+        });
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData {
+                    name: "App session sync planning".to_string(),
+                    description: String::new(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    admins: vec![inviter_keys.public_key()],
+                },
+            )
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let mut groups = HashMap::new();
+        groups.insert(
+            "stale-group".to_string(),
+            GroupIndexEntry {
+                mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+                is_group: true,
+                group_name: Some("Stale Group".into()),
+                members: vec![],
+                admin_pubkeys: vec![],
+            },
+        );
+        let session = Session {
+            pubkey: inviter_keys.public_key(),
+            local_keys: Some(inviter_keys.clone()),
+            mdk: inviter_mdk,
+            client: Client::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups,
+        };
+
+        let sync_plan = plan_app_session_sync(&core, &session).expect("plan app session sync");
+
+        assert_eq!(
+            sync_plan.group_subscriptions.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.added_group_ids,
+            vec![expected_group_id]
+        );
+        assert_eq!(
+            sync_plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group".to_string()]
+        );
+        assert_eq!(
+            sync_plan.relay_roles.session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://group-1.example").expect("group relay"),
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ]
+        );
+        assert_eq!(sync_plan.welcome_inbox, app_welcome_inbox_intent());
     }
 
     #[test]

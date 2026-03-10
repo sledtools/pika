@@ -153,6 +153,19 @@ mod ship 'just/ship.just'
 mod rmp_tools 'just/rmp_tools.just'
 
 # Hidden root aliases preserve existing docs/CI entrypoints without crowding `just --list`.
+# CI/manual selector contracts remain listed here for guardrails and docs even
+# though the executable recipe bodies now live in `just/checks.just` / `just/labs.just`.
+# cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture
+# cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture
+# cargo test -p pikahut --test integration_deterministic call_with_pikachat_daemon_boundary -- --ignored --nocapture
+# cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture
+# cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
+# cargo test -p pikahut --test integration_manual manual_primal_lab_runbook_contract -- --ignored --nocapture
 
 alias rust-build-host := build::rust-build-host
 alias gen-kotlin := build::gen-kotlin

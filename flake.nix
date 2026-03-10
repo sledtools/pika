@@ -45,6 +45,11 @@
 
       serverPkgs = import nixpkgs { system = "x86_64-linux"; };
       armPkgs = import nixpkgs { system = "aarch64-linux"; };
+      ciLinuxPkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [ (import rust-overlay) ];
+        config.allowUnfree = true;
+      };
       ciArmPkgs = import nixpkgs {
         system = "aarch64-linux";
         overlays = [ (import rust-overlay) ];
@@ -62,9 +67,9 @@
           ./uniffi-bindgen
         ];
       };
-      ciRustWorkspaceSrc = ciArmPkgs.lib.fileset.toSource {
+      ciRustWorkspaceSrc = ciLinuxPkgs.lib.fileset.toSource {
         root = ./.;
-        fileset = ciArmPkgs.lib.fileset.unions [
+        fileset = ciLinuxPkgs.lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
           ./config
@@ -74,6 +79,30 @@
           ./uniffi-bindgen
         ];
       };
+      ciPikaCoreRustSrc = ciLinuxPkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = ciLinuxPkgs.lib.fileset.unions [
+          ./rust/Cargo.toml
+          ./rust/build.rs
+          ./rust/uniffi.toml
+          ./rust/src
+          ./rust/tests
+        ];
+      };
+      ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
+        mkdir -p "$out/crates"
+        cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
+        chmod -R u+w "$out/rust"
+        rm -f "$out/rust/.pikaci-review-trigger"
+        cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
+        cp -R ${./crates/pika-marmot-runtime} "$out/crates/pika-marmot-runtime"
+        cp -R ${./crates/pika-media} "$out/crates/pika-media"
+        cp -R ${./crates/pika-relay-profiles} "$out/crates/pika-relay-profiles"
+        cp -R ${./crates/pika-tls} "$out/crates/pika-tls"
+        cp -R ${./crates/pikahut} "$out/crates/pikahut"
+        cp ${./nix/ci/pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
+        cp ${./nix/ci/pika-core-workspace/Cargo.lock} "$out/Cargo.lock"
+      '';
       mkPikaciSrc = lib: lib.fileset.toSource {
         root = ./.;
         fileset = lib.fileset.unions [
@@ -725,14 +754,31 @@ EOF
       };
 
       # Phase 2a staged Linux Rust build outputs.
-      # These are intentionally scoped to the deterministic Linux Rust lane family
-      # we expect phase 2b to migrate first (`pre-merge-pika-rust` / `pika_core`
-      # lib+test compilation). They are not wired into `pikaci` yet.
+      # The preferred staged Linux Rust target is now x86_64-linux so the
+      # deterministic Rust lane can align with pika-build instead of the local
+      # nix-darwin linux-builder. Keep the aarch64-linux namespace as a legacy
+      # compatibility output while the local vfkit execute path still hard-codes
+      # an aarch64-linux guest.
+      ci.x86_64-linux = import ./nix/ci/linux-rust.nix {
+        pkgs = ciLinuxPkgs;
+        crane = crane;
+        src = ciPikaCoreWorkspaceSrc;
+        cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
+        outputHashes = {
+          "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
+            "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+          "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
+            "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+          "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
+            "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+        };
+      };
+
       ci.aarch64-linux = import ./nix/ci/linux-rust.nix {
         pkgs = ciArmPkgs;
         crane = crane;
-        src = ciRustWorkspaceSrc;
-        cargoLock = ./Cargo.lock;
+        src = ciPikaCoreWorkspaceSrc;
+        cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
         outputHashes = {
           "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
             "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";

@@ -28,8 +28,8 @@ fn fulfill_prepared_output_request_helper_replays_requested_mounts() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "node_id": "prepare-pika-core-linux-rust-workspace-build",
-            "installable": "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            "output_name": "ci.aarch64-linux.workspaceBuild",
+            "installable": "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            "output_name": "ci.x86_64-linux.workspaceBuild",
             "protocol": "nix_store_path_v1",
             "realized_path": realized_path.display().to_string(),
             "requested_exposures": [

@@ -32,8 +32,8 @@ fn launch_fulfill_prepared_output_launcher_invokes_helper_from_request_file() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "node_id": "prepare-pika-core-linux-rust-workspace-build",
-            "installable": "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            "output_name": "ci.aarch64-linux.workspaceBuild",
+            "installable": "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            "output_name": "ci.x86_64-linux.workspaceBuild",
             "protocol": "nix_store_path_v1",
             "realized_path": realized_path.display().to_string(),
             "requested_exposures": [
@@ -70,7 +70,7 @@ fn launch_fulfill_prepared_output_launcher_invokes_helper_from_request_file() {
             "helper_request_path": helper_request_path.display().to_string(),
             "helper_result_path": helper_result_path.display().to_string(),
             "node_id": "prepare-pika-core-linux-rust-workspace-build",
-            "output_name": "ci.aarch64-linux.workspaceBuild"
+            "output_name": "ci.x86_64-linux.workspaceBuild"
         }))
         .expect("encode launch request"),
     )

@@ -40,7 +40,25 @@ struct GuestFlakePaths<'a> {
     target_dir: &'a Path,
     staged_linux_rust_workspace_deps_dir: Option<&'a Path>,
     staged_linux_rust_workspace_build_dir: Option<&'a Path>,
-    socket_path: &'a Path,
+    socket_path: Option<&'a Path>,
+}
+
+struct GuestRunnerConfig {
+    guest_system: &'static str,
+    host_pkgs_expr: &'static str,
+    hypervisor: &'static str,
+}
+
+struct RemoteMicrovmContext {
+    remote_host: String,
+    remote_snapshot_dir: PathBuf,
+    remote_vm_dir: PathBuf,
+    remote_artifacts_dir: PathBuf,
+    remote_cargo_home_dir: PathBuf,
+    remote_target_dir: PathBuf,
+    remote_workspace_deps_dir: PathBuf,
+    remote_workspace_build_dir: PathBuf,
+    remote_runner_link: PathBuf,
 }
 
 const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
@@ -52,6 +70,24 @@ const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
 const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
+const VFKIT_GUEST_SYSTEM: &str = "aarch64-linux";
+const REMOTE_MICROVM_GUEST_SYSTEM: &str = "x86_64-linux";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
+    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
+    "nixos-virtiofs-ro-store.sock",
+    "nixos-virtiofs-snapshot.sock",
+    "nixos-virtiofs-artifacts.sock",
+    "nixos-virtiofs-cargo-home.sock",
+    "nixos-virtiofs-cargo-target.sock",
+    "nixos-virtiofs-staged-linux-rust-workspace-deps.sock",
+    "nixos-virtiofs-staged-linux-rust-workspace-build.sock",
+];
 
 struct TartRunProcess {
     child: std::process::Child,
@@ -62,18 +98,20 @@ struct TartRunProcess {
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     match job.runner_kind() {
         RunnerKind::VfkitLocal => run_vfkit_job(job, ctx),
+        RunnerKind::MicrovmRemote => run_remote_microvm_job(job, ctx),
         RunnerKind::TartLocal => run_tart_job(job, ctx),
     }
 }
 
 pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     ensure_supported_host()?;
+    ensure_staged_linux_rust_lane_matches_vfkit_guest(job)?;
     ensure_linux_builder()?;
 
     let vm_dir = ctx.job_dir.join("vm");
     let runner_link = vm_dir.join("runner");
     if !runner_link.exists() {
-        let installable = materialize_vfkit_runner_flake(job, ctx)?;
+        let installable = materialize_runner_flake(job, ctx)?;
         prepare_vfkit_runner_link(&installable, &runner_link, &ctx.host_log_path)?;
     }
 
@@ -175,7 +213,76 @@ pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutc
     })
 }
 
-pub(crate) fn prepare_vfkit_runner_link(
+fn run_remote_microvm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
+    let lane = job
+        .staged_linux_rust_lane()
+        .ok_or_else(|| anyhow!("remote microvm execute requires a staged Linux Rust lane"))?;
+
+    let remote = remote_microvm_context(job, ctx)?;
+    ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    ensure_remote_microvm_directories(&remote, &ctx.host_log_path)?;
+    sync_snapshot_to_remote(
+        &ctx.workspace_snapshot_dir,
+        &remote.remote_snapshot_dir,
+        &remote.remote_host,
+        &ctx.host_log_path,
+    )?;
+    ensure_remote_microvm_runner(job, ctx, &remote, &ctx.host_log_path)?;
+
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] starting remote x86_64 microvm for staged lane `{}` on {} at {}",
+            lane.workspace_output_system(),
+            remote.remote_host,
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    let remote_command = build_remote_microvm_launch_command(&remote);
+    let status = spawn_remote_runner_and_wait(
+        &remote.remote_host,
+        &remote_command,
+        &ctx.host_log_path,
+        job.timeout_secs,
+    )?;
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] remote microvm exited with {:?} at {}",
+            status.code(),
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    copy_remote_file_to_local(
+        &remote.remote_host,
+        &remote.remote_artifacts_dir.join("guest.log"),
+        &ctx.guest_log_path,
+    )?;
+    copy_remote_file_to_local(
+        &remote.remote_host,
+        &remote.remote_artifacts_dir.join("result.json"),
+        &ctx.job_dir.join("artifacts/result.json"),
+    )?;
+
+    let guest_result = load_guest_result(&ctx.job_dir.join("artifacts/result.json"))?;
+    let status = match guest_result.status.as_str() {
+        "passed" => RunStatus::Passed,
+        _ => RunStatus::Failed,
+    };
+    Ok(JobOutcome {
+        status,
+        exit_code: Some(guest_result.exit_code),
+        message: guest_result
+            .message
+            .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
+    })
+}
+
+pub(crate) fn prepare_runner_link(
     installable: &str,
     runner_link: &Path,
     log_path: &Path,
@@ -201,6 +308,41 @@ pub(crate) fn prepare_vfkit_runner_link(
     )
 }
 
+pub(crate) fn prepare_vfkit_runner_link(
+    installable: &str,
+    runner_link: &Path,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    prepare_runner_link(installable, runner_link, log_path)
+}
+
+pub(crate) fn prepare_remote_microvm_runner(
+    job: &JobSpec,
+    ctx: &HostContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let remote = remote_microvm_context(job, ctx)?;
+    ensure_remote_microvm_directories(&remote, log_path)?;
+    sync_snapshot_to_remote(
+        &ctx.workspace_snapshot_dir,
+        &remote.remote_snapshot_dir,
+        &remote.remote_host,
+        log_path,
+    )?;
+    ensure_remote_microvm_runner(job, ctx, &remote, log_path)
+}
+
+pub(crate) fn materialize_runner_flake(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<String> {
+    match job.runner_kind() {
+        RunnerKind::VfkitLocal => materialize_vfkit_runner_flake(job, ctx),
+        RunnerKind::MicrovmRemote => {
+            let remote = remote_microvm_context(job, ctx)?;
+            materialize_remote_microvm_runner_flake(job, ctx, &remote)
+        }
+        RunnerKind::TartLocal => bail!("tart jobs do not use Linux microvm runner flakes"),
+    }
+}
+
 pub(crate) fn materialize_vfkit_runner_flake(
     job: &JobSpec,
     ctx: &HostContext,
@@ -221,6 +363,7 @@ pub(crate) fn materialize_vfkit_runner_flake(
             .with_context(|| format!("remove stale {}", socket_path.display()))?;
     }
     let flake_nix = render_guest_flake(
+        guest_runner_config_for(RunnerKind::VfkitLocal),
         job,
         &ctx.workspace_snapshot_dir,
         ctx.workspace_read_only,
@@ -234,7 +377,38 @@ pub(crate) fn materialize_vfkit_runner_flake(
             staged_linux_rust_workspace_build_dir: ctx
                 .staged_linux_rust_workspace_build_dir
                 .as_deref(),
-            socket_path: &socket_path,
+            socket_path: Some(&socket_path),
+        },
+    )?;
+    fs::write(flake_dir.join("flake.nix"), flake_nix)
+        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
+    Ok(vfkit_runner_installable(&flake_dir))
+}
+
+fn materialize_remote_microvm_runner_flake(
+    job: &JobSpec,
+    ctx: &HostContext,
+    remote: &RemoteMicrovmContext,
+) -> anyhow::Result<String> {
+    let vm_dir = ctx.job_dir.join("vm");
+    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
+    ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    let flake_dir = vm_dir.join("flake");
+    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
+    let flake_nix = render_guest_flake(
+        guest_runner_config_for(RunnerKind::MicrovmRemote),
+        job,
+        &remote.remote_snapshot_dir,
+        ctx.workspace_read_only,
+        &GuestFlakePaths {
+            artifacts_dir: &remote.remote_artifacts_dir,
+            cargo_home_dir: &remote.remote_cargo_home_dir,
+            target_dir: &remote.remote_target_dir,
+            staged_linux_rust_workspace_deps_dir: Some(&remote.remote_workspace_deps_dir),
+            staged_linux_rust_workspace_build_dir: Some(&remote.remote_workspace_build_dir),
+            socket_path: None,
         },
     )?;
     fs::write(flake_dir.join("flake.nix"), flake_nix)
@@ -479,10 +653,25 @@ fn ensure_linux_builder() -> anyhow::Result<()> {
     }
 
     bail!(
-        "no aarch64-linux builder available for this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
+        "no aarch64-linux builder available for the current vfkit execute guest on this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
         builders.trim(),
         extra_platforms.trim()
     )
+}
+
+fn ensure_staged_linux_rust_lane_matches_vfkit_guest(job: &JobSpec) -> anyhow::Result<()> {
+    if let Some(lane) = job.staged_linux_rust_lane()
+        && lane.workspace_output_system() != VFKIT_GUEST_SYSTEM
+    {
+        bail!(
+            "staged Linux Rust lane `{}` now targets `{}` prepared outputs, but the current vfkit execute guest is `{}`; the mounted staged wrappers run target-native test binaries and cannot execute cross-architecture. Move execute to an x86_64-linux host such as pika-build before enabling this lane end-to-end.",
+            job.id,
+            lane.workspace_output_system(),
+            VFKIT_GUEST_SYSTEM
+        );
+    }
+
+    Ok(())
 }
 
 fn ensure_tart_installed() -> anyhow::Result<()> {
@@ -966,7 +1155,452 @@ fn setting_contains(raw: &str, needle: &str) -> bool {
     raw.split_whitespace().any(|token| token == needle)
 }
 
+fn guest_runner_config_for(kind: RunnerKind) -> GuestRunnerConfig {
+    match kind {
+        RunnerKind::VfkitLocal => GuestRunnerConfig {
+            guest_system: VFKIT_GUEST_SYSTEM,
+            host_pkgs_expr: "nixpkgs.legacyPackages.aarch64-darwin",
+            hypervisor: "vfkit",
+        },
+        RunnerKind::MicrovmRemote => GuestRunnerConfig {
+            guest_system: REMOTE_MICROVM_GUEST_SYSTEM,
+            host_pkgs_expr: "nixpkgs.legacyPackages.x86_64-linux",
+            hypervisor: "cloud-hypervisor",
+        },
+        RunnerKind::TartLocal => unreachable!("tart jobs do not render Linux microvm flakes"),
+    }
+}
+
+fn remote_microvm_context(
+    job: &JobSpec,
+    ctx: &HostContext,
+) -> anyhow::Result<RemoteMicrovmContext> {
+    let remote_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV)
+        .unwrap_or_else(|_| "pika-build".to_string());
+    let remote_work_dir = PathBuf::from(
+        std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV)
+            .unwrap_or_else(|_| "/var/tmp/pikaci-prepared-output".to_string()),
+    );
+    let run_dir = ctx
+        .job_dir
+        .ancestors()
+        .nth(2)
+        .ok_or_else(|| anyhow!("derive run dir from {}", ctx.job_dir.display()))?;
+    let run_id = run_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?;
+    let remote_run_dir = remote_work_dir.join("runs").join(run_id);
+    let remote_job_dir = remote_run_dir.join("jobs").join(job.id);
+    let shared_job_dir = remote_work_dir.join("jobs").join(job.id);
+    Ok(RemoteMicrovmContext {
+        remote_host,
+        remote_snapshot_dir: remote_run_dir.join("snapshot"),
+        remote_vm_dir: remote_job_dir.join("vm"),
+        remote_artifacts_dir: remote_job_dir.join("artifacts"),
+        remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
+        remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
+        remote_workspace_deps_dir: shared_job_dir
+            .join("staged-linux-rust")
+            .join("workspace-deps"),
+        remote_workspace_build_dir: shared_job_dir
+            .join("staged-linux-rust")
+            .join("workspace-build"),
+        remote_runner_link: remote_job_dir.join("vm").join("runner"),
+    })
+}
+
+fn ssh_binary() -> String {
+    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+        .unwrap_or_else(|_| "/usr/bin/ssh".to_string())
+}
+
+fn ssh_nix_binary() -> String {
+    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV)
+        .unwrap_or_else(|_| "nix".to_string())
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn run_ssh_command(remote_host: &str, command: &str) -> Command {
+    let mut cmd = Command::new(ssh_binary());
+    cmd.arg(remote_host).arg(command);
+    cmd
+}
+
+fn ensure_remote_microvm_directories(
+    remote: &RemoteMicrovmContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let command = format!(
+        "set -euo pipefail; mkdir -p {} {} {} {} {} {} {}",
+        shell_single_quote(&remote.remote_snapshot_dir.display().to_string()),
+        shell_single_quote(&remote.remote_vm_dir.display().to_string()),
+        shell_single_quote(&remote.remote_artifacts_dir.display().to_string()),
+        shell_single_quote(&remote.remote_cargo_home_dir.display().to_string()),
+        shell_single_quote(&remote.remote_target_dir.display().to_string()),
+        shell_single_quote(&remote.remote_workspace_deps_dir.display().to_string()),
+        shell_single_quote(&remote.remote_workspace_build_dir.display().to_string()),
+    );
+    run_command_to_log(
+        &mut run_ssh_command(&remote.remote_host, &command),
+        log_path,
+        "[pikaci] ensure remote execute dirs",
+    )
+}
+
+fn sync_snapshot_to_remote(
+    local_snapshot_dir: &Path,
+    remote_snapshot_dir: &Path,
+    remote_host: &str,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let ready_marker = remote_snapshot_dir.join("pikaci-snapshot.json");
+    let already_ready_command = format!(
+        "test -f {}",
+        shell_single_quote(&ready_marker.display().to_string())
+    );
+    if run_ssh_command(remote_host, &already_ready_command)
+        .status()
+        .with_context(|| format!("check remote snapshot on {remote_host}"))?
+        .success()
+    {
+        append_line(
+            log_path,
+            &format!(
+                "[pikaci] remote snapshot already available at {}",
+                remote_snapshot_dir.display()
+            ),
+        )?;
+        return Ok(());
+    }
+
+    sync_directory_to_remote(
+        local_snapshot_dir,
+        remote_snapshot_dir,
+        remote_host,
+        log_path,
+        "snapshot",
+    )
+}
+
+fn sync_directory_to_remote(
+    local_dir: &Path,
+    remote_dir: &Path,
+    remote_host: &str,
+    log_path: &Path,
+    label: &str,
+) -> anyhow::Result<()> {
+    append_line(
+        log_path,
+        &format!(
+            "[pikaci] sync {label} {} -> {}:{}",
+            local_dir.display(),
+            remote_host,
+            remote_dir.display()
+        ),
+    )?;
+    let mkdir_command = format!(
+        "set -euo pipefail; rm -rf {}; mkdir -p {}",
+        shell_single_quote(&remote_dir.display().to_string()),
+        shell_single_quote(&remote_dir.display().to_string()),
+    );
+    run_command_to_log(
+        &mut run_ssh_command(remote_host, &mkdir_command),
+        log_path,
+        &format!("[pikaci] reset remote {label} dir"),
+    )?;
+
+    let mut child = Command::new("tar")
+        .arg("-C")
+        .arg(local_dir)
+        .arg("-cf")
+        .arg("-")
+        .arg(".")
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn local {label} tar"))?;
+    let mut ssh = run_ssh_command(
+        remote_host,
+        &format!(
+            "set -euo pipefail; tar -C {} -xf -",
+            shell_single_quote(&remote_dir.display().to_string())
+        ),
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .with_context(|| format!("spawn remote {label} untar"))?;
+    std::io::copy(
+        child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| anyhow!("local {label} tar stdout unavailable"))?,
+        ssh.stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("remote {label} tar stdin unavailable"))?,
+    )
+    .with_context(|| format!("stream {label} tar to remote host"))?;
+    ssh.stdin.take();
+    let tar_status = child
+        .wait()
+        .with_context(|| format!("wait for local {label} tar"))?;
+    let ssh_output = ssh
+        .wait_with_output()
+        .with_context(|| format!("wait for remote {label} untar"))?;
+    if !tar_status.success() || !ssh_output.status.success() {
+        append_line(log_path, &String::from_utf8_lossy(&ssh_output.stderr))?;
+        bail!(
+            "sync {label} to {} failed with local={:?} remote={:?}",
+            remote_host,
+            tar_status.code(),
+            ssh_output.status.code()
+        );
+    }
+    Ok(())
+}
+
+fn remote_symlink(
+    target: &Path,
+    link: &Path,
+    remote_host: &str,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let command = format!(
+        "set -euo pipefail; mkdir -p {}; ln -sfn {} {}",
+        shell_single_quote(
+            &link
+                .parent()
+                .ok_or_else(|| anyhow!("remote link {} has no parent", link.display()))?
+                .display()
+                .to_string()
+        ),
+        shell_single_quote(&target.display().to_string()),
+        shell_single_quote(&link.display().to_string()),
+    );
+    run_command_to_log(
+        &mut run_ssh_command(remote_host, &command),
+        log_path,
+        "[pikaci] install remote runner symlink",
+    )
+}
+
+fn build_remote_microvm_launch_command(remote: &RemoteMicrovmContext) -> String {
+    let runner_dir = shell_single_quote(&remote.remote_runner_link.display().to_string());
+    let vm_dir = shell_single_quote(&remote.remote_vm_dir.display().to_string());
+    let socket_wait = REMOTE_MICROVM_VIRTIOFS_SOCKETS
+        .iter()
+        .map(|socket| {
+            format!(
+                "for _ in $(seq 1 200); do [ -S {socket} ] && break; sleep 0.1; done; [ -S {socket} ] || {{ echo \"missing virtio-fs socket: {socket}\" >&2; exit 1; }}",
+                socket = shell_single_quote(socket),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    format!(
+        concat!(
+            "set -euo pipefail; ",
+            "cd {vm_dir}; ",
+            "rm -f nixos-virtiofs-*.sock nixos-virtiofs-*.sock.pid virtiofsd.log virtiofsd.pids virtiofsd-wrappers.list virtiofsd-wrapper-*; ",
+            "conf=$(sed -n 's#exec .* --configuration \\(/nix/store/[^ ]*supervisord\\.conf\\)#\\1#p' {runner_dir}/bin/virtiofsd-run); ",
+            "[ -n \"$conf\" ] || {{ echo 'failed to locate virtiofsd supervisord config' >&2; exit 1; }}; ",
+            "grep '^command=/nix/store/.*virtiofsd-' \"$conf\" | cut -d= -f2- > virtiofsd-wrappers.list; ",
+            "[ -s virtiofsd-wrappers.list ] || {{ echo \"no virtio-fs wrappers found in $conf\" >&2; exit 1; }}; ",
+            "cleanup() {{ if [ -f virtiofsd.pids ]; then while IFS= read -r pid; do kill \"$pid\" >/dev/null 2>&1 || true; wait \"$pid\" >/dev/null 2>&1 || true; done < virtiofsd.pids; fi; }}; ",
+            "trap cleanup EXIT; ",
+            ": > virtiofsd.pids; ",
+            "while IFS= read -r wrapper; do ",
+            "patched=virtiofsd-wrapper-$(basename \"$wrapper\"); ",
+            "sed '/--socket-group=/d' \"$wrapper\" > \"$patched\"; ",
+            "chmod +x \"$patched\"; ",
+            "\"$PWD/$patched\" >> virtiofsd.log 2>&1 & ",
+            "echo $! >> virtiofsd.pids; ",
+            "done < virtiofsd-wrappers.list; ",
+            "{socket_wait}; ",
+            "{runner_dir}/bin/microvm-run"
+        ),
+        vm_dir = vm_dir,
+        runner_dir = runner_dir,
+        socket_wait = socket_wait,
+    )
+}
+
+fn ensure_remote_microvm_runner(
+    job: &JobSpec,
+    ctx: &HostContext,
+    remote: &RemoteMicrovmContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let remote_runner_bin = remote.remote_runner_link.join("bin").join("microvm-run");
+    let already_ready_command = format!(
+        "test -x {}",
+        shell_single_quote(&remote_runner_bin.display().to_string())
+    );
+    if run_ssh_command(&remote.remote_host, &already_ready_command)
+        .status()
+        .with_context(|| format!("check remote runner on {}", remote.remote_host))?
+        .success()
+    {
+        append_line(
+            log_path,
+            &format!(
+                "[pikaci] remote runner already available at {}",
+                remote.remote_runner_link.display()
+            ),
+        )?;
+        return Ok(());
+    }
+
+    let local_flake_dir = ctx.job_dir.join("vm").join("flake");
+    let installable = materialize_runner_flake(job, ctx)?;
+    append_line(
+        log_path,
+        &format!(
+            "[pikaci] stage remote runner flake {} for `{}` on {}",
+            installable, job.id, remote.remote_host
+        ),
+    )?;
+    let remote_flake_dir = remote.remote_vm_dir.join("flake");
+    sync_directory_to_remote(
+        &local_flake_dir,
+        &remote_flake_dir,
+        &remote.remote_host,
+        log_path,
+        "runner flake",
+    )?;
+
+    let remote_installable = format!(
+        "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
+        remote_flake_dir.display()
+    );
+    let build_command = format!(
+        "set -euo pipefail; {} build --accept-flake-config --no-link --print-out-paths {}",
+        shell_single_quote(&ssh_nix_binary()),
+        shell_single_quote(&remote_installable)
+    );
+    let output = run_ssh_command(&remote.remote_host, &build_command)
+        .output()
+        .with_context(|| format!("build remote runner on {}", remote.remote_host))?;
+    if !output.status.success() {
+        append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
+        append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
+        bail!(
+            "remote runner build failed on {} with {:?}",
+            remote.remote_host,
+            output.status.code()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("decode remote runner build stdout")?;
+    let remote_store_path = stdout
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("/nix/store/"))
+        .ok_or_else(|| anyhow!("remote runner build produced no store path"))?;
+    append_line(log_path, stdout.trim_end())?;
+    remote_symlink(
+        Path::new(remote_store_path),
+        &remote.remote_runner_link,
+        &remote.remote_host,
+        log_path,
+    )
+}
+
+fn spawn_remote_runner_and_wait(
+    remote_host: &str,
+    remote_command: &str,
+    log_path: &Path,
+    timeout_secs: u64,
+) -> anyhow::Result<std::process::ExitStatus> {
+    let mut child = run_ssh_command(remote_host, remote_command)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn remote runner on {remote_host}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("remote runner stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("remote runner stderr unavailable"))?;
+    let log_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .with_context(|| format!("open {}", log_path.display()))?,
+    ));
+    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[runner:stdout]");
+    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[runner:stderr]");
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let status = loop {
+        if let Some(status) = child.try_wait().context("poll remote microvm-run")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            append_line(
+                log_path,
+                &format!(
+                    "[pikaci] timeout after {}s, killing remote runner",
+                    timeout_secs
+                ),
+            )?;
+            child.kill().context("kill timed out remote microvm-run")?;
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            bail!("timed out after {}s", timeout_secs);
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    Ok(status)
+}
+
+fn copy_remote_file_to_local(
+    remote_host: &str,
+    remote_path: &Path,
+    local_path: &Path,
+) -> anyhow::Result<()> {
+    let output = run_ssh_command(
+        remote_host,
+        &format!(
+            "cat {}",
+            shell_single_quote(&remote_path.display().to_string())
+        ),
+    )
+    .output()
+    .with_context(|| {
+        format!(
+            "read {} via ssh from {}",
+            remote_path.display(),
+            remote_host
+        )
+    })?;
+    if !output.status.success() {
+        bail!(
+            "remote read of {} from {} failed with {:?}",
+            remote_path.display(),
+            remote_host,
+            output.status.code()
+        );
+    }
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(local_path, &output.stdout).with_context(|| format!("write {}", local_path.display()))
+}
+
 fn render_guest_flake(
+    config: GuestRunnerConfig,
     job: &JobSpec,
     workspace_dir: &Path,
     workspace_read_only: bool,
@@ -986,11 +1620,17 @@ fn render_guest_flake(
         .staged_linux_rust_workspace_build_dir
         .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
         .unwrap_or_else(|| "null".to_string());
-    let socket_path = nix_escape(&paths.socket_path.display().to_string());
+    let socket_path = paths
+        .socket_path
+        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string());
     let guest_command = nix_escape(&guest_command);
     let workspace_read_only = if workspace_read_only { "true" } else { "false" };
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
     let timeout_secs = job.timeout_secs;
+    let guest_system = config.guest_system;
+    let host_pkgs_expr = config.host_pkgs_expr;
+    let hypervisor = config.hypervisor;
 
     Ok(format!(
         r#"{{
@@ -1002,11 +1642,11 @@ fn render_guest_flake(
 
   outputs = {{ self, nixpkgs, microvm, pika }}: {{
     nixosConfigurations.pikaci-wave1 = nixpkgs.lib.nixosSystem {{
-      system = "aarch64-linux";
+      system = "{guest_system}";
       modules = [
         microvm.nixosModules.microvm
         (pika.lib.pikaci.mkGuestModule {{
-          hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;
+          hostPkgs = {host_pkgs_expr};
           hostUid = {host_uid};
           hostGid = {host_gid};
           workspaceDir = "{workspace_dir}";
@@ -1016,13 +1656,14 @@ fn render_guest_flake(
           cargoTargetDir = "{target_dir}";
           stagedLinuxRustWorkspaceDepsDir = {staged_linux_rust_workspace_deps_dir};
           stagedLinuxRustWorkspaceBuildDir = {staged_linux_rust_workspace_build_dir};
-          socketPath = "{socket_path}";
-          rustToolchain = pika.packages.aarch64-linux.rustToolchain;
-          moqRelay = if pika.packages.aarch64-linux ? moqRelay then pika.packages.aarch64-linux.moqRelay else null;
-          androidSdk = if pika.packages.aarch64-linux ? androidSdk then pika.packages.aarch64-linux.androidSdk else null;
-          androidJdk = if pika.packages.aarch64-linux ? androidJdk then pika.packages.aarch64-linux.androidJdk else null;
-          androidGradle = if pika.packages.aarch64-linux ? androidGradle then pika.packages.aarch64-linux.androidGradle else null;
-          androidCargoNdk = if pika.packages.aarch64-linux ? androidCargoNdk then pika.packages.aarch64-linux.androidCargoNdk else null;
+          hypervisor = "{hypervisor}";
+          socketPath = {socket_path};
+          rustToolchain = pika.packages.{guest_system}.rustToolchain;
+          moqRelay = if pika.packages.{guest_system} ? moqRelay then pika.packages.{guest_system}.moqRelay else null;
+          androidSdk = if pika.packages.{guest_system} ? androidSdk then pika.packages.{guest_system}.androidSdk else null;
+          androidJdk = if pika.packages.{guest_system} ? androidJdk then pika.packages.{guest_system}.androidJdk else null;
+          androidGradle = if pika.packages.{guest_system} ? androidGradle then pika.packages.{guest_system}.androidGradle else null;
+          androidCargoNdk = if pika.packages.{guest_system} ? androidCargoNdk then pika.packages.{guest_system}.androidCargoNdk else null;
           guestCommand = "{guest_command}";
           runAsRoot = {run_as_root};
           timeoutSecs = {timeout_secs};
@@ -1122,9 +1763,12 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        GuestFlakePaths, builders_supports_aarch64_linux, render_guest_flake, vfkit_socket_path,
+        GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
+        build_remote_microvm_launch_command, builders_supports_aarch64_linux,
+        ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
+        render_guest_flake, vfkit_socket_path,
     };
-    use crate::model::{GuestCommand, JobSpec};
+    use crate::model::{GuestCommand, JobSpec, RunnerKind};
 
     #[test]
     fn guest_flake_targets_vfkit_exact_test_beachhead() {
@@ -1139,6 +1783,7 @@ mod tests {
             },
         };
         let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1148,7 +1793,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-beachhead.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-beachhead.sock")),
             },
         )
         .expect("render flake");
@@ -1166,6 +1811,44 @@ mod tests {
     }
 
     #[test]
+    fn guest_flake_targets_remote_microvm_for_staged_linux_rust_lane() {
+        let spec = JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand { command: "ignored" },
+        };
+        let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::MicrovmRemote),
+            &spec,
+            Path::new("/tmp/pikaci/snapshot"),
+            true,
+            &GuestFlakePaths {
+                artifacts_dir: Path::new("/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/artifacts"),
+                cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home"),
+                target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target"),
+                staged_linux_rust_workspace_deps_dir: Some(Path::new(
+                    "/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-deps",
+                )),
+                staged_linux_rust_workspace_build_dir: Some(Path::new(
+                    "/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build",
+                )),
+                socket_path: None,
+            },
+        )
+        .expect("render flake");
+
+        assert!(flake.contains("system = \"x86_64-linux\";"));
+        assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.x86_64-linux;"));
+        assert!(flake.contains("hypervisor = \"cloud-hypervisor\";"));
+        assert!(flake.contains("socketPath = null;"));
+        assert!(flake.contains(
+            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests\";"
+        ));
+    }
+
+    #[test]
     fn builder_parser_detects_supported_builder_lines() {
         assert!(builders_supports_aarch64_linux(
             "ssh://builder aarch64-linux /tmp/key 8 1 benchmark - -"
@@ -1173,6 +1856,26 @@ mod tests {
         assert!(!builders_supports_aarch64_linux(
             "ssh://builder x86_64-linux /tmp/key 8 1 benchmark - -"
         ));
+    }
+
+    #[test]
+    fn staged_linux_rust_lane_rejects_x86_64_outputs_in_aarch64_vfkit_guest() {
+        let spec = JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand { command: "ignored" },
+        };
+
+        let error = ensure_staged_linux_rust_lane_matches_vfkit_guest(&spec)
+            .expect_err("staged x86_64 lane should not execute in an aarch64 vfkit guest");
+
+        assert!(
+            error
+                .to_string()
+                .contains("targets `x86_64-linux` prepared outputs")
+        );
     }
 
     #[test]
@@ -1197,6 +1900,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_microvm_launch_starts_virtiofsd_and_waits_for_sockets() {
+        let command = build_remote_microvm_launch_command(&RemoteMicrovmContext {
+            remote_host: "pika-build".to_string(),
+            remote_snapshot_dir: Path::new("/var/tmp/pikaci/runs/run/snapshot").to_path_buf(),
+            remote_vm_dir: Path::new("/var/tmp/pikaci/jobs/job/vm").to_path_buf(),
+            remote_artifacts_dir: Path::new("/var/tmp/pikaci/jobs/job/artifacts").to_path_buf(),
+            remote_cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home").to_path_buf(),
+            remote_target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target").to_path_buf(),
+            remote_workspace_deps_dir: Path::new(
+                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps",
+            )
+            .to_path_buf(),
+            remote_workspace_build_dir: Path::new(
+                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build",
+            )
+            .to_path_buf(),
+            remote_runner_link: Path::new("/var/tmp/pikaci/jobs/job/vm/runner").to_path_buf(),
+        });
+
+        assert!(command.contains("failed to locate virtiofsd supervisord config"));
+        assert!(command.contains("no virtio-fs wrappers found in $conf"));
+        assert!(command.contains("virtiofsd-wrappers.list"));
+        assert!(command.contains("sed '/--socket-group=/d'"));
+        assert!(command.contains("virtiofsd-wrapper-$(basename \"$wrapper\")"));
+        assert!(command.contains("virtiofsd.pids"));
+        assert!(command.contains("trap cleanup EXIT"));
+        assert!(command.contains("/bin/microvm-run"));
+        for socket in REMOTE_MICROVM_VIRTIOFS_SOCKETS {
+            assert!(command.contains(socket));
+        }
+        assert!(command.contains("missing virtio-fs socket:"));
+    }
+
+    #[test]
     fn guest_flake_can_run_all_package_unit_tests() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
@@ -1208,6 +1945,7 @@ mod tests {
             },
         };
         let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1217,7 +1955,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-agent-control-plane-unit.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-agent-control-plane-unit.sock")),
             },
         )
         .expect("render flake");
@@ -1239,6 +1977,7 @@ mod tests {
             },
         };
         let package_flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &package_spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1248,7 +1987,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-agent-microvm-tests.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-agent-microvm-tests.sock")),
             },
         )
         .expect("render flake");
@@ -1268,6 +2007,7 @@ mod tests {
             },
         };
         let filtered_flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &filtered_spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1277,7 +2017,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-server-agent-api-tests.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-server-agent-api-tests.sock")),
             },
         )
         .expect("render flake");
@@ -1298,6 +2038,7 @@ mod tests {
             },
         };
         let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1307,7 +2048,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock")),
             },
         )
         .expect("render flake");
@@ -1330,6 +2071,7 @@ mod tests {
             },
         };
         let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1339,7 +2081,7 @@ mod tests {
                 target_dir: Path::new("/tmp/pikaci/cache/target"),
                 staged_linux_rust_workspace_deps_dir: None,
                 staged_linux_rust_workspace_build_dir: None,
-                socket_path: Path::new("/tmp/pikaci-android-sdk-probe.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-android-sdk-probe.sock")),
             },
         )
         .expect("render flake");
@@ -1362,6 +2104,7 @@ mod tests {
             },
         };
         let flake = render_guest_flake(
+            guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
             true,
@@ -1375,7 +2118,7 @@ mod tests {
                 staged_linux_rust_workspace_build_dir: Some(Path::new(
                     "/nix/store/workspace-build",
                 )),
-                socket_path: Path::new("/tmp/pikaci-pika-core-lib-app-flows-tests.sock"),
+                socket_path: Some(Path::new("/tmp/pikaci-pika-core-lib-app-flows-tests.sock")),
             },
         )
         .expect("render flake");

@@ -64,6 +64,14 @@ info:
     @echo "    just pikaci-remote-fulfill-deploy"
     @echo "  Run staged Rust lane with remote fulfillment on pika-build:"
     @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
+    @echo "  Prewarm the cold workspaceDeps closure onto pika-build before the real build:"
+    @echo "    just pikaci-workspace-deps-prewarm"
+    @echo "  Prewarm + build workspaceDeps on pika-build with a higher-capacity builder override:"
+    @echo "    just pikaci-workspace-deps-remote-build"
+    @echo "  Fast-build both staged Linux Rust prepare outputs for the real pre-merge lane:"
+    @echo "    just pikaci-pre-merge-pika-rust-prepares-remote-build"
+    @echo "  Repair the legacy local aarch64-linux linux-builder staged-Rust cargo-path failure:"
+    @echo "    just linux-builder-repair"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -1049,6 +1057,27 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
     export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$PWD/target/debug/pikaci-fulfill-prepared-output"
     export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
     exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
+
+# Prewarm the exact `ci.x86_64-linux.workspaceDeps` pre-compile closure onto pika-build.
+pikaci-workspace-deps-prewarm:
+    ./scripts/pika-build-prewarm-workspace-deps.sh
+
+# Prewarm + build the exact `ci.x86_64-linux.workspaceDeps` lane on pika-build with an explicit x86_64 builder override.
+pikaci-workspace-deps-remote-build:
+    ./scripts/pika-build-run-workspace-deps.sh
+
+# Fast-build both staged Linux Rust prepare outputs for the real pre-merge pika Rust lane on pika-build.
+pikaci-pre-merge-pika-rust-prepares-remote-build:
+    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceDeps
+    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceBuild
+
+# Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
+linux-builder-repair:
+    ./scripts/linux-builder-repair.sh
+
+# Fully recreate the local linux-builder VM/store state via the existing launchd service after `just linux-builder-repair` still points at live builder corruption.
+linux-builder-recreate:
+    ./scripts/linux-builder-recreate.sh
 
 # Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
 agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":

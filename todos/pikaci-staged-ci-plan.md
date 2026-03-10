@@ -28,7 +28,7 @@ Establish the exact Linux Rust lane to migrate first, the required success crite
 Deliverables:
 
 - Choose one concrete lane as the first staged-build consumer.
-- Document the proposed `ci.aarch64-linux.*` flake output names.
+- Document the proposed `ci.x86_64-linux.*` flake output names.
 - Document what is explicitly out of scope for the first slice.
 - Document how phase reviews will decide whether to continue, pivot, or stop.
 
@@ -91,9 +91,9 @@ Add checked-in Nix outputs for staged Linux Rust builds in a Fedimint/Flakebox-l
 Scope:
 
 - Add a checked-in Nix module or flake wiring for Linux Rust staged outputs.
-- Expose outputs in a `ci.aarch64-linux` namespace, likely along the lines of:
-  - `.#ci.aarch64-linux.workspaceDeps`
-  - `.#ci.aarch64-linux.workspaceBuild`
+- Expose outputs in a `ci.x86_64-linux` namespace, likely along the lines of:
+  - `.#ci.x86_64-linux.workspaceDeps`
+  - `.#ci.x86_64-linux.workspaceBuild`
 - Do not wire these outputs into `pikaci` yet.
 - Keep the implementation focused on one deterministic Linux Rust lane family.
 - Reuse Crane-style staged build boundaries where practical.
@@ -277,7 +277,7 @@ Rationale from the current migrated lane:
 
 - Current execute startup is conceptually cheap after prepare completes. The staged Rust execute nodes run small wrappers from `workspaceBuild` (`/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests` and `/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests`) that read manifest files and invoke already-built test binaries. The expensive work we can see locally is still VM bring-up, vfkit runner preparation, and guest-side test execution, not Rust recompilation inside execute.
 - The current shared prepared-build model already supports meaningful fanout on the reference lane. One `workspaceDeps` node and one `workspaceBuild` node feed multiple execute nodes, and the plan/log output makes the reuse boundary obvious. That is enough to keep pushing on scheduler and lane-shape work without introducing a second Rust artifact format yet.
-- The current friction is mostly about moving prepared state across machine boundaries, not about local lane fanout. The staged path is snapshot-scoped (`path:<snapshot>#ci.aarch64-linux.workspace*`) and consumed through host-local mount repointing plus read-only virtiofs shares into the guest. That works well on one orchestrating host, but it does not yet define how another host would discover, realize, transfer, or mount the prepared outputs.
+- The current friction is mostly about moving prepared state across machine boundaries, not about local lane fanout. The staged path is snapshot-scoped (`path:<snapshot>#ci.x86_64-linux.workspace*`) and consumed through host-local mount repointing plus read-only virtiofs shares into the guest. That works well on one orchestrating host, but it does not yet define how another host would discover, realize, transfer, or mount the prepared outputs.
 - `nextest` archive would buy us a more explicit Rust-test payload for cross-machine or high-fanout execution: archive export/import, a stable inventory of runnable tests, and a cleaner transport boundary than host-local mount repointing. Those are real advantages, but they are not the current bottleneck in the migrated lane.
 - `nextest` archive would also add immediate complexity that is not justified by today’s lane: new toolchain surface in the flake/guest environment, a second compile/execute contract alongside the current Crane outputs, archive packaging/import logic, and a sharper semantic shift away from the existing `cargo test --no-run` + manifest-wrapper path that already works for the first fanout slice.
 
@@ -531,8 +531,235 @@ Phase 6 first real `pika-build` remote-fulfillment notes:
   - the local host delegated that Linux staged build to the existing `linux-builder`,
   - and that builder hit cargo vendor/source hash mismatches while importing crates such as `tracing-log-0.2.0` and `tracing-subscriber-0.3.22`.
 - What this slice proves: the ssh-style launcher transport is no longer just unit-tested; there is now one repeatable developer command path intended to exercise it against the real `pika-build` host with the existing local execute path unchanged.
+- The immediate blocker is now explicit:
+  - the failure is in staged Linux Rust `workspaceDeps` host prepare on the local `linux-builder`,
+  - the observed symptom is cargo-source hash mismatch while importing paths from `ssh-ng://builder@linux-builder`,
+  - and the ssh remote-fulfillment transport is not the failing edge in the first real experiment.
 - What is still missing: the run is still remote-fulfillment-only, not remote execute orchestration, and the host-side staged Linux Rust prepare must succeed before the ssh fulfillment path can be exercised end-to-end on a real run.
 - Next recommended slice: fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure first, then rerun the new `pika-build` entrypoint before adding any more remote-launcher abstraction.
+
+Phase 6 staged Linux Rust prepare-integrity fix notes:
+
+- This next follow-up slice is now complete and landed.
+- The root cause was narrowed to the local `linux-builder` environment, not the staged flake outputs or the ssh transport:
+  - plain `nix build .#ci.aarch64-linux.workspaceDeps` reproduced the same failure outside the real `pikaci` run,
+  - the mismatch happened while importing cargo-source paths back from `ssh-ng://builder@linux-builder`,
+  - and the builder was simultaneously logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`.
+- A narrow `builders-use-substitutes = false` workaround was tested against the real staged path, but it did not clear the blocker end-to-end and should not become the default `pikaci` behavior.
+- A real rerun of `just pikaci-remote-fulfill-pre-merge-pika-rust` was attempted after the fix:
+  - the host logs showed the narrowed `builders-use-substitutes = false` experiment for `workspaceDeps`,
+  - the broad cargo-source mismatch churn seen in the first run no longer reproduced,
+  - but `workspaceDeps` still failed while importing one specific remote store path: `cargo-src-linux-raw-sys-0.4.15`.
+- The next blocker is now sharper and appears environmental:
+  - `nix build` of that exact derivation still reproduces a hash mismatch when copying `/nix/store/81553n28hv3nqj9v1226qc16dvlqxh9y-cargo-src-linux-raw-sys-0.4.15` back from `ssh-ng://builder@linux-builder`,
+  - the same builder is still logging `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`,
+  - and this no longer looks like a staged flake-output or ssh-transport bug.
+- What this slice proves: the current blocker was narrowed inside the real run path without changing the Nix-backed prepare/execute contract or adding more remote-launcher abstraction, and the remaining failure is now a concrete local `linux-builder` store-health issue.
+- The `builders-use-substitutes = false` workaround was intentionally reverted afterward:
+  - it did not unblock the real run,
+  - it would have changed the steady-state staged Rust hot path,
+  - and the right next move is builder/store repair, not another `pikaci` workaround.
+- Next recommended slice: repair or recreate the local `linux-builder` state (at minimum the corrupt `cargo-src-linux-raw-sys-0.4.15` path, and likely the malformed `/root/.cache/nix/binary-cache-v7.sqlite`) and then rerun the same `pika-build` entrypoint before changing any more `pikaci` architecture.
+
+Phase 6 linux-builder health repair notes:
+
+- This next follow-up slice is now complete and landed.
+- The focus shifted explicitly from `pikaci` architecture to builder/store health:
+  - plain `nix build .#ci.aarch64-linux.workspaceDeps` still reproduced the same failure outside the remote-fulfillment path,
+  - so the blocker remained the local `linux-builder`, not the staged request/result or ssh launcher contracts.
+- The exact `cargo-src-linux-raw-sys-0.4.15` failure was repairable from the host:
+  - `nix show-derivation` revealed the exact fixed-output URL and hash,
+  - `nix-prefetch-url --type sha256 --name cargo-src-linux-raw-sys-0.4.15 https://static.crates.io/crates/linux-raw-sys/0.4.15/download` materialized the expected local source path,
+  - and that exact cargo-source derivation could then be realized locally.
+- The repair moved the real blocker forward but did not clear it entirely:
+  - after reseeding the cargo source path, `workspaceDeps` no longer stopped on `cargo-src-linux-raw-sys-0.4.15`,
+  - it advanced to `cargo-package-linux-raw-sys-0.4.15`,
+  - and that path still failed with a hash mismatch while copying back from `ssh-ng://builder@linux-builder`.
+- Local store health on the host was also part of the issue:
+  - the bad `cargo-package-linux-raw-sys-0.4.15` path could exist in `/nix/store` while still being invalid in the local Nix DB,
+  - deleting that invalid local path is safe and repeatable,
+  - and a new `just linux-builder-repair` entrypoint now codifies the repair steps we proved out on the host side.
+- The new repair entrypoint was exercised for real:
+  - `just linux-builder-repair` first reproduces the current `workspaceDeps` failure to derive the current bad `cargo-src` / `cargo-package` paths, then reseeds the matching cargo source path, deletes the invalid local cargo-package copy, and reruns `nix build .#ci.aarch64-linux.workspaceDeps`,
+  - `workspaceDeps` still failed at the same builder-produced `cargo-package-linux-raw-sys-0.4.15` hash mismatch,
+  - so the host-side repair is repeatable and useful, but not sufficient to restore full builder health by itself.
+- The remaining blocker is now clearly privileged builder maintenance:
+  - the live `linux-builder` still reports `database disk image is malformed` for `/root/.cache/nix/binary-cache-v7.sqlite`,
+  - the same exact cargo-package path still comes back with the wrong hash from the builder,
+  - and fixing that remaining state likely requires restarting or recreating the local `linux-builder` VM/store image rather than more `pikaci` changes.
+- The real `pika-build` remote-fulfillment entrypoint was rerun after the repair:
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` produced run `20260309T004804Z-41a7a549`,
+  - it still failed in shared host prepare before the ssh fulfillment boundary,
+  - and the failing host log again points at `cargo-package-linux-raw-sys-0.4.15` plus the malformed builder cache DB warning.
+- What this slice proves: the real `pika-build` remote-fulfillment experiment is still blocked before ssh fulfillment, but the host now has one repeatable repair entrypoint for the non-privileged side of the builder failure and the remaining work is sharply isolated to privileged `linux-builder` health repair.
+- Next recommended slice: do one explicit privileged `linux-builder` reset/recreate step on the development machine, then rerun `nix build .#ci.aarch64-linux.workspaceDeps` and `just pikaci-remote-fulfill-pre-merge-pika-rust` before changing any more remote CI architecture.
+
+Phase 6 linux-builder privileged reset/recreate notes:
+
+- This follow-up slice is now prepared and reviewable, but the actual privileged recreate is still pending local sudo input.
+- The focus stays strictly on the existing local builder lifecycle:
+  - the scope is the stock `org.nixos.linux-builder` launchd service, its builder image, and its runtime directories,
+  - not more `pikaci` transport or scheduler changes.
+- The new reset path is now codified locally:
+  - `just linux-builder-recreate` delegates to `scripts/linux-builder-recreate.sh`,
+  - `scripts/linux-builder-recreate.sh --help` documents the exact service name, plist path, work dir, run dir, and host ssh port,
+  - the script rejects unexpected args, guards the destructive path targets explicitly, and keeps the flow limited to the builder reset/recreate itself.
+- A real recreate attempt was made from this worktree:
+  - `just linux-builder-recreate` ran the new script,
+  - the script reached the expected privilege boundary,
+  - and because this session had no non-interactive sudo credential it stopped with the exact handoff command:
+    - `cd /Users/justin/code/pika/worktrees/pika-ci && sudo ./scripts/linux-builder-recreate.sh`
+- Because the privileged recreate did not actually run yet in this session:
+  - `nix build --no-link -L .#ci.aarch64-linux.workspaceDeps` was not rerun afterward,
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` was not rerun afterward,
+  - and the live local `linux-builder` remains the next operational blocker to clear.
+- The immediate next step is now concrete:
+  - run the exact privileged recreate command above on the development machine,
+  - then rerun `nix build --no-link -L .#ci.aarch64-linux.workspaceDeps`,
+  - then rerun `just pikaci-remote-fulfill-pre-merge-pika-rust`,
+  - and record whether builder corruption cleared or changed before touching more remote CI architecture.
+
+Phase 6 staged Linux target pivot notes:
+
+- The preferred staged Linux Rust target is now `x86_64-linux`, not `aarch64-linux`.
+- The immediate goal is to align staged Linux Rust prepare outputs with `pika-build`:
+  - preferred outputs are `.#ci.x86_64-linux.workspaceDeps` and `.#ci.x86_64-linux.workspaceBuild`,
+  - `ci.aarch64-linux.*` remains only as a temporary compatibility namespace while the local vfkit execute path still hard-codes an `aarch64-linux` guest.
+- This pivot is operational, not architectural churn:
+  - the intent is to stop forcing staged Linux Rust prepares through the local nix-darwin `linux-builder`,
+  - and instead let the preferred staged outputs target the same `x86_64-linux` world that `pika-build` already runs.
+- The current blocker is now sharper and should not be confused with the old builder-corruption issue:
+  - the staged prepare outputs can pivot to `x86_64-linux`,
+  - but the current local execute path still renders a vfkit guest with `system = "aarch64-linux"` and runs staged wrapper binaries directly inside that guest,
+  - so an end-to-end `pre-merge-pika-rust` run cannot safely consume `x86_64-linux` staged binaries until execute also moves to an `x86_64-linux` host or another explicit cross-arch strategy is added.
+- That blocker is real and should be treated as such:
+  - `pika-build` is a natural candidate for the Linux side because it is already `x86_64-linux`,
+  - but the missing piece is execute-host alignment, not more staged-output naming work and not more ssh transport abstraction.
+- The current optimization pivot is also explicit now:
+  - stop focusing on local `linux-builder` recovery as the active path,
+  - focus on making `.#ci.x86_64-linux.workspaceDeps` execute efficiently on `pika-build`,
+  - and treat low remote CPU before `cargo`/`rustc` starts as a build-path efficiency problem, not a target-selection problem.
+- The first concrete performance finding for that path:
+  - `workspaceDeps` is scheduled onto the remote `x86_64-linux` builder as intended,
+  - but the slow front-loaded work is dominated by Nix realizing and shipping the vendored Cargo dependency closure before the main `cargo test -p pika_core --no-run` compile begins,
+  - so the first pragmatic improvement is to narrow the staged source snapshot to the actual `pika_core` path-crate closure and make Cargo job count explicit once compile starts.
+- The first rerun after that focused improvement clarified the next bottleneck:
+  - trimming the staged source snapshot was safe, but it did not reduce the vendored Cargo closure fan-in,
+  - `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` still began with roughly 703 `cargo-package-*` / vendor derivations,
+  - and short remote observation on `pika-build` still showed no visible `cargo` / `rustc`, only low-utilization Nix/store-prep activity.
+- The next focused vendoring slice did make a real dent:
+  - the staged lane now builds from a synthetic narrow workspace root plus a lane-specific `Cargo.lock`,
+  - and the `workspaceDeps` dry-run fan-in dropped from roughly 703 derivations to roughly 442 derivations.
+- That improvement was real but not sufficient yet:
+  - a real `nix build --no-link -L .#ci.x86_64-linux.workspaceDeps` still spent its first observed minute on `cargo-package-*` / vendor realization,
+  - short remote process checks on `pika-build` still showed no visible `cargo` / `rustc`,
+  - and load stayed low enough that the machine still was not doing meaningful compile work yet.
+- The current cold-start slice should focus on prewarming and feed rate, not on more architecture churn:
+  - prewarm the exact `workspaceDeps` pre-compile closure onto `pika-build` before the real build,
+  - and prove any higher x86_64 builder job count with an explicit override before asking for an `/etc/nix/machines` edit.
+- The current builder-feed mismatch is concrete:
+  - `/etc/nix/machines` still advertises the x86_64 remote builder with only `4` jobs,
+  - while `pika-build` itself reports `32` CPUs,
+  - so the expected proof path is to use a temporary `NIX_BUILDERS=... 16 ...` or similar override during the staged build and document the recommended steady-state setting.
+- The first prewarm/feed slice produced a narrower operational result:
+  - a checked-in prewarm entrypoint now realizes the direct `workspaceDeps` input closure and copies it to `ssh://pika-build` with `nix copy --substitute-on-destination`,
+  - and a proof rerun used an explicit `NIX_BUILDERS=... 12 ...` override instead of changing `/etc/nix/machines` in-repo.
+- The next rerun made the remaining bottleneck much sharper:
+  - a completed destination-side prewarm collapsed the post-warm dry-run tail all the way down to the main `workspaceDeps` derivation itself,
+  - the earlier rough "44 derivations left" state was therefore still an incomplete prewarm/feed result, not evidence that `pika-build` substituters or trust settings were fundamentally wrong,
+  - and the real build immediately transitioned into the main remote derivation on `pika-build`.
+- The first visible remote compile transition has now happened:
+  - builder logs showed `building '/nix/store/...-pika-linux-rust-workspace-deps-deps-0.1.0.drv' on 'ssh://justin@100.73.239.5'`,
+  - then `cargo test --locked -j 16 -p pika_core --lib --tests --no-run --message-format json-render-diagnostics`,
+  - followed by real `Compiling ...` output for the staged dependency build on the remote host,
+  - and the `workspaceDeps` derivation completed successfully after roughly 30 seconds of actual compile once the cold pre-compile closure was ready.
+- The current operational follow-up is now explicit:
+  - keep the checked-in prewarm entrypoint,
+  - add a checked-in wrapper that pairs that prewarm with the proven `NIX_BUILDERS=... 12 ...` override while the local `/etc/nix/machines` entry still advertises only `4` jobs,
+  - and treat the next optimization target as steady-state feed/config cleanup plus the real `pikaci` path, not more blind speculation about missing remote compile.
+- The first real `pikaci` rerun after that fast-path proof got materially further:
+  - it passed the staged `workspaceDeps` prepare step,
+  - the remote prepared-output launcher/helper path on `pika-build` succeeded and recorded the expected staged mount exposures,
+  - and the next active node became `ci.x86_64-linux.workspaceBuild`, not the old `workspaceDeps` bottleneck.
+- That rerun also narrowed the next blocker:
+  - a dry-run for `.#ci.x86_64-linux.workspaceBuild` likewise collapsed to only its main derivation,
+  - so the next wait was no longer a broad missing closure and not yet the execute-host architecture mismatch,
+  - it was the main staged `workspaceBuild` derivation itself.
+- The next narrow operational improvement is now checked in:
+  - a new entrypoint fast-builds both staged Linux Rust prepare outputs on `pika-build` before the real pre-merge lane runs,
+  - and a direct rerun of that `workspaceBuild` path showed the same desired transition as `workspaceDeps`: remote `cargo test -j 16` compile on `pika-build`.
+- The end-to-end boundary is still one step further ahead:
+  - this slice did not yet reach the real execute nodes because `workspaceBuild` still spent a long tail finalizing/copying its large realized output back to the local store,
+  - so the known `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch remains the likely next blocker,
+  - but it was not yet re-proven by a completed real run in this slice.
+- The next rerun exposed and fixed a more specific `workspaceBuild` correctness problem before execute:
+  - the staged test manifests emitted by `workspaceBuild` were still recording absolute `/build/.../target/...` executable paths instead of target-relative paths,
+  - which meant the staged wrapper contract was only appearing to work because the earlier `workspaceBuild` output carried the full cargo-artifacts tree.
+- The follow-up trim on `workspaceBuild` is now concrete:
+  - `workspaceBuild` no longer installs the implicit full cargo-artifacts archive into its staged output,
+  - it copies only the manifest-selected staged test executables plus adjacent `*.so` runtime files,
+  - and the observed realized output on the local host dropped from roughly `1.6 GiB` to roughly `673 MiB`.
+- That improvement was real but did not yet finish the clean rerun inside this slice:
+  - a fresh `just pikaci-pre-merge-pika-rust-prepares-remote-build` rerun compiled the corrected `workspaceBuild` remotely on `pika-build`,
+  - but the corrected `workspaceBuild` output still had a long local import/registration tail after the remote build completed,
+  - so the slice still did not reach the true post-prepare execute boundary,
+  - and the expected `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch therefore remains likely but still not freshly re-proven here.
+- The next rerun finally sharpened that remaining `workspaceBuild` tail:
+  - once remote `workspaceBuild` compile finished, `pika-build` went idle while the local host stayed busy with `nix build`, `nix-daemon __build-remote`, and `ssh ... nix-store --serve --write`,
+  - repeated `nettop` samples showed the ssh store stream was overwhelmingly inbound to the local machine,
+  - so the active tail was local ssh-store import / store registration of the realized `workspaceBuild` output, not more remote compile.
+- One narrow fix removed the last prepare-side reuse leak:
+  - `workspaceBuild` was still deriving a fresh synthetic staged source path per snapshot even when its contents matched the top-level staged source exactly,
+  - forcing `workspaceBuild` to reuse `workspaceDeps.src` made the staged `workspaceBuild` derivation hash-stable between top-level and run snapshot evaluation,
+  - and a fresh rerun then reused hot local `workspaceBuild` immediately instead of rebuilding or re-importing it again.
+- The real `pikaci` lane is now past both staged prepares and both remote fulfillments:
+  - `workspaceDeps` and `workspaceBuild` were both realized locally and exposed successfully on `pika-build`,
+  - the run then advanced to building the generated execute runner flake under `jobs/.../vm/flake`,
+  - and that generated flake still targets `system = "aarch64-linux"` even though the staged prepared outputs are `ci.x86_64-linux.*`.
+- That means the next blocker is now sharper but still one step ahead of the current live rerun:
+  - the immediate active wait is the generated `aarch64-linux` microVM runner build, not staged prepare reuse anymore,
+  - the known `x86_64-linux` prepared-output versus local `aarch64-linux` vfkit execute mismatch remains the likely first execute-side blocker once the runner build clears,
+  - and the next architectural move should still be decided from that execute boundary rather than from more prepare-side churn.
+- The next execute-side slice replaced that stale `aarch64-linux` runner generation with a one-lane remote microVM path:
+  - staged Linux Rust jobs now plan and execute as `microvm_remote` instead of `vfkit_local`,
+  - the runner flake renderer now emits `system = "x86_64-linux"` with `hostPkgs = nixpkgs.legacyPackages.x86_64-linux` and `hypervisor = "cloud-hypervisor"` for the staged `pika_core` lane,
+  - and `guest-module.nix` now accepts a narrow hypervisor override so the same guest module can render either the old local vfkit guest or the new remote `microvm.nix` guest on `pika-build`.
+- One first rerun exposed a real planner bug rather than an execute-host limitation:
+  - the execute node and job records already said `microvm_remote`,
+  - but the plan builder was still calling the old vfkit-only runner-flake materializer,
+  - so the generated flake under `jobs/.../vm/flake` still came out as `aarch64-linux`,
+  - and that bug was fixed by routing runner prepare/materialization through the runner-kind-aware dispatcher.
+- After that fix, the corrected rerun finally rendered the right execute boundary:
+  - the generated runner flake for `pika-core-lib-app-flows-tests` now says `system = "x86_64-linux"`,
+  - it mounts the fulfilled staged outputs from the remote prepared-output work dir,
+  - and it targets `cloud-hypervisor` on `pika-build` rather than the local vfkit guest on macOS.
+- The live blocker is no longer the old execute architecture mismatch:
+  - the checked-in dual-prepare wrapper still succeeds and leaves both staged prepares hot,
+  - but the real `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun now fails before execute because the local host cannot materialize a fresh `.pikaci/runs/.../snapshot`,
+  - the host log shows `error: writing to file: No space left on device` while fetching the snapshot input for `path:.../snapshot#ci.x86_64-linux.workspaceDeps`,
+  - and repeated local `df -h` checks stayed below roughly `1 GiB` free even after deleting old generated `.pikaci/runs` directories.
+- The next operational rerun cleared that disk blocker:
+  - local free space was restored from under `1 GiB` to roughly `32 GiB` before the next rerun and later rose above `100 GiB` during the same slice,
+  - `cargo test -p pikaci` passed,
+  - `just pikaci-pre-merge-pika-rust-prepares-remote-build` succeeded again,
+  - and the real `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun got past both staged prepares and both remote fulfillments without snapshot-space failure.
+- That first post-disk rerun produced the first real microVM-specific blocker:
+  - the generated `x86_64-linux` runner build failed under `cloud-hypervisor` with `Unsupported interface type user for Cloud-Hypervisor`,
+  - so the remaining problem was the shared guest module still hard-coding the vfkit-style `microvm.interfaces = [{ type = "user"; ... }]` network shape,
+  - not runner architecture selection or prepared-output transport.
+- One narrow execute-side fix addressed that exact blocker:
+  - the guest module now omits the unsupported `user` interface when `hypervisor == "cloud-hypervisor"`,
+  - leaving the old vfkit path unchanged while letting the staged remote microVM runner build proceed further.
+- After that fix, the next rerun got further again but still did not reach actual execute inside this slice:
+  - the old `Unsupported interface type user for Cloud-Hypervisor` error disappeared,
+  - `just pikaci-remote-fulfill-pre-merge-pika-rust` once again passed both staged prepares and both remote fulfillments,
+  - and the active wait moved into `nix build ... nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner` for the staged runner itself,
+  - with repeated local `nix-daemon __build-remote` plus `ssh ... nix-store --serve --write` activity but still no observed `microvm-run` / `cloud-hypervisor` process for the staged lane yet.
+- Next recommended slice:
+  - keep the corrected staged manifest normalization, slimmer `workspaceBuild` output, `workspaceBuild.src = workspaceDeps.src`, and the remote `x86_64-linux` microVM runner path,
+  - keep the new `cloud-hypervisor` interface guard in the guest module,
+  - rerun or directly instrument the staged runner build long enough to determine whether it eventually reaches `microvm-run` or is bottlenecked in remote runner realization,
+  - and treat that runner-build/launch boundary as the new active place to sharpen, not the old disk or prepare path.
 
 ## Deferred Until Proven Necessary
 
@@ -571,5 +798,41 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, and fourteenth narrow remote-prep forms.
-- Current recommended slice is one narrow follow-up driven by the first real `pika-build` experiment: keep the new dev entrypoint, preserve the Nix-backed contract, and fix the current staged `workspaceDeps` / `linux-builder` source-integrity failure before doing more remote-fulfillment work.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth, and seventeenth narrow remote-execute forms, and has now crossed both the first real remote guest-boot boundary and the first real staged-test-execution boundary on `pika-build`.
+- Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
+  - stop spending more slices on local `linux-builder` recovery,
+  - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
+  - keep using the checked-in prewarm plus dual-prepare wrappers to ensure prepare is not the intentional bottleneck,
+  - note that the generated runner is no longer `aarch64-linux`: the staged `pika_core` lane now renders an `x86_64-linux` `cloud-hypervisor` microVM runner for `pika-build`,
+  - note that local disk exhaustion is no longer the active blocker,
+  - note that the first post-disk runtime blocker was the unsupported `user` network interface under `cloud-hypervisor`, and that narrow guest-module fix is now in,
+  - note that the runner flake no longer points at `/Users/.../snapshot`: it now renders against the remote snapshot path and the staged `declaredRunner` build completes on `pika-build`,
+  - note that the run snapshot was still far too large for this boundary because it copied generated mobile build state (`android/app/build`, `ios/build`, Gradle caches) into the remote runner input,
+  - note that snapshots now skip those generated nested build directories, shrinking the observed run snapshot from about `2.0G` to about `698M`,
+  - note that the run-scoped remote snapshot was also being deleted and re-uploaded for sibling jobs, and that the execute path now reuses an already-populated remote snapshot instead of resetting it,
+  - note that the lane now reaches the first real remote launch boundary: both staged jobs log `starting remote x86_64 microvm`, `cloud-hypervisor` starts, and the guest kernel/systemd boot sequence is visible in the host log,
+  - note that the first concrete runtime failure is no longer runner realization but the unprivileged remote `virtiofsd` launcher trying to force `--socket-group=kvm`,
+  - note that direct host inspection proved each backend bound its socket and then died on `chown(..., group=kvm) = EPERM`, which surfaced to Cloud Hypervisor as `Connection refused`,
+  - note that the remote runtime layout had another correctness bug: vm/runner/artifact directories were shared by job id across runs, so stale runner payloads embedded old snapshot paths,
+  - note that the remote microVM layout is now run-scoped for vm/runner/artifact state while keeping the shared prepared-output mount locations intact,
+  - note that the execute wrapper now starts the generated `virtiofsd` backends itself for the remote lane, strips the privileged `--socket-group` flag, waits for all expected sockets, and only then launches `microvm-run`,
+  - note that this fix cleared the Cloud Hypervisor boot failure: the guest now reaches stage 2, mounts `/artifacts`, `/cargo-home`, `/cargo-target`, `/workspace/snapshot`, and both staged Linux Rust shares, starts `pikaci-job`, and powers off cleanly,
+  - note that the old staged-manifest blocker is now fixed,
+  - note that the root cause was twofold:
+    - the staged `ciPikaCoreWorkspaceSrc` source assembly was not explicitly carrying `rust/tests` and related support files for this lane,
+    - and `workspaceDeps` was still using Crane's manifest-only dummy source even though its custom build phase intentionally compiles real test targets, which also meant `workspaceBuild.src = workspaceDeps.src` was inheriting a tests-stripped source tree,
+  - note that the lane now explicitly stages the narrowed `rust` subtree with `build.rs`, `uniffi.toml`, `src`, and `tests`,
+  - note that `workspaceDeps` now uses that real narrowed source as `dummySrc` for this lane so the staged `cargo test --no-run` commands can actually see the named integration targets,
+  - note that staged test target realization is now driven by the explicit lane commands (`--test app_flows`, `--test e2e_messaging`, `--test e2e_group_profiles`) instead of relying on the broader `--tests` sweep,
+  - note that the resulting `workspaceBuild` payload now carries non-empty lane manifests:
+    - `pika-core-lib-app-flows.manifest` contains `debug/deps/app_flows-*` plus `debug/deps/pika_core-*`,
+    - `pika-core-messaging-e2e.manifest` contains `debug/deps/e2e_messaging-*` and `debug/deps/e2e_group_profiles-*`,
+  - note that a fresh `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun now gets past both staged prepares, both remote fulfillments, runner realization, remote `microvm-run`, guest boot, and the old missing-manifest failure,
+  - note that the remote guest now really executes the staged test binaries:
+    - the `app_flows` lane guest log shows `run-pika-core-lib-app-flows-tests` launching staged binaries and running Rust tests inside the remote microVM,
+    - the messaging lane guest log shows `run-pika-core-messaging-e2e-tests` launching the staged e2e binaries inside the remote microVM,
+  - note that the next blockers are now actual test/runtime failures inside the guest rather than staged-payload assembly:
+    - the `app_flows` lane currently fails one real Rust test: `min_version_check_e2e`,
+    - the messaging/group-profile lane currently fails earlier during `pikahut` fixture startup because Go tries to create its build cache under `/cargo-home/xdg-cache/go-build` and the guest-side mount/ownership setup leaves that path non-writable for the test user,
+    - the guest log also shows `chown: changing ownership of '/artifacts': Invalid argument`, `'/cargo-home'`, and `'/cargo-target'`, which likely points at the same remaining writable-mount contract issue for remote test execution,
+  - and treat the next narrow slice as guest runtime environment cleanup for writable caches/artifacts plus diagnosis of the real `app_flows` test failure, not more manifest, transport, or boot plumbing.

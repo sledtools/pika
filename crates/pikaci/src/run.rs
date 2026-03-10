@@ -12,8 +12,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_vfkit_runner_flake, prepare_vfkit_runner_link,
-    run_job_on_runner,
+    HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
+    prepare_vfkit_runner_link, run_job_on_runner,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -681,6 +681,11 @@ enum PrepareAction {
         runner_link: PathBuf,
         log_paths: Vec<PathBuf>,
     },
+    RemoteMicrovmRunner {
+        job: JobSpec,
+        ctx: HostContext,
+        log_paths: Vec<PathBuf>,
+    },
 }
 
 #[derive(Clone)]
@@ -965,23 +970,42 @@ fn build_run_plan(
             depends_on.push(deps_node_id);
             depends_on.push(build_node_id);
         }
-        if job.runner_kind() == RunnerKind::VfkitLocal {
+        if matches!(
+            job.runner_kind(),
+            RunnerKind::VfkitLocal | RunnerKind::MicrovmRemote
+        ) {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
-            let installable = materialize_vfkit_runner_flake(job, &ctx)?;
-            planned_prepares.push(PlannedPrepare {
-                node_id: prepare_node_id.clone(),
-                depends_on: Vec::new(),
-                action: PrepareAction::VfkitRunner {
+            let installable = materialize_runner_flake(job, &ctx)?;
+            let runner_description = match job.runner_kind() {
+                RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
+                RunnerKind::MicrovmRemote => {
+                    format!("Build remote microvm runner for `{}`", job.id)
+                }
+                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            };
+            let action = match job.runner_kind() {
+                RunnerKind::VfkitLocal => PrepareAction::VfkitRunner {
                     installable: installable.clone(),
                     runner_link: ctx.job_dir.join("vm").join("runner"),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
+                RunnerKind::MicrovmRemote => PrepareAction::RemoteMicrovmRunner {
+                    job: job.clone(),
+                    ctx: ctx.clone(),
+                    log_paths: vec![ctx.host_log_path.clone()],
+                },
+                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            };
+            planned_prepares.push(PlannedPrepare {
+                node_id: prepare_node_id.clone(),
+                depends_on: Vec::new(),
+                action,
             });
             prepare_nodes.insert(
                 prepare_node_id.clone(),
                 PlanNodeRecord::Prepare {
                     id: prepare_node_id.clone(),
-                    description: format!("Build vfkit runner for `{}`", job.id),
+                    description: runner_description,
                     executor: PlanExecutorKind::HostLocal,
                     depends_on: Vec::new(),
                     prepare: PrepareNode::NixBuild {
@@ -3098,13 +3122,12 @@ fn validate_prepared_output_consumer_for_jobs(
     jobs: &[PlannedJob],
 ) -> anyhow::Result<()> {
     if kind == PreparedOutputConsumerKind::RemoteExposureRequestV1
-        && jobs.iter().any(|planned_job| {
-            planned_job.job.runner_kind() == RunnerKind::VfkitLocal
-                && planned_job.job.staged_linux_rust_lane().is_some()
-        })
+        && jobs
+            .iter()
+            .any(|planned_job| planned_job.job.staged_linux_rust_lane().is_some())
     {
         return Err(anyhow!(
-            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust vfkit jobs still require local prepared-output mounts"
+            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust jobs still require fulfilled prepared-output mounts"
         ));
     }
     Ok(())
@@ -3251,6 +3274,22 @@ fn run_prepare_nodes(
                     message: "missing vfkit runner prepare log path".to_string(),
                 })?;
                 prepare_vfkit_runner_link(installable, runner_link, log_path).map_err(|err| {
+                    PrepareFailure {
+                        node_id: prepare.node_id.clone(),
+                        message: format!("{err:#}"),
+                    }
+                })?;
+            }
+            PrepareAction::RemoteMicrovmRunner {
+                job,
+                ctx,
+                log_paths,
+            } => {
+                let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
+                    node_id: prepare.node_id.clone(),
+                    message: "missing remote microvm runner prepare log path".to_string(),
+                })?;
+                prepare_remote_microvm_runner(job, ctx, log_path).map_err(|err| {
                     PrepareFailure {
                         node_id: prepare.node_id.clone(),
                         message: format!("{err:#}"),
@@ -3635,9 +3674,9 @@ mod tests {
                     } => {
                         assert!(
                             installable
-                                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceDeps")
+                                .contains("runs/run-1/snapshot#ci.x86_64-linux.workspaceDeps")
                         );
-                        assert_eq!(output_name, "ci.aarch64-linux.workspaceDeps");
+                        assert_eq!(output_name, "ci.x86_64-linux.workspaceDeps");
                         let handoff = handoff.as_ref().expect("workspace deps handoff");
                         assert_eq!(
                             handoff.protocol,
@@ -3682,9 +3721,9 @@ mod tests {
                     } => {
                         assert!(
                             installable
-                                .contains("runs/run-1/snapshot#ci.aarch64-linux.workspaceBuild")
+                                .contains("runs/run-1/snapshot#ci.x86_64-linux.workspaceBuild")
                         );
-                        assert_eq!(output_name, "ci.aarch64-linux.workspaceBuild");
+                        assert_eq!(output_name, "ci.x86_64-linux.workspaceBuild");
                         let handoff = handoff.as_ref().expect("workspace build handoff");
                         assert_eq!(
                             handoff.protocol,
@@ -3768,7 +3807,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-lib-app-flows-tests");
-                assert_eq!(*executor, PlanExecutorKind::VfkitLocal);
+                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
                 assert_eq!(
                     depends_on,
                     &vec![
@@ -3800,11 +3839,13 @@ mod tests {
         match &plan.record.nodes[5] {
             PlanNodeRecord::Execute {
                 id,
+                executor,
                 depends_on,
                 execute,
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-messaging-e2e-tests");
+                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
                 assert_eq!(
                     depends_on,
                     &vec![
@@ -3951,8 +3992,8 @@ mod tests {
             &path,
             RealizedPreparedOutputRecord {
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 consumer: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
                 realized_path: "/nix/store/workspace-build".to_string(),
@@ -4005,8 +4046,8 @@ mod tests {
         let realized_path = first_test_nix_store_path();
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -4109,8 +4150,8 @@ mod tests {
         let consumer = HostLocalSymlinkPreparedOutputConsumer;
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -4165,8 +4206,8 @@ mod tests {
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -4198,7 +4239,7 @@ mod tests {
         assert!(!mount_path.exists());
         let request_body = fs::read_to_string(request_path).expect("read request");
         assert!(request_body.contains("\"schema_version\": 1"));
-        assert!(request_body.contains("\"output_name\": \"ci.aarch64-linux.workspaceBuild\""));
+        assert!(request_body.contains("\"output_name\": \"ci.x86_64-linux.workspaceBuild\""));
         assert!(request_body.contains("\"requested_exposures\""));
         assert!(request_body.contains(&mount_path.display().to_string()));
         assert!(fs::read_to_string(&log_path).expect("read log").contains(
@@ -4697,9 +4738,9 @@ mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
 mkdir -p "$(dirname "$result_path")"
 cat >"$result_path" <<EOF
-{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
 EOF
-printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"%s","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"%s","access":"read_only"}],"error":null}\n' "$request_path" "$realized_path" "$mount_path"
+printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"%s","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"%s","access":"read_only"}],"error":null}\n' "$request_path" "$realized_path" "$mount_path"
 "#,
         )
         .expect("write helper");
@@ -4718,8 +4759,8 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -4812,7 +4853,7 @@ mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
 mkdir -p "$(dirname "$result_path")"
 cat >"$result_path" <<EOF
-{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
 EOF
 "#,
         )
@@ -4840,8 +4881,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -4930,7 +4971,7 @@ mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
 mkdir -p "$(dirname "$result_path")"
 cat >"$result_path" <<EOF
-{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
 EOF
 "#,
         )
@@ -4966,8 +5007,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5084,7 +5125,7 @@ mkdir -p "$(dirname "$mount_path")"
 ln -sfn "$realized_path" "$mount_path"
 mkdir -p "$(dirname "$result_path")"
 cat >"$result_path" <<EOF
-{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
+{"schema_version":1,"request_path":"$request_path","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild","realized_path":"$realized_path","status":"succeeded","fulfilled_exposures_count":1,"fulfilled_exposures":[{"kind":"host_symlink_mount","path":"$mount_path","access":"read_only"}],"error":null}
 EOF
 "#,
         )
@@ -5128,8 +5169,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5311,8 +5352,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5370,7 +5411,7 @@ EOF
         let request_path = root.join("transport-request.json");
         fs::write(
             &request_path,
-            r#"{"schema_version":1,"launcher_program":"/tmp/bin/pikaci-launch-fulfill-prepared-output","launcher_request_path":"/tmp/run/prepared-output-launch-requests/request.json","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.aarch64-linux.workspaceBuild"}"#,
+            r#"{"schema_version":1,"launcher_program":"/tmp/bin/pikaci-launch-fulfill-prepared-output","launcher_request_path":"/tmp/run/prepared-output-launch-requests/request.json","node_id":"prepare-pika-core-linux-rust-workspace-build","output_name":"ci.x86_64-linux.workspaceBuild"}"#,
         )
         .expect("write legacy transport request");
 
@@ -5408,7 +5449,7 @@ EOF
                 schema_version: 1,
                 request_path: "/tmp/request.json".to_string(),
                 node_id: Some("prepare-pika-core-linux-rust-workspace-build".to_string()),
-                output_name: Some("ci.aarch64-linux.workspaceBuild".to_string()),
+                output_name: Some("ci.x86_64-linux.workspaceBuild".to_string()),
                 realized_path: Some(realized_path.display().to_string()),
                 status: PreparedOutputFulfillmentStatus::Failed,
                 fulfilled_exposures_count: 0,
@@ -5440,8 +5481,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5497,7 +5538,7 @@ EOF
                 schema_version: 1,
                 request_path: "/tmp/wrong-request.json".to_string(),
                 node_id: Some("prepare-pika-core-linux-rust-workspace-build".to_string()),
-                output_name: Some("ci.aarch64-linux.workspaceBuild".to_string()),
+                output_name: Some("ci.x86_64-linux.workspaceBuild".to_string()),
                 realized_path: Some(realized_path.display().to_string()),
                 status: PreparedOutputFulfillmentStatus::Succeeded,
                 fulfilled_exposures_count: 0,
@@ -5529,8 +5570,8 @@ EOF
         };
         let materialization = PreparedOutputMaterialization {
             node_id: "prepare-pika-core-linux-rust-workspace-build",
-            installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild",
-            output_name: "ci.aarch64-linux.workspaceBuild",
+            installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
+            output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
             realized_path: &realized_path,
         };
@@ -5582,8 +5623,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 1,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: vec![PreparedOutputExposure {
@@ -5598,7 +5639,7 @@ EOF
         let fulfilled =
             fulfill_prepared_output_request(&request_path).expect("fulfill prepared output");
 
-        assert_eq!(fulfilled.output_name, "ci.aarch64-linux.workspaceBuild");
+        assert_eq!(fulfilled.output_name, "ci.x86_64-linux.workspaceBuild");
         assert_eq!(fulfilled.requested_exposures.len(), 1);
         assert_eq!(
             fs::read_link(&mount_path).expect("read symlink"),
@@ -5621,8 +5662,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 1,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: Path::new("/nix/store/missing-output").display().to_string(),
                 requested_exposures: Vec::new(),
@@ -5651,8 +5692,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 1,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: Vec::new(),
@@ -5680,8 +5721,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 99,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: Vec::new(),
@@ -5712,8 +5753,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 1,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: vec![PreparedOutputExposure {
@@ -5755,8 +5796,8 @@ EOF
             &PreparedOutputRemoteExposureRequest {
                 schema_version: 1,
                 node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
-                installable: "path:/tmp/snapshot#ci.aarch64-linux.workspaceBuild".to_string(),
-                output_name: "ci.aarch64-linux.workspaceBuild".to_string(),
+                installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                 realized_path: Path::new("/nix/store/missing-output").display().to_string(),
                 requested_exposures: Vec::new(),

@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+  "rust",
+  "crates/hypernote-protocol",
+  "crates/pika-marmot-runtime",
+  "crates/pika-media",
+  "crates/pika-relay-profiles",
+  "crates/pika-tls",
+  "crates/pikahut",
+]
+
+[workspace.dependencies]
+mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7", features = ["mip04"] }
+mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7" }
+mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7" }
+hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx", rev = "9c73231c980a03e6b149f62ccce2e58c9563744f", version = "0.3.0" }
+hypernote-protocol = { path = "crates/hypernote-protocol" }
+
+anyhow = "1"
+apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }
+askama = "0.12"
+base64 = "0.22"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+flume = "0.11"
+hex = "0.4"
+libsqlite3-sys = "0.35.0"
+keyring-core = "0.7"
+nostr = "0.44"
+nostr-blossom = "0.44.0"
+nostr-connect = "0.44.0"
+nostr-sdk = "0.44.1"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false }
+rusqlite = "0.37"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hmac = "0.12"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uniffi = "0.31.0"
+url = "2"
+uuid = { version = "1", features = ["v4"] }

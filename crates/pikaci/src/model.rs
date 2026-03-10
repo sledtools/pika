@@ -318,7 +318,10 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
+<<<<<<< HEAD
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
+=======
+>>>>>>> 96d58322 (Migrate agent contracts staged Linux lane)
         };
 
         assert_eq!(
@@ -329,6 +332,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
     fn standalone_agent_contract_jobs_can_stay_on_vfkit() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
@@ -346,6 +350,8 @@ mod tests {
     }
 
     #[test]
+=======
+>>>>>>> 96d58322 (Migrate agent contracts staged Linux lane)
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
         let lane = StagedLinuxRustLane::AgentContractsServerAgentApi;
 

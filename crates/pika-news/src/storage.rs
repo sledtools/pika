@@ -699,7 +699,7 @@ impl Store {
                         LIMIT 1
                      )
                      WHERE aus.npub = ?1 AND aus.state = 'inbox'
-                     ORDER BY aus.created_at DESC
+                     ORDER BY aus.created_at ASC, av.pr_id ASC
                      LIMIT ?2 OFFSET ?3",
                 )
                 .context("prepare inbox query")?;
@@ -796,14 +796,29 @@ impl Store {
         })
     }
 
-    pub fn inbox_neighbors(
+    pub fn inbox_review_context(
         &self,
         npub: &str,
         pr_id: i64,
-    ) -> anyhow::Result<(Option<i64>, Option<i64>)> {
+    ) -> anyhow::Result<Option<InboxReviewContext>> {
         self.with_connection(|conn| {
-            // Items ordered created_at DESC (newest first).
-            // "prev" = newer item (higher created_at), "next" = older item (lower created_at).
+            let current = conn
+                .query_row(
+                    "SELECT aus.created_at, av.pr_id
+                     FROM artifact_user_states aus
+                     JOIN artifact_versions av ON av.id = aus.artifact_id
+                     WHERE aus.npub = ?1 AND aus.state = 'inbox' AND av.pr_id = ?2
+                     LIMIT 1",
+                    params![npub, pr_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .context("lookup inbox review item")?;
+
+            let Some((created_at, current_pr_id)) = current else {
+                return Ok(None);
+            };
+
             let prev: Option<i64> = conn
                 .query_row(
                     "SELECT av.pr_id
@@ -811,14 +826,13 @@ impl Store {
                      JOIN artifact_versions av ON av.id = aus.artifact_id
                      WHERE aus.npub = ?1
                        AND aus.state = 'inbox'
-                       AND aus.created_at > (
-                           SELECT aus2.created_at
-                           FROM artifact_user_states aus2
-                           JOIN artifact_versions av2 ON av2.id = aus2.artifact_id
-                           WHERE aus2.npub = ?1 AND aus2.state = 'inbox' AND av2.pr_id = ?2
+                       AND (
+                           aus.created_at < ?2
+                           OR (aus.created_at = ?2 AND av.pr_id < ?3)
                        )
-                     ORDER BY aus.created_at ASC LIMIT 1",
-                    params![npub, pr_id],
+                     ORDER BY aus.created_at DESC, av.pr_id DESC
+                     LIMIT 1",
+                    params![npub, created_at, current_pr_id],
                     |row| row.get(0),
                 )
                 .optional()
@@ -831,20 +845,50 @@ impl Store {
                      JOIN artifact_versions av ON av.id = aus.artifact_id
                      WHERE aus.npub = ?1
                        AND aus.state = 'inbox'
-                       AND aus.created_at < (
-                           SELECT aus2.created_at
-                           FROM artifact_user_states aus2
-                           JOIN artifact_versions av2 ON av2.id = aus2.artifact_id
-                           WHERE aus2.npub = ?1 AND aus2.state = 'inbox' AND av2.pr_id = ?2
+                       AND (
+                           aus.created_at > ?2
+                           OR (aus.created_at = ?2 AND av.pr_id > ?3)
                        )
-                     ORDER BY aus.created_at DESC LIMIT 1",
-                    params![npub, pr_id],
+                     ORDER BY aus.created_at ASC, av.pr_id ASC
+                     LIMIT 1",
+                    params![npub, created_at, current_pr_id],
                     |row| row.get(0),
                 )
                 .optional()
                 .context("inbox next neighbor")?;
 
-            Ok((prev, next))
+            let position: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM artifact_user_states aus
+                     JOIN artifact_versions av ON av.id = aus.artifact_id
+                     WHERE aus.npub = ?1
+                       AND aus.state = 'inbox'
+                       AND (
+                           aus.created_at < ?2
+                           OR (aus.created_at = ?2 AND av.pr_id <= ?3)
+                       )",
+                    params![npub, created_at, current_pr_id],
+                    |row| row.get(0),
+                )
+                .context("count inbox review position")?;
+
+            let total: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM artifact_user_states
+                     WHERE npub = ?1 AND state = 'inbox'",
+                    params![npub],
+                    |row| row.get(0),
+                )
+                .context("count inbox review total")?;
+
+            Ok(Some(InboxReviewContext {
+                prev,
+                next,
+                position,
+                total,
+            }))
         })
     }
 
@@ -1186,6 +1230,14 @@ pub struct InboxItem {
     pub generation_status: String,
     pub reason: String,
     pub inbox_created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InboxReviewContext {
+    pub prev: Option<i64>,
+    pub next: Option<i64>,
+    pub position: i64,
+    pub total: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1689,7 +1741,7 @@ mod tests {
     use nostr::key::PublicKey;
     use rusqlite::{params, OptionalExtension};
 
-    use super::{ChatAllowlistEntry, PrUpsertInput, Store};
+    use super::{ChatAllowlistEntry, InboxReviewContext, PrUpsertInput, Store};
 
     fn latest_artifact_id(store: &Store, pr_id: i64) -> i64 {
         store
@@ -2073,7 +2125,7 @@ mod tests {
     }
 
     #[test]
-    fn inbox_populate_list_dismiss_and_neighbors() {
+    fn inbox_populate_list_dismiss_and_review_context() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-news.db");
         let store = Store::open(&db_path).expect("open store");
@@ -2132,20 +2184,39 @@ mod tests {
         let count = store.inbox_count(&npub).unwrap();
         assert_eq!(count, 2);
 
-        // List (newest first)
+        // List (oldest first)
         let items = store.list_inbox(&npub, 50, 0).unwrap();
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].pr_id, pr_id_2); // newest first
-        assert_eq!(items[1].pr_id, pr_id_1);
+        assert_eq!(items[0].pr_id, pr_id_1);
+        assert_eq!(items[1].pr_id, pr_id_2);
 
-        // Neighbors: pr_id_2 is first (newest), pr_id_1 is second
-        let (prev, next) = store.inbox_neighbors(&npub, pr_id_2).unwrap();
-        assert_eq!(prev, None); // no newer item
-        assert_eq!(next, Some(pr_id_1)); // older item
+        let context_1 = store
+            .inbox_review_context(&npub, pr_id_1)
+            .unwrap()
+            .expect("review context for oldest item");
+        assert_eq!(
+            context_1,
+            InboxReviewContext {
+                prev: None,
+                next: Some(pr_id_2),
+                position: 1,
+                total: 2,
+            }
+        );
 
-        let (prev, next) = store.inbox_neighbors(&npub, pr_id_1).unwrap();
-        assert_eq!(prev, Some(pr_id_2)); // newer item
-        assert_eq!(next, None); // no older item
+        let context_2 = store
+            .inbox_review_context(&npub, pr_id_2)
+            .unwrap()
+            .expect("review context for newest item");
+        assert_eq!(
+            context_2,
+            InboxReviewContext {
+                prev: Some(pr_id_1),
+                next: None,
+                position: 2,
+                total: 2,
+            }
+        );
 
         // Dismiss one item
         let dismissed = store.dismiss_inbox_items(&npub, &[pr_id_1]).unwrap();

@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
-use crate::storage::{ChatAllowlistEntry, FeedItem, PrDetailRecord, Store};
+use crate::storage::{ChatAllowlistEntry, FeedItem, InboxReviewContext, PrDetailRecord, Store};
 use crate::tutorial::TutorialDoc;
 use crate::worker;
 
@@ -1122,10 +1122,21 @@ async fn api_inbox_neighbors_handler(
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.inbox_neighbors(&npub, pr_id)).await {
-        Ok(Ok((prev, next))) => {
-            Json(serde_json::json!({"prev": prev, "next": next})).into_response()
-        }
+    match tokio::task::spawn_blocking(move || store.inbox_review_context(&npub, pr_id)).await {
+        Ok(Ok(Some(InboxReviewContext {
+            prev,
+            next,
+            position,
+            total,
+        }))) => Json(
+            serde_json::json!({"prev": prev, "next": next, "position": position, "total": total}),
+        )
+        .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "inbox item not found"})),
+        )
+            .into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

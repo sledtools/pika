@@ -43,10 +43,10 @@
       a:hover { text-decoration: underline; }
 
       /* Nav */
-      .site-nav { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1.5rem; background: var(--nav-bg); border-bottom: 1px solid var(--nav-border); }
+      .site-nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.6rem 1.5rem; background: var(--nav-bg); border-bottom: 1px solid var(--nav-border); }
       .site-nav .nav-brand { font-weight: 700; font-size: 1rem; color: var(--link); text-decoration: none; }
       .site-nav .nav-brand:hover { text-decoration: none; }
-      .site-nav .nav-right { display: flex; align-items: center; gap: 0.75rem; }
+      .site-nav .nav-right { display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; flex-wrap: wrap; }
       .nostr-btn { background: var(--accent); color: #fff; border: none; padding: 0.38rem 1rem; font-size: 0.85rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
       .nostr-btn:hover { background: var(--accent-hover); }
       .nostr-btn:disabled { opacity: 0.6; cursor: default; }
@@ -65,6 +65,7 @@
     <nav class="site-nav">
       <a href="/news" class="nav-brand">pika-news</a>
       <div class="nav-right">
+        {% block nav_right_extra %}{% endblock %}
         <span id="auth-actions">
           <button id="nostr-login" type="button" class="nostr-btn">Sign in with Nostr</button>
         </span>

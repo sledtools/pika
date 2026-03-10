@@ -66,23 +66,28 @@ pikaci-remote-fulfill-pre-merge-pika-rust:
     exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
 
 # Prewarm the exact `ci.x86_64-linux.workspaceDeps` pre-compile closure onto pika-build.
+[private]
 pikaci-workspace-deps-prewarm:
     ./scripts/pika-build-prewarm-workspace-deps.sh
 
 # Prewarm + build the exact `ci.x86_64-linux.workspaceDeps` lane on pika-build with an explicit x86_64 builder override.
+[private]
 pikaci-workspace-deps-remote-build:
     ./scripts/pika-build-run-workspace-deps.sh
 
 # Fast-build both staged Linux Rust prepare outputs for the real pre-merge pika Rust lane on pika-build.
+[private]
 pikaci-pre-merge-pika-rust-prepares-remote-build:
     ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceDeps
     ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceBuild
 
 # Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
+[private]
 linux-builder-repair:
     ./scripts/linux-builder-repair.sh
 
 # Fully recreate the local linux-builder VM/store state via the existing launchd service after `just linux-builder-repair` still points at live builder corruption.
+[private]
 linux-builder-recreate:
     ./scripts/linux-builder-recreate.sh
 

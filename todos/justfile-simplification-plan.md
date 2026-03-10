@@ -772,4 +772,5 @@ Deliverable:
 - Completed Prompt 6 by marking low-signal infra, labs, and RMP helper recipes `[private]` while keeping the existing root aliases and CI/doc entrypoints intact.
 - Review note: `just --list --list-submodules` now keeps `infra`, `labs`, and `rmp_tools` focused on the few real entrypoints, while manual QA prompt pointers, rare debug helpers, remote fulfill plumbing, and local RMP scaffold QA commands remain callable through their established root names.
 - Review tradeoff: `pikahut-up`, `rmp`, relay entrypoints, `primal-ios-lab`, and the docs/workflow-facing RMP nightly commands stayed visible; the rest of the touched commands were hidden rather than renamed or deleted.
+- Post-rebase Prompt 6 cleanup: re-hid the rebased `pikaci-workspace-deps-*` and `linux-builder-*` operational helpers in `infra`, kept their compatibility aliases intact, and removed them from `just info` so the curated human-facing surface stayed consistent.
 - Review follow-up: no Prompt 7 was added because the remaining cleanup work is not yet shaped into a similarly bounded slice.

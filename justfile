@@ -1,9 +1,14 @@
 set shell := ["bash", "-c"]
 set dotenv-load := true
 
-# List available recipes.
+[private]
 default:
+    @echo "Pika just commands"
+    @echo
     @just --list
+    @echo
+    @echo 'Use `just info` for common run flows.'
+    @echo 'Use `JUST_UNSTABLE=1 just --list --list-submodules` for the full task tree.'
 
 # Print developer-facing usage notes (targets, env vars, common flows).
 info:
@@ -89,780 +94,163 @@ info:
     @echo "  Generate bindings:"
     @echo "    just rmp bindings all"
 
-# Run the new Rust `rmp` CLI.
-rmp *ARGS:
-    cargo run -p rmp-cli -- {{ ARGS }}
-
-# Ensure an Android target is booted and ready (without building/installing app).
-android-device-start *ARGS:
-    just rmp devices start android {{ ARGS }}
-
-# Boot Android target and open app with agent-device.
-android-agent-open APP="com.justinmoon.pika.dev" *ARGS="":
-    just android-device-start {{ ARGS }}
-    ./tools/agent-device --platform android open {{ APP }}
-
-# Smoke test `rmp init` output locally (scaffold + doctor + core check).
-rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-smoke.XXXXXX")"; \
-    TARGET="$TMP/target"; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/{{ NAME }}" --yes --org "{{ ORG }}"; \
-    cd "$TMP/{{ NAME }}"; \
-    "$BIN" doctor --json >/dev/null; \
-    CARGO_TARGET_DIR="$TARGET" cargo check; \
-    echo "ok: rmp init smoke passed ($TMP/{{ NAME }})"
-
-# End-to-end launch check for a freshly initialized project.
-rmp-init-run PLATFORM="android" NAME="rmp-e2e" ORG="com.example":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-run.XXXXXX")"; \
-    EXTRA_INIT=""; \
-    if [ "{{ PLATFORM }}" = "iced" ]; then \
-      EXTRA_INIT="--no-ios --no-android --iced"; \
-    fi; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/{{ NAME }}" --yes --org "{{ ORG }}" $EXTRA_INIT; \
-    cd "$TMP/{{ NAME }}"; \
-    "$BIN" run {{ PLATFORM }}
-
-# Phase 4 scaffold QA: core tests + workspace check + desktop runtime sanity.
-rmp-phase4-qa NAME="rmp-phase4-qa" ORG="com.example":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-phase4-qa.XXXXXX")"; \
-    TARGET="$TMP/target"; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/{{ NAME }}" --yes --org "{{ ORG }}" --iced --json >/dev/null; \
-    cd "$TMP/{{ NAME }}"; \
-    "$BIN" doctor --json >/dev/null; \
-    "$BIN" bindings all; \
-    CORE_CRATE="$(awk -F '\"' '/^crate = / { print $2; exit }' rmp.toml)"; \
-    if [ -z "$CORE_CRATE" ]; then echo "error: failed to read core crate from rmp.toml"; exit 1; fi; \
-    CARGO_TARGET_DIR="$TARGET" cargo test -p "$CORE_CRATE"; \
-    CARGO_TARGET_DIR="$TARGET" cargo check; \
-    if timeout 8s "$BIN" run iced --verbose; then \
-      echo "error: iced app exited before timeout (expected to keep running)" >&2; \
-      exit 1; \
-    else \
-      code=$?; \
-      if [ "$code" -ne 124 ]; then \
-        echo "error: iced runtime check failed with exit code $code" >&2; \
-        exit "$code"; \
-      fi; \
-    fi; \
-    echo "ok: phase4 QA passed ($TMP/{{ NAME }})"
-
-# Linux-safe CI checks for `rmp init` output.
-rmp-init-smoke-ci ORG="com.example":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX")"; \
-    TARGET="$TMP/target"; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/rmp-mobile-no-iced" --yes --org "{{ ORG }}" --no-iced --json >/dev/null; \
-    (cd "$TMP/rmp-mobile-no-iced" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
-    "$BIN" init "$TMP/rmp-all" --yes --org "{{ ORG }}" --json >/dev/null; \
-    (cd "$TMP/rmp-all" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
-    "$BIN" init "$TMP/rmp-android" --yes --org "{{ ORG }}" --no-ios --json >/dev/null; \
-    (cd "$TMP/rmp-android" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
-    "$BIN" init "$TMP/rmp-ios" --yes --org "{{ ORG }}" --no-android --json >/dev/null; \
-    (cd "$TMP/rmp-ios" && CARGO_TARGET_DIR="$TARGET" cargo check >/dev/null); \
-    "$BIN" init "$TMP/rmp-iced" --yes --org "{{ ORG }}" --no-ios --no-android --iced --json >/dev/null; \
-    (cd "$TMP/rmp-iced" && CARGO_TARGET_DIR="$TARGET" cargo check -p rmp-iced_core_desktop_iced >/dev/null); \
-    echo "ok: rmp init ci smoke passed"
-
-# Nightly Linux lane: scaffold + Android emulator run.
-rmp-nightly-linux NAME="rmp-nightly-linux" ORG="com.example" AVD="rmp_ci_api35":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-nightly-linux.XXXXXX")"; \
-    ABI="x86_64"; \
-    IMG="system-images;android-35;google_apis;$ABI"; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/{{ NAME }}" --yes --org "{{ ORG }}" --no-ios --iced; \
-    if ! emulator -list-avds | grep -qx "{{ AVD }}"; then \
-      echo "no" | avdmanager create avd -n "{{ AVD }}" -k "$IMG" --force; \
-    fi; \
-    cd "$TMP/{{ NAME }}"; \
-    CI=1 "$BIN" run android --avd "{{ AVD }}" --verbose; \
-    if ! command -v xvfb-run >/dev/null 2>&1; then \
-      echo "error: missing xvfb-run on PATH" >&2; \
-      exit 1; \
-    fi; \
-    if LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=vulkan WINIT_UNIX_BACKEND=x11 timeout 900s \
-      xvfb-run -a -s "-screen 0 1280x720x24" "$BIN" run iced --verbose; then \
-      echo "error: iced app exited before timeout (expected long-running UI process)" >&2; \
-      exit 1; \
-    else \
-      code=$?; \
-      if [ "$code" -ne 124 ]; then \
-        echo "error: iced runtime check failed with exit code $code" >&2; \
-        exit "$code"; \
-      fi; \
-    fi; \
-    adb devices || true
-
-# Nightly macOS lane: scaffold + iOS simulator run.
-rmp-nightly-macos NAME="rmp-nightly-macos" ORG="com.example":
-    set -euo pipefail; \
-    ROOT="$PWD"; \
-    BIN="$ROOT/target/debug/rmp"; \
-    TMP="$(mktemp -d "${TMPDIR:-/tmp}/rmp-nightly-macos.XXXXXX")"; \
-    cargo build -p rmp-cli; \
-    "$BIN" init "$TMP/{{ NAME }}" --yes --org "{{ ORG }}" --no-android; \
-    cd "$TMP/{{ NAME }}"; \
-    "$BIN" run ios --verbose
-
-# Run pika_core tests.
-test *ARGS:
-    cargo test -p pika_core {{ ARGS }}
-
-# Check formatting (cargo fmt).
-fmt:
-    cargo fmt --all --check
-
-# Lint with clippy.
-clippy *ARGS:
-    cargo clippy --all-targets {{ ARGS }} -- -D warnings
-
-# Local pre-commit checks (fmt + clippy + justfile + docs checks).
-pre-commit: fmt clippy
-    just --fmt --check --unstable
-    npx --yes @justinmoon/agent-tools check-docs
-    npx --yes @justinmoon/agent-tools check-justfile
-    just clippy --lib --tests
-    cargo clippy -p pikachat --tests -- -D warnings
-    cargo clippy -p pikachat-sidecar --tests -- -D warnings
-    cargo clippy -p pika-server --tests -- -D warnings
-    cargo clippy -p pikahut -- -D warnings
-
-# CI-safe pre-merge for the Pika app lane.
-pre-merge-pika: fmt clippy
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-pika-rust
-    else
-        just test --lib --tests
-    fi
-    cd android && ./gradlew :app:compileDebugAndroidTestKotlin
-    cargo build -p pikachat
-    just desktop-check
-    actionlint
-    npx --yes @justinmoon/agent-tools check-docs
-    npx --yes @justinmoon/agent-tools check-justfile
-    echo "pre-merge-pika complete"
-
-# CI-safe pre-merge for the notification server lane.
-pre-merge-notifications:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo clippy -p pika-server -- -D warnings
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-notifications
-    else
-        SD="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
-        cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
-        trap cleanup EXIT
-        cargo run -q -p pikahut -- up --profile postgres --background --state-dir "$SD" >/dev/null
-        eval "$(cargo run -q -p pikahut -- env --state-dir "$SD")"
-        cargo test -p pika-server -- --test-threads=1
-    fi
-    echo "pre-merge-notifications complete"
-
-# CI-safe pre-merge for the pikachat lane (deterministic only).
-pre-merge-pikachat:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo clippy -p pikachat -- -D warnings
-    cargo clippy -p pikachat-sidecar -- -D warnings
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-pikachat-rust
-        cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
-        npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
-    else
-        cargo test -p pikachat
-        cargo test -p pikachat-sidecar
-        cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
-        cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
-        cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture
-        cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture
-        just openclaw-pikachat-deterministic
-    fi
-    echo "pre-merge-pikachat complete"
-
-# Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
-pre-merge-agent-contracts:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-agent-contracts
-    else
-        cargo test -p pika-agent-microvm
-        cargo test -p pika-server -- agent_api::tests
-        cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
-    fi
-    cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
-    echo "pre-merge-agent-contracts complete"
-
-# CI-safe pre-merge for the RMP tooling lane.
-pre-merge-rmp:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-rmp
-    else
-        just rmp-init-smoke-ci
-    fi
-    echo "pre-merge-rmp complete"
-
-# Deterministic Apple-platform lane (iOS + macOS desktop) via Tart.
-pre-merge-apple-deterministic:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
-        echo "error: pre-merge-apple-deterministic currently requires Apple Silicon macOS" >&2
-        exit 1
-    fi
-    PIKACI_TART_BASE_VM="${PIKACI_TART_BASE_VM:-pikaci-xcode16-base}" \
-      nix run .#pikaci -- run pre-merge-apple-deterministic
-    echo "pre-merge-apple-deterministic complete"
-
-# CI-safe pre-merge for the pikahut tooling lane.
-pre-merge-fixture:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo clippy -p pikahut -- -D warnings
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-fixture-rust
-    else
-        cargo test -p pikahut
-    fi
-    SD="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
-    cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
-    trap cleanup EXIT
-    cargo run -q -p pikahut -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
-    cargo run -q -p pikahut -- wait --state-dir "$SD" --timeout 30
-    cargo run -q -p pikahut -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
-    echo "pre-merge-fixture complete"
-
-# Single CI entrypoint for the whole repo.
-pre-merge:
-    just pre-merge-pika
-    just pre-merge-notifications
-    just pre-merge-pikachat
-    just pre-merge-fixture
-    just pre-merge-rmp
-    @echo "pre-merge complete"
-
-# Nightly root task.
-nightly:
-    just pre-merge
-    just nightly-pika-e2e
-    just nightly-pikachat
-    @echo "nightly complete"
-
-# Nightly E2E (Rust): local-only deterministic + heavy call-path regression boundaries.
-nightly-pika-e2e:
-    cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic call_with_pikachat_daemon_boundary -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
-
-# Nightly lane: full OpenClaw integration E2E (gateway + real sidecar wiring).
-nightly-pikachat:
-    just openclaw-pikachat-e2e
-
-# Nightly lane: iOS interop smoke (nostrconnect:// route + Pika bridge emission).
-nightly-primal-ios-interop:
-    cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture
-
-# Manual-only selector contracts (never required in CI lanes).
-integration-manual:
-    cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
-    cargo test -p pikahut --test integration_manual manual_primal_lab_runbook_contract -- --ignored --nocapture
-
-# Local Primal interop lab: dedicated simulator + local relay + event tap logs.
-primal-ios-lab:
-    ./tools/primal-ios-interop-lab run
-
-# Apply debug logging patch in local Primal checkout (~/code/primal-ios-app by default).
-primal-ios-lab-patch-primal:
-    ./tools/primal-ios-interop-lab patch-primal
-
-# Capture current lab simulator as a reusable seeded snapshot.
-primal-ios-lab-seed-capture:
-    ./tools/primal-ios-interop-lab seed-capture
-
-# Reset the lab simulator from the saved seed snapshot.
-primal-ios-lab-seed-reset:
-    ./tools/primal-ios-interop-lab seed-reset
-
-# Print Pika's latest nostr-connect debug snapshot and a decode helper command.
-primal-ios-lab-dump-debug:
-    ./tools/primal-ios-interop-lab dump-debug
-
-# openclaw pikachat deterministic contract suite (local relay + scenarios + focused tests).
-openclaw-pikachat-deterministic:
-    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture
-    PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
-    npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
-
-# Full OpenClaw integration lane (nightly/manual).
-openclaw-pikachat-e2e:
-    cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture
-
-# Backwards-compatible alias for older docs/scripts.
-openclaw-pikachat-scenarios:
-    just openclaw-pikachat-deterministic
-
-# Full QA: fmt, clippy, test, android build, iOS sim build.
-qa: fmt clippy test android-assemble ios-build-sim
-    @echo "QA complete"
-
-# Deterministic E2E: local Nostr relay + local Rust bot (iOS + Android).
-e2e-local-relay:
-    just ios-ui-e2e-local
-    just android-ui-e2e-local
-
-# Build Rust core + extension crates for the host platform.
-rust-build-host:
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    case "$PROFILE" in \
-      release) cargo build -p pika_core -p pika-nse -p pika-share --release ;; \
-      debug) cargo build -p pika_core -p pika-nse -p pika-share ;; \
-      *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
-    esac
-
-# Generate Kotlin bindings via UniFFI.
-gen-kotlin:
-    ./scripts/android-build gen-kotlin
-
-# Cross-compile Rust core for Android (arm64, armv7, x86_64).
-
-# Note: this clears `android/app/src/main/jniLibs` so output matches the requested ABI set.
-android-rust:
-    ./scripts/android-build android-rust
-
-# Write android/local.properties with SDK path.
-android-local-properties:
-    ./scripts/android-build android-local-properties
-
-# Build signed Android release APK (arm64-v8a) and copy to dist/.
-android-release:
-    ./scripts/android-build android-release
-
-# Encrypt Zapstore signing value to `secrets/zapstore-signing.env.age`.
-zapstore-encrypt-signing:
-    ./scripts/encrypt-zapstore-signing
-
-# Check Zapstore publish inputs for a local APK without publishing events.
-zapstore-check APK:
-    zsp publish --check "{{ APK }}" -r https://github.com/sledtools/pika
-
-# Publish a local APK artifact to Zapstore.
-zapstore-publish APK:
-    ./scripts/zapstore-publish "{{ APK }}" https://github.com/sledtools/pika
-
-# Build Android debug APK.
-android-assemble: gen-kotlin android-rust android-local-properties
-    cd android && ./gradlew :app:assembleDebug
-
-# Build and install Android debug APK on connected device.
-android-install: gen-kotlin android-rust android-local-properties
-    cd android && ./gradlew :app:installDebug
-
-# Run Android instrumentation tests (requires running emulator/device).
-android-ui-test: gen-kotlin android-rust android-local-properties
-    TEST_SUFFIX="${PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX:-.test}"; \
-    TEST_APP_ID="org.pikachat.pika${TEST_SUFFIX}"; \
-    PIKA_ANDROID_APP_ID="$TEST_APP_ID" ./tools/android-ensure-debug-installable; \
-    SERIAL="$(./tools/android-pick-serial)"; \
-    cd android && ANDROID_SERIAL="$SERIAL" ./gradlew :app:connectedDebugAndroidTest -PPIKA_ANDROID_APPLICATION_ID_SUFFIX="$TEST_SUFFIX"
-
-# Android E2E: local Nostr relay + local Rust bot. Requires emulator.
-android-ui-e2e-local:
-    cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture
-
-# Desktop E2E: local Nostr relay + local Rust bot.
-desktop-e2e-local:
-    cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
-
-# Sync the shared release version across app + pikachat/OpenClaw manifests.
-release-bump VERSION:
-    set -euo pipefail; \
-    release_version="{{ VERSION }}"; \
-    case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
-    ./scripts/set-release-version "$release_version"
-
-# Create a single coordinated release version commit without tagging.
-release-commit VERSION:
-    set -euo pipefail; \
-    release_version="{{ VERSION }}"; \
-    case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
-    branch="$(git rev-parse --abbrev-ref HEAD)"; \
-    if [ "$branch" != "master" ]; then \
-      echo "error: release commits must be created from master (currently on $branch)"; \
-      exit 1; \
-    fi; \
-    if [ -n "$(git status --porcelain)" ]; then \
-      echo "error: git working tree is dirty"; \
-      git status --short; \
-      exit 1; \
-    fi; \
-    ./scripts/set-release-version "$release_version"; \
-    git add VERSION ios/project.yml cli/Cargo.toml pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json Cargo.lock; \
-    git commit -m "release: bump to $release_version"
-
-# Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
-release VERSION:
-    set -euo pipefail; \
-    branch="$(git rev-parse --abbrev-ref HEAD)"; \
-    if [ "$branch" != "master" ]; then \
-      echo "error: releases must be tagged from master (currently on $branch)"; \
-      exit 1; \
-    fi; \
-    release_version="{{ VERSION }}"; \
-    case "$release_version" in VERSION=*) release_version="${release_version#VERSION=}";; esac; \
-    current_version="$(./scripts/version-read --name)"; \
-    if [ "$release_version" != "$current_version" ]; then \
-      echo "error: release version ($release_version) does not match file VERSION ($current_version)"; \
-      exit 1; \
-    fi; \
-    if [ -n "$(git status --porcelain)" ]; then \
-      echo "error: git working tree is dirty"; \
-      git status --short; \
-      exit 1; \
-    fi; \
-    tag="pika/v$release_version"; \
-    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then \
-      echo "error: tag already exists: $tag"; \
-      exit 1; \
-    fi; \
-    git tag "$tag"; \
-    git push origin "$tag"; \
-    echo "ok: pushed $tag"
-
-# Generate Swift bindings via UniFFI.
-ios-gen-swift:
-    ./scripts/ios-build ios-gen-swift
-
-# Cross-compile Rust core for iOS (device + simulator).
-
-# Keep `PIKA_IOS_RUST_TARGETS` aligned with destination (device vs simulator) to avoid link errors.
-ios-rust:
-    ./scripts/ios-build ios-rust
-
-# Build PikaCore.xcframework, PikaNSE.xcframework, and PikaShare.xcframework (device + simulator slices).
-ios-xcframework:
-    ./scripts/ios-build ios-xcframework
-
-# Generate Xcode project via xcodegen.
-ios-xcodeproj:
-    ./scripts/ios-build ios-xcodeproj
-
-# Prepare for App Store: build xcframework, regenerate project, open Xcode.
-
-# Set PIKA_IOS_DEVELOPMENT_TEAM in .env so all targets get the signing team automatically.
-ios-appstore: ios-xcframework ios-xcodeproj
-    @echo ""
-    @echo "Ready for App Store build."
-    @echo "  1. Xcode is opening…"
-    @echo "  2. Product > Archive"
-    @echo ""
-    open ios/Pika.xcodeproj
-
-# Build iOS app for simulator.
-ios-build-sim:
-    ./scripts/ios-build ios-build-sim
-
-# Build iOS app for simulator using existing Rust-generated artifacts.
-ios-build-swift-sim:
-    ./scripts/ios-build ios-build-swift-sim
-
-# Run iOS UI tests on simulator (skips E2E deployed-bot test).
-ios-ui-test: ios-xcframework ios-xcodeproj
-    udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"; \
-    if [ -z "$udid" ]; then echo "error: could not determine simulator udid"; exit 1; fi; \
-    ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -derivedDataPath ios/build -destination "id=$udid" test -skipMacroValidation ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}" \
-      -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
-
-# iOS E2E: local Nostr relay + local Rust bot.
-ios-ui-e2e-local:
-    cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture
-
-# Optional: device automation (npx). Not required for building.
-device:
-    ./tools/agent-device --help
-
-# Show Android manual QA instructions.
-android-manual-qa:
-    @echo "Manual QA prompt: prompts/android-agent-device-manual-qa.md"
-    @echo "Tip: run `npx --yes agent-device --platform android open org.pikachat.pika.dev` then follow the prompt."
-
-# Show iOS manual QA instructions.
-ios-manual-qa:
-    @echo "Manual QA prompt: prompts/ios-agent-device-manual-qa.md"
-    @echo "Tip: run `./tools/agent-device --platform ios open org.pikachat.pika.dev` then follow the prompt."
-
-# Build, install, and launch Android app on emulator/device.
-run-android *ARGS:
-    ./tools/pika-run android run {{ ARGS }}
-
 # Build, install, and launch iOS app on simulator/device.
 run-ios *ARGS:
-    ./tools/pika-run ios run {{ ARGS }}
+    @just build::run-ios {{ ARGS }}
 
 # Build, install, and launch iOS app using existing Rust-generated artifacts.
 run-swift *ARGS:
-    PIKA_IOS_SKIP_RUST_REBUILD=1 ./tools/pika-run ios run {{ ARGS }}
+    @just build::run-swift {{ ARGS }}
 
-# Capture a screenshot from the booted iOS simulator and print the saved path.
-screenshot-booted-ios OUT="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    out="{{ OUT }}"
-    if [ -z "$out" ]; then
-      out="/tmp/pika-ios-$(date +%Y%m%d-%H%M%S).png"
-    fi
-    xcrun simctl io booted screenshot "$out" >/dev/null
-    echo "$out"
-
-# Build-check the desktop ICED app.
-desktop-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-      ./tools/cargo-with-xcode check -p pika-desktop
-    else
-      cargo check -p pika-desktop
-    fi
-
-# Run desktop tests (manager + UI wiring).
-desktop-ui-test:
-    cargo test -p pika-desktop
+# Build, install, and launch Android app on emulator/device.
+run-android *ARGS:
+    @just build::run-android {{ ARGS }}
 
 # Run the desktop ICED app.
 run-desktop *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-      ./tools/cargo-with-xcode run -p pika-desktop {{ ARGS }}
-    else
-      cargo run -p pika-desktop {{ ARGS }}
-    fi
-
-# Check iOS dev environment (Xcode, simulators, runtimes).
-doctor-ios:
-    ./tools/ios-runtime-doctor
-
-# Interop baseline: local Rust bot. Requires ~/code/marmot-interop-lab-rust.
-interop-rust-baseline:
-    cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
-
-# Interactive interop test (manual send/receive with local bot).
-interop-rust-manual:
-    cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
-
-# ── pika-relay (local Nostr relay + Blossom server) ─────────────────────────
-
-# Run pika-relay locally (relay on :3334, blossom on same port).
-run-relay *ARGS:
-    cd cmd/pika-relay && go run . {{ ARGS }}
-
-# Run pika-relay with custom data/media dirs (persistent local dev).
-run-relay-dev:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p .pika-relay/data .pika-relay/media
-    cd cmd/pika-relay && \
-      DATA_DIR=../../.pika-relay/data \
-      MEDIA_DIR=../../.pika-relay/media \
-      SERVICE_URL=http://localhost:3334 \
-      go run .
-
-# Build pika-relay binary.
-relay-build:
-    cd cmd/pika-relay && go build -o ../../target/pika-relay .
-
-# ── Local backend (postgres + relay + pika-server) ──────────────────────────
-# Start local backend (postgres, pika-relay, pika-server with agent control).
-
-# State persists in .pikahut/. Press Ctrl-C to stop all services.
-pikahut-up:
-    cargo run -p pikahut -- up --profile backend
-
-# TUI: pikahut-up + component logs + interactive shell via mprocs.
-pikahut:
-    mprocs
-
-# ── pikachat (Pika messaging CLI) ───────────────────────────────────────────
-
-# Build pikachat (debug).
-cli-build:
-    cargo build -p pikachat
-
-# Build pikachat (release).
-cli-release:
-    cargo build -p pikachat --release
+    @just build::run-desktop {{ ARGS }}
 
 # Run pikachat with shared local-env defaults; forwards args verbatim.
 cli *ARGS="":
-    ./scripts/pikachat-cli.sh {{ ARGS }}
+    @just build::cli {{ ARGS }}
 
-# Show (or create) an identity in the given state dir.
-cli-identity STATE_DIR=".pikachat" RELAY="ws://127.0.0.1:7777":
-    cargo run -p pikachat -- --state-dir {{ STATE_DIR }} --relay {{ RELAY }} identity
+# Start local backend (postgres, pika-relay, pika-server with agent control).
+pikahut-up: infra::pikahut-up
 
-# Quick smoke test: two users, local relay, send+receive.
+# Check formatting (cargo fmt).
+fmt: checks::fmt
 
-# Starts its own pika-relay automatically.
-cli-smoke:
-    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
+# Lint with clippy.
+clippy *ARGS:
+    @just checks::clippy {{ ARGS }}
 
-# Minimum shared-runtime regression set for the app / CLI / daemon extraction boundary.
-shared-runtime-regression:
-    cargo test -p pika-marmot-runtime publish_welcome_rumors_
-    cargo test -p pika-marmot-runtime create_group_and_publish_welcomes_returns_group_and_published_metadata
-    cargo test -p pikachat-sidecar init_group_uses_shared_runtime_helper_and_keeps_expiration_tag
-    cargo test -p pika_core app_background_publish_uses_shared_welcome_pairing
-    cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture
+# Run pika_core tests.
+test *ARGS:
+    @just checks::test {{ ARGS }}
 
-# Quick smoke test including encrypted media upload/download over Blossom.
+# Full QA: fmt, clippy, test, android build, iOS sim build.
+qa: checks::qa
 
-# Starts its own relay automatically. Requires internet for the default Blossom server.
-cli-smoke-media:
-    cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
+# Single CI entrypoint for the whole repo.
+pre-merge: checks::pre-merge
 
-# Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
-agent-microvm *ARGS="":
-    set -euo pipefail; \
-      if [ -f .env ]; then \
-        set -a; \
-        source .env; \
-        set +a; \
-      fi; \
-    ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Nightly root task.
+nightly: checks::nightly
 
-# Run the HTTP agent ensure demo with ACP microVM guest bootstrap.
-agent-microvm-acp *ARGS="":
-    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Create + push version tag (pika/vX.Y.Z) after validating VERSION and clean tree.
+release VERSION:
+    @just ship::release {{ VERSION }}
 
-# Run the HTTP agent ensure demo for a Pi ACP-backed guest.
-agent-pi-ensure *ARGS="":
-    PIKA_AGENT_MICROVM_KIND=pi ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Run the new Rust `rmp` CLI.
+rmp *ARGS:
+    @just rmp_tools::rmp {{ ARGS }}
 
-# Run the HTTP agent ensure demo for an OpenClaw guest over the daemon protocol.
-agent-claw-ensure *ARGS="":
-    PIKA_AGENT_MICROVM_KIND=openclaw ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Build, bindgen, and platform helper commands.
+mod build 'just/build.just'
+# QA aggregates, CI lanes, and test selectors.
+mod checks 'just/checks.just'
+# Manual QA prompts, interop labs, and device helpers.
+mod labs 'just/labs.just'
+# Agent demos and microVM debugging helpers.
+mod agent 'just/agent.just'
+# Local backend, relay, and infra plumbing.
+mod infra 'just/infra.just'
+# Release, versioning, and Zapstore helpers.
+mod ship 'just/ship.just'
+# RMP scaffold and nightly helpers.
+mod rmp_tools 'just/rmp_tools.just'
 
-# Ensure/reuse agent, send one message, then optionally listen for reply.
-agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
-    ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
+# Hidden root aliases preserve existing docs/CI entrypoints without crowding `just --list`.
 
-# Tail local pika-server logs from the pikahut backend state dir.
-agent-microvm-server-logs STATE_DIR=".pikahut":
-    cargo run -p pikahut -- logs --state-dir {{ STATE_DIR }} --follow --component server
-
-# Tail remote vm-spawner logs on the pika-build microVM host.
-agent-microvm-vmspawner-logs:
-    nix develop .#infra -c just -f infra/justfile build-vmspawner-logs
-
-# Tail the guest agent log for a specific VM on the pika-build microVM host.
-agent-microvm-guest-logs VM_ID:
-    nix develop .#infra -c just -f infra/justfile build-guest-logs {{ VM_ID }}
-
-# Deploy the `pikaci` helper and launcher binaries onto pika-build via the host NixOS config.
-pikaci-remote-fulfill-deploy:
-    nix develop .#infra -c just -f infra/justfile build-deploy
-
-# Run the staged `pre-merge-pika-rust` lane with remote prepared-output fulfillment on pika-build.
-# Assumptions:
-# - pika-build has `/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output`
-# - pika-build has `/run/current-system/sw/bin/pikaci-fulfill-prepared-output`
-# - ssh access to `{{env_var_or_default("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST", "pika-build")}}` works
-
-# - nix can copy the realized prepared output to that host
-pikaci-remote-fulfill-pre-merge-pika-rust:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    export PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY:-/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY:-/run/current-system/sw/bin/pikaci-fulfill-prepared-output}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/pikaci-prepared-output}"
-
-    cargo build -p pikaci --bins
-    export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$PWD/target/debug/pikaci-fulfill-prepared-output"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
-    exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
-
-# Prewarm the exact `ci.x86_64-linux.workspaceDeps` pre-compile closure onto pika-build.
-pikaci-workspace-deps-prewarm:
-    ./scripts/pika-build-prewarm-workspace-deps.sh
-
-# Prewarm + build the exact `ci.x86_64-linux.workspaceDeps` lane on pika-build with an explicit x86_64 builder override.
-pikaci-workspace-deps-remote-build:
-    ./scripts/pika-build-run-workspace-deps.sh
-
-# Fast-build both staged Linux Rust prepare outputs for the real pre-merge pika Rust lane on pika-build.
-pikaci-pre-merge-pika-rust-prepares-remote-build:
-    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceDeps
-    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceBuild
-
-# Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
-linux-builder-repair:
-    ./scripts/linux-builder-repair.sh
-
-# Fully recreate the local linux-builder VM/store state via the existing launchd service after `just linux-builder-repair` still points at live builder corruption.
-linux-builder-recreate:
-    ./scripts/linux-builder-recreate.sh
-
-# Ensure/reuse the current test account's agent via pika-server, then chat.
-agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    ./scripts/agent-demo.sh "{{ MESSAGE }}"
-
-# Ensure/reuse the current test account's agent, then chat through an ACP-backed guest daemon.
-agent-demo-acp MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
-
-# Ensure/reuse a Pi ACP guest, then chat.
-agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    PIKA_AGENT_MICROVM_KIND=pi ./scripts/agent-demo.sh "{{ MESSAGE }}"
-
-# Ensure/reuse an OpenClaw guest, then chat.
-agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
-    PIKA_AGENT_MICROVM_KIND=openclaw ./scripts/agent-demo.sh "{{ MESSAGE }}"
-# Open local port-forward to remote vm-spawner (`http://127.0.0.1:8080`).
-agent-microvm-tunnel:
-    nix develop .#infra -c just -f infra/justfile build-vmspawner-tunnel
-
-# Run pika-news with auto-rebuild on source changes.
-news MAX_PRS="2":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    set -a; source .env; set +a
-    export GITHUB_TOKEN="$(gh auth token)"
-    cargo watch -w crates/pika-news -x "run -p pika-news -- serve \
-      --config crates/pika-news/pika-news.toml \
-      --db .tmp/pika-news.db \
-      --max-prs {{ MAX_PRS }}"
+alias rust-build-host := build::rust-build-host
+alias gen-kotlin := build::gen-kotlin
+alias android-rust := build::android-rust
+alias android-local-properties := build::android-local-properties
+alias android-release := build::android-release
+alias android-assemble := build::android-assemble
+alias android-install := build::android-install
+alias android-ui-test := build::android-ui-test
+alias ios-gen-swift := build::ios-gen-swift
+alias ios-rust := build::ios-rust
+alias ios-xcframework := build::ios-xcframework
+alias ios-xcodeproj := build::ios-xcodeproj
+alias ios-appstore := build::ios-appstore
+alias ios-build-sim := build::ios-build-sim
+alias ios-build-swift-sim := build::ios-build-swift-sim
+alias ios-ui-test := build::ios-ui-test
+alias screenshot-booted-ios := build::screenshot-booted-ios
+alias desktop-check := build::desktop-check
+alias doctor-ios := build::doctor-ios
+alias cli-build := build::cli-build
+alias cli-release := build::cli-release
+alias cli-identity := build::cli-identity
+alias pre-commit := checks::pre-commit
+alias pre-merge-pika := checks::pre-merge-pika
+alias pre-merge-notifications := checks::pre-merge-notifications
+alias pre-merge-pikachat := checks::pre-merge-pikachat
+alias pre-merge-agent-contracts := checks::pre-merge-agent-contracts
+alias pre-merge-rmp := checks::pre-merge-rmp
+alias pre-merge-apple-deterministic := checks::pre-merge-apple-deterministic
+alias pre-merge-fixture := checks::pre-merge-fixture
+alias nightly-pika-e2e := checks::nightly-pika-e2e
+alias nightly-pikachat := checks::nightly-pikachat
+alias nightly-primal-ios-interop := checks::nightly-primal-ios-interop
+alias openclaw-pikachat-deterministic := checks::openclaw-pikachat-deterministic
+alias openclaw-pikachat-e2e := checks::openclaw-pikachat-e2e
+alias e2e-local-relay := checks::e2e-local-relay
+alias android-ui-e2e-local := checks::android-ui-e2e-local
+alias ios-ui-e2e-local := checks::ios-ui-e2e-local
+alias desktop-e2e-local := checks::desktop-e2e-local
+alias desktop-ui-test := checks::desktop-ui-test
+alias cli-smoke := checks::cli-smoke
+alias shared-runtime-regression := checks::shared-runtime-regression
+alias cli-smoke-media := checks::cli-smoke-media
+alias android-device-start := labs::android-device-start
+alias android-agent-open := labs::android-agent-open
+alias integration-manual := labs::integration-manual
+alias primal-ios-lab := labs::primal-ios-lab
+alias primal-ios-lab-patch-primal := labs::primal-ios-lab-patch-primal
+alias primal-ios-lab-seed-capture := labs::primal-ios-lab-seed-capture
+alias primal-ios-lab-seed-reset := labs::primal-ios-lab-seed-reset
+alias primal-ios-lab-dump-debug := labs::primal-ios-lab-dump-debug
+alias interop-rust-baseline := labs::interop-rust-baseline
+alias interop-rust-manual := labs::interop-rust-manual
+alias device := labs::device
+alias android-manual-qa := labs::android-manual-qa
+alias ios-manual-qa := labs::ios-manual-qa
+alias agent-microvm := agent::agent-microvm
+alias agent-microvm-acp := agent::agent-microvm-acp
+alias agent-pi-ensure := agent::agent-pi-ensure
+alias agent-claw-ensure := agent::agent-claw-ensure
+alias agent-microvm-chat := agent::agent-microvm-chat
+alias agent-microvm-server-logs := agent::agent-microvm-server-logs
+alias agent-microvm-vmspawner-logs := agent::agent-microvm-vmspawner-logs
+alias agent-microvm-guest-logs := agent::agent-microvm-guest-logs
+alias agent-demo := agent::agent-demo
+alias agent-demo-acp := agent::agent-demo-acp
+alias agent-pi := agent::agent-pi
+alias agent-claw := agent::agent-claw
+alias agent-microvm-tunnel := agent::agent-microvm-tunnel
+alias run-relay := infra::run-relay
+alias run-relay-dev := infra::run-relay-dev
+alias relay-build := infra::relay-build
+alias pikahut := infra::pikahut
+alias pikaci-remote-fulfill-deploy := infra::pikaci-remote-fulfill-deploy
+alias pikaci-remote-fulfill-pre-merge-pika-rust := infra::pikaci-remote-fulfill-pre-merge-pika-rust
+alias pikaci-workspace-deps-prewarm := infra::pikaci-workspace-deps-prewarm
+alias pikaci-workspace-deps-remote-build := infra::pikaci-workspace-deps-remote-build
+alias pikaci-pre-merge-pika-rust-prepares-remote-build := infra::pikaci-pre-merge-pika-rust-prepares-remote-build
+alias linux-builder-repair := infra::linux-builder-repair
+alias linux-builder-recreate := infra::linux-builder-recreate
+alias news := infra::news
+alias release-bump := ship::release-bump
+alias release-commit := ship::release-commit
+alias zapstore-encrypt-signing := ship::zapstore-encrypt-signing
+alias zapstore-check := ship::zapstore-check
+alias zapstore-publish := ship::zapstore-publish
+alias rmp-init-smoke := rmp_tools::rmp-init-smoke
+alias rmp-init-run := rmp_tools::rmp-init-run
+alias rmp-phase4-qa := rmp_tools::rmp-phase4-qa
+alias rmp-init-smoke-ci := rmp_tools::rmp-init-smoke-ci
+alias rmp-nightly-linux := rmp_tools::rmp-nightly-linux
+alias rmp-nightly-macos := rmp_tools::rmp-nightly-macos

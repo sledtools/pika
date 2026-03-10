@@ -376,13 +376,97 @@ Deliverable:
 
 Workstream B1: introduce `just` modules and private recipes, keep the existing public root entrypoints, and reduce `just --list` noise.
 
-Status: ready
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream B1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Reduce the visible root `just` surface for humans by introducing `just` modules and `[private]` recipes, while preserving the existing public entrypoints and keeping CI/documented commands working.
+
+Scope:
+- root `justfile`
+- new `*.just` module files as needed
+- any minimal command-discovery updates needed for humans vs agents
+- `scripts/agent-brief` only if needed to keep agent discovery strong after module/private changes
+
+Primary objectives:
+- Make `just --list` materially less overwhelming for humans.
+- Keep the familiar public root entrypoints working.
+- Move low-signal, implementation-detail, manual-only, and internal helper recipes out of the root visible list.
+- Use `mod` and `[private]` instead of deleting commands aggressively.
+
+Constraints:
+- Do not break CI entrypoint names.
+- Do not break documented public commands that should remain root-facing.
+- Prefer preserving command behavior and implementation as-is; this slice is about organization and visibility, not another major behavior refactor.
+- Do not create a second agent-only justfile.
+- Avoid broad renaming unless clearly justified and compatibility is preserved.
+
+Recommended approach:
+- Keep a small curated root layer for high-signal commands such as:
+  - `info`
+  - `run-ios`
+  - `run-android`
+  - `run-desktop`
+  - `cli`
+  - `qa`
+  - `pre-merge`
+  - `nightly`
+  - `release`
+  - maybe `rmp`
+  - maybe `pikahut-up`
+- Move other recipes into a few coherent modules, for example:
+  - `build`
+  - `test`
+  - `agent`
+  - `rmp`
+  - `infra`
+  - `release`
+  - `_internal`
+- Mark implementation-only helpers `[private]` where that improves list hygiene without losing needed functionality.
+- Change the default/root listing behavior so `just` shows curated help rather than dumping the full raw recipe list.
+- If needed, update `scripts/agent-brief` so agents still get a rich task snapshot, for example via submodule listing or grouped output.
+
+Recipe selection guidance:
+- Clear candidate for deletion if still present only as compatibility cruft:
+  - `openclaw-pikachat-scenarios`
+- Good candidates to hide or move out of the root visible list:
+  - manual QA helpers
+  - relay/debug helpers
+  - agent demo helpers
+  - RMP scaffold QA helpers
+  - one-off release/debug plumbing
+- Be conservative with anything referenced by CI, README, or active docs. Compatibility matters more than purity.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Validate the new root experience with:
+  - `just`
+  - `just --list`
+  - `just --list --list-submodules`
+- Smoke-check a representative sample of preserved public commands with `just --dry-run` where appropriate.
+- If you touch `scripts/agent-brief`, run it or otherwise verify it still provides useful discovery output.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 3 complete,
+  - add a short review note under the Review Log,
+  - adjust Prompt 4 if this slice changes the best next step.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on compatibility tradeoffs and any commands intentionally hidden or deleted.
+```
 
 ### Prompt 4
 
 Workstream C1: consolidate release/version helper logic into one coherent implementation surface.
 
-Status: planned
+Status: ready
 
 ### Prompt 5
 
@@ -408,4 +492,9 @@ Status: planned
 - Review follow-up: `gen-kotlin` and `android-release` now force a host `cargo build` freshness check inside the extracted script path, so UniFFI generation no longer reuses stale host artifacts just because the dylibs already exist.
 - Completed Prompt 2 by moving `ios-gen-swift`, `ios-rust`, `ios-xcframework`, `ios-xcodeproj`, `ios-build-sim`, and `ios-build-swift-sim` implementation into `scripts/ios-build`.
 - Review note: the iOS section of the root `justfile` is now wrapper-only for the extracted recipes, `scripts/lib/mobile-build.sh` now owns the shared cargo target lookup used by xcframework assembly, and the simulator build flow now shares one underlying xcodebuild helper with an explicit swift-only mode.
+- Reviewed Prompt 2 and found no structural regressions; remaining risk is limited to real Xcode/provisioning verification depth.
 - Next step is Prompt 3: namespace and visibility cleanup now that the heavy mobile shell has been moved out of the root `justfile`.
+- Completed Prompt 3 by moving low-signal recipes into `just/` modules, shrinking the visible root list to a curated public surface, and preserving documented/CI entrypoints through hidden root aliases.
+- Review note: `just` now shows curated root help, `just --list --list-submodules` exposes the expanded module tree for agents, and `scripts/agent-brief` now includes both views so discovery stays strong after the module/private split.
+- Review tradeoff: the compatibility alias `openclaw-pikachat-scenarios` was removed because it had no live references outside the root `justfile`; the active root entrypoints and CI/documented commands remain intact.
+- Next step is Prompt 4: consolidate the release/version helper logic now that the root command surface has been thinned and grouped.

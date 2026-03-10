@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # Run the new Rust `rmp` CLI.
 rmp *ARGS:
     cargo run -p rmp-cli -- {{ ARGS }}

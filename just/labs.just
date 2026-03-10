@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # Ensure an Android target is booted and ready (without building/installing app).
 android-device-start *ARGS:
     just rmp devices start android {{ ARGS }}

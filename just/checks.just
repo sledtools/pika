@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # Run pika_core tests.
 test *ARGS:
     cargo test -p pika_core {{ ARGS }}

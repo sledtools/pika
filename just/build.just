@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # Build Rust core + extension crates for the host platform.
 rust-build-host:
     set -euo pipefail; \

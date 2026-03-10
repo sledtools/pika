@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
 agent-microvm *ARGS="":
     set -euo pipefail; \

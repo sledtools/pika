@@ -466,13 +466,83 @@ Deliverable:
 
 Workstream C1: consolidate release/version helper logic into one coherent implementation surface.
 
-Status: ready
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream C1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Consolidate the release/version helper logic into one coherent implementation surface while preserving current release behavior and existing command entrypoints.
+
+Scope:
+- release/version helper scripts under `scripts/`
+- any thin just/module wiring needed to keep existing commands working
+- release/version command paths such as:
+  - `release-bump`
+  - `release-commit`
+  - `release`
+  - `scripts/set-release-version`
+  - `scripts/sync-pikachat-version`
+  - `scripts/version-read`
+  - `scripts/bump-pikachat.sh`
+
+Primary objectives:
+- Reduce the number of places where release/version rules are encoded.
+- Remove duplicated branch / dirty-tree / version parsing / manifest update logic.
+- Keep release workflows auditable by making one implementation surface the clear owner.
+- Preserve existing public commands and script entrypoints unless a change is clearly compatibility-safe.
+
+Constraints:
+- Do not change the actual release policy unless required by correctness.
+- Do not break GitHub Actions workflows, documented release commands, or existing root just entrypoints.
+- Prefer consolidating behavior behind one helper or one script family with subcommands, rather than spreading small changes across many scripts again.
+- Avoid mixing in the release-secret encryption/decryption consolidation unless it is required for the version-flow cleanup. That can stay for a later slice unless there is a very obvious shared helper worth introducing now.
+- Keep the diff focused on release/version behavior; do not reopen justfile/module organization work unless needed for thin wiring.
+
+Recommended approach:
+- Pick one clear owner for version parsing and manifest synchronization.
+- Make the root/module release recipes thin wrappers over that owner.
+- If `scripts/bump-pikachat.sh` can share the same underlying implementation cleanly, do that.
+- If a new script with subcommands is the clearest shape, that is acceptable.
+- Preserve the existing external UX where practical:
+  - `just release-bump <version>`
+  - `just release-commit <version>`
+  - `just release <version>`
+  - `./scripts/bump-pikachat.sh [version]`
+
+Known duplication to target:
+- repeated semantic-version validation
+- repeated repo cleanliness checks
+- repeated branch checks
+- repeated version-file / manifest sync logic
+- repeated tag existence checks
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Run `bash -n` on any new or changed shell scripts.
+- Smoke-check the preserved command surface with non-destructive invocations where possible, for example help, dry-run-safe cases, or failure-mode validation in a temp repo/worktree.
+- Verify that any updated script entrypoints still match what workflows and docs call.
+- If you cannot safely run the real release path, say exactly what you verified and what remains unverified.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 4 complete,
+  - add a short review note under the Review Log,
+  - adjust Prompt 5 if this slice changes the best next step.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on compatibility tradeoffs and any remaining release-risk gaps.
+```
 
 ### Prompt 5
 
 Workstream D1: simplify the agent/demo wrapper stack and standardize env ownership.
 
-Status: planned
+Status: ready
 
 ## Review Log
 
@@ -497,4 +567,9 @@ Status: planned
 - Completed Prompt 3 by moving low-signal recipes into `just/` modules, shrinking the visible root list to a curated public surface, and preserving documented/CI entrypoints through hidden root aliases.
 - Review note: `just` now shows curated root help, `just --list --list-submodules` exposes the expanded module tree for agents, and `scripts/agent-brief` now includes both views so discovery stays strong after the module/private split.
 - Review tradeoff: the compatibility alias `openclaw-pikachat-scenarios` was removed because it had no live references outside the root `justfile`; the active root entrypoints and CI/documented commands remain intact.
+- Reviewed Prompt 3 and found no structural regressions; remaining risk is mostly limited to obscure external uses of hidden/removed commands outside the repo.
 - Next step is Prompt 4: consolidate the release/version helper logic now that the root command surface has been thinned and grouped.
+- Completed Prompt 4 by introducing `scripts/release-version` as the single owner for release/version parsing, manifest sync, branch/clean-tree checks, and tag creation, with the existing helper scripts reduced to thin compatibility wrappers.
+- Review note: `release-bump`, `release-commit`, `release`, `scripts/set-release-version`, `scripts/sync-pikachat-version`, `scripts/version-read`, and `scripts/bump-pikachat.sh` now all route through the same implementation surface, and the ship module recipes are wrapper-only.
+- Review follow-up: while exercising the new release paths, verification surfaced that `just` module recipes were executing from their module directory; all `just/*.just` files now set `working-directory := '..'` so routed commands run from the repo root as intended.
+- Next step is Prompt 5: simplify the agent/demo wrapper stack now that the release/version logic has a single owner and the module execution root is fixed.

@@ -1,3 +1,5 @@
+set working-directory := '..'
+
 # ── pika-relay (local Nostr relay + Blossom server) ─────────────────────────
 #
 # Run pika-relay locally (relay on :3334, blossom on same port).

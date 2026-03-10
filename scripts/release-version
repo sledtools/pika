@@ -1,0 +1,554 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION_FILE_REL="VERSION"
+IOS_PROJECT_YML_REL="ios/project.yml"
+CLI_CARGO_TOML_REL="cli/Cargo.toml"
+PACKAGE_JSON_REL="pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json"
+CARGO_LOCK_REL="Cargo.lock"
+
+VERSION_FILE="$ROOT/$VERSION_FILE_REL"
+IOS_PROJECT_YML="$ROOT/$IOS_PROJECT_YML_REL"
+CLI_CARGO_TOML="$ROOT/$CLI_CARGO_TOML_REL"
+PACKAGE_JSON="$ROOT/$PACKAGE_JSON_REL"
+CARGO_LOCK="$ROOT/$CARGO_LOCK_REL"
+
+declare -a TEMP_FILES=()
+declare -a TRANSACTION_PATHS=()
+declare -a TRANSACTION_BACKUPS=()
+TRANSACTION_ACTIVE=0
+
+usage_main() {
+  cat <<'EOF'
+Usage:
+  ./scripts/release-version version-read [--name|--code]
+  ./scripts/release-version sync-pikachat-version [<version>]
+  ./scripts/release-version set-release-version <version>
+  ./scripts/release-version release-bump <version>
+  ./scripts/release-version release-commit <version>
+  ./scripts/release-version release <version>
+  ./scripts/release-version bump-pikachat [<version>]
+EOF
+}
+
+display_name() {
+  local fallback="$1"
+  if [[ -n "${RELEASE_VERSION_DISPLAY_NAME:-}" ]]; then
+    printf '%s\n' "$RELEASE_VERSION_DISPLAY_NAME"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+usage_version_read() {
+  local cmd
+  cmd="$(display_name "./scripts/release-version version-read")"
+  cat <<EOF
+usage: ${cmd} [--name|--code]
+
+Reads VERSION at repo root (x.y.z).
+  --name  Print version name (e.g. 0.1.0)
+  --code  Print Android versionCode (major*10000 + minor*100 + patch)
+EOF
+}
+
+usage_sync_pikachat_version() {
+  local cmd
+  cmd="$(display_name "./scripts/release-version sync-pikachat-version")"
+  cat <<EOF
+Usage: ${cmd} [<version>]
+
+Syncs the pikachat Rust binary and OpenClaw extension versions.
+
+- With no argument, reads the version from the repo-root VERSION file.
+- With an explicit argument, uses that version instead.
+
+Updates:
+- cli/Cargo.toml
+- pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json
+- Cargo.lock (via \`cargo check -p pikachat\`)
+EOF
+}
+
+usage_set_release_version() {
+  local cmd
+  cmd="$(display_name "./scripts/release-version set-release-version")"
+  cat <<EOF
+Usage: ${cmd} <version>
+
+Sets the shared release version and syncs dependent manifests.
+
+Updates:
+- VERSION
+- ios/project.yml (MARKETING_VERSION)
+- cli/Cargo.toml
+- pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json
+- Cargo.lock (via \`cargo check -p pikachat\`)
+EOF
+}
+
+usage_bump_pikachat() {
+  local cmd
+  cmd="$(display_name "./scripts/release-version bump-pikachat")"
+  cat <<EOF
+Usage: ${cmd} [<version>]
+Example: ${cmd} 1.1.0
+When omitted, the repo-root VERSION value is used.
+Set PIKACHAT_ALLOW_VERSION_DRIFT=1 to intentionally release pikachat at a different version.
+EOF
+}
+
+cleanup() {
+  if [[ "$TRANSACTION_ACTIVE" -eq 1 ]]; then
+    local i
+    for i in "${!TRANSACTION_PATHS[@]}"; do
+      cp "${TRANSACTION_BACKUPS[$i]}" "${TRANSACTION_PATHS[$i]}"
+    done
+  fi
+
+  if ((${#TEMP_FILES[@]} > 0)); then
+    rm -f "${TEMP_FILES[@]}"
+  fi
+}
+
+trap cleanup EXIT
+
+make_temp_file() {
+  local stem="$1"
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/release-version.${stem}.XXXXXX")"
+  TEMP_FILES+=("$tmp")
+  printf '%s\n' "$tmp"
+}
+
+begin_transaction() {
+  TRANSACTION_ACTIVE=1
+  TRANSACTION_PATHS=()
+  TRANSACTION_BACKUPS=()
+
+  local path backup
+  for path in "$@"; do
+    backup="$(make_temp_file "$(basename "$path").bak")"
+    cp "$path" "$backup"
+    TRANSACTION_PATHS+=("$path")
+    TRANSACTION_BACKUPS+=("$backup")
+  done
+}
+
+commit_transaction() {
+  TRANSACTION_ACTIVE=0
+  TRANSACTION_PATHS=()
+  TRANSACTION_BACKUPS=()
+}
+
+normalize_version_arg() {
+  local version="$1"
+  case "$version" in
+    VERSION=*) version="${version#VERSION=}" ;;
+  esac
+  printf '%s\n' "$version"
+}
+
+parse_semver() {
+  local version="$1"
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    return 1
+  fi
+
+  SEMVER_MAJOR="${BASH_REMATCH[1]}"
+  SEMVER_MINOR="${BASH_REMATCH[2]}"
+  SEMVER_PATCH="${BASH_REMATCH[3]}"
+}
+
+require_semver() {
+  local version="$1"
+  local label="$2"
+  if ! parse_semver "$version"; then
+    echo "error: ${label} must be x.y.z (got: $version)" >&2
+    exit 1
+  fi
+}
+
+read_root_version() {
+  if [[ ! -f "$VERSION_FILE" ]]; then
+    echo "error: missing VERSION file: $VERSION_FILE" >&2
+    exit 1
+  fi
+
+  local version
+  version="$(tr -d '[:space:]' <"$VERSION_FILE")"
+  require_semver "$version" "VERSION"
+  printf '%s\n' "$version"
+}
+
+android_version_code_for() {
+  local version="$1"
+  require_semver "$version" "version"
+  printf '%s\n' "$((10#$SEMVER_MAJOR * 10000 + 10#$SEMVER_MINOR * 100 + 10#$SEMVER_PATCH))"
+}
+
+ensure_master_branch() {
+  local message="$1"
+  local branch
+  branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+  if [[ "$branch" != "master" ]]; then
+    echo "error: ${message} (currently on $branch)" >&2
+    exit 1
+  fi
+}
+
+ensure_clean_tree() {
+  if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+    echo "error: git working tree is dirty" >&2
+    git -C "$ROOT" status --short >&2
+    exit 1
+  fi
+}
+
+ensure_tag_absent() {
+  local tag="$1"
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+    echo "error: tag already exists: $tag" >&2
+    exit 1
+  fi
+}
+
+write_version_file() {
+  local version="$1"
+  local tmp
+  tmp="$(make_temp_file version)"
+  printf '%s\n' "$version" >"$tmp"
+  mv "$tmp" "$VERSION_FILE"
+}
+
+write_ios_marketing_version() {
+  local version="$1"
+  local tmp
+  tmp="$(make_temp_file ios-project)"
+
+  awk -v version="$version" '
+    BEGIN {
+      updated = 0
+    }
+    !updated && /^[[:space:]]*MARKETING_VERSION:/ {
+      match($0, /^[[:space:]]*/)
+      indent = substr($0, RSTART, RLENGTH)
+      print indent "MARKETING_VERSION: " version
+      updated = 1
+      next
+    }
+    {
+      print
+    }
+    END {
+      if (!updated) {
+        exit 1
+      }
+    }
+  ' "$IOS_PROJECT_YML" >"$tmp" || {
+    rm -f "$tmp"
+    echo "error: failed to update MARKETING_VERSION in $IOS_PROJECT_YML" >&2
+    exit 1
+  }
+
+  if ! grep -q "MARKETING_VERSION: ${version}" "$tmp"; then
+    echo "error: MARKETING_VERSION verification failed for $IOS_PROJECT_YML" >&2
+    exit 1
+  fi
+
+  mv "$tmp" "$IOS_PROJECT_YML"
+}
+
+write_cli_version() {
+  local version="$1"
+  local tmp
+  tmp="$(make_temp_file cli-cargo)"
+
+  awk -v version="$version" '
+    BEGIN {
+      in_package = 0
+      updated = 0
+    }
+    /^\[package\]$/ {
+      in_package = 1
+      print
+      next
+    }
+    /^\[/ {
+      in_package = 0
+    }
+    in_package && !updated && /^version = ".*"$/ {
+      print "version = \"" version "\""
+      updated = 1
+      next
+    }
+    {
+      print
+    }
+    END {
+      if (!updated) {
+        exit 1
+      }
+    }
+  ' "$CLI_CARGO_TOML" >"$tmp" || {
+    rm -f "$tmp"
+    echo "error: failed to update package version in $CLI_CARGO_TOML" >&2
+    exit 1
+  }
+
+  mv "$tmp" "$CLI_CARGO_TOML"
+}
+
+write_package_json_version() {
+  local version="$1"
+  local tmp
+  tmp="$(make_temp_file package-json)"
+
+  node - "$PACKAGE_JSON" "$version" "$tmp" <<'EOF'
+const fs = require("fs");
+
+const [pkgPath, version, outPath] = process.argv.slice(2);
+const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+pkg.version = version;
+fs.writeFileSync(outPath, `${JSON.stringify(pkg, null, 2)}\n`);
+EOF
+
+  mv "$tmp" "$PACKAGE_JSON"
+}
+
+refresh_pikachat_lockfile() {
+  (
+    cd "$ROOT"
+    cargo check -p pikachat --quiet
+  )
+}
+
+sync_pikachat_artifacts() {
+  local version="$1"
+  require_semver "$version" "version"
+
+  begin_transaction "$CLI_CARGO_TOML" "$PACKAGE_JSON" "$CARGO_LOCK"
+  write_cli_version "$version"
+  write_package_json_version "$version"
+  refresh_pikachat_lockfile
+  commit_transaction
+}
+
+set_release_version_artifacts() {
+  local version="$1"
+  require_semver "$version" "version"
+
+  begin_transaction "$VERSION_FILE" "$IOS_PROJECT_YML" "$CLI_CARGO_TOML" "$PACKAGE_JSON" "$CARGO_LOCK"
+  write_version_file "$version"
+  write_ios_marketing_version "$version"
+  write_cli_version "$version"
+  write_package_json_version "$version"
+  refresh_pikachat_lockfile
+  commit_transaction
+}
+
+cmd_version_read() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage_version_read
+    return 0
+  fi
+
+  if [[ "$#" -gt 1 ]]; then
+    usage_version_read >&2
+    return 2
+  fi
+
+  local mode="${1:---name}"
+  local version
+  version="$(read_root_version)"
+
+  case "$mode" in
+    --name)
+      echo "$version"
+      ;;
+    --code)
+      android_version_code_for "$version"
+      ;;
+    *)
+      usage_version_read >&2
+      return 2
+      ;;
+  esac
+}
+
+cmd_sync_pikachat_version() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage_sync_pikachat_version
+    return 0
+  fi
+
+  if [[ "$#" -gt 1 ]]; then
+    usage_sync_pikachat_version >&2
+    return 2
+  fi
+
+  local version
+  if [[ "$#" -eq 1 ]]; then
+    version="$(normalize_version_arg "$1")"
+  else
+    version="$(read_root_version)"
+  fi
+
+  sync_pikachat_artifacts "$version"
+  echo "ok: synced pikachat artifacts to version $version"
+}
+
+cmd_set_release_version() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage_set_release_version
+    return 0
+  fi
+
+  if [[ "$#" -ne 1 ]]; then
+    usage_set_release_version >&2
+    return 2
+  fi
+
+  local version
+  version="$(normalize_version_arg "$1")"
+  set_release_version_artifacts "$version"
+  echo "ok: synced release version $version"
+}
+
+cmd_release_commit() {
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: ./scripts/release-version release-commit <version>" >&2
+    return 2
+  fi
+
+  local version
+  version="$(normalize_version_arg "$1")"
+  require_semver "$version" "version"
+
+  ensure_master_branch "release commits must be created from master"
+  ensure_clean_tree
+
+  set_release_version_artifacts "$version"
+  git -C "$ROOT" add -- "$VERSION_FILE_REL" "$IOS_PROJECT_YML_REL" "$CLI_CARGO_TOML_REL" "$PACKAGE_JSON_REL" "$CARGO_LOCK_REL"
+  git -C "$ROOT" commit -m "release: bump to $version"
+}
+
+cmd_release() {
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: ./scripts/release-version release <version>" >&2
+    return 2
+  fi
+
+  local version current_version tag
+  version="$(normalize_version_arg "$1")"
+  require_semver "$version" "release version"
+
+  ensure_master_branch "releases must be tagged from master"
+  current_version="$(read_root_version)"
+  if [[ "$version" != "$current_version" ]]; then
+    echo "error: release version ($version) does not match file VERSION ($current_version)" >&2
+    exit 1
+  fi
+
+  ensure_clean_tree
+
+  tag="pika/v$version"
+  ensure_tag_absent "$tag"
+  git -C "$ROOT" tag "$tag"
+  git -C "$ROOT" push origin "$tag"
+  echo "ok: pushed $tag"
+}
+
+cmd_bump_pikachat() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage_bump_pikachat
+    return 0
+  fi
+
+  if [[ "$#" -gt 1 ]]; then
+    usage_bump_pikachat >&2
+    return 2
+  fi
+
+  local root_version version include_root_version tag
+  root_version="$(read_root_version)"
+
+  ensure_master_branch "pikachat releases must be tagged from master"
+  ensure_clean_tree
+
+  if [[ "$#" -eq 1 ]]; then
+    version="$(normalize_version_arg "$1")"
+    require_semver "$version" "version"
+    if [[ "$version" == "$root_version" ]]; then
+      include_root_version=1
+    elif [[ "${PIKACHAT_ALLOW_VERSION_DRIFT:-0}" == "1" ]]; then
+      echo "warning: requested pikachat version ($version) differs from VERSION ($root_version)" >&2
+      echo "warning: continuing because PIKACHAT_ALLOW_VERSION_DRIFT=1 is set" >&2
+      include_root_version=0
+    else
+      echo "error: requested pikachat version ($version) differs from VERSION ($root_version)" >&2
+      echo "hint: run \`just release-commit $version\` for a coordinated release," >&2
+      echo "      or set PIKACHAT_ALLOW_VERSION_DRIFT=1 for an intentional pikachat-only release" >&2
+      exit 1
+    fi
+  else
+    version="$root_version"
+    include_root_version=1
+  fi
+
+  tag="pikachat-v$version"
+  ensure_tag_absent "$tag"
+
+  sync_pikachat_artifacts "$version"
+  git -C "$ROOT" add -- "$CLI_CARGO_TOML_REL" "$PACKAGE_JSON_REL" "$CARGO_LOCK_REL"
+  if [[ "$include_root_version" -eq 1 ]]; then
+    git -C "$ROOT" add -- "$VERSION_FILE_REL"
+  fi
+  git -C "$ROOT" commit -m "release: pikachat v$version"
+  git -C "$ROOT" tag "$tag"
+
+  echo ""
+  echo "Done. To release:"
+  echo "  git push origin master $tag"
+}
+
+main() {
+  if [[ "$#" -eq 0 ]]; then
+    usage_main >&2
+    exit 2
+  fi
+
+  local command="$1"
+  shift
+
+  case "$command" in
+    version-read)
+      cmd_version_read "$@"
+      ;;
+    sync-pikachat-version)
+      cmd_sync_pikachat_version "$@"
+      ;;
+    set-release-version|release-bump)
+      cmd_set_release_version "$@"
+      ;;
+    release-commit)
+      cmd_release_commit "$@"
+      ;;
+    release)
+      cmd_release "$@"
+      ;;
+    bump-pikachat)
+      cmd_bump_pikachat "$@"
+      ;;
+    -h|--help|help)
+      usage_main
+      ;;
+    *)
+      usage_main >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

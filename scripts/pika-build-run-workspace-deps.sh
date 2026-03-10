@@ -8,7 +8,7 @@ Usage: pika-build-run-workspace-deps.sh [--installable TARGET] [--remote-host HO
 Sync the current filtered worktree snapshot to pika-build and realize one staged x86_64 Linux
 prepare output there. This is the strict remote-authoritative path for staged Linux Rust
 outputs: the helper must not build the final output locally or round-trip it back through the
-Mac.
+Mac, and it prunes older remote helper snapshots before uploading a new one.
 
 Options:
   --installable TARGET   Installable to realize remotely. Default: .#ci.x86_64-linux.workspaceDeps
@@ -79,6 +79,7 @@ attr="${installable#.#}"
 remote_snapshot_dir="${remote_work_dir}/helpers/${snapshot_id}/snapshot"
 remote_installable="path:${remote_snapshot_dir}#${attr}"
 remote_marker="${remote_snapshot_dir}/pikaci-snapshot.json"
+remote_helpers_dir="${remote_work_dir}/helpers"
 
 remote_q() {
   printf "'%s'" "${1//\'/\'\"\'\"\'}"
@@ -92,7 +93,7 @@ echo "    remote nix: $remote_nix_binary"
 echo "    remote snapshot: $remote_snapshot_dir"
 
 "$ssh_binary" "$remote_host" \
-  "set -euo pipefail; rm -rf $(remote_q "$remote_snapshot_dir"); mkdir -p $(remote_q "$remote_snapshot_dir")"
+  "set -euo pipefail; mkdir -p $(remote_q "$remote_helpers_dir"); find $(remote_q "$remote_helpers_dir") -mindepth 1 -maxdepth 1 -type d ! -name $(remote_q "$snapshot_id") -exec rm -rf {} +; rm -rf $(remote_q "$remote_snapshot_dir"); mkdir -p $(remote_q "$remote_snapshot_dir")"
 
 tar -C "$PWD" \
   --exclude=.git \

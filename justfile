@@ -69,6 +69,10 @@ info:
     @echo "    just pikaci-remote-fulfill-deploy"
     @echo "  Run staged Rust lane with remote fulfillment on pika-build:"
     @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
+    @echo "  Realize both staged Linux Rust prepare outputs directly on pika-build:"
+    @echo "    just pikaci-pre-merge-pika-rust-prepares-remote-build"
+    @echo "  Repair the legacy local aarch64-linux linux-builder staged-Rust cargo-path failure:"
+    @echo "    just linux-builder-repair"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -167,6 +171,7 @@ mod rmp_tools 'just/rmp_tools.just'
 # cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
 # cargo test -p pikahut --test integration_manual manual_primal_lab_runbook_contract -- --ignored --nocapture
 
+<<<<<<< HEAD
 alias rust-build-host := build::rust-build-host
 alias gen-kotlin := build::gen-kotlin
 alias android-rust := build::android-rust
@@ -242,8 +247,6 @@ alias relay-build := infra::relay-build
 alias pikahut := infra::pikahut
 alias pikaci-remote-fulfill-deploy := infra::pikaci-remote-fulfill-deploy
 alias pikaci-remote-fulfill-pre-merge-pika-rust := infra::pikaci-remote-fulfill-pre-merge-pika-rust
-alias pikaci-workspace-deps-prewarm := infra::pikaci-workspace-deps-prewarm
-alias pikaci-workspace-deps-remote-build := infra::pikaci-workspace-deps-remote-build
 alias pikaci-pre-merge-pika-rust-prepares-remote-build := infra::pikaci-pre-merge-pika-rust-prepares-remote-build
 alias linux-builder-repair := infra::linux-builder-repair
 alias linux-builder-recreate := infra::linux-builder-recreate

@@ -869,9 +869,20 @@ We have at least one important Linux Rust lane where:
     - instead it now syncs a filtered helper snapshot to `/var/tmp/pikaci-prepared-output/helpers/<id>/snapshot` on `pika-build`, runs `ssh pika-build ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix} build --accept-flake-config --no-link --print-out-paths path:...#ci.x86_64-linux.workspace{Deps,Build}`, and requires the returned `/nix/store/...` path to exist remotely,
     - `just pikaci-pre-merge-pika-rust-prepares-remote-build` therefore no longer misrepresents a fast path while secretly bouncing the final Linux output through the Mac,
     - and the helper still hard-fails by construction if it cannot stay on that remote-authoritative path,
+    - the helper now also prunes older `/var/tmp/pikaci-prepared-output/helpers/*` snapshot directories before uploading a new helper snapshot, so repeated prepare-only runs do not leak full repo snapshots onto `pika-build`,
     - a fresh helper rerun completed both outputs on the strict path and reported only remote-authoritative results:
       - `ci.x86_64-linux.workspaceDeps` -> `/nix/store/lw2m7kd6l0bfssd0cpkiqv2hxmmz8mbm-pika-linux-rust-workspace-deps-deps-0.1.0`
       - `ci.x86_64-linux.workspaceBuild` -> `/nix/store/y1rdyafqd4zyyxiam8cj8rknaa662w63-pika-linux-rust-workspace-build-0.1.0`
+  - note that the operational story for this first lane is now much less prototype-shaped:
+    - `just pikaci-pre-merge-pika-rust-prepares-remote-build` and `just pikaci-remote-fulfill-pre-merge-pika-rust` both flow through the same checked-in `scripts/pikaci-pre-merge-pika-rust-remote.sh` wrapper,
+    - the old user-facing `workspaceDeps`-only helper recipes are gone from `justfile`,
+    - and the default operator guidance for this lane is now simply:
+      - `just pikaci-pre-merge-pika-rust-prepares-remote-build`
+      - `just pikaci-remote-fulfill-pre-merge-pika-rust`
+    - a fresh consolidated rerun kept that simplified story honest:
+      - `just pikaci-pre-merge-pika-rust-prepares-remote-build` pruned stale remote helper snapshots and left only `/var/tmp/pikaci-prepared-output/helpers/helper-20260310T192300Z-40839`,
+      - `just pikaci-remote-fulfill-pre-merge-pika-rust` still passed end-to-end (`20260310T192529Z-7c95792a`),
+      - and the real lane logs again showed only remote `ssh pika-build nix build ... path:/var/tmp/pikaci-prepared-output/runs/.../snapshot#ci.x86_64-linux.workspace{Deps,Build}` prepares, not Mac-side `nix-store --serve --write` bounce.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

@@ -40,46 +40,15 @@ pikahut:
 pikaci-remote-fulfill-deploy:
     nix develop .#infra -c just -f infra/justfile build-deploy
 
-# Run the staged `pre-merge-pika-rust` lane with remote prepared-output fulfillment on pika-build.
-# Assumptions:
-# - pika-build has `/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output`
-# - pika-build has `/run/current-system/sw/bin/pikaci-fulfill-prepared-output`
-# - ssh access to `{{env_var_or_default("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST", "pika-build")}}` works
-#
-# - nix can copy the realized prepared output to that host
+# Run the staged `pre-merge-pika-rust` lane with strict remote-authoritative fulfillment on pika-build.
 [private]
 pikaci-remote-fulfill-pre-merge-pika-rust:
-    #!/usr/bin/env bash
-    set -euo pipefail
+    ./scripts/pikaci-pre-merge-pika-rust-remote.sh run
 
-    export PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY:-/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY:-/run/current-system/sw/bin/pikaci-fulfill-prepared-output}"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/pikaci-prepared-output}"
-
-    cargo build -p pikaci --bins
-    export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$PWD/target/debug/pikaci-fulfill-prepared-output"
-    export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$PWD/target/debug/pikaci-launch-fulfill-prepared-output"
-    exec "$PWD/target/debug/pikaci" run pre-merge-pika-rust
-
-# Prewarm the exact `ci.x86_64-linux.workspaceDeps` pre-compile closure onto pika-build.
-[private]
-pikaci-workspace-deps-prewarm:
-    ./scripts/pika-build-prewarm-workspace-deps.sh
-
-# Prewarm + build the exact `ci.x86_64-linux.workspaceDeps` lane on pika-build with an explicit x86_64 builder override.
-[private]
-pikaci-workspace-deps-remote-build:
-    ./scripts/pika-build-run-workspace-deps.sh
-
-# Fast-build both staged Linux Rust prepare outputs for the real pre-merge pika Rust lane on pika-build.
+# Realize both staged Linux Rust prepare outputs directly on pika-build without a Mac-side output bounce.
 [private]
 pikaci-pre-merge-pika-rust-prepares-remote-build:
-    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceDeps
-    ./scripts/pika-build-run-workspace-deps.sh --installable .#ci.x86_64-linux.workspaceBuild
+    ./scripts/pikaci-pre-merge-pika-rust-remote.sh prepare
 
 # Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
 [private]

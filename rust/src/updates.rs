@@ -111,7 +111,6 @@ pub enum InternalEvent {
         flow_token: u64,
         phase: crate::state::AgentProvisioningPhase,
         agent_npub: Option<String>,
-        poll_attempt: Option<u32>,
     },
     AgentFlowCompleted {
         flow_token: u64,

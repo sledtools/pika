@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
+use pika_agent_control_plane::AgentStartupPhase;
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -23,6 +24,7 @@ enum AgentAppState {
 struct AgentStateResponse {
     agent_id: String,
     state: AgentAppState,
+    startup_phase: AgentStartupPhase,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,16 +280,29 @@ fn send_progress(
     flow_token: u64,
     phase: crate::state::AgentProvisioningPhase,
     agent_npub: Option<String>,
-    poll_attempt: Option<u32>,
 ) {
     let _ = tx.send(CoreMsg::Internal(Box::new(
         InternalEvent::AgentFlowProgress {
             flow_token,
             phase,
             agent_npub,
-            poll_attempt,
         },
     )));
+}
+
+fn provisioning_phase_from_startup(
+    startup_phase: AgentStartupPhase,
+) -> crate::state::AgentProvisioningPhase {
+    match startup_phase {
+        AgentStartupPhase::Requested => crate::state::AgentProvisioningPhase::Requested,
+        AgentStartupPhase::ProvisioningVm => crate::state::AgentProvisioningPhase::ProvisioningVm,
+        AgentStartupPhase::BootingGuest => crate::state::AgentProvisioningPhase::BootingGuest,
+        AgentStartupPhase::WaitingForServiceReady => {
+            crate::state::AgentProvisioningPhase::WaitingForServiceReady
+        }
+        AgentStartupPhase::Ready => crate::state::AgentProvisioningPhase::WaitingForServiceReady,
+        AgentStartupPhase::Failed => crate::state::AgentProvisioningPhase::Error,
+    }
 }
 
 async fn run_agent_flow(
@@ -302,8 +317,7 @@ async fn run_agent_flow(
     send_progress(
         &tx,
         flow_token,
-        crate::state::AgentProvisioningPhase::Provisioning,
-        None,
+        crate::state::AgentProvisioningPhase::Requested,
         None,
     );
 
@@ -315,9 +329,8 @@ async fn run_agent_flow(
                     send_progress(
                         &tx,
                         flow_token,
-                        crate::state::AgentProvisioningPhase::Provisioning,
+                        provisioning_phase_from_startup(state.startup_phase),
                         Some(state.agent_id.clone()),
-                        Some(attempt),
                     );
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
@@ -329,7 +342,6 @@ async fn run_agent_flow(
                         flow_token,
                         crate::state::AgentProvisioningPhase::Recovering,
                         Some(state.agent_id.clone()),
-                        Some(attempt),
                     );
                     recover_my_agent(&client, &keys, &base_url).await?;
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
@@ -350,21 +362,16 @@ async fn run_agent_flow(
     Err(AgentFlowError::Timeout)
 }
 
-pub(super) fn provisioning_status_message(
-    phase: &crate::state::AgentProvisioningPhase,
-    poll_attempt: Option<u32>,
-) -> String {
+pub(super) fn provisioning_status_message(phase: &crate::state::AgentProvisioningPhase) -> String {
     match phase {
         crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
-        crate::state::AgentProvisioningPhase::Provisioning => {
-            if let Some(attempt) = poll_attempt {
-                format!(
-                    "Starting microVM... (attempt {}/{})",
-                    attempt, AGENT_POLL_MAX_ATTEMPTS
-                )
-            } else {
-                "Starting microVM...".to_string()
-            }
+        crate::state::AgentProvisioningPhase::Requested => "Request received...".to_string(),
+        crate::state::AgentProvisioningPhase::ProvisioningVm => {
+            "Provisioning microVM...".to_string()
+        }
+        crate::state::AgentProvisioningPhase::BootingGuest => "Booting guest...".to_string(),
+        crate::state::AgentProvisioningPhase::WaitingForServiceReady => {
+            "Waiting for guest service to become ready...".to_string()
         }
         crate::state::AgentProvisioningPhase::Recovering => "Recovering agent...".to_string(),
         crate::state::AgentProvisioningPhase::PublishingKeyPackage => {
@@ -553,7 +560,6 @@ impl AppCore {
         flow_token: u64,
         phase: crate::state::AgentProvisioningPhase,
         agent_npub: Option<String>,
-        poll_attempt: Option<u32>,
     ) {
         if flow_token != self.agent_flow_token {
             return;
@@ -563,15 +569,15 @@ impl AppCore {
             .agent_flow_start
             .map(|start| start.elapsed().as_secs() as u32)
             .unwrap_or(0);
-        let status_message = provisioning_status_message(&phase, poll_attempt);
+        let status_message = provisioning_status_message(&phase);
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
             phase,
             agent_npub,
             status_message,
             elapsed_secs,
-            poll_attempt,
-            poll_max: Some(AGENT_POLL_MAX_ATTEMPTS),
+            poll_attempt: None,
+            poll_max: None,
         });
         self.emit_state();
     }
@@ -600,7 +606,6 @@ impl AppCore {
                 flow_token,
                 crate::state::AgentProvisioningPhase::CreatingChat,
                 Some(agent_id.clone()),
-                None,
             );
             if let Err(message) = self.open_or_create_direct_chat_for_agent(&agent_id) {
                 self.set_busy(|b| b.starting_agent = false);
@@ -783,11 +788,11 @@ mod tests {
         spawn_agent_flow_mock_server_scripted(vec![
             (
                 "POST /v1/agents/ensure ",
-                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
             ),
             (
                 "GET /v1/agents/me ",
-                r#"{"agent_id":"npub1testagent","state":"ready"}"#,
+                r#"{"agent_id":"npub1testagent","state":"ready","startup_phase":"ready"}"#,
             ),
         ])
     }
@@ -834,10 +839,14 @@ mod tests {
     }
 
     #[test]
-    fn provisioning_status_message_omits_attempt_counter_before_first_poll() {
+    fn provisioning_status_message_uses_typed_startup_messages() {
         assert_eq!(
-            provisioning_status_message(&crate::state::AgentProvisioningPhase::Provisioning, None),
-            "Starting microVM..."
+            provisioning_status_message(&crate::state::AgentProvisioningPhase::ProvisioningVm),
+            "Provisioning microVM..."
+        );
+        assert_eq!(
+            provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
+            "Booting guest..."
         );
     }
 
@@ -870,19 +879,19 @@ mod tests {
         let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
             (
                 "POST /v1/agents/ensure ",
-                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
             ),
             (
                 "GET /v1/agents/me ",
-                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"provisioning_vm"}"#,
             ),
             (
                 "GET /v1/agents/me ",
-                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"booting_guest"}"#,
             ),
             (
                 "GET /v1/agents/me ",
-                r#"{"agent_id":"npub1testagent","state":"ready"}"#,
+                r#"{"agent_id":"npub1testagent","state":"ready","startup_phase":"ready"}"#,
             ),
         ])
         .expect("start mock server");

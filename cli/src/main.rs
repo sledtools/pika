@@ -15,7 +15,8 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
-    AgentProvisionRequest, MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
+    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentBackend, MicrovmAgentKind,
+    MicrovmProvisionParams,
 };
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
@@ -1873,6 +1874,46 @@ fn parse_agent_fields(agent: &serde_json::Value) -> anyhow::Result<(String, Stri
     Ok((agent_id, state))
 }
 
+fn parse_agent_startup_phase(agent: &serde_json::Value) -> anyhow::Result<AgentStartupPhase> {
+    if let Some(raw) = agent
+        .get("startup_phase")
+        .and_then(serde_json::Value::as_str)
+    {
+        return serde_json::from_value::<AgentStartupPhase>(serde_json::Value::String(
+            raw.to_string(),
+        ))
+        .context("parse agent startup_phase");
+    }
+    let (_, state) = parse_agent_fields(agent)?;
+    Ok(match state.as_str() {
+        "ready" => AgentStartupPhase::Ready,
+        "error" => AgentStartupPhase::Failed,
+        _ => AgentStartupPhase::ProvisioningVm,
+    })
+}
+
+fn agent_startup_status_message(
+    kind: Option<MicrovmAgentKind>,
+    phase: AgentStartupPhase,
+) -> &'static str {
+    match (kind, phase) {
+        (_, AgentStartupPhase::Requested) => "Requesting agent...",
+        (_, AgentStartupPhase::ProvisioningVm) => "Provisioning microVM...",
+        (_, AgentStartupPhase::BootingGuest) => "Booting guest...",
+        (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForServiceReady) => {
+            "Starting Pi daemon and waiting for ACP service..."
+        }
+        (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForServiceReady) => {
+            "Starting OpenClaw gateway and waiting for health check..."
+        }
+        (_, AgentStartupPhase::WaitingForServiceReady) => {
+            "Waiting for guest service to become ready..."
+        }
+        (_, AgentStartupPhase::Ready) => "Agent ready.",
+        (_, AgentStartupPhase::Failed) => "Agent startup failed.",
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ChatSendOutcome {
     ReplyReceived,
@@ -1993,14 +2034,31 @@ async fn cmd_agent_chat(
     };
 
     let body = agent_provision_request(microvm);
+    let agent_kind = body
+        .as_ref()
+        .and_then(|req| req.microvm.as_ref())
+        .and_then(|microvm| microvm.kind);
     let _ = ensure_agent_idempotent(http, body.as_ref()).await?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
+    let mut last_phase = Some(AgentStartupPhase::Requested);
+    eprintln!(
+        "{}",
+        agent_startup_status_message(agent_kind, AgentStartupPhase::Requested)
+    );
 
     for attempt in 1..=options.poll_attempts {
         let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
         let (agent_npub, state) = parse_agent_fields(&me)?;
+        let startup_phase = parse_agent_startup_phase(&me)?;
         last_state = state.clone();
+        if last_phase != Some(startup_phase) {
+            eprintln!(
+                "{}",
+                agent_startup_status_message(agent_kind, startup_phase)
+            );
+            last_phase = Some(startup_phase);
+        }
 
         if state == "ready" {
             let outcome = send_to_agent_and_optionally_listen(
@@ -2030,8 +2088,11 @@ async fn cmd_agent_chat(
     }
 
     anyhow::bail!(
-        "agent did not become ready within {} checks (last state: {}). wait longer or run `pikachat agent recover --api-base-url {} --nsec <nsec>` if the agent is stuck",
+        "agent did not become ready within {} checks (last phase: {}, last state: {}). wait longer or run `pikachat agent recover --api-base-url {} --nsec <nsec>` if the agent is stuck",
         options.poll_attempts,
+        serde_json::to_string(&last_phase.unwrap_or(AgentStartupPhase::Requested))
+            .unwrap_or_else(|_| "\"requested\"".to_string())
+            .trim_matches('"'),
         if last_state.is_empty() {
             "unknown".to_string()
         } else {
@@ -2682,6 +2743,35 @@ mod tests {
         ])
         .expect_err("removed recover-after-attempt flag should be rejected");
         assert!(err.to_string().contains("--recover-after-attempt"));
+    }
+
+    #[test]
+    fn parse_agent_startup_phase_reads_typed_field() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating",
+            "startup_phase": "booting_guest"
+        });
+        let phase = parse_agent_startup_phase(&payload).expect("startup phase");
+        assert_eq!(phase, AgentStartupPhase::BootingGuest);
+    }
+
+    #[test]
+    fn agent_startup_status_message_uses_kind_specific_waiting_text() {
+        assert!(
+            agent_startup_status_message(
+                Some(MicrovmAgentKind::Pi),
+                AgentStartupPhase::WaitingForServiceReady
+            )
+            .contains("ACP")
+        );
+        assert!(
+            agent_startup_status_message(
+                Some(MicrovmAgentKind::Openclaw),
+                AgentStartupPhase::WaitingForServiceReady
+            )
+            .contains("OpenClaw")
+        );
     }
 
     #[test]

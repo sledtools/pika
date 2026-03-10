@@ -800,8 +800,18 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth, and seventeenth narrow remote-execute forms, and has now crossed both the first real remote guest-boot boundary and the first real staged-test-execution boundary on `pika-build`.
-- Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth, seventeenth, eighteenth, nineteenth, and twentieth narrow remote-execute forms, and the first staged Linux Rust lane now passes end-to-end on `pika-build`.
+- Phase 7 is the GitHub shadow-mode slice for that first staged Linux Rust lane.
+- Current recommended slice is a narrow shadow-mode follow-up on the now-stable `x86_64-linux` staged lane:
+  - keep the passing staged Linux Rust lane on the strict remote-authoritative path,
+  - use GitHub only as a thin trigger/reporting shell for now,
+  - run the proven lane as a clearly labeled non-gating shadow job on pull requests,
+  - keep the canonical operator/CI command path as `just pre-merge-pika-rust-shadow`, which delegates to `just pikaci-remote-fulfill-pre-merge-pika-rust`,
+  - note that `.github/workflows/pre-merge.yml` now exposes that path as the advisory `shadow-pikaci-pre-merge-pika-rust` job, which captures its exit code and reports it in the pre-merge summary without blocking merges,
+  - note that the first local shadow-mode verification rerun (`20260310T220049Z-c2361db8`) still passed end-to-end in about `216s`,
+  - use the shadow lane to gather pass/fail parity, runtime, and operator-friction data before promoting it over any legacy Linux path,
+  - and keep the next cleanup focus on removing residual stringly staged-Linux detection and making the remote-authoritative prepare model more explicit in `pikaci`.
+  - historical notes for the landed path remain below:
   - stop spending more slices on local `linux-builder` recovery,
   - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
   - keep using the checked-in prewarm plus dual-prepare wrappers to ensure prepare is not the intentional bottleneck,

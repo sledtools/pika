@@ -40,6 +40,11 @@ pre-merge-pika: fmt clippy
     npx --yes @justinmoon/agent-tools check-justfile
     echo "pre-merge-pika complete"
 
+# Advisory shadow CI lane for the staged Linux Rust remote microVM path.
+pre-merge-pika-rust-shadow:
+    just pikaci-remote-fulfill-pre-merge-pika-rust
+    echo "pre-merge-pika-rust-shadow complete"
+
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
     #!/usr/bin/env bash

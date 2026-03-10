@@ -64,23 +64,64 @@ release_secret_missing_identity_error() {
   echo "error: set AGE_SECRET_KEY or provide PIKA_AGE_IDENTITY_FILE (default: $PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT)" >&2
 }
 
+_release_secret_decrypt_to_stdout_with_secret_key() {
+  local encrypted_file="$1"
+  local tmp_key=""
+
+  cleanup() {
+    if [ -n "$tmp_key" ]; then
+      rm -f "$tmp_key"
+    fi
+  }
+
+  (
+    set -euo pipefail
+    trap cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    umask 077
+    tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
+    printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
+    age -d -i "$tmp_key" "$encrypted_file"
+  )
+}
+
+_release_secret_decrypt_to_file_with_secret_key() {
+  local encrypted_file="$1"
+  local output_file="$2"
+  local tmp_key=""
+
+  cleanup() {
+    if [ -n "$tmp_key" ]; then
+      rm -f "$tmp_key"
+    fi
+  }
+
+  (
+    set -euo pipefail
+    trap cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    umask 077
+    tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
+    printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
+    age -d -i "$tmp_key" -o "$output_file" "$encrypted_file"
+  )
+}
+
 release_secret_decrypt_to_stdout() {
   local encrypted_file="$1"
   local identity_file="${2:-$(release_secret_identity_file_for_read)}"
-  local tmp_key=""
-  local rc=0
 
   release_secret_need_cmd age
 
   if [ -n "${AGE_SECRET_KEY:-}" ]; then
-    umask 077
-    tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
-    printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
-    if ! age -d -i "$tmp_key" "$encrypted_file"; then
-      rc=$?
-    fi
-    rm -f "$tmp_key"
-    return "$rc"
+    _release_secret_decrypt_to_stdout_with_secret_key "$encrypted_file"
+    return $?
   fi
 
   if [ -f "$identity_file" ]; then
@@ -96,20 +137,12 @@ release_secret_decrypt_to_file() {
   local encrypted_file="$1"
   local output_file="$2"
   local identity_file="${3:-$(release_secret_identity_file_for_read)}"
-  local tmp_key=""
-  local rc=0
 
   release_secret_need_cmd age
 
   if [ -n "${AGE_SECRET_KEY:-}" ]; then
-    umask 077
-    tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
-    printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
-    if ! age -d -i "$tmp_key" -o "$output_file" "$encrypted_file"; then
-      rc=$?
-    fi
-    rm -f "$tmp_key"
-    return "$rc"
+    _release_secret_decrypt_to_file_with_secret_key "$encrypted_file" "$output_file"
+    return $?
   fi
 
   if [ -f "$identity_file" ]; then

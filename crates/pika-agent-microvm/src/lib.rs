@@ -261,6 +261,17 @@ pub fn resolve_params(params: &MicrovmProvisionParams) -> ResolvedMicrovmParams 
     }
 }
 
+pub fn validate_resolved_params(params: &ResolvedMicrovmParams) -> anyhow::Result<()> {
+    if matches!(params.kind, ResolvedMicrovmAgentKind::Pi)
+        && matches!(params.backend, ResolvedMicrovmAgentBackend::Native)
+    {
+        anyhow::bail!(
+            "microvm agent kind `pi` requires ACP backend mode; use backend=acp or choose kind=openclaw for native daemon mode"
+        );
+    }
+    Ok(())
+}
+
 fn resolve_kind(kind: Option<MicrovmAgentKind>) -> ResolvedMicrovmAgentKind {
     match kind.unwrap_or(MicrovmAgentKind::Pi) {
         MicrovmAgentKind::Pi => ResolvedMicrovmAgentKind::Pi,
@@ -381,6 +392,7 @@ set -euo pipefail
 # Keep Marmot/MLS state under /root so VM restart/recovery preserves context.
 STATE_DIR="/root/pika-agent/state"
 mkdir -p "$STATE_DIR"
+# Seed the durable state dir from the provisioned identity on first boot only.
 if [[ -f "/workspace/pika-agent/state/identity.json" && ! -f "$STATE_DIR/identity.json" ]]; then
   cp "/workspace/pika-agent/state/identity.json" "$STATE_DIR/identity.json"
 fi
@@ -474,6 +486,8 @@ case "$agent_kind" in
     export OPENCLAW_SKIP_CANVAS_HOST=1
     export OPENCLAW_SKIP_CRON=1
     echo "[microvm-agent] starting openclaw agent via $openclaw_exec" >&2
+    # Use a login shell so npx/openclaw installed via profile-managed Node setups
+    # are available in the guest PATH.
     exec bash -lc "$openclaw_exec gateway --allow-unconfigured"
     ;;
   *)
@@ -502,6 +516,9 @@ fn openclaw_gateway_config(relay_urls: &[String], backend: &ResolvedMicrovmAgent
             channel_config["daemonAcpCwd"] = json!(cwd);
         }
     }
+    // Keep the plugin entry config and channel config identical so either OpenClaw
+    // surface sees the same daemon launch settings.
+    let entry_config = channel_config.clone();
     serde_json::to_string_pretty(&json!({
         "plugins": {
             "enabled": true,
@@ -515,7 +532,7 @@ fn openclaw_gateway_config(relay_urls: &[String], backend: &ResolvedMicrovmAgent
             "entries": {
                 "pikachat-openclaw": {
                     "enabled": true,
-                    "config": channel_config.clone()
+                    "config": entry_config
                 }
             }
         },
@@ -587,6 +604,26 @@ fn openclaw_extension_files() -> BTreeMap<String, String> {
     ])
 }
 
+#[cfg(test)]
+fn expected_openclaw_extension_paths() -> &'static [&'static str] {
+    &[
+        "package.json",
+        "openclaw.plugin.json",
+        "index.ts",
+        "tsconfig.json",
+        "src/channel-behavior.ts",
+        "src/channel.ts",
+        "src/config-schema.ts",
+        "src/config.ts",
+        "src/daemon-launch.ts",
+        "src/daemon-protocol.ts",
+        "src/runtime.ts",
+        "src/sidecar-install.ts",
+        "src/sidecar.ts",
+        "src/types.ts",
+    ]
+}
+
 fn create_vm_timeout() -> Duration {
     let secs = std::env::var("PIKA_MICROVM_CREATE_TIMEOUT_SECS")
         .ok()
@@ -601,6 +638,9 @@ mod tests {
     use super::*;
     use nostr_sdk::prelude::Keys;
     use pika_test_utils::spawn_one_shot_server;
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::time::Duration as StdDuration;
 
     #[test]
@@ -627,6 +667,17 @@ mod tests {
                 cwd: "/tmp/acp".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn validate_resolved_params_rejects_pi_native_mode() {
+        let err = validate_resolved_params(&ResolvedMicrovmParams {
+            spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+            kind: ResolvedMicrovmAgentKind::Pi,
+            backend: ResolvedMicrovmAgentBackend::Native,
+        })
+        .expect_err("pi native mode should be rejected");
+        assert!(err.to_string().contains("requires ACP backend mode"));
     }
 
     #[test]
@@ -792,6 +843,47 @@ mod tests {
             .as_object()
             .expect("files map")
             .contains_key(&format!("{OPENCLAW_EXTENSION_ROOT}/package.json")));
+    }
+
+    #[test]
+    fn openclaw_extension_file_list_matches_source_tree() {
+        fn collect_relative_files(root: &Path) -> BTreeSet<String> {
+            fn visit(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
+                for entry in fs::read_dir(dir).expect("read dir") {
+                    let entry = entry.expect("dir entry");
+                    let path = entry.path();
+                    if entry.file_type().expect("file type").is_dir() {
+                        visit(root, &path, out);
+                    } else {
+                        out.insert(
+                            path.strip_prefix(root)
+                                .expect("strip root")
+                                .to_string_lossy()
+                                .replace('\\', "/"),
+                        );
+                    }
+                }
+            }
+
+            let mut files = BTreeSet::new();
+            visit(root, root, &mut files);
+            files
+        }
+
+        let extension_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../pikachat-openclaw/openclaw/extensions/pikachat-openclaw");
+        let expected: BTreeSet<String> = expected_openclaw_extension_paths()
+            .iter()
+            .map(|path| path.to_string())
+            .collect();
+        let actual = collect_relative_files(&extension_root)
+            .into_iter()
+            .filter(|path| path != "CHANGELOG.md" && !path.ends_with(".test.ts"))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual, expected,
+            "openclaw extension file list changed; update openclaw_extension_files()"
+        );
     }
 
     #[tokio::test]

@@ -14,3 +14,11 @@ Rerun only if asked, if you switch worktrees, or if the first run failed.
 
 - Run `cargo fmt` to format Rust code before committing.
 - Always add tests for changes when possible.
+
+## Just Command Contract
+
+- Treat the visible root `just` surface as curated for humans; new root recipes should be rare and high-signal.
+- Put real implementation in `scripts/` or a dedicated CLI; `just` recipes should usually be thin wrappers.
+- Default low-signal, manual, debug, and compatibility helpers to module-local recipes and usually mark them `[private]`.
+- Treat `./scripts/agent-brief` as the supported expanded discovery path for agents.
+- See [`docs/just-command-contract.md`](docs/just-command-contract.md) before adding or reorganizing `just` recipes.

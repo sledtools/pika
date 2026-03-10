@@ -7,12 +7,24 @@ default:
     @echo
     @just --list
     @echo
-    @echo 'Use `just info` for common run flows.'
-    @echo 'Use `JUST_UNSTABLE=1 just --list --list-submodules` for the full task tree.'
+    @echo 'Humans: use `just info` for common run flows.'
+    @echo 'Agents: use `./scripts/agent-brief` for expanded discovery.'
+    @echo 'Full module tree: `JUST_UNSTABLE=1 just --list --list-submodules`.'
 
 # Print developer-facing usage notes (targets, env vars, common flows).
 info:
     @echo "Pika: run commands + target selection"
+    @echo
+    @echo "Discovery"
+    @echo "  Curated root surface:"
+    @echo "    just"
+    @echo "    just --list"
+    @echo "  Human-oriented workflow help:"
+    @echo "    just info"
+    @echo "  Expanded module tree:"
+    @echo "    JUST_UNSTABLE=1 just --list --list-submodules"
+    @echo "  Agent discovery:"
+    @echo "    ./scripts/agent-brief"
     @echo
     @echo "iOS"
     @echo "  Simulator:"
@@ -89,6 +101,17 @@ info:
     @echo "    just rmp devices start ios"
     @echo "  Generate bindings:"
     @echo "    just rmp bindings all"
+    @echo
+    @echo "Command contract"
+    @echo "  Root recipes stay small and high-signal."
+    @echo "  New implementation should live in scripts/ or a real CLI."
+    @echo "  Low-signal, manual, and debug helpers default to module-local or [private]."
+
+# Command-surface contract:
+# - Root recipes are rare, high-signal human entrypoints.
+# - Real implementation should live in scripts/ or a dedicated CLI.
+# - Low-signal/manual/debug helpers default to modules and usually `[private]`.
+# - `./scripts/agent-brief` is the supported expanded discovery path for agents.
 
 # Build, install, and launch iOS app on simulator/device.
 run-ios *ARGS:

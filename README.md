@@ -147,7 +147,7 @@ just pre-merge-pika  # CI-safe app lane (Rust + Android + desktop)
 just pre-merge       # CI entrypoint for the whole repo
 ```
 
-See all available recipes with `just --list`.
+Use `just --list` for the curated root recipes. For the expanded module tree, use `JUST_UNSTABLE=1 just --list --list-submodules`.
 
 ## Testing
 

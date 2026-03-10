@@ -985,6 +985,69 @@ Deliverable:
 - a short note on what moved out of `just/infra.just`, what stayed inline, and any remaining infra-script ambiguity.
 ```
 
+### Prompt 10
+
+Workstream G1: finalize the post-cleanup command contract so the `just` surface does not drift back toward a toolbox dump.
+
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream G1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Codify the new “small human surface, expanded agent discovery, thin wrappers by default” rules in the repo so future changes do not undo the cleanup.
+
+Scope:
+- `justfile`
+- `scripts/agent-brief`
+- docs or maintainer-facing guidance files only where they are the clearest place to record the contract
+- optionally a lightweight non-flaky check if there is a very simple way to enforce part of the contract
+
+Primary objectives:
+- Make the intended root-vs-module-vs-hidden command model explicit.
+- Document how new recipes should be added going forward.
+- Tighten any remaining help/discovery text so humans and agents each get the right view.
+- Avoid further structural churn unless it directly supports the contract.
+
+Constraints:
+- Do not do another broad reorganization of recipes.
+- Do not rename or move commands just for aesthetics in this slice.
+- Do not add a heavy or brittle CI check.
+- Prefer lightweight guardrails and clear documentation over clever automation.
+
+Implementation guidance:
+- Update maintainer-facing guidance so it is explicit that:
+  - root recipes should be rare and high-signal,
+  - implementation should live in `scripts/` or a real CLI,
+  - low-signal/manual/debug helpers should default to module-local or `[private]`,
+  - `scripts/agent-brief` is the supported expanded discovery path for agents.
+- If `just info` can better explain the split between curated human commands and expanded agent/module discovery, improve it.
+- If there is a small, stable check worth adding, keep it extremely simple and low-maintenance.
+- Prefer clarifying comments/docs/help text over more code movement.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt` if any justfiles change.
+- Verify:
+  - `just`
+  - `just --list`
+  - `JUST_UNSTABLE=1 just --list --list-submodules`
+  - `./scripts/agent-brief`
+- If you add any lightweight guardrail, run it once and report the result.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 10 complete,
+  - add a short review note under the Review Log,
+  - state explicitly whether the project should now be treated as complete.
+
+Deliverable:
+- code/doc/help-text changes,
+- verification results,
+- a short statement of the long-term maintenance rule for new `just` commands.
+```
+
 ## Review Log
 
 ### 2026-03-09
@@ -1036,3 +1099,8 @@ Deliverable:
 - Completed Prompt 9 by moving the remaining shell-heavy infra recipe bodies into `scripts/run-relay-dev` and `scripts/news`, while routing the `pikaci` remote lane through the canonical `scripts/pikaci-pre-merge-pika-rust-remote.sh` entrypoint and keeping `.env` loading for `news` in `scripts/lib/infra-env.sh`.
 - Review note: `just/infra.just` is now wrapper-only for the extracted commands, `news` makes its `.env` + `gh auth token` behavior explicit in the script layer, and the remote `pikaci` lane now routes through the existing canonical helper instead of an inline bash block.
 - Review tradeoff: `run-relay`, `relay-build`, `pikahut-up`, and `pikahut` stayed inline because they are already single-step wrappers with little embedded shell logic; no Prompt 10 was added because the next cleanup slice is not yet clearly bounded.
+- Completed Prompt 10 by documenting the `just` command-surface contract in `docs/just-command-contract.md`, surfacing the human-vs-agent discovery split in `just info` and the default help text, and tightening `scripts/agent-brief` to present itself as the supported expanded discovery path.
+- Review note: the repo now explicitly documents that root recipes should stay rare and high-signal, implementation should default to `scripts/` or a real CLI, and low-signal helpers should usually land in modules as `[private]`.
+- Project status: treat this justfile simplification effort as complete for now; future work should follow the documented contract and open a new bounded cleanup slice only if the command surface drifts again.
+- Reviewed Prompt 9 and found no structural regressions; remaining risk is limited to live relay/news/remote-fulfill runtime verification depth rather than command-surface shape.
+- Added Prompt 10 as an optional closure slice focused on documenting and lightly guarding the post-cleanup command contract, not on more structural refactoring.

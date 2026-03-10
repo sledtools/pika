@@ -15,11 +15,15 @@ descs=()
 
 titles+=("just commands")
 cmds+=("just --list")
-descs+=("Curated root task surface for humans.")
+descs+=("Curated root task surface for humans; root recipes should stay small and high-signal.")
+
+titles+=("just info")
+cmds+=("just info")
+descs+=("Human-facing workflow help plus the repo's root-vs-module-vs-agent discovery split.")
 
 titles+=("just command tree")
 cmds+=("JUST_UNSTABLE=1 just --list --list-submodules")
-descs+=("Expanded task tree with module recipes for agent discovery.")
+descs+=("Expanded task tree with module recipes and hidden helpers for agent discovery.")
 
 # --- Docs ---
 
@@ -79,6 +83,7 @@ done
 
 printf "# Agent Brief\n\n"
 printf "Live context snapshot for AI agents.\n\n"
+printf '%s\n\n' 'Supported expanded discovery path for this repo. Root `just --list` stays curated for humans.'
 printf "_Generated:_ %s\n\n" "$(date -u +"%Y-%m-%d %H:%M:%SZ")"
 
 # --- Private context (gitignored) ---

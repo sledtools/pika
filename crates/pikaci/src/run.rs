@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::executor::{
     HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
-    prepare_vfkit_runner_link, run_job_on_runner, sync_snapshot_to_remote,
+    prepare_vfkit_runner_link, run_job_on_runner, ssh_nix_binary, sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -720,6 +720,16 @@ fn is_strict_remote_staged_linux_rust_output(output_name: &str) -> bool {
         output_name,
         "ci.x86_64-linux.workspaceDeps" | "ci.x86_64-linux.workspaceBuild"
     )
+}
+
+fn can_record_remote_authoritative_local_result(
+    output_name: &str,
+    launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
+    realized_path: &Path,
+) -> bool {
+    launcher_transport_mode == Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        && is_strict_remote_staged_linux_rust_output(output_name)
+        && !realized_path.exists()
 }
 
 #[derive(Debug)]
@@ -2299,6 +2309,22 @@ impl PreparedOutputFulfillmentLauncherTransport
 
         let local_result = if realized_path.exists() {
             fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path))
+        } else if can_record_remote_authoritative_local_result(
+            &helper_request.output_name,
+            Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+            &realized_path,
+        ) {
+            PreparedOutputFulfillmentResult {
+                schema_version: 1,
+                request_path: launch_request.helper_request_path.clone(),
+                node_id: Some(helper_request.node_id.clone()),
+                output_name: Some(helper_request.output_name.clone()),
+                realized_path: Some(helper_request.realized_path.clone()),
+                status: PreparedOutputFulfillmentStatus::Succeeded,
+                fulfilled_exposures_count: 0,
+                fulfilled_exposures: Vec::new(),
+                error: None,
+            }
         } else {
             PreparedOutputFulfillmentResult {
                 schema_version: 1,
@@ -2606,7 +2632,15 @@ fn fulfill_prepared_output_request_via_subprocess(
             request_path.display()
         ));
     }
-    if result.fulfilled_exposures != request.requested_exposures {
+    let allow_remote_authoritative_local_metadata = result.fulfilled_exposures.is_empty()
+        && can_record_remote_authoritative_local_result(
+            &request.output_name,
+            subprocess.launcher_transport_mode,
+            Path::new(&request.realized_path),
+        );
+    if result.fulfilled_exposures != request.requested_exposures
+        && !allow_remote_authoritative_local_metadata
+    {
         return Err(anyhow!(
             "prepared-output fulfillment helper `{}` reported fulfilled exposures that do not match the request for {}",
             program.display(),
@@ -3081,16 +3115,19 @@ fn realize_nix_build_output(
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepare {output_name}: ssh {} nix build --accept-flake-config --no-link --print-out-paths {}",
-                remote.remote_host, remote.remote_installable
+                "[pikaci] prepare {output_name}: ssh {} {} build --accept-flake-config --no-link --print-out-paths {}",
+                remote.remote_host,
+                ssh_nix_binary(),
+                remote.remote_installable
             ),
         )?;
+        let remote_nix_program = ssh_nix_binary();
         let output = Command::new(
             std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
                 .unwrap_or_else(|_| "/usr/bin/ssh".to_string()),
         )
         .arg(&remote.remote_host)
-        .arg("nix")
+        .arg(&remote_nix_program)
         .arg("build")
         .arg("--accept-flake-config")
         .arg("--no-link")
@@ -5643,12 +5680,21 @@ EOF
         .expect("consume remote authoritative handoff via ssh transport");
 
         assert_eq!(result.kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
-        assert_eq!(result.exposures, handoff.exposures);
+        assert!(result.exposures.is_empty());
+        assert_eq!(result.requested_exposures, handoff.exposures);
         assert!(!mount_path.exists());
         assert_eq!(
             fs::read_link(&remote_mount_path).expect("read remote symlink"),
             realized_path
         );
+        let helper_result_path = result
+            .consumer_result_path
+            .as_deref()
+            .expect("consumer result path");
+        let helper_result = load_prepared_output_fulfillment_result(Path::new(helper_result_path))
+            .expect("load helper result");
+        assert_eq!(helper_result.fulfilled_exposures_count, 0);
+        assert!(helper_result.fulfilled_exposures.is_empty());
         let ssh_log = fs::read_to_string(&ssh_log_path).expect("read ssh log");
         assert!(ssh_log.contains(&format!("pika-build test -e {}", realized_path.display())));
         assert!(!nix_log_path.exists());

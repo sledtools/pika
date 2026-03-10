@@ -26,7 +26,9 @@ use crate::model::{
     PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
     RunnerKind, StagedLinuxRustLane,
 };
-use crate::snapshot::{create_snapshot, git_dirty, git_head, materialize_workspace};
+use crate::snapshot::{
+    SnapshotProfile, create_snapshot_with_profile, git_dirty, git_head, materialize_workspace,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogKind {
@@ -109,7 +111,12 @@ pub fn run_jobs_with_metadata(
     let prepared = prepare_run(options)?;
     run_host_setup_commands(jobs, &options.source_root, &prepared.run_dir)?;
     let snapshot_dir = prepared.run_dir.join("snapshot");
-    let snapshot = create_snapshot(&options.source_root, &snapshot_dir, &prepared.created_at)?;
+    let snapshot = create_snapshot_with_profile(
+        &options.source_root,
+        &snapshot_dir,
+        &prepared.created_at,
+        snapshot_profile_for_jobs(jobs),
+    )?;
     let snapshot = SnapshotSource {
         source_root: snapshot.source_root,
         snapshot_dir: PathBuf::from(&snapshot.snapshot_dir),
@@ -118,6 +125,18 @@ pub fn run_jobs_with_metadata(
         git_dirty: snapshot.git_dirty,
     };
     run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata)
+}
+
+fn snapshot_profile_for_jobs(jobs: &[JobSpec]) -> SnapshotProfile {
+    if !jobs.is_empty()
+        && jobs
+            .iter()
+            .all(|job| job.staged_linux_rust_lane().is_some())
+    {
+        SnapshotProfile::StagedLinuxRust
+    } else {
+        SnapshotProfile::Full
+    }
 }
 
 pub fn rerun_jobs_with_metadata(

@@ -7,6 +7,12 @@ use std::process::Command;
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotProfile {
+    Full,
+    StagedLinuxRust,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SnapshotMetadata {
     pub source_root: String,
@@ -16,12 +22,13 @@ pub struct SnapshotMetadata {
     pub created_at: String,
 }
 
-pub fn create_snapshot(
+pub fn create_snapshot_with_profile(
     source_root: &Path,
     snapshot_dir: &Path,
     created_at: &str,
+    profile: SnapshotProfile,
 ) -> anyhow::Result<SnapshotMetadata> {
-    copy_filtered_tree(source_root, snapshot_dir)?;
+    copy_filtered_tree(source_root, snapshot_dir, profile)?;
     let metadata = SnapshotMetadata {
         source_root: source_root.display().to_string(),
         snapshot_dir: snapshot_dir.display().to_string(),
@@ -34,14 +41,23 @@ pub fn create_snapshot(
 }
 
 pub fn materialize_workspace(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    copy_filtered_tree(source, destination)
+    copy_filtered_tree(source, destination, SnapshotProfile::Full)
 }
 
-fn copy_filtered_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
-    copy_tree(source, destination, true)
+fn copy_filtered_tree(
+    source: &Path,
+    destination: &Path,
+    profile: SnapshotProfile,
+) -> anyhow::Result<()> {
+    copy_tree(source, destination, true, profile)
 }
 
-fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()> {
+fn copy_tree(
+    source: &Path,
+    destination: &Path,
+    root: bool,
+    profile: SnapshotProfile,
+) -> anyhow::Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("create snapshot dir {}", destination.display()))?;
 
@@ -50,7 +66,7 @@ fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()
         let source_path = entry.path();
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
-        if should_skip(&file_name, root) {
+        if should_skip(&file_name, root, profile) {
             continue;
         }
 
@@ -68,7 +84,7 @@ fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()
                 )
             })?;
         } else if metadata.is_dir() {
-            copy_tree(&source_path, &destination_path, false)?;
+            copy_tree(&source_path, &destination_path, false, profile)?;
         } else if metadata.is_file() {
             fs::copy(&source_path, &destination_path).with_context(|| {
                 format!(
@@ -88,9 +104,12 @@ fn copy_tree(source: &Path, destination: &Path, root: bool) -> anyhow::Result<()
     Ok(())
 }
 
-fn should_skip(name: &str, root: bool) -> bool {
+fn should_skip(name: &str, root: bool, profile: SnapshotProfile) -> bool {
     matches!(name, ".git" | ".pikaci" | ".direnv")
         || name == "target"
+        || (root
+            && profile == SnapshotProfile::StagedLinuxRust
+            && matches!(name, "ios" | "android"))
         || (!root && matches!(name, "node_modules" | ".gradle" | "DerivedData" | "build"))
 }
 
@@ -165,20 +184,36 @@ fn write_json(path: PathBuf, value: &impl Serialize) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_skip;
+    use super::{SnapshotProfile, should_skip};
 
     #[test]
     fn snapshot_skip_filters_ignore_expected_paths() {
-        assert!(should_skip(".git", true));
-        assert!(should_skip(".pikaci", true));
-        assert!(should_skip(".direnv", true));
-        assert!(should_skip("target", true));
-        assert!(should_skip("node_modules", false));
-        assert!(should_skip(".gradle", false));
-        assert!(should_skip("DerivedData", false));
-        assert!(should_skip("build", false));
-        assert!(!should_skip("Cargo.toml", true));
-        assert!(!should_skip("src", false));
-        assert!(!should_skip("build", true));
+        assert!(should_skip(".git", true, SnapshotProfile::Full));
+        assert!(should_skip(".pikaci", true, SnapshotProfile::Full));
+        assert!(should_skip(".direnv", true, SnapshotProfile::Full));
+        assert!(should_skip("target", true, SnapshotProfile::Full));
+        assert!(should_skip("node_modules", false, SnapshotProfile::Full));
+        assert!(should_skip(".gradle", false, SnapshotProfile::Full));
+        assert!(should_skip("DerivedData", false, SnapshotProfile::Full));
+        assert!(should_skip("build", false, SnapshotProfile::Full));
+        assert!(!should_skip("Cargo.toml", true, SnapshotProfile::Full));
+        assert!(!should_skip("src", false, SnapshotProfile::Full));
+        assert!(!should_skip("build", true, SnapshotProfile::Full));
+    }
+
+    #[test]
+    fn staged_linux_rust_snapshot_skips_mobile_roots() {
+        assert!(should_skip("ios", true, SnapshotProfile::StagedLinuxRust));
+        assert!(should_skip(
+            "android",
+            true,
+            SnapshotProfile::StagedLinuxRust
+        ));
+        assert!(!should_skip("rust", true, SnapshotProfile::StagedLinuxRust));
+        assert!(!should_skip(
+            "crates",
+            true,
+            SnapshotProfile::StagedLinuxRust
+        ));
     }
 }

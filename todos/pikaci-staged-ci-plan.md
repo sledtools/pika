@@ -891,6 +891,12 @@ We have at least one important Linux Rust lane where:
     - the canonical wrapper and both helper scripts now `cd` to the repo root before any `nix derivation show`, tar snapshotting, or helper invocation, so `scripts/pikaci-pre-merge-pika-rust-remote.sh prepare` is self-contained even when it is invoked outside `just`,
     - the fresh helper rerun (`just pikaci-pre-merge-pika-rust-prepares-remote-build`) completed in about `160s` and left `/var/tmp/pikaci-prepared-output/helpers` empty again,
     - and the fresh real lane rerun (`20260310T202126Z-c66767d9`) still passed end-to-end in about `268s`, with exactly one run-snapshot sync followed by repeated `remote snapshot already available` reuse lines for the remaining prepares/runner steps.
+  - note that the next real run-snapshot win was much larger than the helper reuse win:
+    - the actual `20260310T202126Z-c66767d9` run snapshot was dominated by mobile trees that the passing staged Linux Rust lane does not consume: about `317M` from `ios/Frameworks`, about `360M` from `android/app`, and only about `15M` from `crates`,
+    - `pikaci` now uses a `StagedLinuxRust` snapshot profile whenever the run consists entirely of staged Linux Rust jobs, and that profile skips the repo-root `ios/` and `android/` trees while keeping the strict remote-authoritative prepare/execute path unchanged,
+    - the fresh real rerun (`20260310T203525Z-a2ed09fa`) therefore produced a `19M` run snapshot instead of `~698M`,
+    - and that rerun still passed end-to-end on `pika-build`, with total wall clock dropping from about `268s` to about `212s`,
+    - so the remaining visible cost is no longer bulk mobile source upload; the next biggest sync/copy target is the per-job runner flake sync and any other small dynamic run metadata that still moves on each rerun.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

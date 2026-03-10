@@ -10,6 +10,24 @@ use tracing::{info, warn};
 use crate::config::ResolvedConfig;
 use crate::health;
 
+const PIKA_FIXTURE_RELAY_CMD_ENV: &str = "PIKA_FIXTURE_RELAY_CMD";
+const PIKA_FIXTURE_SERVER_CMD_ENV: &str = "PIKA_FIXTURE_SERVER_CMD";
+
+fn fixture_binary_override_value(env_key: &str, cmd: Option<String>) -> Result<Option<PathBuf>> {
+    let Some(cmd) = cmd else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(&cmd);
+    if path.exists() {
+        return Ok(Some(path));
+    }
+    bail!("{env_key}={cmd} does not exist");
+}
+
+fn fixture_binary_override(env_key: &str) -> Result<Option<PathBuf>> {
+    fixture_binary_override_value(env_key, std::env::var(env_key).ok())
+}
+
 pub struct Postgres {
     pub pgdata: PathBuf,
     pub database_url: String,
@@ -237,12 +255,8 @@ impl Relay {
 }
 
 fn find_or_build_relay(workspace_root: &Path) -> Result<PathBuf> {
-    if let Ok(cmd) = std::env::var("PIKA_FIXTURE_RELAY_CMD") {
-        let p = PathBuf::from(&cmd);
-        if p.exists() {
-            return Ok(p);
-        }
-        bail!("PIKA_FIXTURE_RELAY_CMD={cmd} does not exist");
+    if let Some(path) = fixture_binary_override(PIKA_FIXTURE_RELAY_CMD_ENV)? {
+        return Ok(path);
     }
 
     let target_bin = workspace_root.join("target/pika-relay");
@@ -367,13 +381,19 @@ impl Server {
             (key.to_string(), val)
         };
 
-        let mut cmd = Command::new("cargo");
-        cmd.args(["run", "-q", "-p", "pika-server"])
+        let mut child_cmd =
+            if let Some(server_bin) = fixture_binary_override(PIKA_FIXTURE_SERVER_CMD_ENV)? {
+                Command::new(server_bin)
+            } else {
+                let mut cmd = Command::new("cargo");
+                cmd.args(["run", "-q", "-p", "pika-server"]);
+                cmd
+            };
+        child_cmd
             .env("RELAYS", relay_url)
             .env("DATABASE_URL", database_url)
             .env("NOTIFICATION_PORT", port.to_string());
 
-        // Required env vars that may not be set in test/local environments.
         for (key, val) in [
             env_or("PIKA_AGENT_MICROVM_KIND", "openclaw"),
             env_or("PIKA_AGENT_MICROVM_SPAWNER_URL", "http://127.0.0.1:1"),
@@ -384,10 +404,10 @@ impl Server {
             env_or("PIKA_ADMIN_SESSION_SECRET", "pikahut-test-secret-0000"),
             env_or("RUST_LOG", "info"),
         ] {
-            cmd.env(key, val);
+            child_cmd.env(key, val);
         }
 
-        let child = cmd
+        let child = child_cmd
             .current_dir(&config.workspace_root)
             .stdout(StdStdio::from(log_file))
             .stderr(StdStdio::from(stderr_file))
@@ -530,4 +550,45 @@ pub fn kill_pid(pid: u32) {
 
     warn!("PID {pid} did not exit after SIGTERM, sending SIGKILL");
     let _ = kill(nix_pid, Signal::SIGKILL);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture_binary_override_value;
+    use std::fs;
+
+    #[test]
+    fn fixture_binary_override_returns_none_when_env_missing() {
+        assert!(
+            fixture_binary_override_value("PIKAHUT_DOES_NOT_EXIST_FOR_TESTS", None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fixture_binary_override_requires_existing_path() {
+        let key = "PIKAHUT_TEST_FIXTURE_BINARY_OVERRIDE_INVALID";
+        let err = fixture_binary_override_value(
+            key,
+            Some("/definitely/missing/pikahut-test-binary".to_string()),
+        )
+        .expect_err("invalid override should fail");
+        assert!(err
+            .to_string()
+            .contains("PIKAHUT_TEST_FIXTURE_BINARY_OVERRIDE_INVALID=/definitely/missing/pikahut-test-binary does not exist"));
+    }
+
+    #[test]
+    fn fixture_binary_override_accepts_existing_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fixture-bin");
+        fs::write(&path, "ok").expect("write temp fixture binary");
+        let resolved = fixture_binary_override_value(
+            "PIKAHUT_TEST_FIXTURE_BINARY_OVERRIDE_VALID",
+            Some(path.display().to_string()),
+        )
+        .expect("resolve override");
+        assert_eq!(resolved.as_deref(), Some(path.as_path()));
+    }
 }

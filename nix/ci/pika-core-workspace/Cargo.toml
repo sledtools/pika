@@ -3,9 +3,13 @@ resolver = "2"
 members = [
   "rust",
   "crates/hypernote-protocol",
+  "crates/pika-agent-control-plane",
+  "crates/pika-agent-microvm",
   "crates/pika-marmot-runtime",
   "crates/pika-media",
   "crates/pika-relay-profiles",
+  "crates/pika-server",
+  "crates/pika-test-utils",
   "crates/pika-tls",
   "crates/pikahut",
 ]

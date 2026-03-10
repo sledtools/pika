@@ -49,12 +49,12 @@ info:
     @echo "Agent demos"
     @echo "  Local backend (postgres + relay + server):"
     @echo "    just pikahut-up"
-    @echo "  Agent ensure demos:"
-    @echo "    just agent-pi-ensure"
-    @echo "    just agent-claw-ensure"
-    @echo "  Agent chat demos (ensure/reuse + send + listen):"
-    @echo "    just agent-pi \"hello\""
-    @echo "    just agent-claw \"hello\""
+    @echo "  Agent HTTP demo:"
+    @echo "    just agent-microvm"
+    @echo "    just agent-microvm-acp         # guest daemon boots with --acp-exec"
+    @echo "  Agent chat demo (ensure/reuse + send + listen):"
+    @echo "    just agent-microvm-chat \"hello\""
+    @echo "    just agent-demo-acp \"hello\"   # full ACP-backed microVM demo"
     @echo "  Unified pikachat wrapper:"
     @echo "    just cli --help"
     @echo "    just cli agent new --nsec <nsec>"
@@ -1000,13 +1000,19 @@ shared-runtime-regression:
 cli-smoke-media:
     cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 
-# Run the HTTP agent ensure demo for a Pi ACP-backed guest.
-agent-pi-ensure *ARGS="":
-    PIKA_AGENT_MICROVM_KIND=pi PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
+agent-microvm *ARGS="":
+    set -euo pipefail; \
+    if [ -f .env ]; then \
+      set -a; \
+      source .env; \
+      set +a; \
+    fi; \
+    ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
-# Run the HTTP agent ensure demo for an OpenClaw guest over the daemon protocol.
-agent-claw-ensure *ARGS="":
-    PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh {{ ARGS }}
+# Run the HTTP agent ensure demo with ACP microVM guest bootstrap.
+agent-microvm-acp *ARGS="":
+    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
 # Ensure/reuse agent, send one message, then optionally listen for reply.
 agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
@@ -1073,9 +1079,18 @@ linux-builder-repair:
 linux-builder-recreate:
     ./scripts/linux-builder-recreate.sh
 
+# Reset the current test account's VM on pika-build, recover/create via pika-server, then chat.
+agent-demo MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
+# Reset/create/recover the current test account's VM, then chat through an ACP-backed guest daemon.
+agent-demo-acp MESSAGE="CLI demo check: reply with ACK and one short sentence.":
+    PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
 # Reset the current test account's VM on pika-build, recover/create a Pi ACP guest, then chat.
 agent-pi MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_KIND=pi PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/agent-demo.sh "{{ MESSAGE }}"
+
 # Reset the current test account's VM on pika-build, recover/create an OpenClaw guest, then chat.
 agent-claw MESSAGE="CLI demo check: reply with ACK and one short sentence.":
     PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-demo.sh "{{ MESSAGE }}"

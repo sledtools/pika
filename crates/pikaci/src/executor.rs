@@ -79,6 +79,8 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+const REMOTE_MICROVM_HOST_UID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_UID";
+const REMOTE_MICROVM_HOST_GID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_GID";
 const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
     "nixos-virtiofs-ro-store.sock",
     "nixos-virtiofs-snapshot.sock",
@@ -362,7 +364,7 @@ pub(crate) fn materialize_vfkit_runner_flake(
         fs::remove_file(&socket_path)
             .with_context(|| format!("remove stale {}", socket_path.display()))?;
     }
-    let flake_nix = render_guest_flake(
+    let flake_nix = render_local_guest_flake(
         guest_runner_config_for(RunnerKind::VfkitLocal),
         job,
         &ctx.workspace_snapshot_dir,
@@ -397,6 +399,7 @@ fn materialize_remote_microvm_runner_flake(
 
     let flake_dir = vm_dir.join("flake");
     fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
+    let (host_uid, host_gid) = remote_ownership_ids(&remote.remote_host)?;
     let flake_nix = render_guest_flake(
         guest_runner_config_for(RunnerKind::MicrovmRemote),
         job,
@@ -410,6 +413,8 @@ fn materialize_remote_microvm_runner_flake(
             staged_linux_rust_workspace_build_dir: Some(&remote.remote_workspace_build_dir),
             socket_path: None,
         },
+        host_uid,
+        host_gid,
     )?;
     fs::write(flake_dir.join("flake.nix"), flake_nix)
         .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
@@ -1605,8 +1610,9 @@ fn render_guest_flake(
     workspace_dir: &Path,
     workspace_read_only: bool,
     paths: &GuestFlakePaths<'_>,
+    host_uid: u32,
+    host_gid: u32,
 ) -> anyhow::Result<String> {
-    let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
     let (guest_command, run_as_root) = compiled_guest_command(job);
     let workspace_dir = nix_escape(&workspace_dir.display().to_string());
     let artifacts_dir = nix_escape(&paths.artifacts_dir.display().to_string());
@@ -1675,6 +1681,73 @@ fn render_guest_flake(
 }}
 "#
     ))
+}
+
+fn render_local_guest_flake(
+    config: GuestRunnerConfig,
+    job: &JobSpec,
+    workspace_dir: &Path,
+    workspace_read_only: bool,
+    paths: &GuestFlakePaths<'_>,
+) -> anyhow::Result<String> {
+    let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
+    render_guest_flake(
+        config,
+        job,
+        workspace_dir,
+        workspace_read_only,
+        paths,
+        host_uid,
+        host_gid,
+    )
+}
+
+fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
+    if let (Ok(host_uid), Ok(host_gid)) = (
+        std::env::var(REMOTE_MICROVM_HOST_UID_ENV),
+        std::env::var(REMOTE_MICROVM_HOST_GID_ENV),
+    ) {
+        return Ok((
+            host_uid
+                .trim()
+                .parse::<u32>()
+                .with_context(|| format!("parse {REMOTE_MICROVM_HOST_UID_ENV}"))?,
+            host_gid
+                .trim()
+                .parse::<u32>()
+                .with_context(|| format!("parse {REMOTE_MICROVM_HOST_GID_ENV}"))?,
+        ));
+    }
+
+    let output = run_ssh_command(remote_host, "printf '%s\\n%s\\n' \"$(id -u)\" \"$(id -g)\"")
+        .output()
+        .with_context(|| format!("read remote ownership ids from {remote_host}"))?;
+    if !output.status.success() {
+        if cfg!(test) {
+            return ownership_ids(Path::new("."));
+        }
+        bail!(
+            "failed to read remote ownership ids from {} with {:?}",
+            remote_host,
+            output.status.code()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("decode remote ownership id stdout")?;
+    let mut lines = stdout.lines();
+    let host_uid = lines
+        .next()
+        .ok_or_else(|| anyhow!("missing remote uid from {remote_host}"))?
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("parse remote uid from {remote_host}"))?;
+    let host_gid = lines
+        .next()
+        .ok_or_else(|| anyhow!("missing remote gid from {remote_host}"))?
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("parse remote gid from {remote_host}"))?;
+    Ok((host_uid, host_gid))
 }
 
 pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
@@ -1766,7 +1839,7 @@ mod tests {
         GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
         build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        render_guest_flake, vfkit_socket_path,
+        render_guest_flake, render_local_guest_flake, vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec, RunnerKind};
 
@@ -1782,7 +1855,7 @@ mod tests {
                 test_name: "tests::command_envelope_round_trips",
             },
         };
-        let flake = render_guest_flake(
+        let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -1836,11 +1909,15 @@ mod tests {
                 )),
                 socket_path: None,
             },
+            1000,
+            1234,
         )
         .expect("render flake");
 
         assert!(flake.contains("system = \"x86_64-linux\";"));
         assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.x86_64-linux;"));
+        assert!(flake.contains("hostUid = 1000;"));
+        assert!(flake.contains("hostGid = 1234;"));
         assert!(flake.contains("hypervisor = \"cloud-hypervisor\";"));
         assert!(flake.contains("socketPath = null;"));
         assert!(flake.contains(
@@ -1944,7 +2021,7 @@ mod tests {
                 package: "pika-agent-control-plane",
             },
         };
-        let flake = render_guest_flake(
+        let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -1976,7 +2053,7 @@ mod tests {
                 package: "pika-agent-microvm",
             },
         };
-        let package_flake = render_guest_flake(
+        let package_flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &package_spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -2006,7 +2083,7 @@ mod tests {
                 filter: "agent_api::tests",
             },
         };
-        let filtered_flake = render_guest_flake(
+        let filtered_flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &filtered_spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -2037,7 +2114,7 @@ mod tests {
                 command: "set -euo pipefail; cargo build -p rmp-cli; echo ok",
             },
         };
-        let flake = render_guest_flake(
+        let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -2070,7 +2147,7 @@ mod tests {
                 command: "nix develop .#default -c bash -lc 'command -v adb'",
             },
         };
-        let flake = render_guest_flake(
+        let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),
@@ -2103,7 +2180,7 @@ mod tests {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
         };
-        let flake = render_guest_flake(
+        let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
             &spec,
             Path::new("/tmp/pikaci/snapshot"),

@@ -1,4 +1,4 @@
-{ pkgs, crane, src, cargoLock, outputHashes }:
+{ pkgs, crane, src, cargoLock, outputHashes, pikaRelayPkg ? null }:
 let
   craneLib = (crane.mkLib pkgs).overrideToolchain (
     pkgs.rust-bin.stable.latest.default.override {
@@ -20,8 +20,24 @@ let
     buildInputs = [
       pkgs.alsa-lib
       pkgs.openssl
+      pkgs.postgresql
     ];
   };
+
+  workspaceDummySrc = pkgs.runCommand "ci-pika-core-workspace-dummy-src" { } ''
+    cp -R ${craneLib.mkDummySrc commonArgs} "$out"
+    chmod -R u+w "$out"
+    mkdir -p "$out/rust/tests"
+    cat >"$out/rust/tests/app_flows.rs" <<'EOF'
+    fn main() {}
+    EOF
+    cat >"$out/rust/tests/e2e_messaging.rs" <<'EOF'
+    fn main() {}
+    EOF
+    cat >"$out/rust/tests/e2e_group_profiles.rs" <<'EOF'
+    fn main() {}
+    EOF
+  '';
 
   # Phase 2a stays intentionally narrow: these outputs model the first staged
   # Linux Rust lane family (`pre-merge-pika-rust`) by compiling the deterministic
@@ -31,6 +47,7 @@ let
     export PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST="$TMPDIR/pika-core-lib-tests.manifest"
     export PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST="$TMPDIR/pika-core-lib-app-flows.manifest"
     export PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST="$TMPDIR/pika-core-messaging-e2e.manifest"
+    export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
     cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
     case "$cargoJobs" in
       ""|0)
@@ -81,6 +98,20 @@ let
       --no-run \
       --message-format json-render-diagnostics >"$cargoBuildLog"
     capture_artifacts "$cargoBuildLog"
+
+    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+    cargo build --locked -j "$cargoJobs" -p pika-server \
+      --bin pika-server \
+      --message-format json-render-diagnostics >"$cargoBuildLog"
+    ${pkgs.jq}/bin/jq -r '
+      select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
+      | .executable
+    ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
+    if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
+      echo "missing staged pika-server executable" >&2
+      cat "$cargoBuildLog" >&2
+      exit 1
+    fi
 
     sort -u -o "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" "$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
 
@@ -169,6 +200,7 @@ in
 rec {
   workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
     pname = "${commonArgs.pname}-deps";
+    dummySrc = workspaceDummySrc;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
   });
@@ -211,6 +243,22 @@ rec {
         copy_target_relative "$relative"
       done <"$staged_runtime_manifest"
 
+      server_executable="$(cat "$PIKACI_PIKA_SERVER_EXECUTABLE")"
+      case "$server_executable" in
+        "$target_root_abs"*)
+          server_relative="''${server_executable#$target_root_abs}"
+          ;;
+        "$target_root"*)
+          server_relative="''${server_executable#$target_root/}"
+          ;;
+        *)
+          echo "unexpected staged pika-server executable path: $server_executable" >&2
+          exit 1
+          ;;
+      esac
+      copy_target_relative "$server_relative"
+      ln -s "../target/$server_relative" "$out/bin/pika-server"
+
       if [ -d "$target_root/debug/deps" ]; then
         while IFS= read -r shared_object; do
           copy_target_relative "''${shared_object#$target_root/}"
@@ -220,6 +268,10 @@ rec {
             | sort
         )
       fi
+
+      ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
+      ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+      ''}
 
       cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
       #!${pkgs.bash}/bin/bash
@@ -235,6 +287,13 @@ rec {
       if [ ! -s "$manifest" ]; then
         echo "missing staged pika_core test manifest at $manifest" >&2
         exit 1
+      fi
+
+      if [ -x "$root/bin/pika-server" ]; then
+        export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
+      fi
+      if [ -x "$root/bin/pika-relay" ]; then
+        export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
       fi
 
       while IFS= read -r relative; do

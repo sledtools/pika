@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.pika.app.rust.AgentKind
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.AppReconciler
 import com.pika.app.rust.AppState

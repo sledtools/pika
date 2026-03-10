@@ -53,12 +53,12 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().list_joined_group_snapshots()
     }
 
-    pub(super) fn get_messages(
+    pub(super) fn load_message_page(
         &self,
         nostr_group_id: &str,
-        pagination: Option<mdk_storage_traits::groups::Pagination>,
-    ) -> anyhow::Result<Vec<mdk_storage_traits::messages::types::Message>> {
-        self.runtime().get_messages(nostr_group_id, pagination)
+        query: pika_marmot_runtime::conversation::RuntimeMessagePageQuery,
+    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeMessagePage> {
+        self.runtime().load_message_page(nostr_group_id, query)
     }
 
     pub(super) fn parse_message_media_attachments(

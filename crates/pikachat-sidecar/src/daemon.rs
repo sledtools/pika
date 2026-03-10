@@ -2272,11 +2272,12 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
-                        let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-                        match host.get_messages(&nostr_group_id, Some(pagination)) {
-                            Ok(msgs) => {
-                                let out: Vec<serde_json::Value> = msgs.iter().map(|m| {
+                        let query =
+                            pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(limit, 0);
+                        match host.load_message_page(&nostr_group_id, query) {
+                            Ok(page) => {
+                                let out: Vec<serde_json::Value> = page.messages.iter().map(|m| {
                                     json!({
                                         "message_id": m.id.to_hex(),
                                         "from_pubkey": m.pubkey.to_hex(),
@@ -4217,6 +4218,75 @@ mod tests {
         assert_eq!(groups[0].name, snapshots[0].name);
         assert_eq!(groups[0].description, snapshots[0].description);
         assert_eq!(groups[0].member_count, snapshots[0].member_count());
+    }
+
+    #[test]
+    fn daemon_message_history_uses_shared_runtime_page_query() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon message history".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        for content in ["one", "two", "three"] {
+            let event = make_group_message_event(
+                &inviter_mdk,
+                &inviter_keys,
+                &created.group.mls_group_id,
+                Kind::ChatMessage,
+                content,
+                Tags::new(),
+            );
+            inviter_mdk
+                .process_message(&event)
+                .expect("process group message");
+        }
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+
+        let first_page = host
+            .load_message_page(
+                &nostr_group_id_hex,
+                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(2, 0),
+            )
+            .expect("load first page");
+        let second_page = host
+            .load_message_page(
+                &nostr_group_id_hex,
+                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(2, 2),
+            )
+            .expect("load second page");
+
+        assert_eq!(first_page.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(first_page.fetched_count, 2);
+        assert_eq!(first_page.next_offset, 2);
+        assert!(!first_page.storage_exhausted);
+        assert_eq!(first_page.messages.len(), 2);
+        assert_eq!(second_page.fetched_count, 1);
+        assert_eq!(second_page.next_offset, 3);
+        assert!(second_page.storage_exhausted);
+        assert_eq!(second_page.messages.len(), 1);
     }
 
     #[test]

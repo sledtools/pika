@@ -23,7 +23,7 @@ descs+=("Human-facing workflow help plus the repo's root-vs-module-vs-agent disc
 
 titles+=("just command tree")
 cmds+=("JUST_UNSTABLE=1 just --list --list-submodules")
-descs+=("Expanded task tree with module recipes and hidden helpers for agent discovery.")
+descs+=("Expanded task tree with module recipes for agent discovery; hidden helpers remain callable but are not listed.")
 
 # --- Docs ---
 

@@ -1102,5 +1102,6 @@ Deliverable:
 - Completed Prompt 10 by documenting the `just` command-surface contract in `docs/just-command-contract.md`, surfacing the human-vs-agent discovery split in `just info` and the default help text, and tightening `scripts/agent-brief` to present itself as the supported expanded discovery path.
 - Review note: the repo now explicitly documents that root recipes should stay rare and high-signal, implementation should default to `scripts/` or a real CLI, and low-signal helpers should usually land in modules as `[private]`.
 - Project status: treat this justfile simplification effort as complete for now; future work should follow the documented contract and open a new bounded cleanup slice only if the command surface drifts again.
+- Prompt 10 review follow-up: `scripts/agent-brief` now describes `just --list --list-submodules` accurately as the expanded module tree for agents, and no longer implies that `[private]` helpers appear in that listing.
 - Reviewed Prompt 9 and found no structural regressions; remaining risk is limited to live relay/news/remote-fulfill runtime verification depth rather than command-surface shape.
 - Added Prompt 10 as an optional closure slice focused on documenting and lightly guarding the post-cleanup command contract, not on more structural refactoring.

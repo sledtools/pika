@@ -256,6 +256,21 @@ impl<'a> DaemonHostContext<'a> {
             .plan_group_subscriptions(subscribed_group_ids)
     }
 
+    pub(super) fn plan_session_sync(
+        &self,
+        subscribed_group_ids: Vec<String>,
+        long_lived_session_relays: Vec<RelayUrl>,
+        temporary_key_package_relays: Vec<RelayUrl>,
+        welcome_inbox: pika_marmot_runtime::runtime::RuntimeWelcomeInboxSubscriptionIntent,
+    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionSyncPlan> {
+        self.runtime().plan_session_sync(
+            subscribed_group_ids,
+            long_lived_session_relays,
+            temporary_key_package_relays,
+            welcome_inbox,
+        )
+    }
+
     pub(super) fn handle_inbound_call_signal(
         &self,
         ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,

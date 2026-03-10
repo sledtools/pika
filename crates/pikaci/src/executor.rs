@@ -12,6 +12,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus, RunnerKind};
+use crate::snapshot::{SnapshotMetadata, read_snapshot_metadata};
 
 #[derive(Clone, Debug)]
 pub struct HostContext {
@@ -1196,11 +1197,16 @@ fn remote_microvm_context(
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?;
     let remote_run_dir = remote_work_dir.join("runs").join(run_id);
+    let remote_snapshot_dir = if job.staged_linux_rust_lane().is_some() {
+        staged_linux_remote_snapshot_dir(&ctx.workspace_snapshot_dir, &remote_work_dir, run_id)?
+    } else {
+        remote_run_dir.join("snapshot")
+    };
     let remote_job_dir = remote_run_dir.join("jobs").join(job.id);
     let shared_job_dir = remote_work_dir.join("jobs").join(job.id);
     Ok(RemoteMicrovmContext {
         remote_host,
-        remote_snapshot_dir: remote_run_dir.join("snapshot"),
+        remote_snapshot_dir,
         remote_vm_dir: remote_job_dir.join("vm"),
         remote_artifacts_dir: remote_job_dir.join("artifacts"),
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
@@ -1212,6 +1218,21 @@ fn remote_microvm_context(
             .join("staged-linux-rust")
             .join("workspace-build"),
         remote_runner_link: remote_job_dir.join("vm").join("runner"),
+    })
+}
+
+pub(crate) fn staged_linux_remote_snapshot_dir(
+    local_snapshot_dir: &Path,
+    remote_work_dir: &Path,
+    run_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let metadata = read_snapshot_metadata(local_snapshot_dir).ok();
+    Ok(match metadata.and_then(|metadata| metadata.content_hash) {
+        Some(hash) if !hash.is_empty() => remote_work_dir
+            .join("snapshots")
+            .join(hash)
+            .join("snapshot"),
+        _ => remote_work_dir.join("runs").join(run_id).join("snapshot"),
     })
 }
 
@@ -1262,24 +1283,52 @@ pub(crate) fn sync_snapshot_to_remote(
     remote_host: &str,
     log_path: &Path,
 ) -> anyhow::Result<()> {
+    let local_metadata = read_snapshot_metadata(local_snapshot_dir)?;
     let ready_marker = remote_snapshot_dir.join("pikaci-snapshot.json");
-    let already_ready_command = format!(
-        "test -f {}",
-        shell_single_quote(&ready_marker.display().to_string())
-    );
-    if run_ssh_command(remote_host, &already_ready_command)
-        .status()
-        .with_context(|| format!("check remote snapshot on {remote_host}"))?
-        .success()
-    {
-        append_line(
-            log_path,
-            &format!(
-                "[pikaci] remote snapshot already available at {}",
-                remote_snapshot_dir.display()
-            ),
-        )?;
-        return Ok(());
+    if let Some(remote_metadata) = load_remote_snapshot_metadata(remote_host, &ready_marker)? {
+        match (
+            local_metadata.content_hash.as_deref(),
+            remote_metadata.content_hash.as_deref(),
+        ) {
+            (Some(expected), Some(actual)) if expected == actual => {
+                append_line(
+                    log_path,
+                    &format!(
+                        "[pikaci] remote snapshot already available at {} (content hash {})",
+                        remote_snapshot_dir.display(),
+                        expected
+                    ),
+                )?;
+                return Ok(());
+            }
+            (Some(expected), Some(actual)) => {
+                bail!(
+                    "remote snapshot hash mismatch at {} on {} (expected {}, got {})",
+                    remote_snapshot_dir.display(),
+                    remote_host,
+                    expected,
+                    actual
+                );
+            }
+            (Some(expected), None) => {
+                bail!(
+                    "remote snapshot at {} on {} is missing content hash {}; refusing ambiguous reuse",
+                    remote_snapshot_dir.display(),
+                    remote_host,
+                    expected
+                );
+            }
+            _ => {
+                append_line(
+                    log_path,
+                    &format!(
+                        "[pikaci] remote snapshot already available at {}",
+                        remote_snapshot_dir.display()
+                    ),
+                )?;
+                return Ok(());
+            }
+        }
     }
 
     sync_directory_to_remote(
@@ -1289,6 +1338,37 @@ pub(crate) fn sync_snapshot_to_remote(
         log_path,
         "snapshot",
     )
+}
+
+fn load_remote_snapshot_metadata(
+    remote_host: &str,
+    ready_marker: &Path,
+) -> anyhow::Result<Option<SnapshotMetadata>> {
+    let command = format!(
+        "if test -f {}; then cat {}; fi",
+        shell_single_quote(&ready_marker.display().to_string()),
+        shell_single_quote(&ready_marker.display().to_string())
+    );
+    let output = run_ssh_command(remote_host, &command)
+        .output()
+        .with_context(|| format!("read remote snapshot metadata from {remote_host}"))?;
+    if !output.status.success() {
+        bail!(
+            "read remote snapshot metadata from {} failed with status {}",
+            remote_host,
+            output.status
+        );
+    }
+    if output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let metadata: SnapshotMetadata = serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "decode remote snapshot metadata from {}",
+            ready_marker.display()
+        )
+    })?;
+    Ok(Some(metadata))
 }
 
 fn sync_directory_to_remote(
@@ -1839,7 +1919,8 @@ mod tests {
         GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
         build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        render_guest_flake, render_local_guest_flake, vfkit_socket_path,
+        render_guest_flake, render_local_guest_flake, staged_linux_remote_snapshot_dir,
+        vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec, RunnerKind};
 
@@ -2008,6 +2089,34 @@ mod tests {
             assert!(command.contains(socket));
         }
         assert!(command.contains("missing virtio-fs socket:"));
+    }
+
+    #[test]
+    fn staged_linux_remote_snapshot_dir_uses_content_hash_when_present() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-remote-snapshot-dir-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("create snapshot dir");
+        std::fs::write(
+            root.join("pikaci-snapshot.json"),
+            r#"{"source_root":"/tmp/src","snapshot_dir":"/tmp/snapshot","git_head":null,"git_dirty":false,"created_at":"2026-03-10T00:00:00Z","content_hash":"abc123"}"#,
+        )
+        .expect("write metadata");
+
+        let remote = staged_linux_remote_snapshot_dir(
+            &root,
+            Path::new("/var/tmp/pikaci-prepared-output"),
+            "run-123",
+        )
+        .expect("remote snapshot dir");
+
+        assert_eq!(
+            remote,
+            Path::new("/var/tmp/pikaci-prepared-output/snapshots/abc123/snapshot")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

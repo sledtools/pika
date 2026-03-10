@@ -897,6 +897,13 @@ We have at least one important Linux Rust lane where:
     - the fresh real rerun (`20260310T203525Z-a2ed09fa`) therefore produced a `19M` run snapshot instead of `~698M`,
     - and that rerun still passed end-to-end on `pika-build`, with total wall clock dropping from about `268s` to about `212s`,
     - so the remaining visible cost is no longer bulk mobile source upload; the next biggest sync/copy target is the per-job runner flake sync and any other small dynamic run metadata that still moves on each rerun.
+  - note that the next snapshot slice moved from pruning to strict content-addressed reuse:
+    - staged Linux remote snapshots are now keyed by the SHA-256 content hash recorded in `pikaci-snapshot.json`, under `/var/tmp/pikaci-prepared-output/snapshots/<hash>/snapshot` on `pika-build`,
+    - staged Linux prepare and remote microVM execution both use that same hashed remote snapshot path when the local snapshot metadata carries a content hash, and fall back only for legacy snapshots that predate the hash field,
+    - reuse is validated by reading the remote `pikaci-snapshot.json` and requiring its `content_hash` to exactly match the local snapshot hash; `pikaci` now hard-fails on hash mismatch or missing remote hash instead of treating the path as ambiguously reusable,
+    - the first unchanged rerun (`20260310T205036Z-e56ce4a5`) uploaded the `19M` snapshot once to `/var/tmp/pikaci-prepared-output/snapshots/02d9abe340ea69a5f8e92360ea12bb97b8931dd752b15e101d5991250c33b245/snapshot` and still passed end-to-end in about `159s`,
+    - the second unchanged rerun (`20260310T205318Z-3ecb177c`) skipped snapshot upload entirely, started with `remote snapshot already available ... (content hash 02d9abe3...)`, and still passed end-to-end in about `152s`,
+    - so the next biggest visible cost after snapshot reuse is no longer the run snapshot at all; it is the per-run runner-flake sync / realization and the rest of the small dynamic remote setup.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

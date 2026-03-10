@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotProfile {
@@ -20,6 +22,8 @@ pub struct SnapshotMetadata {
     pub git_head: Option<String>,
     pub git_dirty: Option<bool>,
     pub created_at: String,
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }
 
 pub fn create_snapshot_with_profile(
@@ -29,12 +33,14 @@ pub fn create_snapshot_with_profile(
     profile: SnapshotProfile,
 ) -> anyhow::Result<SnapshotMetadata> {
     copy_filtered_tree(source_root, snapshot_dir, profile)?;
+    let content_hash = Some(compute_snapshot_content_hash(snapshot_dir)?);
     let metadata = SnapshotMetadata {
         source_root: source_root.display().to_string(),
         snapshot_dir: snapshot_dir.display().to_string(),
         git_head: git_head(source_root),
         git_dirty: git_dirty(source_root),
         created_at: created_at.to_string(),
+        content_hash,
     };
     write_json(snapshot_dir.join("pikaci-snapshot.json"), &metadata)?;
     Ok(metadata)
@@ -182,9 +188,79 @@ fn write_json(path: PathBuf, value: &impl Serialize) -> anyhow::Result<()> {
     fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
+pub fn read_snapshot_metadata(snapshot_dir: &Path) -> anyhow::Result<SnapshotMetadata> {
+    let path = snapshot_dir.join("pikaci-snapshot.json");
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn compute_snapshot_content_hash(snapshot_dir: &Path) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hash_snapshot_tree(snapshot_dir, snapshot_dir, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_snapshot_tree(root: &Path, current: &Path, hasher: &mut Sha256) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(current)
+        .with_context(|| format!("read {}", current.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("collect {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        if current == root && name == "pikaci-snapshot.json" {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip {} from {}", root.display(), path.display()))?;
+        let metadata =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            let target =
+                fs::read_link(&path).with_context(|| format!("read symlink {}", path.display()))?;
+            hasher.update(target.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+        } else if metadata.is_dir() {
+            hasher.update(b"dir\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            hash_snapshot_tree(root, &path, hasher)?;
+        } else if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            let mut file =
+                fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .with_context(|| format!("read {}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            hasher.update(b"\0");
+        } else {
+            return Err(anyhow!("unsupported filesystem entry: {}", path.display()));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SnapshotProfile, should_skip};
+    use super::{SnapshotProfile, compute_snapshot_content_hash, should_skip};
+    use std::fs;
 
     #[test]
     fn snapshot_skip_filters_ignore_expected_paths() {
@@ -215,5 +291,32 @@ mod tests {
             true,
             SnapshotProfile::StagedLinuxRust
         ));
+    }
+
+    #[test]
+    fn snapshot_content_hash_ignores_metadata_file() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-snapshot-hash-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("rust")).expect("create rust dir");
+        fs::write(root.join("rust/Cargo.toml"), "name = \"pika\"\n").expect("write cargo file");
+        fs::write(
+            root.join("pikaci-snapshot.json"),
+            "{\"content_hash\":\"old\"}\n",
+        )
+        .expect("write metadata");
+
+        let before = compute_snapshot_content_hash(&root).expect("hash before");
+        fs::write(
+            root.join("pikaci-snapshot.json"),
+            "{\"content_hash\":\"new\"}\n",
+        )
+        .expect("rewrite metadata");
+        let after = compute_snapshot_content_hash(&root).expect("hash after");
+
+        assert_eq!(before, after);
+
+        let _ = fs::remove_dir_all(root);
     }
 }

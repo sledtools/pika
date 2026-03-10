@@ -275,6 +275,21 @@ Candidate PR 7: shared media helpers / workflow primitives
   - shared media mechanics
   - host-specific orchestration remains local when needed
 
+Candidate PR 8: shared inbound session / notification-ingress shell
+- status:
+  - first slice landed: shared relay-event ingress classification + seen-ID cache
+  - app session loop and daemon notification loop both consume the same ingress helper
+  - host-specific projection/protocol mapping remains local
+- extract:
+  - duplicate suppression for inbound relay events
+  - gift-wrap welcome vs group-message classification
+  - neutral ingress envelope types
+- acceptance:
+  - shared ingress mechanics live in `pika-marmot-runtime`
+  - app still owns state/router/toast projection
+  - daemon still owns `OutMsg` mapping, subscription management, and child/protocol glue
+  - this stops short of any EngineHandle or shared event-bus design
+
 Phase 2 rule:
 when app and daemon differ, stop and decide the correct behavior before extracting. Do not hide
 behavioral disagreement inside “shared” code.

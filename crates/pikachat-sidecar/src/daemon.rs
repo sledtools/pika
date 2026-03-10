@@ -28,11 +28,12 @@ use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    BootstrappedRuntimeSession, MarmotRuntime, bootstrap_runtime_session,
-    subscribe_group_messages_individual, subscribe_welcome_inbox,
+    BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
+    bootstrap_runtime_session, classify_inbound_relay_event, subscribe_group_messages_individual,
+    subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
-    AcceptedWelcome, accept_welcome_and_catch_up, take_pending_welcome,
+    AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome, take_pending_welcome,
 };
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
 use pika_media::crypto::{FrameInfo, decrypt_frame, encrypt_frame};
@@ -196,6 +197,14 @@ fn accept_welcome_not_found_message() -> String {
         "pending welcome not found; {}",
         accept_welcome_event_id_hint()
     )
+}
+
+async fn classify_daemon_notification_event(
+    client: &Client,
+    seen: &mut InboundRelaySeenCache,
+    event: Event,
+) -> anyhow::Result<Option<InboundRelayEvent>> {
+    classify_inbound_relay_event(client, seen, event).await
 }
 
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
@@ -1792,9 +1801,12 @@ pub async fn daemon_main(
     )
     .await?;
 
-    // Track which wrapper events and group message wrapper events we've already processed.
-    let mut seen_welcomes: HashSet<EventId> = bootstrapped.startup.seen_welcomes;
-    let mut seen_group_events: HashSet<EventId> = bootstrapped.startup.seen_group_events;
+    // Track inbound relay events we've already processed. Seed from bootstrapped
+    // startup state so reconnects do not immediately replay known wrappers.
+    let mut seen_inbound = InboundRelaySeenCache::unbounded();
+    seen_inbound.extend(bootstrapped.startup.seen_welcomes);
+    let mut seen_group_events = bootstrapped.startup.seen_group_events;
+    seen_inbound.extend(seen_group_events.iter().copied());
 
     // Track group subscriptions.
     let mut group_subs: HashMap<SubscriptionId, String> =
@@ -3523,25 +3535,43 @@ pub async fn daemon_main(
                 let event = *event;
 
                 if subscription_id == gift_sub {
-                    if event.kind != Kind::GiftWrap {
-                        continue;
-                    }
-                    if !seen_welcomes.insert(event.id) {
-                        continue;
-                    }
-
-                    let welcome = match crate::ingest_welcome_from_giftwrap(
-                        &mdk,
-                        &keys,
-                        &event,
-                        |sender_hex| sender_allowed(sender_hex),
+                    let inbound = match classify_daemon_notification_event(
+                        &client,
+                        &mut seen_inbound,
+                        event,
                     )
                     .await
                     {
+                        Ok(Some(inbound)) => inbound,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            warn!("[pikachat] notification ingress failed err={e:#}");
+                            continue;
+                        }
+                    };
+                    let InboundRelayEvent::Welcome {
+                        wrapper,
+                        sender,
+                        rumor,
+                    } = inbound
+                    else {
+                        continue;
+                    };
+
+                    let welcome = match ingest_unwrapped_welcome(
+                        &mdk,
+                        &wrapper.id,
+                        sender,
+                        &rumor,
+                        |sender_hex| sender_allowed(sender_hex),
+                    ) {
                         Ok(Some(w)) => w,
                         Ok(None) => continue,
                         Err(e) => {
-                            warn!("[pikachat] welcome ingest failed wrapper_id={} err={e:#}", event.id.to_hex());
+                            warn!(
+                                "[pikachat] welcome ingest failed wrapper_id={} err={e:#}",
+                                wrapper.id.to_hex()
+                            );
                             continue;
                         }
                     };
@@ -3571,17 +3601,31 @@ pub async fn daemon_main(
                     continue;
                 }
 
-                if event.kind == Kind::MlsGroupMessage {
-                    let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-                    // Only process messages for subscriptions we created.
-                    if !group_subs.contains_key(&subscription_id) {
+                let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                // Only process messages for subscriptions we created.
+                if !group_subs.contains_key(&subscription_id) {
+                    continue;
+                }
+                let inbound = match classify_daemon_notification_event(
+                    &client,
+                    &mut seen_inbound,
+                    event,
+                )
+                .await
+                {
+                    Ok(Some(inbound)) => inbound,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        warn!("[pikachat] notification ingress failed err={e:#}");
                         continue;
                     }
-                    if !seen_group_events.insert(event.id) {
-                        continue;
-                    }
+                };
+                let InboundRelayEvent::GroupMessage { event } = inbound else {
+                    continue;
+                };
+                seen_group_events.insert(event.id);
 
-                    match host.process_event(&event) {
+                match host.process_event(&event) {
                         Ok(Some(ConversationEvent::Application(runtime_msg))) => {
                             let classification = runtime_msg.classification;
                             let nostr_group_id = runtime_msg.nostr_group_id_hex;
@@ -3820,11 +3864,10 @@ pub async fn daemon_main(
                                 }
                             }
                         }
-                        Ok(Some(_)) => {}
-                        Ok(None) => {}
-                        Err(e) => {
-                            warn!("[pikachat] process_message failed id={} err={e:#}", event.id.to_hex());
-                        }
+                    Ok(Some(_)) => {}
+                    Ok(None) => {}
+                    Err(e) => {
+                        warn!("[pikachat] process_message failed id={} err={e:#}", event.id.to_hex());
                     }
                 }
             }
@@ -4138,6 +4181,55 @@ mod tests {
                 .expect("get pending welcomes")
                 .is_empty(),
             "shared daemon helper should clear the pending welcome"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_notification_ingress_uses_shared_runtime_classifier_for_welcome() {
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let client = Client::builder().signer(invitee_keys.clone()).build();
+        let rumor = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(1_u64),
+            Kind::MlsWelcome,
+            Tags::new(),
+            "{}".to_string(),
+        );
+        let wrapper = EventBuilder::gift_wrap(
+            &inviter_keys,
+            &invitee_keys.public_key(),
+            rumor.clone(),
+            Vec::<Tag>::new(),
+        )
+        .await
+        .expect("gift wrap");
+        let mut seen = InboundRelaySeenCache::unbounded();
+
+        let first = classify_daemon_notification_event(&client, &mut seen, wrapper.clone())
+            .await
+            .expect("classify daemon inbound event");
+        let duplicate = classify_daemon_notification_event(&client, &mut seen, wrapper.clone())
+            .await
+            .expect("classify duplicate daemon inbound event");
+
+        match first {
+            Some(InboundRelayEvent::Welcome {
+                wrapper: first_wrapper,
+                sender,
+                rumor: first_rumor,
+            }) => {
+                assert_eq!(first_wrapper.id, wrapper.id);
+                assert_eq!(sender, inviter_keys.public_key());
+                assert_eq!(first_rumor.pubkey, rumor.pubkey);
+                assert_eq!(first_rumor.kind, rumor.kind);
+                assert_eq!(first_rumor.content, rumor.content);
+            }
+            other => panic!("expected shared welcome ingress event, got {other:?}"),
+        }
+        assert!(
+            duplicate.is_none(),
+            "shared ingress classifier should suppress duplicate relay events for the daemon"
         );
     }
 

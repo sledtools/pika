@@ -63,6 +63,50 @@ pub fn take_pending_welcome(
     find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
 }
 
+pub fn ingest_unwrapped_welcome<F>(
+    mdk: &PikaMdk,
+    wrapper_event_id: &EventId,
+    sender: PublicKey,
+    rumor: &UnsignedEvent,
+    sender_allowed: F,
+) -> Result<Option<IngestedWelcome>>
+where
+    F: Fn(&str) -> bool,
+{
+    if rumor.kind != Kind::MlsWelcome {
+        return Ok(None);
+    }
+
+    let sender_hex = sender.to_hex().to_lowercase();
+    if !sender_allowed(&sender_hex) {
+        return Ok(None);
+    }
+
+    mdk.process_welcome(wrapper_event_id, rumor)
+        .context("process welcome rumor")?;
+
+    let pending = mdk
+        .get_pending_welcomes(None)
+        .context("get pending welcomes")?;
+    let stored = pending
+        .into_iter()
+        .find(|welcome| welcome.wrapper_event_id == *wrapper_event_id);
+    let (nostr_group_id_hex, group_name) = match stored {
+        Some(welcome) => (hex::encode(welcome.nostr_group_id), welcome.group_name),
+        None => (String::new(), String::new()),
+    };
+    let mut welcome_rumor = rumor.clone();
+
+    Ok(Some(IngestedWelcome {
+        wrapper_event_id: *wrapper_event_id,
+        welcome_event_id: welcome_rumor.id(),
+        sender,
+        sender_hex,
+        nostr_group_id_hex,
+        group_name,
+    }))
+}
+
 /// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
 /// storage. This intentionally does not accept the welcome; hosts decide
 /// whether to stage, auto-accept, subscribe, or backfill after ingest. MDK may
@@ -83,36 +127,13 @@ where
     let unwrapped = nostr_sdk::nostr::nips::nip59::extract_rumor(keys, event)
         .await
         .context("unwrap giftwrap rumor")?;
-    if unwrapped.rumor.kind != Kind::MlsWelcome {
-        return Ok(None);
-    }
-
-    let sender_hex = unwrapped.sender.to_hex().to_lowercase();
-    if !sender_allowed(&sender_hex) {
-        return Ok(None);
-    }
-
-    let mut rumor = unwrapped.rumor;
-    mdk.process_welcome(&event.id, &rumor)
-        .context("process welcome rumor")?;
-
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
-    let stored = pending.into_iter().find(|w| w.wrapper_event_id == event.id);
-    let (nostr_group_id_hex, group_name) = match stored {
-        Some(w) => (hex::encode(w.nostr_group_id), w.group_name),
-        None => (String::new(), String::new()),
-    };
-
-    Ok(Some(IngestedWelcome {
-        wrapper_event_id: event.id,
-        welcome_event_id: rumor.id(),
-        sender: unwrapped.sender,
-        sender_hex,
-        nostr_group_id_hex,
-        group_name,
-    }))
+    ingest_unwrapped_welcome(
+        mdk,
+        &event.id,
+        unwrapped.sender,
+        &unwrapped.rumor,
+        sender_allowed,
+    )
 }
 
 /// Accept a known pending welcome, optionally let the host run a narrow

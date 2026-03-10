@@ -16,7 +16,7 @@ mod relay_publish;
 mod session;
 mod storage;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -7277,7 +7277,6 @@ mod tests {
         fn make_peer_key_package(peer_keys: &Keys) -> Event {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let peer_dir = tempdir.path().to_string_lossy().into_owned();
-            std::mem::forget(tempdir);
 
             let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
             let relay = RelayUrl::parse("wss://test.relay").unwrap();

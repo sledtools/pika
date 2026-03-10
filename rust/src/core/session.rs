@@ -4,8 +4,9 @@ use std::future::Future;
 
 use super::*;
 use pika_marmot_runtime::runtime::{
-    bootstrap_runtime_session, connect_runtime_relays, subscribe_group_messages_combined,
-    subscribe_welcome_inbox, BootstrappedRuntimeSession,
+    bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
+    subscribe_group_messages_combined, subscribe_welcome_inbox, BootstrappedRuntimeSession,
+    InboundRelayEvent, InboundRelaySeenCache,
 };
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
 
@@ -18,6 +19,22 @@ fn bootstrap_runtime_for_app(
     bootstrap_runtime_session(pubkey, signer, || {
         open_mdk(data_dir, &pubkey, keychain_group)
     })
+}
+
+async fn classify_app_notification_event(
+    client: &Client,
+    seen: &mut InboundRelaySeenCache,
+    event: Event,
+) -> anyhow::Result<Option<InternalEvent>> {
+    match classify_inbound_relay_event(client, seen, event).await? {
+        Some(InboundRelayEvent::Welcome { wrapper, rumor, .. }) => {
+            Ok(Some(InternalEvent::GiftWrapReceived { wrapper, rumor }))
+        }
+        Some(InboundRelayEvent::GroupMessage { event }) => {
+            Ok(Some(InternalEvent::GroupMessageReceived { event }))
+        }
+        None => Ok(None),
+    }
 }
 
 impl AppCore {
@@ -166,48 +183,20 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            // Relay pools can redeliver the same event id (reconnects, multi-relay fanout).
-            // Keep a small bounded cache to avoid duplicate MDK processing and noisy logs.
-            const SEEN_CAP: usize = 2048;
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut seen_order: VecDeque<String> = VecDeque::new();
+            let mut seen = InboundRelaySeenCache::default();
 
             loop {
                 match rx.recv().await {
                     Ok(RelayPoolNotification::Event { event, .. }) => {
                         let ev: Event = (*event).clone();
-                        let id_hex = ev.id.to_hex();
-                        if seen.contains(&id_hex) {
-                            continue;
-                        }
-                        seen.insert(id_hex.clone());
-                        seen_order.push_back(id_hex);
-                        if seen_order.len() > SEEN_CAP {
-                            if let Some(old) = seen_order.pop_front() {
-                                seen.remove(&old);
+                        match classify_app_notification_event(&client, &mut seen, ev).await {
+                            Ok(Some(internal)) => {
+                                let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
                             }
-                        }
-
-                        match ev.kind {
-                            Kind::GiftWrap => match client.unwrap_gift_wrap(&ev).await {
-                                Ok(unwrapped) => {
-                                    let _ = tx.send(CoreMsg::Internal(Box::new(
-                                        InternalEvent::GiftWrapReceived {
-                                            wrapper: ev,
-                                            rumor: unwrapped.rumor,
-                                        },
-                                    )));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("giftwrap unwrap failed: {e}");
-                                }
-                            },
-                            Kind::MlsGroupMessage => {
-                                let _ = tx.send(CoreMsg::Internal(Box::new(
-                                    InternalEvent::GroupMessageReceived { event: ev },
-                                )));
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!("notification ingress failed: {e:#}");
                             }
-                            _ => {}
                         }
                     }
                     Ok(_) => {}
@@ -1109,5 +1098,52 @@ mod tests {
                 other => panic!("unexpected receiver {}", other.to_hex()),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn app_notification_ingress_uses_shared_runtime_classifier_for_welcome() {
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let client = Client::builder().signer(invitee_keys.clone()).build();
+        let rumor = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(1_u64),
+            Kind::MlsWelcome,
+            Tags::new(),
+            "{}".to_string(),
+        );
+        let wrapper = EventBuilder::gift_wrap(
+            &inviter_keys,
+            &invitee_keys.public_key(),
+            rumor.clone(),
+            Vec::<Tag>::new(),
+        )
+        .await
+        .expect("gift wrap");
+        let mut seen = InboundRelaySeenCache::default();
+
+        let first = classify_app_notification_event(&client, &mut seen, wrapper.clone())
+            .await
+            .expect("classify app inbound event");
+        let duplicate = classify_app_notification_event(&client, &mut seen, wrapper.clone())
+            .await
+            .expect("classify duplicate app inbound event");
+
+        match first {
+            Some(InternalEvent::GiftWrapReceived {
+                wrapper: first_wrapper,
+                rumor: first_rumor,
+            }) => {
+                assert_eq!(first_wrapper.id, wrapper.id);
+                assert_eq!(first_rumor.pubkey, rumor.pubkey);
+                assert_eq!(first_rumor.kind, rumor.kind);
+                assert_eq!(first_rumor.content, rumor.content);
+            }
+            other => panic!("expected giftwrap internal event, got {other:?}"),
+        }
+        assert!(
+            duplicate.is_none(),
+            "shared ingress classifier should suppress duplicate relay events for the app"
+        );
     }
 }

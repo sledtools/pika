@@ -42,7 +42,7 @@ pub fn create_group_and_plan_welcome_delivery(
         .create_group(creator_pubkey, peer_key_packages, config)
         .context("create group")?;
 
-    let welcome_delivery = if result.welcome_rumors.is_empty() {
+    let welcome_delivery = if recipients.is_empty() || result.welcome_rumors.is_empty() {
         None
     } else {
         Some(GroupWelcomeDeliveryPlan {

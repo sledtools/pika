@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +25,104 @@ use crate::outbound::{
     PublishedConversationAction, ResolvedConversationTarget,
 };
 use crate::relay::subscribe_group_msgs;
+
+pub const DEFAULT_INBOUND_RELAY_SEEN_CAP: usize = 2048;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InboundRelayEvent {
+    Welcome {
+        wrapper: Event,
+        sender: PublicKey,
+        rumor: UnsignedEvent,
+    },
+    GroupMessage {
+        event: Event,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundRelaySeenCache {
+    seen: HashSet<EventId>,
+    order: VecDeque<EventId>,
+    cap: Option<usize>,
+}
+
+impl Default for InboundRelaySeenCache {
+    fn default() -> Self {
+        Self::bounded(DEFAULT_INBOUND_RELAY_SEEN_CAP)
+    }
+}
+
+impl InboundRelaySeenCache {
+    pub fn bounded(cap: usize) -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: Some(cap),
+        }
+    }
+
+    pub fn unbounded() -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: None,
+        }
+    }
+
+    pub fn extend<I>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = EventId>,
+    {
+        for id in ids {
+            let _ = self.record(id);
+        }
+    }
+
+    pub fn record(&mut self, id: EventId) -> bool {
+        if !self.seen.insert(id) {
+            return false;
+        }
+        self.order.push_back(id);
+        if let Some(cap) = self.cap {
+            while self.order.len() > cap {
+                if let Some(old) = self.order.pop_front() {
+                    self.seen.remove(&old);
+                }
+            }
+        }
+        true
+    }
+}
+
+pub async fn classify_inbound_relay_event(
+    client: &Client,
+    seen: &mut InboundRelaySeenCache,
+    event: Event,
+) -> Result<Option<InboundRelayEvent>> {
+    if !seen.record(event.id) {
+        return Ok(None);
+    }
+
+    match event.kind {
+        Kind::GiftWrap => {
+            let unwrapped = client
+                .unwrap_gift_wrap(&event)
+                .await
+                .context("unwrap giftwrap rumor")?;
+            if unwrapped.rumor.kind != Kind::MlsWelcome {
+                return Ok(None);
+            }
+            Ok(Some(InboundRelayEvent::Welcome {
+                wrapper: event,
+                sender: unwrapped.sender,
+                rumor: unwrapped.rumor,
+            }))
+        }
+        Kind::MlsGroupMessage => Ok(Some(InboundRelayEvent::GroupMessage { event })),
+        _ => Ok(None),
+    }
+}
 
 pub struct RuntimeSession {
     pub pubkey: PublicKey,
@@ -517,6 +615,72 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    #[tokio::test]
+    async fn classify_inbound_relay_event_returns_welcome_for_new_giftwrap() {
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let client = Client::builder().signer(invitee_keys.clone()).build();
+        let rumor = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(1_u64),
+            Kind::MlsWelcome,
+            Tags::new(),
+            "{}".to_string(),
+        );
+        let wrapper = EventBuilder::gift_wrap(
+            &inviter_keys,
+            &invitee_keys.public_key(),
+            rumor.clone(),
+            Vec::<Tag>::new(),
+        )
+        .await
+        .expect("gift wrap");
+        let mut seen = InboundRelaySeenCache::default();
+
+        let classified = classify_inbound_relay_event(&client, &mut seen, wrapper.clone())
+            .await
+            .expect("classify inbound event")
+            .expect("welcome event");
+
+        match classified {
+            InboundRelayEvent::Welcome {
+                wrapper: classified_wrapper,
+                sender,
+                rumor: classified_rumor,
+            } => {
+                assert_eq!(classified_wrapper.id, wrapper.id);
+                assert_eq!(sender, inviter_keys.public_key());
+                assert_eq!(classified_rumor.pubkey, rumor.pubkey);
+                assert_eq!(classified_rumor.kind, rumor.kind);
+                assert_eq!(classified_rumor.content, rumor.content);
+            }
+            other => panic!("expected welcome ingress event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_inbound_relay_event_dedupes_event_ids_and_keeps_group_messages() {
+        let keys = Keys::generate();
+        let client = Client::builder().signer(keys.clone()).build();
+        let event = EventBuilder::new(Kind::MlsGroupMessage, "hello")
+            .sign_with_keys(&keys)
+            .expect("sign event");
+        let mut seen = InboundRelaySeenCache::bounded(8);
+
+        let first = classify_inbound_relay_event(&client, &mut seen, event.clone())
+            .await
+            .expect("classify first event");
+        let duplicate = classify_inbound_relay_event(&client, &mut seen, event.clone())
+            .await
+            .expect("classify duplicate event");
+
+        assert_eq!(first, Some(InboundRelayEvent::GroupMessage { event }));
+        assert!(
+            duplicate.is_none(),
+            "duplicate event id should be suppressed"
+        );
     }
 
     #[test]

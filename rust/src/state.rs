@@ -66,6 +66,8 @@ pub struct AgentMenuItemState {
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
+    // App-facing mirror of control-plane `MicrovmAgentKind`.
+    // Keep the mapping in `core::agent` in sync when adding kinds.
     Openclaw,
     Pi,
 }

@@ -3074,6 +3074,7 @@ impl AppCore {
             self.profiles.clear();
             if let Some(conn) = self.profile_db.as_ref() {
                 profile_db::clear_all(conn);
+                profile_db::clear_app_settings(conn);
             }
             profile_pics::clear_cache(&self.data_dir);
             self.state.my_profile = MyProfileState::empty();
@@ -8155,6 +8156,22 @@ mod tests {
 
             assert!(core.state.show_agent_marketplace);
             assert!(profile_db::load_show_agent_marketplace(
+                core.profile_db.as_ref().expect("profile db")
+            ));
+        }
+
+        #[test]
+        fn wipe_local_data_clears_show_agent_marketplace_setting() {
+            let (mut core, _tmp) = make_logged_in_core();
+            core.handle_action(AppAction::SetShowAgentMarketplace { enabled: true });
+            assert!(profile_db::load_show_agent_marketplace(
+                core.profile_db.as_ref().expect("profile db")
+            ));
+
+            core.handle_action(AppAction::WipeLocalData);
+
+            assert!(!core.state.show_agent_marketplace);
+            assert!(!profile_db::load_show_agent_marketplace(
                 core.profile_db.as_ref().expect("profile db")
             ));
         }

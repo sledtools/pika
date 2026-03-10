@@ -242,13 +242,25 @@ async fn recover_my_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
+    agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
+    let body = serde_json::to_value(AgentProvisionRequest {
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            kind: Some(match agent_kind {
+                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
+                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
+            }),
+            backend: None,
+        }),
+    })
+    .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
         Method::POST,
         &endpoint(base_url, "/v1/agents/me/recover"),
-        None,
+        Some(&body),
     )
     .await?;
     match response.status().as_u16() {
@@ -378,7 +390,7 @@ async fn run_agent_flow(
                         crate::state::AgentProvisioningPhase::Recovering,
                         Some(state.agent_id.clone()),
                     );
-                    recover_my_agent(&client, &keys, &base_url).await?;
+                    recover_my_agent(&client, &keys, &base_url, agent_kind).await?;
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
                     }
@@ -996,5 +1008,47 @@ mod tests {
         assert!(captured
             .iter()
             .all(|(request_line, _, _)| !request_line.starts_with("POST /v1/agents/me/recover ")));
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_recover_sends_selected_agent_kind() {
+        let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"error","startup_phase":"failed"}"#,
+            ),
+            (
+                "POST /v1/agents/me/recover ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"provisioning_vm"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1piagent","state":"ready","startup_phase":"ready"}"#,
+            ),
+        ])
+        .expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(client, keys, base_url, crate::state::AgentKind::Pi, tx, 1)
+            .await
+            .expect("run agent flow");
+        assert_eq!(agent_id, "npub1piagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        let recover = captured
+            .iter()
+            .find(|(request_line, _, _)| request_line.starts_with("POST /v1/agents/me/recover "))
+            .expect("recover request");
+        assert!(recover.2.contains("\"kind\":\"pi\""));
     }
 }

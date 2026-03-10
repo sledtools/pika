@@ -8,7 +8,8 @@ Usage: pika-build-run-workspace-deps.sh [--installable TARGET] [--remote-host HO
 Sync the current filtered worktree snapshot to pika-build and realize one staged x86_64 Linux
 prepare output there. This is the strict remote-authoritative path for staged Linux Rust
 outputs: the helper must not build the final output locally or round-trip it back through the
-Mac, and it prunes older remote helper snapshots before uploading a new one.
+Mac, and it cleans up its own remote helper snapshot on exit while only pruning stale sibling
+helper snapshots that are older than a conservative age threshold.
 
 Options:
   --installable TARGET   Installable to realize remotely. Default: .#ci.x86_64-linux.workspaceDeps
@@ -17,6 +18,7 @@ Options:
   --ssh-binary PATH      SSH binary. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}
   --remote-nix-binary    Remote nix binary. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}
   --snapshot-id ID       Remote helper snapshot id. Default: helper-<timestamp>-<pid>
+  --stale-minutes N      Prune sibling helper dirs older than N minutes. Default: ${PIKACI_X86_64_REMOTE_HELPER_STALE_MINUTES:-15}
   -h, --help             Show this help.
 EOF
 }
@@ -27,6 +29,7 @@ remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/
 ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}"
 remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}"
 snapshot_id="helper-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+stale_minutes="${PIKACI_X86_64_REMOTE_HELPER_STALE_MINUTES:-15}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       snapshot_id="${2:?missing value for --snapshot-id}"
       shift 2
       ;;
+    --stale-minutes)
+      stale_minutes="${2:?missing value for --stale-minutes}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -76,14 +83,20 @@ case "$installable" in
 esac
 
 attr="${installable#.#}"
-remote_snapshot_dir="${remote_work_dir}/helpers/${snapshot_id}/snapshot"
+remote_snapshot_root="${remote_work_dir}/helpers/${snapshot_id}"
+remote_snapshot_dir="${remote_snapshot_root}/snapshot"
 remote_installable="path:${remote_snapshot_dir}#${attr}"
 remote_marker="${remote_snapshot_dir}/pikaci-snapshot.json"
-remote_helpers_dir="${remote_work_dir}/helpers"
 
 remote_q() {
   printf "'%s'" "${1//\'/\'\"\'\"\'}"
 }
+
+cleanup_remote_snapshot() {
+  "$ssh_binary" "$remote_host" "rm -rf $(remote_q "$remote_snapshot_root")" >/dev/null 2>&1 || true
+}
+
+trap cleanup_remote_snapshot EXIT
 
 echo "==> strict staged x86_64 remote prepare on pika-build"
 echo "    installable: $installable"
@@ -91,9 +104,10 @@ echo "    remote host: $remote_host"
 echo "    remote work dir: $remote_work_dir"
 echo "    remote nix: $remote_nix_binary"
 echo "    remote snapshot: $remote_snapshot_dir"
+echo "    stale helper prune threshold (minutes): $stale_minutes"
 
 "$ssh_binary" "$remote_host" \
-  "set -euo pipefail; mkdir -p $(remote_q "$remote_helpers_dir"); find $(remote_q "$remote_helpers_dir") -mindepth 1 -maxdepth 1 -type d ! -name $(remote_q "$snapshot_id") -exec rm -rf {} +; rm -rf $(remote_q "$remote_snapshot_dir"); mkdir -p $(remote_q "$remote_snapshot_dir")"
+  "set -euo pipefail; mkdir -p $(remote_q "${remote_work_dir}/helpers"); find $(remote_q "${remote_work_dir}/helpers") -mindepth 1 -maxdepth 1 -type d -mmin +${stale_minutes} ! -name $(remote_q "$snapshot_id") -exec rm -rf {} +; rm -rf $(remote_q "$remote_snapshot_root"); mkdir -p $(remote_q "$remote_snapshot_dir")"
 
 tar -C "$PWD" \
   --exclude=.git \

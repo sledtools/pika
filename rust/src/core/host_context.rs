@@ -48,6 +48,14 @@ impl<'a> AppHostContext<'a> {
         self.runtime().list_joined_group_snapshots()
     }
 
+    pub(super) fn load_message_page(
+        &self,
+        chat_id: &str,
+        query: pika_marmot_runtime::conversation::RuntimeMessagePageQuery,
+    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeMessagePage> {
+        self.runtime().load_message_page(chat_id, query)
+    }
+
     pub(super) fn prepare_outbound_action_for_chat(
         &self,
         chat_id: &str,

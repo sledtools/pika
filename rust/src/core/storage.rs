@@ -428,6 +428,7 @@ impl AppCore {
         self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
         let sess = self.session.as_ref().unwrap();
+        let host = sess.host_context();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
@@ -441,25 +442,32 @@ impl AppCore {
         let mut visible_messages = Vec::new();
         let mut fetch_offset = 0;
         let mut storage_len = 0;
+        let mut storage_exhausted = true;
         loop {
-            let batch = sess
-                .mdk
-                .get_messages(
-                    &entry.mls_group_id,
-                    Some(Pagination::new(Some(target), Some(fetch_offset))),
-                )
-                .unwrap_or_default();
-            let batch_len = batch.len();
-            storage_len += batch_len;
+            let page = match host.load_message_page(
+                chat_id,
+                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(
+                    target,
+                    fetch_offset,
+                ),
+            ) {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::debug!(%e, chat_id, limit = target, offset = fetch_offset, "load message page failed");
+                    break;
+                }
+            };
+            storage_len += page.fetched_count;
+            storage_exhausted = page.storage_exhausted;
             visible_messages.extend(
-                batch
+                page.messages
                     .into_iter()
                     .filter(|m| classify_app_message(m).is_some_and(|k| k.is_chat_visible())),
             );
-            if batch_len < target || visible_messages.len() >= target {
+            if storage_exhausted || visible_messages.len() >= target {
                 break;
             }
-            fetch_offset += batch_len;
+            fetch_offset = page.next_offset;
         }
 
         let separated = separate_messages(&visible_messages, &sender_names);
@@ -617,7 +625,7 @@ impl AppCore {
             local.retain(|id, lm| !present_ids.contains(id) && lm.timestamp >= oldest_loaded_ts);
         }
 
-        let can_load_older = visible_messages.len() >= target;
+        let can_load_older = !storage_exhausted;
         self.loaded_count.insert(chat_id.to_string(), storage_len);
 
         process_hypernote_responses(
@@ -840,6 +848,7 @@ impl AppCore {
         self.ensure_media_cache_loaded(chat_id, &my_pubkey_hex);
 
         let sess = self.session.as_ref().unwrap();
+        let host = sess.host_context();
         let sender_names = self.build_sender_names(chat_id, &entry.members, &my_pubkey_hex);
         let member_profiles =
             self.build_member_profiles(chat_id, sess, &entry.members, &my_pubkey_hex);
@@ -847,25 +856,29 @@ impl AppCore {
         let base_offset = *self.loaded_count.get(chat_id).unwrap_or(&0);
         let mut visible_page = Vec::new();
         let mut total_fetched = 0;
+        let mut storage_exhausted = true;
         loop {
-            let batch = sess
-                .mdk
-                .get_messages(
-                    &entry.mls_group_id,
-                    Some(Pagination::new(
-                        Some(limit),
-                        Some(base_offset + total_fetched),
-                    )),
-                )
-                .unwrap_or_default();
-            let batch_len = batch.len();
-            total_fetched += batch_len;
+            let page = match host.load_message_page(
+                chat_id,
+                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(
+                    limit,
+                    base_offset + total_fetched,
+                ),
+            ) {
+                Ok(page) => page,
+                Err(e) => {
+                    tracing::debug!(%e, chat_id, limit, offset = base_offset + total_fetched, "load older message page failed");
+                    break;
+                }
+            };
+            total_fetched += page.fetched_count;
+            storage_exhausted = page.storage_exhausted;
             visible_page.extend(
-                batch
+                page.messages
                     .into_iter()
                     .filter(|m| classify_app_message(m).is_some_and(|k| k.is_chat_visible())),
             );
-            if batch_len < limit || visible_page.len() >= limit {
+            if storage_exhausted || visible_page.len() >= limit {
                 break;
             }
         }
@@ -933,7 +946,7 @@ impl AppCore {
             if cur.chat_id == chat_id {
                 older.append(&mut cur.messages);
                 cur.messages = older;
-                cur.can_load_older = total_fetched >= limit;
+                cur.can_load_older = !storage_exhausted;
                 self.loaded_count
                     .insert(chat_id.to_string(), base_offset + total_fetched);
                 process_html_updates(&mut cur.messages);

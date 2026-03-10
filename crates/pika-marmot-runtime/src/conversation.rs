@@ -74,6 +74,28 @@ pub struct RuntimeGroupSummary {
     pub member_count: u32,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct RuntimeMessagePageQuery {
+    pub limit: usize,
+    pub offset: usize,
+}
+
+impl RuntimeMessagePageQuery {
+    pub const fn new(limit: usize, offset: usize) -> Self {
+        Self { limit, offset }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeMessagePage {
+    pub nostr_group_id_hex: String,
+    pub mls_group_id: GroupId,
+    pub messages: Vec<Message>,
+    pub fetched_count: usize,
+    pub next_offset: usize,
+    pub storage_exhausted: bool,
+}
+
 pub struct ConversationRuntime<'a> {
     mdk: &'a PikaMdk,
 }
@@ -208,6 +230,30 @@ impl<'a> ConversationRuntime<'a> {
             .context("get messages")
     }
 
+    pub fn load_message_page(
+        &self,
+        nostr_group_id_hex: &str,
+        query: RuntimeMessagePageQuery,
+    ) -> Result<RuntimeMessagePage> {
+        let mls_group_id = self.mls_group_id_for_nostr_group_id(nostr_group_id_hex)?;
+        let messages = self
+            .mdk
+            .get_messages(
+                &mls_group_id,
+                Some(Pagination::new(Some(query.limit), Some(query.offset))),
+            )
+            .context("get message page")?;
+        let fetched_count = messages.len();
+        Ok(RuntimeMessagePage {
+            nostr_group_id_hex: nostr_group_id_hex.to_string(),
+            mls_group_id,
+            messages,
+            fetched_count,
+            next_offset: query.offset + fetched_count,
+            storage_exhausted: fetched_count < query.limit,
+        })
+    }
+
     pub async fn ingest_backlog_messages(
         &self,
         client: &Client,
@@ -313,6 +359,21 @@ mod tests {
         }
     }
 
+    fn store_group_message(
+        mdk: &PikaMdk,
+        keys: &Keys,
+        mls_group_id: &GroupId,
+        kind: Kind,
+        content: &str,
+    ) -> Event {
+        let rumor = nostr_sdk::prelude::EventBuilder::new(kind, content).build(keys.public_key());
+        let event = mdk
+            .create_message(mls_group_id, rumor)
+            .expect("create group message");
+        mdk.process_message(&event).expect("process group message");
+        event
+    }
+
     #[test]
     fn interpret_processing_result_classifies_and_resolves_group() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
@@ -411,6 +472,72 @@ mod tests {
                 .contains(&invitee_keys.public_key())
         );
         assert_eq!(snapshots[0].member_count(), 2);
+        assert_eq!(snapshots[0].last_message_at, None);
+    }
+
+    #[test]
+    fn load_message_page_surfaces_shared_pagination_metadata() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "message page test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        store_group_message(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::ChatMessage,
+            "first",
+        );
+        store_group_message(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::ChatMessage,
+            "second",
+        );
+        let runtime = ConversationRuntime::new(&inviter_mdk);
+
+        let first_page = runtime
+            .load_message_page(&nostr_group_id_hex, RuntimeMessagePageQuery::new(1, 0))
+            .expect("load first page");
+        let second_page = runtime
+            .load_message_page(&nostr_group_id_hex, RuntimeMessagePageQuery::new(1, 1))
+            .expect("load second page");
+        let empty_page = runtime
+            .load_message_page(&nostr_group_id_hex, RuntimeMessagePageQuery::new(1, 2))
+            .expect("load empty page");
+
+        assert_eq!(first_page.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(first_page.mls_group_id, created.group.mls_group_id);
+        assert_eq!(first_page.fetched_count, 1);
+        assert_eq!(first_page.next_offset, 1);
+        assert!(!first_page.storage_exhausted);
+        assert_eq!(first_page.messages.len(), 1);
+        assert_eq!(second_page.fetched_count, 1);
+        assert_eq!(second_page.next_offset, 2);
+        assert!(!second_page.storage_exhausted);
+        assert_eq!(empty_page.fetched_count, 0);
+        assert_eq!(empty_page.next_offset, 2);
+        assert!(empty_page.storage_exhausted);
     }
 
     #[test]

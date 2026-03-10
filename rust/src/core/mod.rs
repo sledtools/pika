@@ -6689,6 +6689,22 @@ mod tests {
                 .expect("create group message event")
         }
 
+        fn store_group_message(core: &AppCore, mls_group_id: &GroupId, content: &str) {
+            let event = make_group_message_event(
+                core,
+                mls_group_id,
+                Kind::ChatMessage,
+                content,
+                Tags::new(),
+            );
+            core.session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .process_message(&event)
+                .expect("process group message");
+        }
+
         #[test]
         fn no_session_returns_early() {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -7021,6 +7037,39 @@ mod tests {
             // refresh_current_chat (which re-fetches from storage).  The key
             // assertion is that unread stays at 0 — proving we took the
             // "current chat" code path instead of the "other chat" path.
+        }
+
+        #[test]
+        fn app_message_history_loading_uses_shared_runtime_page_query() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            for idx in 0..55 {
+                store_group_message(&core, &group_id, &format!("message {idx}"));
+            }
+
+            core.refresh_chat_list_from_storage();
+            let first_page = core
+                .host_context()
+                .expect("host context")
+                .load_message_page(
+                    &chat_id,
+                    pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(50, 0),
+                )
+                .expect("load first page");
+
+            core.refresh_current_chat(&chat_id);
+
+            let current = core.state.current_chat.as_ref().expect("current chat");
+            assert_eq!(first_page.fetched_count, 50);
+            assert_eq!(current.messages.len(), 50);
+            assert!(current.can_load_older);
+            assert_eq!(core.loaded_count.get(&chat_id).copied(), Some(50));
+
+            core.load_older_messages(&chat_id, 10);
+
+            let current = core.state.current_chat.as_ref().expect("current chat");
+            assert_eq!(current.messages.len(), 55);
+            assert!(!current.can_load_older);
+            assert_eq!(core.loaded_count.get(&chat_id).copied(), Some(55));
         }
 
         #[test]

@@ -320,6 +320,8 @@ Current status:
 - app and daemon both derive that plan from shared runtime state while keeping actual connect/reconnect and combined-vs-individual subscription execution local
 - fourth session-facing slice landed: shared durable joined-group snapshot queries now rebuild current group/chat index metadata from MDK/runtime state
 - app chat-list refresh and daemon list-groups both consume that shared snapshot query while keeping UI/protocol presentation local
+- fifth durable-state/query slice landed: shared runtime message-history page queries now surface joined-chat messages plus pagination metadata from MDK/runtime state
+- app current-chat/load-older flows and daemon get-messages now consume that shared page query while keeping chat-view and protocol formatting local
 
 Important caution:
 this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction

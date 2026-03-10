@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Managed OpenClaw Login</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f0e6;
+      --panel: rgba(255, 251, 243, 0.92);
+      --border: #d3c6aa;
+      --ink: #1f2521;
+      --muted: #5f665d;
+      --accent: #0d6b57;
+      --accent-ink: #f7fff9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(13, 107, 87, 0.16), transparent 34%),
+        linear-gradient(180deg, #f8f5ee 0%, var(--bg) 100%);
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 18px 60px rgba(72, 58, 31, 0.08);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2.4rem, 7vw, 4rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    p {
+      margin: 0 0 16px;
+      font-size: 1.05rem;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 14px 22px;
+      font: inherit;
+      background: var(--accent);
+      color: var(--accent-ink);
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: progress;
+    }
+    code {
+      font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+      font-size: 0.92em;
+    }
+    .note {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(13, 107, 87, 0.08);
+      color: var(--ink);
+    }
+    #status {
+      min-height: 1.4em;
+      margin-top: 14px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <h1>Managed OpenClaw</h1>
+      <p>This is the customer control surface for your managed OpenClaw environment.</p>
+      <p>Sign in with a Nostr browser extension. Access is allowlist-only in this phase, and your authenticated identity is your <code>npub</code>.</p>
+      <button id="login">Sign in with Nostr</button>
+      <p id="status"></p>
+      <div class="note">
+        Recover and destructive reset are controlled from the dashboard after sign-in. Recover preserves the durable home. Reset is allowed to destroy it and create a fresh managed environment.
+      </div>
+    </section>
+  </main>
+  <script>
+  (function() {
+    const btn = document.getElementById('login');
+    const status = document.getElementById('status');
+    async function login() {
+      if (!window.nostr) {
+        alert('No Nostr extension detected.');
+        return;
+      }
+      try {
+        btn.disabled = true;
+        status.textContent = 'Requesting challenge...';
+        const challengeRes = await fetch('/login/challenge', { method: 'POST' });
+        if (!challengeRes.ok) throw new Error('challenge request failed');
+        const { challenge } = await challengeRes.json();
+
+        status.textContent = 'Signing event...';
+        const pubkey = await window.nostr.getPublicKey();
+        const event = {
+          kind: 27235,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['u', window.location.origin + '/login/verify'], ['method', 'POST']],
+          content: challenge,
+          pubkey
+        };
+        const signed = await window.nostr.signEvent(event);
+
+        status.textContent = 'Verifying...';
+        const verifyRes = await fetch('/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: signed })
+        });
+        if (!verifyRes.ok) {
+          const text = await verifyRes.text();
+          throw new Error(text || 'verify failed');
+        }
+        window.location.assign('/dashboard');
+      } catch (err) {
+        btn.disabled = false;
+        status.textContent = '';
+        alert('Login failed: ' + (err.message || err));
+      }
+    }
+    btn.addEventListener('click', login);
+  })();
+  </script>
+</body>
+</html>

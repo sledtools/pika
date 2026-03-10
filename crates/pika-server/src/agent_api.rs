@@ -55,6 +55,18 @@ impl AgentApiError {
         self.request_id = Some(request_id.into());
         self
     }
+
+    pub(crate) fn status_code(&self) -> StatusCode {
+        self.status
+    }
+
+    pub(crate) fn error_code(&self) -> &'static str {
+        self.code.as_str()
+    }
+
+    pub(crate) fn request_id(&self) -> Option<&str> {
+        self.request_id.as_deref()
+    }
 }
 
 impl IntoResponse for AgentApiError {
@@ -97,6 +109,21 @@ pub(crate) struct AgentStateResponse {
     vm_id: Option<String>,
     state: AgentAppState,
     startup_phase: AgentStartupPhase,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedEnvironmentAction {
+    pub row: AgentInstance,
+    pub startup_phase: AgentStartupPhase,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedEnvironmentStatus {
+    pub row: Option<AgentInstance>,
+    pub app_state: Option<AgentAppState>,
+    pub startup_phase: Option<AgentStartupPhase>,
+    pub environment_exists: bool,
+    pub status_copy: String,
 }
 
 fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
@@ -270,6 +297,42 @@ fn json_response(
     )?))
 }
 
+fn managed_environment_status_copy(
+    row: Option<&AgentInstance>,
+    startup_phase: Option<AgentStartupPhase>,
+) -> String {
+    match (row, startup_phase) {
+        (None, None) => "No managed OpenClaw environment has been provisioned yet.".to_string(),
+        (Some(_), Some(AgentStartupPhase::Requested)) => {
+            "Provision request recorded. Waiting for a managed OpenClaw VM to be assigned."
+                .to_string()
+        }
+        (Some(_), Some(AgentStartupPhase::ProvisioningVm)) => {
+            "Provisioning a managed OpenClaw environment.".to_string()
+        }
+        (Some(_), Some(AgentStartupPhase::BootingGuest)) => {
+            "The VM is booting and OpenClaw is starting inside the guest.".to_string()
+        }
+        (Some(_), Some(AgentStartupPhase::WaitingForServiceReady)) => {
+            "The VM is up. Waiting for the managed OpenClaw service to report ready."
+                .to_string()
+        }
+        (Some(_), Some(AgentStartupPhase::Ready)) => {
+            "Managed OpenClaw is running and ready.".to_string()
+        }
+        (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
+            "Managed OpenClaw needs recovery. Recover preserves the durable home; destructive reset deletes it and starts fresh."
+                .to_string()
+        }
+        (Some(_), Some(AgentStartupPhase::Failed)) => {
+            "The last managed OpenClaw environment failed before a durable VM was available."
+                .to_string()
+        }
+        (Some(_), None) => "Managed OpenClaw status is unavailable.".to_string(),
+        (None, Some(_)) => "Managed OpenClaw status is unavailable.".to_string(),
+    }
+}
+
 fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
     match (vm.status.as_str(), vm.guest_ready) {
         ("failed", _) => AGENT_PHASE_ERROR,
@@ -310,6 +373,7 @@ fn load_visible_agent_row(
     Ok(select_visible_agent_row(active, latest))
 }
 
+#[cfg(test)]
 fn visible_agent_response(
     conn: &mut PgConnection,
     owner_npub: &str,
@@ -325,6 +389,19 @@ fn visible_agent_response(
         .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Internal))
         .map_err(|err| err.with_request_id(request_id.to_string()))?;
     json_response(active, startup_phase, request_id)
+}
+
+fn normalize_loaded_agent_row(
+    conn: &mut PgConnection,
+    row: AgentInstance,
+    request_id: &str,
+) -> Result<AgentInstance, AgentApiError> {
+    match row.vm_id.as_deref() {
+        Some(_) => Ok(row),
+        None if row.phase != AGENT_PHASE_ERROR => mark_agent_errored(conn, &row.agent_id)
+            .map_err(|err| err.with_request_id(request_id.to_string())),
+        None => Ok(row),
+    }
 }
 
 struct RefreshedAgentStatus {
@@ -417,6 +494,40 @@ async fn refresh_agent_from_spawner(
     Ok(RefreshedAgentStatus {
         row: updated,
         startup_phase,
+    })
+}
+
+pub(crate) async fn load_managed_environment_status(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<ManagedEnvironmentStatus, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let Some(row) = load_visible_agent_row(&mut conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?
+    else {
+        return Ok(ManagedEnvironmentStatus {
+            row: None,
+            app_state: None,
+            startup_phase: None,
+            environment_exists: false,
+            status_copy: managed_environment_status_copy(None, None),
+        });
+    };
+    let normalized = normalize_loaded_agent_row(&mut conn, row, request_id)?;
+    let refreshed = refresh_agent_from_spawner(&mut conn, normalized, request_id).await?;
+    let app_state = phase_to_state(&refreshed.row.phase);
+    Ok(ManagedEnvironmentStatus {
+        environment_exists: refreshed.row.vm_id.is_some(),
+        status_copy: managed_environment_status_copy(
+            Some(&refreshed.row),
+            Some(refreshed.startup_phase),
+        ),
+        row: Some(refreshed.row),
+        app_state,
+        startup_phase: Some(refreshed.startup_phase),
     })
 }
 
@@ -605,30 +716,22 @@ async fn provision_agent_for_owner(
     Ok(updated)
 }
 
-async fn reprovision_agent_response(
+pub(crate) async fn provision_managed_environment_if_missing(
     state: &State,
     owner_npub: &str,
     request_id: &str,
     requested: Option<&MicrovmProvisionParams>,
-) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
-        Ok(reprovisioned) => {
-            json_response(reprovisioned, AgentStartupPhase::ProvisioningVm, request_id)
-        }
-        Err(err) if err.code == AgentApiErrorCode::AgentExists => {
-            let mut conn = state.db_pool.get().map_err(|_| {
-                AgentApiError::from_code(AgentApiErrorCode::Internal)
-                    .with_request_id(request_id.to_string())
-            })?;
-            visible_agent_response(
-                &mut conn,
-                owner_npub,
-                request_id,
-                AgentApiErrorCode::RecoverFailed,
-            )
-        }
-        Err(err) => Err(err),
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    let status = load_managed_environment_status(state, owner_npub, request_id).await?;
+    if let (Some(row), Some(startup_phase)) = (status.row, status.startup_phase) {
+        return Ok(ManagedEnvironmentAction { row, startup_phase });
     }
+
+    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
+    Ok(ManagedEnvironmentAction {
+        row,
+        startup_phase: AgentStartupPhase::ProvisioningVm,
+    })
 }
 
 pub async fn ensure_agent(
@@ -693,14 +796,7 @@ pub async fn get_my_agent(
         return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
             .with_request_id(request_context.request_id.clone()));
     };
-    let normalized = match active.vm_id.as_deref() {
-        Some(_) => active,
-        None if active.phase != AGENT_PHASE_ERROR => {
-            mark_agent_errored(&mut conn, &active.agent_id)
-                .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
-        }
-        None => active,
-    };
+    let normalized = normalize_loaded_agent_row(&mut conn, active, &request_context.request_id)?;
     let refreshed =
         refresh_agent_from_spawner(&mut conn, normalized, &request_context.request_id).await?;
     json_response(
@@ -708,6 +804,167 @@ pub async fn get_my_agent(
         refreshed.startup_phase,
         &request_context.request_id,
     )
+}
+
+pub(crate) async fn recover_agent_for_owner(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let Some(active) = load_visible_agent_row(&mut conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?
+    else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
+        );
+    };
+    if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
+        prepare_agent_for_reprovision(&mut conn, &active)
+            .map_err(|err| err.with_request_id(request_id.to_string()))?;
+        drop(conn);
+        let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
+        return Ok(ManagedEnvironmentAction {
+            row,
+            startup_phase: AgentStartupPhase::ProvisioningVm,
+        });
+    }
+    let vm_id = active.vm_id.clone().ok_or_else(|| {
+        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
+    })?;
+
+    let resolved = resolved_spawner_params(requested).map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
+    })?;
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let recovered = match spawner
+        .recover_vm_with_request_id(&vm_id, Some(request_id))
+        .await
+    {
+        Ok(recovered) => recovered,
+        Err(err) if is_vm_not_found_error(&err) => {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "recover requested for missing vm; marking stale agent errored and reprovisioning"
+            );
+            prepare_agent_for_reprovision(&mut conn, &active)
+                .map_err(|err| err.with_request_id(request_id.to_string()))?;
+            drop(conn);
+            let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
+            return Ok(ManagedEnvironmentAction {
+                row,
+                startup_phase: AgentStartupPhase::ProvisioningVm,
+            });
+        }
+        Err(err) => {
+            tracing::error!(
+                request_id = %request_id,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                owner_npub = %owner_npub,
+                error = %err,
+                "failed to recover agent microvm"
+            );
+            return Err(AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
+                .with_request_id(request_id));
+        }
+    };
+
+    let updated = AgentInstance::update_phase(
+        &mut conn,
+        &active.agent_id,
+        phase_from_spawner_vm(&recovered),
+        Some(&recovered.id),
+    )
+    .map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    Ok(ManagedEnvironmentAction {
+        row: updated,
+        startup_phase: startup_phase_from_spawner_vm(&recovered),
+    })
+}
+
+pub(crate) async fn reset_agent_for_owner(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    let existing = {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+        load_visible_agent_row(&mut conn, owner_npub)
+            .map_err(|err| err.with_request_id(request_id.to_string()))?
+    };
+
+    if let Some(vm_id) = existing.as_ref().and_then(|row| row.vm_id.as_deref()) {
+        let resolved = resolved_spawner_params(requested).map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                error = %err,
+                "failed to resolve reset spawner params"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+        let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+        match spawner
+            .delete_vm_with_request_id(vm_id, Some(request_id))
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    request_id = %request_id,
+                    owner_npub = %owner_npub,
+                    vm_id = %vm_id,
+                    "destroyed managed environment during reset"
+                );
+            }
+            Err(err) if is_vm_not_found_error(&err) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    owner_npub = %owner_npub,
+                    vm_id = %vm_id,
+                    error = %err,
+                    "reset requested for missing vm; continuing with fresh provision"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    owner_npub = %owner_npub,
+                    vm_id = %vm_id,
+                    error = %err,
+                    "failed to destroy managed environment during reset"
+                );
+                return Err(AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_id));
+            }
+        }
+    }
+
+    if let Some(existing) = existing {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+        prepare_agent_for_reprovision(&mut conn, &existing)
+            .map_err(|err| err.with_request_id(request_id.to_string()))?;
+    }
+
+    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
+    Ok(ManagedEnvironmentAction {
+        row,
+        startup_phase: AgentStartupPhase::ProvisioningVm,
+    })
 }
 
 pub async fn recover_my_agent(
@@ -728,87 +985,18 @@ pub async fn recover_my_agent(
         state.trust_forwarded_host,
     )
     .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-    let Some(active) = load_visible_agent_row(&mut conn, &requester.owner_npub)
-        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?
-    else {
-        return Err(AgentApiError::from_code(AgentApiErrorCode::AgentNotFound)
-            .with_request_id(request_context.request_id.clone()));
-    };
+    drop(conn);
     let requested = body.as_ref().and_then(|body| body.microvm.as_ref());
-    if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
-        prepare_agent_for_reprovision(&mut conn, &active)
-            .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-        drop(conn);
-        return reprovision_agent_response(
-            &state,
-            &requester.owner_npub,
-            &request_context.request_id,
-            requested,
-        )
-        .await;
-    }
-    let vm_id = active.vm_id.clone().ok_or_else(|| {
-        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-            .with_request_id(request_context.request_id.clone())
-    })?;
-
-    let resolved = resolved_spawner_params(requested).map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-            .with_request_id(request_context.request_id.clone())
-    })?;
-    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
-    let recovered = match spawner
-        .recover_vm_with_request_id(&vm_id, Some(&request_context.request_id))
-        .await
-    {
-        Ok(recovered) => recovered,
-        Err(err) if is_vm_not_found_error(&err) => {
-            tracing::error!(
-                request_id = %request_context.request_id,
-                owner_npub = %requester.owner_npub,
-                agent_id = %active.agent_id,
-                vm_id = %vm_id,
-                error = %err,
-                "recover requested for missing vm; marking stale agent errored and reprovisioning"
-            );
-            prepare_agent_for_reprovision(&mut conn, &active)
-                .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-            drop(conn);
-            return reprovision_agent_response(
-                &state,
-                &requester.owner_npub,
-                &request_context.request_id,
-                requested,
-            )
-            .await;
-        }
-        Err(err) => {
-            tracing::error!(
-                request_id = %request_context.request_id,
-                agent_id = %active.agent_id,
-                vm_id = %vm_id,
-                owner_npub = %requester.owner_npub,
-                error = %err,
-                "failed to recover agent microvm"
-            );
-            return Err(AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
-                .with_request_id(request_context.request_id.clone()));
-        }
-    };
-
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &active.agent_id,
-        phase_from_spawner_vm(&recovered),
-        Some(&recovered.id),
+    let recovered = recover_agent_for_owner(
+        &state,
+        &requester.owner_npub,
+        &request_context.request_id,
+        requested,
     )
-    .map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal)
-            .with_request_id(request_context.request_id.clone())
-    })?;
+    .await?;
     json_response(
-        updated,
-        startup_phase_from_spawner_vm(&recovered),
+        recovered.row,
+        recovered.startup_phase,
         &request_context.request_id,
     )
 }
@@ -821,6 +1009,7 @@ pub fn agent_api_healthcheck() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::serial_test_guard;
     use axum::body::HttpBody;
     use axum::http::header;
     use base64::Engine;
@@ -828,7 +1017,6 @@ mod tests {
     use diesel::prelude::*;
     use diesel_migrations::MigrationHarness;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
-    use std::sync::{Mutex, OnceLock};
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -844,14 +1032,6 @@ mod tests {
                 .expect("valid date")
                 .and_hms_opt(0, 0, 0)
                 .expect("valid timestamp"),
-        }
-    }
-
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        match GUARD.get_or_init(|| Mutex::new(())).lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
         }
     }
 
@@ -879,7 +1059,7 @@ mod tests {
     }
 
     fn with_spawner_env<T>(value: &str, f: impl FnOnce() -> T) -> T {
-        let _guard = test_guard();
+        let _guard = serial_test_guard();
         let prior = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
         unsafe {
             std::env::set_var(MICROVM_SPAWNER_URL_ENV, value);
@@ -901,7 +1081,7 @@ mod tests {
         kind: Option<&str>,
         f: impl FnOnce() -> T,
     ) -> T {
-        let _guard = test_guard();
+        let _guard = serial_test_guard();
         let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
         let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
         unsafe {
@@ -1326,7 +1506,7 @@ mod tests {
 
     #[test]
     fn prepare_agent_for_reprovision_clears_active_constraint_for_missing_vm_id_row() {
-        let _guard = test_guard();
+        let _guard = serial_test_guard();
         let Some(mut conn) = init_test_db_connection() else {
             return;
         };
@@ -1367,7 +1547,7 @@ mod tests {
 
     #[test]
     fn visible_agent_response_returns_active_row_for_recover_retry() {
-        let _guard = test_guard();
+        let _guard = serial_test_guard();
         let Some(mut conn) = init_test_db_connection() else {
             return;
         };

@@ -1,8 +1,7 @@
 use super::*;
 use crate::state::CallStatus;
 use pika_marmot_runtime::call::{
-    derive_relay_auth_token as derive_shared_relay_auth_token, parse_call_signal,
-    DEFAULT_CALL_BROADCAST_PREFIX,
+    derive_relay_auth_token as derive_shared_relay_auth_token, DEFAULT_CALL_BROADCAST_PREFIX,
 };
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome, InboundSignalContext,
@@ -14,7 +13,7 @@ pub(super) use pika_marmot_runtime::call::{
 };
 
 #[cfg(test)]
-use pika_marmot_runtime::call::valid_relay_auth_token;
+use pika_marmot_runtime::call::{parse_call_signal, valid_relay_auth_token};
 
 /// Type-safe call end reasons. Converted to strings for the UniFFI `CallStatus::Ended { reason }`
 /// and for the wire protocol (`call.end` / `call.reject` signals).
@@ -755,16 +754,16 @@ impl AppCore {
         }
     }
 
-    pub(super) fn maybe_parse_call_signal(
+    pub(super) fn filter_incoming_call_signal(
         &self,
         sender_pubkey: &PublicKey,
-        content: &str,
+        signal: Option<ParsedCallSignal>,
     ) -> Option<ParsedCallSignal> {
         let my_pubkey = self.session.as_ref().map(|s| s.pubkey);
         if my_pubkey.as_ref() == Some(sender_pubkey) {
             return None;
         }
-        parse_call_signal(content)
+        signal
     }
 }
 

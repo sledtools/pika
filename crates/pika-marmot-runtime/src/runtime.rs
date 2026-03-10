@@ -9,12 +9,14 @@ use mdk_storage_traits::messages::types::Message;
 use nostr_sdk::prelude::*;
 
 use crate::PikaMdk;
-use crate::call::{CallSessionParams, ParsedCallSignal};
+use crate::call::{CallSessionParams, ParsedCallSignal, parse_call_signal};
 use crate::call_runtime::{
     CallWorkflowRuntime, GroupCallContext, InboundCallSignalOutcome, InboundSignalContext,
     PendingIncomingCall, PreparedAcceptedCall, PreparedCallSignal,
 };
-use crate::conversation::{ConversationEvent, ConversationRuntime, RuntimeGroupSummary};
+use crate::conversation::{
+    ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupSummary,
+};
 use crate::media::{
     MediaRuntime, ParsedMediaAttachment, PreparedMediaUpload, RuntimeDownloadedMedia,
     RuntimeMediaUploadResult,
@@ -64,6 +66,34 @@ impl InboundGroupMessageProcessing {
             Self::Processed {
                 conversation_event, ..
             } => Some(conversation_event),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeApplicationMessageInterpretation {
+    TypingIndicator {
+        message: RuntimeApplicationMessage,
+    },
+    CallSignal {
+        message: RuntimeApplicationMessage,
+        parsed_signal: Option<ParsedCallSignal>,
+    },
+    Content {
+        message: RuntimeApplicationMessage,
+    },
+    GroupProfile {
+        message: RuntimeApplicationMessage,
+    },
+}
+
+impl RuntimeApplicationMessageInterpretation {
+    pub fn message(&self) -> &RuntimeApplicationMessage {
+        match self {
+            Self::TypingIndicator { message }
+            | Self::CallSignal { message, .. }
+            | Self::Content { message }
+            | Self::GroupProfile { message } => message,
         }
     }
 }
@@ -292,6 +322,38 @@ impl<'a> MarmotRuntime<'a> {
             return Ok(None);
         };
         self.process_group_message_event(event).map(Some)
+    }
+
+    pub fn interpret_runtime_application_message(
+        &self,
+        runtime_msg: RuntimeApplicationMessage,
+    ) -> RuntimeApplicationMessageInterpretation {
+        match runtime_msg.classification {
+            crate::message::MessageClassification::TypingIndicator => {
+                RuntimeApplicationMessageInterpretation::TypingIndicator {
+                    message: runtime_msg,
+                }
+            }
+            crate::message::MessageClassification::CallSignal => {
+                RuntimeApplicationMessageInterpretation::CallSignal {
+                    parsed_signal: parse_call_signal(&runtime_msg.message.content),
+                    message: runtime_msg,
+                }
+            }
+            crate::message::MessageClassification::Chat
+            | crate::message::MessageClassification::Reaction
+            | crate::message::MessageClassification::Hypernote
+            | crate::message::MessageClassification::HypernoteResponse => {
+                RuntimeApplicationMessageInterpretation::Content {
+                    message: runtime_msg,
+                }
+            }
+            crate::message::MessageClassification::GroupProfile => {
+                RuntimeApplicationMessageInterpretation::GroupProfile {
+                    message: runtime_msg,
+                }
+            }
+        }
     }
 
     pub fn interpret_processing_result(
@@ -652,6 +714,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call::{CallTrackSpec, OutgoingCallSignal, build_call_signal_json};
     use crate::conversation::RuntimeApplicationMessage;
     use mdk_core::prelude::NostrGroupConfigData;
 
@@ -683,6 +746,36 @@ mod tests {
             .build(keys.public_key());
         mdk.create_message(mls_group_id, rumor)
             .expect("create group message event")
+    }
+
+    fn make_runtime_application_message(
+        classification: crate::message::MessageClassification,
+        kind: Kind,
+        content: &str,
+    ) -> RuntimeApplicationMessage {
+        let created_at = Timestamp::from(123_u64);
+        let pubkey = Keys::generate().public_key();
+        let tags = Tags::new();
+        let mls_group_id = GroupId::from_slice(&[1, 2, 3]);
+        RuntimeApplicationMessage {
+            mls_group_id: mls_group_id.clone(),
+            nostr_group_id_hex: "deadbeef".to_string(),
+            classification,
+            message: mdk_storage_traits::messages::types::Message {
+                id: EventId::all_zeros(),
+                mls_group_id,
+                pubkey,
+                kind,
+                created_at,
+                processed_at: created_at,
+                content: content.to_string(),
+                tags: tags.clone(),
+                event: UnsignedEvent::new(pubkey, created_at, kind, tags, content.to_string()),
+                wrapper_event_id: EventId::all_zeros(),
+                epoch: None,
+                state: mdk_core::prelude::message_types::MessageState::Processed,
+            },
+        }
     }
 
     #[tokio::test]
@@ -827,6 +920,79 @@ mod tests {
             }
             other => panic!("expected ignored non-group event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn interpret_runtime_application_message_parses_shared_call_signal() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&tempdir);
+        let runtime = MarmotRuntime::new(&mdk);
+        let call_id = "550e8400-e29b-41d4-a716-446655440000";
+        let session = CallSessionParams {
+            moq_url: "https://moq.example.com/anon".to_string(),
+            broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: "capv1_test_token".to_string(),
+            tracks: vec![CallTrackSpec::audio0_opus_default()],
+        };
+        let content = build_call_signal_json(call_id, OutgoingCallSignal::Invite(&session))
+            .expect("build call signal");
+        let runtime_msg = make_runtime_application_message(
+            crate::message::MessageClassification::CallSignal,
+            crate::message::CALL_SIGNAL_KIND,
+            &content,
+        );
+
+        let interpreted = runtime.interpret_runtime_application_message(runtime_msg);
+
+        match interpreted {
+            RuntimeApplicationMessageInterpretation::CallSignal {
+                message,
+                parsed_signal: Some(ParsedCallSignal::Invite { call_id, session }),
+            } => {
+                assert_eq!(
+                    message.classification,
+                    crate::message::MessageClassification::CallSignal
+                );
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440000");
+                assert_eq!(session.moq_url, "https://moq.example.com/anon");
+            }
+            other => panic!("expected parsed call-signal interpretation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_runtime_application_message_marks_typing_content_and_group_profile() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&tempdir);
+        let runtime = MarmotRuntime::new(&mdk);
+        let typing = make_runtime_application_message(
+            crate::message::MessageClassification::TypingIndicator,
+            crate::message::TYPING_INDICATOR_KIND,
+            "typing",
+        );
+        let content = make_runtime_application_message(
+            crate::message::MessageClassification::Chat,
+            Kind::ChatMessage,
+            "hello",
+        );
+        let group_profile = make_runtime_application_message(
+            crate::message::MessageClassification::GroupProfile,
+            Kind::Metadata,
+            "{\"name\":\"Pika\"}",
+        );
+
+        assert!(matches!(
+            runtime.interpret_runtime_application_message(typing),
+            RuntimeApplicationMessageInterpretation::TypingIndicator { .. }
+        ));
+        assert!(matches!(
+            runtime.interpret_runtime_application_message(content),
+            RuntimeApplicationMessageInterpretation::Content { .. }
+        ));
+        assert!(matches!(
+            runtime.interpret_runtime_application_message(group_profile),
+            RuntimeApplicationMessageInterpretation::GroupProfile { .. }
+        ));
     }
 
     #[test]

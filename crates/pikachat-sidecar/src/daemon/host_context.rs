@@ -233,6 +233,14 @@ impl<'a> DaemonHostContext<'a> {
             .process_classified_inbound_group_message(inbound)
     }
 
+    pub(super) fn interpret_runtime_application_message(
+        &self,
+        runtime_msg: pika_marmot_runtime::conversation::RuntimeApplicationMessage,
+    ) -> pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation {
+        self.runtime()
+            .interpret_runtime_application_message(runtime_msg)
+    }
+
     pub(super) fn handle_inbound_call_signal(
         &self,
         ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,

@@ -896,6 +896,47 @@ mod tests {
         result
     }
 
+    fn with_server_microvm_env<T>(
+        spawner_url: &str,
+        kind: Option<&str>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let _guard = test_guard();
+        let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+        unsafe {
+            std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
+        }
+        match kind {
+            Some(kind) => unsafe {
+                std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
+            },
+            None => unsafe {
+                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+            },
+        }
+
+        let result = f();
+
+        match prior_spawner {
+            Some(prior) => unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+            },
+            None => unsafe {
+                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+            },
+        }
+        match prior_kind {
+            Some(prior) => unsafe {
+                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+            },
+            None => unsafe {
+                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+            },
+        }
+        result
+    }
+
     #[test]
     fn authenticated_requester_npub_requires_nostr_authorization_header() {
         let headers = HeaderMap::new();
@@ -1094,6 +1135,26 @@ mod tests {
     }
 
     #[test]
+    fn resolved_spawner_params_defaults_pi_to_acp_backend() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                backend: None,
+            };
+
+            let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
+            assert_eq!(
+                resolved.backend,
+                pika_agent_microvm::ResolvedMicrovmAgentBackend::Acp {
+                    exec_command: pika_agent_microvm::DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                    cwd: pika_agent_microvm::DEFAULT_ACP_CWD.to_string(),
+                }
+            );
+        });
+    }
+
+    #[test]
     fn resolved_spawner_params_rejects_pi_native_mode() {
         with_spawner_env("http://127.0.0.1:8080", || {
             let requested = MicrovmProvisionParams {
@@ -1105,6 +1166,58 @@ mod tests {
             let err = resolved_spawner_params(Some(&requested)).expect_err("pi native should fail");
             let msg = err.to_string();
             assert!(msg.contains("validate microvm agent selection"));
+        });
+    }
+
+    #[test]
+    fn server_env_selected_openclaw_builds_typed_startup_plan_request() {
+        with_server_microvm_env("http://127.0.0.1:8080", Some("openclaw"), || {
+            let resolved = resolved_spawner_params(None).expect("resolve server env defaults");
+            assert_eq!(
+                resolved.kind,
+                pika_agent_microvm::ResolvedMicrovmAgentKind::Openclaw
+            );
+            assert_eq!(
+                resolved.backend,
+                pika_agent_microvm::ResolvedMicrovmAgentBackend::Native
+            );
+
+            let owner_keys = Keys::generate();
+            let bot_keys = Keys::generate();
+            let request = build_create_vm_request(
+                &owner_keys.public_key(),
+                &default_message_relays(),
+                &bot_keys.secret_key().to_secret_hex(),
+                &bot_keys.public_key().to_hex(),
+                &resolved,
+            );
+
+            let startup_plan = request
+                .guest_autostart
+                .startup_plan
+                .clone()
+                .expect("startup plan");
+            assert_eq!(
+                startup_plan.agent_kind,
+                pika_agent_control_plane::MicrovmAgentKind::Openclaw
+            );
+            assert_eq!(
+                startup_plan.service_kind,
+                pika_agent_control_plane::GuestServiceKind::OpenclawGateway
+            );
+            assert_eq!(
+                startup_plan.backend_mode,
+                pika_agent_control_plane::GuestServiceBackendMode::Native
+            );
+
+            let startup_plan_file = request
+                .guest_autostart
+                .files
+                .get(pika_agent_control_plane::GUEST_STARTUP_PLAN_PATH)
+                .expect("startup plan file");
+            let serialized_plan: pika_agent_control_plane::GuestStartupPlan =
+                serde_json::from_str(startup_plan_file).expect("parse startup plan file");
+            assert_eq!(serialized_plan, startup_plan);
         });
     }
 

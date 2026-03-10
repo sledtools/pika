@@ -9,6 +9,17 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 {% endblock %}
 
+{% block nav_right_extra %}
+    {% if review_mode %}
+    <div class="review-nav-center">
+      <button id="review-prev" type="button" disabled>Prev</button>
+      <button id="review-dismiss" type="button" class="review-dismiss-btn">Dismiss</button>
+      <button id="review-next" type="button" disabled>Next</button>
+      <span id="review-pos" class="review-nav-pos"></span>
+    </div>
+    {% endif %}
+{% endblock %}
+
 {% block styles %}
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; margin-right: 0.4rem; font-size: 0.8rem; }
@@ -16,6 +27,7 @@
       .diff-panel { max-width: none; overflow-x: auto; }
       .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
       button { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.45rem 0.8rem; cursor: pointer; }
+      button:disabled { opacity: 0.55; cursor: default; }
       .step { display: none; }
       .step.active { display: block; }
       .evidence { background: var(--badge-bg-alt); border-radius: 10px; padding: 0.75rem; }
@@ -89,11 +101,8 @@
       .chat-msg p:first-child { margin-top: 0; }
       .chat-msg p:last-child { margin-bottom: 0; }
       .chat-msg ul, .chat-msg ol { margin: 0.3rem 0; padding-left: 1.2rem; }
-      /* Review mode nav */
-      .review-nav { background: var(--nav-bg); border-bottom: 1px solid var(--nav-border); padding: 0.5rem 1.5rem; position: sticky; top: 0; z-index: 20; }
-      .review-nav-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-      .review-nav-center { display: flex; gap: 0.5rem; align-items: center; }
-      .review-nav-link { font-size: 0.85rem; }
+      /* Review controls in top nav */
+      .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
       .review-dismiss-btn { background: var(--accent); color: #fff; border: none; padding: 0.35rem 0.8rem; font-size: 0.82rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
       .review-dismiss-btn:hover { background: var(--accent-hover); }
@@ -109,19 +118,6 @@
 {% endblock %}
 
 {% block body %}
-    {% if review_mode %}
-    <div class="review-nav" id="review-nav">
-      <div class="review-nav-inner">
-        <a href="/news/inbox" class="review-nav-link">Back to Inbox</a>
-        <div class="review-nav-center">
-          <button id="review-prev" type="button" disabled>Prev</button>
-          <button id="review-dismiss" type="button" class="review-dismiss-btn">Dismiss</button>
-          <button id="review-next" type="button" disabled>Next</button>
-        </div>
-        <span id="review-pos" class="review-nav-pos"></span>
-      </div>
-    </div>
-    {% endif %}
     <div class="page-layout">
     <div class="main-content">
       <p><a href="/news">Back to feed</a></p>
@@ -519,9 +515,6 @@
 
       // Review mode: inbox navigation
       (function () {
-        var reviewNav = document.getElementById('review-nav');
-        if (!reviewNav) return;
-
         var prId = window.location.pathname.match(/\/news\/inbox\/review\/(\d+)/);
         if (!prId) return;
         prId = prId[1];
@@ -530,67 +523,83 @@
         var nextBtn = document.getElementById('review-next');
         var dismissBtn = document.getElementById('review-dismiss');
         var posEl = document.getElementById('review-pos');
+        var reviewState = null;
+
+        if (!prevBtn || !nextBtn || !dismissBtn || !posEl) return;
 
         function getToken() {
           return window.pikaAuth && window.pikaAuth.getToken();
         }
 
-        async function loadNeighbors() {
+        function renderReviewContext(data) {
+          reviewState = data;
+          prevBtn.disabled = !data || data.prev === null;
+          nextBtn.disabled = !data || data.next === null;
+          prevBtn.onclick = data && data.prev !== null
+            ? function () { window.location.href = '/news/inbox/review/' + data.prev; }
+            : null;
+          nextBtn.onclick = data && data.next !== null
+            ? function () { window.location.href = '/news/inbox/review/' + data.next; }
+            : null;
+
+          if (!data || !data.total) {
+            posEl.textContent = '';
+            return;
+          }
+
+          var remaining = Math.max(data.total - data.position, 0);
+          posEl.textContent = data.position + ' / ' + data.total + ' · ' + remaining + ' left';
+        }
+
+        async function loadReviewContext() {
           var token = getToken();
-          if (!token) return;
+          if (!token) {
+            renderReviewContext(null);
+            return null;
+          }
           try {
             var res = await fetch('/news/api/inbox/neighbors/' + prId, {
               headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+              renderReviewContext(null);
+              return null;
+            }
             var data = await res.json();
-            if (data.prev !== null) {
-              prevBtn.disabled = false;
-              prevBtn.addEventListener('click', function () {
-                window.location.href = '/news/inbox/review/' + data.prev;
-              });
-            }
-            if (data.next !== null) {
-              nextBtn.disabled = false;
-              nextBtn.addEventListener('click', function () {
-                window.location.href = '/news/inbox/review/' + data.next;
-              });
-            }
-          } catch (e) {}
+            renderReviewContext(data);
+            return data;
+          } catch (e) {
+            renderReviewContext(null);
+            return null;
+          }
         }
 
-        if (dismissBtn) {
-          dismissBtn.addEventListener('click', async function () {
-            var token = getToken();
-            if (!token) { alert('Sign in first.'); return; }
-            try {
-              var res = await fetch('/news/api/inbox/dismiss', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-                body: JSON.stringify({ pr_ids: [parseInt(prId)] }),
-              });
-              if (!res.ok) throw new Error('Dismiss failed');
-              // Navigate to next item or back to inbox
-              var neighborsRes = await fetch('/news/api/inbox/neighbors/' + prId, {
-                headers: { 'Authorization': 'Bearer ' + token }
-              });
-              if (neighborsRes.ok) {
-                var n = await neighborsRes.json();
-                if (n.next !== null) {
-                  window.location.href = '/news/inbox/review/' + n.next;
-                  return;
-                }
-                if (n.prev !== null) {
-                  window.location.href = '/news/inbox/review/' + n.prev;
-                  return;
-                }
-              }
-              window.location.href = '/news/inbox';
-            } catch (e) {
-              alert('Error: ' + e.message);
+        dismissBtn.addEventListener('click', async function () {
+          var token = getToken();
+          if (!token) { alert('Sign in first.'); return; }
+
+          var context = await loadReviewContext();
+
+          try {
+            var res = await fetch('/news/api/inbox/dismiss', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({ pr_ids: [parseInt(prId)] }),
+            });
+            if (!res.ok) throw new Error('Dismiss failed');
+            if (context && context.next !== null) {
+              window.location.href = '/news/inbox/review/' + context.next;
+              return;
             }
-          });
-        }
+            if (context && context.prev !== null) {
+              window.location.href = '/news/inbox/review/' + context.prev;
+              return;
+            }
+            window.location.href = '/news/inbox';
+          } catch (e) {
+            alert('Error: ' + e.message);
+          }
+        });
 
         // Keyboard shortcuts: j/k for next/prev
         window.addEventListener('keydown', function (e) {
@@ -601,9 +610,9 @@
         });
 
         if (window.pikaAuth && window.pikaAuth.isAuthed()) {
-          loadNeighbors();
+          loadReviewContext();
         } else {
-          window.addEventListener('pika-auth', function () { loadNeighbors(); });
+          window.addEventListener('pika-auth', function () { loadReviewContext(); });
         }
       })();
     </script>

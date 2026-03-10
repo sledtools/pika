@@ -248,6 +248,14 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().interpret_conversation_event(event)
     }
 
+    pub(super) fn plan_group_subscriptions(
+        &self,
+        subscribed_group_ids: Vec<String>,
+    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
+        self.runtime()
+            .plan_group_subscriptions(subscribed_group_ids)
+    }
+
     pub(super) fn handle_inbound_call_signal(
         &self,
         ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,

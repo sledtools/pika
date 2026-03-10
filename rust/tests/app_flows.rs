@@ -39,9 +39,11 @@ fn write_config_ext(
     enable_external_signer: Option<bool>,
     notification_url: Option<&str>,
 ) {
+    const LOOPBACK_RELAY_URL: &str = "ws://127.0.0.1:9";
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let mut v = serde_json::json!({
         "disable_network": disable_network,
+        "disable_agent_allowlist_probe": true,
         "call_moq_url": "https://moq.local/anon",
         "call_broadcast_prefix": "pika/calls",
         "call_audio_backend": "synthetic",
@@ -51,6 +53,8 @@ fn write_config_ext(
     }
     if let Some(url) = notification_url {
         v["notification_url"] = serde_json::Value::String(url.to_string());
+        v["relay_urls"] = serde_json::json!([LOOPBACK_RELAY_URL]);
+        v["key_package_relay_urls"] = serde_json::json!([LOOPBACK_RELAY_URL]);
     }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }

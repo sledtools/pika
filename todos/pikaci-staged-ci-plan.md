@@ -865,4 +865,13 @@ We have at least one important Linux Rust lane where:
   - note that the remaining guest-visible network errors are now product/test-environment noise rather than staging-contract failures:
     - some tests still log DNS failures for public relays such as `wss://relay.damus.io`, `wss://relay.primal.net`, and `https://api.pikachat.org/v1/agents/me`,
     - but those calls are outside the staged fixture-binary contract and did not fail the lane,
+  - note that the current post-rebase hardening slice is still in progress rather than reproven:
+    - the staged Rust test configs now set `disable_agent_allowlist_probe = true`,
+    - the `min_version_check_e2e` app-flows helper now pins relay URLs to loopback instead of inheriting the public-relay defaults,
+    - and the rebased narrowed staged source now explicitly carries the `pikachat-openclaw` subtree required by current `origin/master`,
+  - note that this fresh rerun has not yet produced guest logs for the hardening verdict:
+    - the first post-rebase rerun exposed a `workspaceBuild` size regression, where staged manifest collection had drifted back to globbing every matching `target/debug/deps/<name>-*` executable and reintroduced duplicate hashed test binaries into the output,
+    - that regression is now narrowed by selecting exactly one captured compiler-artifact executable per staged target when emitting the lane manifests,
+    - the rebuilt `workspaceBuild` output is down from about `6.2 GiB` to about `5.4 GiB`, but the fresh `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun is still working through the `workspaceBuild` fulfillment boundary before guest logs exist,
+    - so the lane is not yet re-proven from the rebased tree and the hardening slice cannot honestly claim the outbound network noise is gone until that fresh rerun finishes,
   - and treat the next narrow slice as optional cleanup around those residual external-network assumptions or as the first product-focused follow-up now that the staged `x86_64-linux` microVM lane passes end-to-end.

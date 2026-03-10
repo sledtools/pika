@@ -16,6 +16,7 @@ const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
 #[serde(default)]
 pub(super) struct AppConfig {
     pub(super) disable_network: Option<bool>,
+    pub(super) disable_agent_allowlist_probe: Option<bool>,
     pub(super) enable_external_signer: Option<bool>,
     pub(super) relay_urls: Option<Vec<String>>,
     pub(super) key_package_relay_urls: Option<Vec<String>>,
@@ -106,6 +107,10 @@ impl AppCore {
             return !disable;
         }
         std::env::var("PIKA_DISABLE_NETWORK").ok().as_deref() != Some("1")
+    }
+
+    pub(super) fn agent_allowlist_probe_enabled(&self) -> bool {
+        !self.config.disable_agent_allowlist_probe.unwrap_or(false)
     }
 
     pub(super) fn default_relays(&self) -> Vec<RelayUrl> {
@@ -234,6 +239,19 @@ mod tests {
             value["key_package_relay_urls"],
             serde_json::json!(app_default_key_package_relays())
         );
+    }
+
+    #[test]
+    fn load_app_config_reads_disable_agent_allowlist_probe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("pika_config.json"),
+            r#"{"disable_agent_allowlist_probe":true}"#,
+        )
+        .expect("write config");
+
+        let config = load_app_config(dir.path().to_str().expect("utf8 path"));
+        assert_eq!(config.disable_agent_allowlist_probe, Some(true));
     }
 
     #[test]

@@ -91,6 +91,7 @@
       };
       ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
         mkdir -p "$out/crates"
+        mkdir -p "$out/pikachat-openclaw/openclaw/extensions"
         cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
         chmod -R u+w "$out/rust"
         rm -f "$out/rust/.pikaci-review-trigger"
@@ -104,6 +105,8 @@
         cp -R ${./crates/pika-test-utils} "$out/crates/pika-test-utils"
         cp -R ${./crates/pika-tls} "$out/crates/pika-tls"
         cp -R ${./crates/pikahut} "$out/crates/pikahut"
+        cp -R ${./pikachat-openclaw/openclaw/extensions/pikachat-openclaw} \
+          "$out/pikachat-openclaw/openclaw/extensions/pikachat-openclaw"
         cp ${./nix/ci/pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
         cp ${./nix/ci/pika-core-workspace/Cargo.lock} "$out/Cargo.lock"
       '';

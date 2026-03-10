@@ -451,6 +451,12 @@ impl AppCore {
 
     pub(super) fn refresh_agent_allowlist(&mut self) {
         self.invalidate_agent_allowlist_probe();
+        if !self.agent_allowlist_probe_enabled() {
+            self.agent_allowlist_state = AgentAllowlistState::Unknown;
+            self.sync_agent_menu_item_state();
+            self.emit_state();
+            return;
+        }
         let (client, keys, base_url, pubkey) = match (&self.state.auth, self.session.as_ref()) {
             (
                 AuthState::LoggedIn {

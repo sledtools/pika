@@ -610,7 +610,7 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [detect-changes, check-pika, shadow-pikaci-pre-merge-pika-rust, check-pikachat, check-pikachat-openclaw-e2e, check-agent-contracts, check-rmp, check-notifications, check-fixture]
+    needs: [detect-changes, check-pika, check-pikachat, check-pikachat-openclaw-e2e, check-agent-contracts, check-rmp, check-notifications, check-fixture]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate lane results
@@ -646,7 +646,6 @@ jobs:
           done
 
           echo "Advisory integration lanes:"
-          echo "shadow-pikaci-pre-merge-pika-rust: ${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }} (exit=${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.exit_code }})"
           echo "nightly-* jobs are non-blocking for pre-merge and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then

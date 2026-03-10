@@ -816,6 +816,76 @@ Deliverable:
 - a short note on compatibility tradeoffs and any remaining release-secret risks.
 ```
 
+### Prompt 8
+
+Workstream F1: simplify the macOS release packaging script and remove hardcoded packaging internals where possible.
+
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream F1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Simplify `scripts/build-macos-release` so it is easier to audit and maintain, with less hardcoded packaging logic embedded directly in one large shell script.
+
+Scope:
+- `scripts/build-macos-release`
+- a checked-in template file if needed (for example an Info.plist template)
+- `scripts/lib/mobile-build.sh` only if a tiny shared helper meaningfully reduces duplication
+- docs only if the command interface or important assumptions become clearer as a result
+
+Primary objectives:
+- Reduce the density of `scripts/build-macos-release`.
+- Remove the inline Info.plist heredoc from the script if a checked-in template is cleaner.
+- Reduce hardcoded path discovery where a reliable cargo- or repo-derived lookup is available.
+- Preserve the existing external behavior and workflow entrypoint.
+
+Constraints:
+- Do not change the release artifact shape unless required by correctness:
+  - still build the universal macOS app,
+  - still package the DMG,
+  - still use `VERSION` as the app version source of truth.
+- Do not break `.github/workflows/release.yml`.
+- Do not redesign the macOS release process or add signing/notarization work in this slice.
+- Keep the script shell-based unless a tiny helper extraction is clearly simpler than further shell growth.
+- Avoid unrelated cleanup outside the macOS release packaging path.
+
+Known complexity to target:
+- hardcoded target output paths for the two Rust builds
+- inline Info.plist generation in the middle of the shell script
+- dense bundling / packaging flow with little structure
+- release metadata discovery mixed directly into packaging steps
+
+Implementation guidance:
+- Prefer a few small helpers over one long top-to-bottom shell block.
+- If a template file makes the bundle metadata easier to review, use one.
+- If cargo metadata or an existing shared helper can derive target/build paths more reliably, use it where it meaningfully reduces hardcoding.
+- Preserve the current script interface so existing workflow calls still work.
+- Keep the nix-store link guard intact unless you have a correctness reason to change it.
+
+Verification:
+- Run `bash -n scripts/build-macos-release` and any new shell helper you add.
+- If you add or modify templates, verify the generated app bundle metadata path still works in the script flow.
+- Run the lightest safe verification you can, for example:
+  - `./scripts/build-macos-release --help` if you add help,
+  - targeted dry-run or fixture-level verification of template rendering/path discovery,
+  - any non-destructive local checks that confirm the script still resolves the expected binary outputs.
+- If a real macOS build is not practical, say exactly what you verified and what remains unverified.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 8 complete,
+  - add a short review note under the Review Log,
+  - add Prompt 9 only if another bounded cleanup slice clearly remains.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on what was simplified and any remaining release-packaging risks.
+```
+
 ## Review Log
 
 ### 2026-03-09
@@ -859,3 +929,7 @@ Deliverable:
 - Review note: `read-keystore-password`, `read-zapstore-sign-with`, `decrypt-keystore`, `encrypt-zapstore-signing`, and the decrypt/test portions of `init-release-secrets` now all share the same helper surface, and `init-release-secrets` no longer uses a fixed temp path for the generated CI private key.
 - Review tradeoff: the external script entrypoints and env overrides stayed intact; no Prompt 8 was added because the remaining cleanup work is not yet shaped into a comparably bounded slice.
 - Prompt 7 review follow-up: the shared helper now runs `AGE_SECRET_KEY` decrypts inside an EXIT-trapped subshell so temp identity files are removed even when the decrypt path is interrupted mid-command.
+- Next step is Prompt 8: simplify the macOS release packager now that the release/version flow and release-secret helpers have both been consolidated.
+- Completed Prompt 8 by restructuring `scripts/build-macos-release` into small helpers with a guarded `main`, moving the bundle metadata into a checked-in Info.plist template, and deriving per-target binary paths through cargo target helpers instead of raw `target/<triple>/release/...` strings.
+- Review note: the macOS packager is now easier to audit because version/git/deployment metadata loading, Rust target builds, icon generation, plist rendering, nix-store validation, and DMG packaging each live in a focused helper with the same workflow entrypoint.
+- Review tradeoff: the external script interface, DMG artifact shape, and nix-store link guard all stayed intact; no Prompt 9 was added because the remaining cleanup work is not yet shaped into another similarly bounded slice.

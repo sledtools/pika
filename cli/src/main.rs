@@ -1993,7 +1993,7 @@ async fn cmd_agent_chat(
     };
 
     let body = agent_provision_request(microvm);
-    let _ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
+    let _ = ensure_agent_idempotent(http, body.as_ref()).await?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
 

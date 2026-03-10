@@ -29,6 +29,7 @@ const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
+const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -192,7 +193,7 @@ impl MicrovmSpawnerClient {
         request_id: Option<&str>,
     ) -> anyhow::Result<VmResponse> {
         let url = format!("{}/vms/{vm_id}", self.base_url);
-        let resp = with_request_id(self.client.get(&url).timeout(DELETE_VM_TIMEOUT), request_id)
+        let resp = with_request_id(self.client.get(&url).timeout(GET_VM_TIMEOUT), request_id)
             .send()
             .await
             .context("send get vm request")?;
@@ -428,6 +429,14 @@ set -euo pipefail
 STATE_DIR="/root/pika-agent/state"
 READY_PATH="/workspace/pika-agent/service-ready.json"
 FAILED_PATH="/workspace/pika-agent/service-failed.json"
+agent_pid=""
+cleanup_agent() {
+  if [[ -n "${agent_pid:-}" ]]; then
+    kill "$agent_pid" 2>/dev/null || true
+    wait "$agent_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup_agent EXIT TERM INT
 mkdir -p "$STATE_DIR"
 # Seed the durable state dir from the provisioned identity on first boot only.
 if [[ -f "/workspace/pika-agent/state/identity.json" && ! -f "$STATE_DIR/identity.json" ]]; then
@@ -606,6 +615,8 @@ case "$agent_kind" in
     export OPENCLAW_SKIP_GMAIL_WATCHER=1
     export OPENCLAW_SKIP_CANVAS_HOST=1
     export OPENCLAW_SKIP_CRON=1
+    # Keep this default in sync with DEFAULT_OPENCLAW_GATEWAY_PORT and
+    # openclaw_gateway_config() in this module.
     export PIKA_OPENCLAW_GATEWAY_PORT="${PIKA_OPENCLAW_GATEWAY_PORT:-18789}"
     echo "[microvm-agent] starting openclaw agent via $openclaw_exec" >&2
     # Use a login shell so npx/openclaw installed via profile-managed Node setups
@@ -878,6 +889,7 @@ mod tests {
         );
         assert!(script.contains("READY_PATH=\"/workspace/pika-agent/service-ready.json\""));
         assert!(script.contains("FAILED_PATH=\"/workspace/pika-agent/service-failed.json\""));
+        assert!(script.contains("trap cleanup_agent EXIT TERM INT"));
         assert!(script.contains("--state-dir \"$STATE_DIR\""));
         assert!(script.contains("PIKA_PIKACHAT_BIN"));
         assert!(script.contains("PIKA_AGENT_KIND"));

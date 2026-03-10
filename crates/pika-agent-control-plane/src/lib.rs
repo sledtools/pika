@@ -35,6 +35,17 @@ pub enum RuntimeLifecyclePhase {
     Teardown,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStartupPhase {
+    Requested,
+    ProvisioningVm,
+    BootingGuest,
+    WaitingForServiceReady,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct AuthContext {
     #[serde(skip_serializing_if = "Option::is_none")]

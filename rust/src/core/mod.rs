@@ -2938,7 +2938,7 @@ impl AppCore {
     ) {
         if let Some(ref mut prov) = self.state.agent_provisioning {
             prov.phase = phase.clone();
-            prov.status_message = crate::core::agent::provisioning_status_message(&phase, None);
+            prov.status_message = crate::core::agent::provisioning_status_message(&phase);
             prov.poll_attempt = None;
             prov.poll_max = None;
             self.emit_state();
@@ -3279,8 +3279,7 @@ impl AppCore {
                 flow_token,
                 phase,
                 agent_npub,
-                poll_attempt,
-            } => self.handle_agent_flow_progress(flow_token, phase, agent_npub, poll_attempt),
+            } => self.handle_agent_flow_progress(flow_token, phase, agent_npub),
             InternalEvent::AgentFlowCompleted {
                 flow_token,
                 agent_id,
@@ -8774,9 +8773,8 @@ mod tests {
 
                 core.handle_internal(InternalEvent::AgentFlowProgress {
                     flow_token: 5,
-                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    phase: crate::state::AgentProvisioningPhase::BootingGuest,
                     agent_npub: Some("npub1agent".into()),
-                    poll_attempt: Some(3),
                 });
 
                 let prov = core
@@ -8786,13 +8784,12 @@ mod tests {
                     .expect("provisioning state");
                 assert_eq!(
                     prov.phase,
-                    crate::state::AgentProvisioningPhase::Provisioning
+                    crate::state::AgentProvisioningPhase::BootingGuest
                 );
                 assert_eq!(prov.agent_npub.as_deref(), Some("npub1agent"));
-                assert_eq!(prov.poll_attempt, Some(3));
-                assert_eq!(prov.poll_max, Some(45));
-                assert!(prov.status_message.contains("Starting microVM"));
-                assert!(prov.status_message.contains("3/45"));
+                assert_eq!(prov.poll_attempt, None);
+                assert_eq!(prov.poll_max, None);
+                assert_eq!(prov.status_message, "Booting guest...");
             }
 
             #[test]
@@ -8802,9 +8799,8 @@ mod tests {
 
                 core.handle_internal(InternalEvent::AgentFlowProgress {
                     flow_token: 4,
-                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    phase: crate::state::AgentProvisioningPhase::ProvisioningVm,
                     agent_npub: None,
-                    poll_attempt: Some(1),
                 });
 
                 assert!(core.state.agent_provisioning.is_none());
@@ -8815,12 +8811,12 @@ mod tests {
                 let (mut core, _tmp) = make_logged_in_core();
                 core.agent_flow_token = 7;
                 core.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
-                    phase: crate::state::AgentProvisioningPhase::Provisioning,
+                    phase: crate::state::AgentProvisioningPhase::ProvisioningVm,
                     agent_npub: None,
-                    status_message: "Starting microVM...".into(),
+                    status_message: "Provisioning microVM...".into(),
                     elapsed_secs: 0,
-                    poll_attempt: Some(5),
-                    poll_max: Some(45),
+                    poll_attempt: None,
+                    poll_max: None,
                 });
 
                 core.handle_internal(InternalEvent::AgentFlowCompleted {

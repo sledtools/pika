@@ -65,7 +65,10 @@ pub struct AgentMenuItemState {
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
 pub enum AgentProvisioningPhase {
     Ensuring,
-    Provisioning,
+    Requested,
+    ProvisioningVm,
+    BootingGuest,
+    WaitingForServiceReady,
     Recovering,
     PublishingKeyPackage,
     CreatingChat,

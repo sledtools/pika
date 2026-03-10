@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -47,13 +49,16 @@ import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.GroupAdd
+import com.pika.app.rust.AgentKind
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     var showMyProfile by remember { mutableStateOf(false) }
+    var showAgentChooser by remember { mutableStateOf(false) }
     val myProfile = manager.state.myProfile
     val shareSummary = manager.pendingShareSelectionSummary()
     val isShareSelectionMode = shareSummary != null
@@ -98,6 +103,21 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                         }
                         IconButton(onClick = { manager.dispatch(AppAction.PushScreen(Screen.NewGroupChat)) }) {
                             Icon(Icons.Default.GroupAdd, contentDescription = "New Group")
+                        }
+                        manager.state.agentButton?.let { agent ->
+                            IconButton(
+                                onClick = {
+                                    if (manager.state.showAgentMarketplace) {
+                                        showAgentChooser = true
+                                    } else {
+                                        manager.ensureAgent()
+                                    }
+                                },
+                                enabled = !agent.isBusy,
+                                modifier = Modifier.testTag("chatlist_agent"),
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = agent.title)
+                            }
                         }
                     }
                 },
@@ -174,6 +194,35 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
             manager = manager,
             npub = myNpub,
             onDismiss = { showMyProfile = false },
+        )
+    }
+
+    if (showAgentChooser) {
+        AlertDialog(
+            onDismissRequest = { showAgentChooser = false },
+            title = { Text("Choose Agent") },
+            text = { Text("Show experimental agent choices when creating a new agent.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showAgentChooser = false
+                    manager.ensureAgent(AgentKind.Openclaw)
+                }) {
+                    Text("OpenClaw")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        showAgentChooser = false
+                        manager.ensureAgent(AgentKind.Pi)
+                    }) {
+                        Text("Pi")
+                    }
+                    OutlinedButton(onClick = { showAgentChooser = false }) {
+                        Text("Cancel")
+                    }
+                }
+            },
         )
     }
 }

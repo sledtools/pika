@@ -170,6 +170,9 @@ pub enum AppAction {
     // UI
     ClearToast,
     EnableDeveloperMode,
+    SetShowAgentMarketplace {
+        enabled: bool,
+    },
     WipeProfileCache,
     VoiceRecordingStart,
     VoiceRecordingPause,
@@ -220,6 +223,9 @@ pub enum AppAction {
 
     // Agent
     EnsureAgent,
+    EnsureAgentKind {
+        kind: crate::state::AgentKind,
+    },
 }
 
 impl AppAction {
@@ -284,6 +290,7 @@ impl AppAction {
             // UI
             AppAction::ClearToast => "ClearToast",
             AppAction::EnableDeveloperMode => "EnableDeveloperMode",
+            AppAction::SetShowAgentMarketplace { .. } => "SetShowAgentMarketplace",
             AppAction::WipeProfileCache => "WipeProfileCache",
             AppAction::VoiceRecordingStart => "VoiceRecordingStart",
             AppAction::VoiceRecordingPause => "VoiceRecordingPause",
@@ -316,6 +323,7 @@ impl AppAction {
             AppAction::FollowUser { .. } => "FollowUser",
             AppAction::UnfollowUser { .. } => "UnfollowUser",
             AppAction::EnsureAgent => "EnsureAgent",
+            AppAction::EnsureAgentKind { .. } => "EnsureAgentKind",
         }
     }
 }

@@ -7,6 +7,26 @@ It is intentionally not an implementation checklist. The goal is to capture the 
 the product, the boundaries we want to preserve, and the requirements that future implementation
 prompts should satisfy. This document should evolve as we learn.
 
+## Role Of This Document
+
+This document is a north-star requirements and architecture document.
+
+It is meant to:
+
+- preserve the intended product shape
+- clarify trust boundaries and platform boundaries
+- give future implementation prompts a consistent frame of reference
+
+It is not meant to:
+
+- prescribe the exact order of implementation
+- override current prerequisite work already underway elsewhere in the repo
+- pretend we already know every operational detail
+
+In particular, this document should be treated as a directional companion to ongoing runtime and
+`pika_core` cleanup work, not as a signal that the entire platform should immediately become the
+top implementation priority.
+
 ## Product Direction
 
 We want to build a managed platform at `agents.pikachat.org` where a user can purchase an agent
@@ -22,6 +42,27 @@ The initial product should optimize for:
 - low long-term maintenance burden
 
 The first version should prioritize the managed experience, not maximum power-user flexibility.
+
+## Current MVP Bias
+
+The current bias for the first shipped version is:
+
+- managed VM first
+- one customer per VM
+- design for multiple agents per VM from the beginning
+- preserve the ability to support multiple templates cleanly
+- keep the first shipped surface narrower than the full long-term vision
+
+This means the architecture should be ready for multiple agents per VM, but the first shipped
+product does not need to expose every possible capability on day one.
+
+It is acceptable for the MVP to begin with:
+
+- one primary user-visible agent template first
+- a limited subset of dashboard actions
+- a constrained customization surface
+
+as long as those decisions do not paint us into the wrong long-term shape.
 
 ## Core Model
 
@@ -42,6 +83,36 @@ Inside the VM:
 - agents should not get blanket write access to each other’s private homes
 
 This supports collaboration without turning the guest into an unstructured shared filesystem.
+
+## Control Plane Vocabulary
+
+The implementation should converge on a small, consistent vocabulary even before the exact schema
+is finalized.
+
+Useful terms for the platform are:
+
+- `CustomerVm`
+  The managed VM assigned to one customer. This is the main trust, billing, and recovery boundary.
+
+- `AgentInstance`
+  One runnable agent inside a customer VM. It has a template, identity, service unit, state, and
+  sharing policy.
+
+- `AgentTemplate`
+  A runtime family or harness template, such as OpenClaw, NanoClaw, IronClaw, or Pi.
+
+- `Generation`
+  A deployable composed configuration for a managed VM, including platform base plus customer and
+  agent-layer configuration.
+
+- `UiLaunchTicket`
+  A short-lived platform-issued credential used to open a built-in agent UI on its own origin.
+
+- `ManagedMode`
+  The current control posture of a VM, such as fully managed by the platform versus a future
+  ejected or self-directed mode.
+
+These names are directional and may evolve, but the underlying concepts should remain stable.
 
 ## Agent Identity
 

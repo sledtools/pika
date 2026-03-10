@@ -217,6 +217,12 @@ jobs:
               | head -n1 \
               || true
           )"
+          previous_run_created_at=""
+          if [ -n "$previous_run_id" ] && [ -f ".pikaci/runs/$previous_run_id/run.json" ]; then
+            previous_run_created_at="$(
+              python3 -c 'import json, pathlib, sys; run = json.loads(pathlib.Path(".pikaci/runs", sys.argv[1], "run.json").read_text()); print(run.get("created_at", ""))' "$previous_run_id"
+            )"
+          fi
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
             echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux Rust shadow lane" >&2
@@ -250,6 +256,7 @@ jobs:
             echo "result=$result"
             echo "exit_code=$exit_code"
             echo "previous_run_id=$previous_run_id"
+            echo "previous_run_created_at=$previous_run_created_at"
           } >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -259,7 +266,7 @@ jobs:
         run: |
           python3 scripts/pikaci-shadow-summary.py \
             --target-id pre-merge-pika-rust \
-            --exclude-run-id "${{ steps.shadow.outputs.previous_run_id }}" \
+            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
             --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \

@@ -34,8 +34,8 @@ def parse_args() -> argparse.Namespace:
         help="Explicit run id to summarize. Default: latest run matching --target-id",
     )
     parser.add_argument(
-        "--exclude-run-id",
-        help="Ignore this run id when selecting the latest matching run.",
+        "--min-created-at-exclusive",
+        help="Only consider runs created strictly after this timestamp.",
     )
     parser.add_argument(
         "--allow-missing",
@@ -84,7 +84,11 @@ def load_run_record(run_json: Path) -> dict:
     return json.loads(run_json.read_text())
 
 
-def find_latest_run(state_root: Path, target_id: str, exclude_run_id: str | None) -> Path | None:
+def find_latest_run(
+    state_root: Path,
+    target_id: str,
+    min_created_at_exclusive: str | None,
+) -> Path | None:
     runs_root = state_root / "runs"
     candidates: list[tuple[str, Path]] = []
     for run_dir in runs_root.iterdir():
@@ -96,9 +100,10 @@ def find_latest_run(state_root: Path, target_id: str, exclude_run_id: str | None
         except json.JSONDecodeError:
             continue
         if record.get("target_id") == target_id:
-            if exclude_run_id and record.get("run_id") == exclude_run_id:
+            created_at = record.get("created_at", "")
+            if min_created_at_exclusive and created_at <= min_created_at_exclusive:
                 continue
-            candidates.append((record.get("created_at", ""), run_json))
+            candidates.append((created_at, run_json))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -123,7 +128,9 @@ def main() -> int:
     if args.run_id:
         run_json = state_root / "runs" / args.run_id / "run.json"
     else:
-        run_json = find_latest_run(state_root, args.target_id, args.exclude_run_id)
+        run_json = find_latest_run(
+            state_root, args.target_id, args.min_created_at_exclusive
+        )
     if run_json is None or not run_json.exists():
         markdown = (
             "### Advisory staged Linux Rust shadow lane\n\n"

@@ -79,6 +79,15 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
+    "nixos-virtiofs-ro-store.sock",
+    "nixos-virtiofs-snapshot.sock",
+    "nixos-virtiofs-artifacts.sock",
+    "nixos-virtiofs-cargo-home.sock",
+    "nixos-virtiofs-cargo-target.sock",
+    "nixos-virtiofs-staged-linux-rust-workspace-deps.sock",
+    "nixos-virtiofs-staged-linux-rust-workspace-build.sock",
+];
 
 struct TartRunProcess {
     child: std::process::Child,
@@ -232,11 +241,7 @@ fn run_remote_microvm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Jo
         ),
     )?;
 
-    let remote_command = format!(
-        "set -euo pipefail; cd {}; exec {}/bin/microvm-run",
-        shell_single_quote(&remote.remote_vm_dir.display().to_string()),
-        shell_single_quote(&remote.remote_runner_link.display().to_string()),
-    );
+    let remote_command = build_remote_microvm_launch_command(&remote);
     let status = spawn_remote_runner_and_wait(
         &remote.remote_host,
         &remote_command,
@@ -1383,6 +1388,48 @@ fn remote_symlink(
     )
 }
 
+fn build_remote_microvm_launch_command(remote: &RemoteMicrovmContext) -> String {
+    let runner_dir = shell_single_quote(&remote.remote_runner_link.display().to_string());
+    let vm_dir = shell_single_quote(&remote.remote_vm_dir.display().to_string());
+    let socket_wait = REMOTE_MICROVM_VIRTIOFS_SOCKETS
+        .iter()
+        .map(|socket| {
+            format!(
+                "for _ in $(seq 1 200); do [ -S {socket} ] && break; sleep 0.1; done; [ -S {socket} ] || {{ echo \"missing virtio-fs socket: {socket}\" >&2; exit 1; }}",
+                socket = shell_single_quote(socket),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    format!(
+        concat!(
+            "set -euo pipefail; ",
+            "cd {vm_dir}; ",
+            "rm -f nixos-virtiofs-*.sock nixos-virtiofs-*.sock.pid virtiofsd.log virtiofsd.pids virtiofsd-wrappers.list virtiofsd-wrapper-*; ",
+            "conf=$(sed -n 's#exec .* --configuration \\(/nix/store/[^ ]*supervisord\\.conf\\)#\\1#p' {runner_dir}/bin/virtiofsd-run); ",
+            "[ -n \"$conf\" ] || {{ echo 'failed to locate virtiofsd supervisord config' >&2; exit 1; }}; ",
+            "grep '^command=/nix/store/.*virtiofsd-' \"$conf\" | cut -d= -f2- > virtiofsd-wrappers.list; ",
+            "[ -s virtiofsd-wrappers.list ] || {{ echo \"no virtio-fs wrappers found in $conf\" >&2; exit 1; }}; ",
+            "cleanup() {{ if [ -f virtiofsd.pids ]; then while IFS= read -r pid; do kill \"$pid\" >/dev/null 2>&1 || true; wait \"$pid\" >/dev/null 2>&1 || true; done < virtiofsd.pids; fi; }}; ",
+            "trap cleanup EXIT; ",
+            ": > virtiofsd.pids; ",
+            "while IFS= read -r wrapper; do ",
+            "patched=virtiofsd-wrapper-$(basename \"$wrapper\"); ",
+            "sed '/--socket-group=/d' \"$wrapper\" > \"$patched\"; ",
+            "chmod +x \"$patched\"; ",
+            "\"$PWD/$patched\" >> virtiofsd.log 2>&1 & ",
+            "echo $! >> virtiofsd.pids; ",
+            "done < virtiofsd-wrappers.list; ",
+            "{socket_wait}; ",
+            "{runner_dir}/bin/microvm-run"
+        ),
+        vm_dir = vm_dir,
+        runner_dir = runner_dir,
+        socket_wait = socket_wait,
+    )
+}
+
 fn ensure_remote_microvm_runner(
     job: &JobSpec,
     ctx: &HostContext,
@@ -1716,7 +1763,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        GuestFlakePaths, builders_supports_aarch64_linux,
+        GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
+        build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
         render_guest_flake, vfkit_socket_path,
     };
@@ -1849,6 +1897,40 @@ mod tests {
         );
 
         assert_eq!(path, Path::new("/tmp/pikaci-20260307T024-beachhead.sock"));
+    }
+
+    #[test]
+    fn remote_microvm_launch_starts_virtiofsd_and_waits_for_sockets() {
+        let command = build_remote_microvm_launch_command(&RemoteMicrovmContext {
+            remote_host: "pika-build".to_string(),
+            remote_snapshot_dir: Path::new("/var/tmp/pikaci/runs/run/snapshot").to_path_buf(),
+            remote_vm_dir: Path::new("/var/tmp/pikaci/jobs/job/vm").to_path_buf(),
+            remote_artifacts_dir: Path::new("/var/tmp/pikaci/jobs/job/artifacts").to_path_buf(),
+            remote_cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home").to_path_buf(),
+            remote_target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target").to_path_buf(),
+            remote_workspace_deps_dir: Path::new(
+                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps",
+            )
+            .to_path_buf(),
+            remote_workspace_build_dir: Path::new(
+                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build",
+            )
+            .to_path_buf(),
+            remote_runner_link: Path::new("/var/tmp/pikaci/jobs/job/vm/runner").to_path_buf(),
+        });
+
+        assert!(command.contains("failed to locate virtiofsd supervisord config"));
+        assert!(command.contains("no virtio-fs wrappers found in $conf"));
+        assert!(command.contains("virtiofsd-wrappers.list"));
+        assert!(command.contains("sed '/--socket-group=/d'"));
+        assert!(command.contains("virtiofsd-wrapper-$(basename \"$wrapper\")"));
+        assert!(command.contains("virtiofsd.pids"));
+        assert!(command.contains("trap cleanup EXIT"));
+        assert!(command.contains("/bin/microvm-run"));
+        for socket in REMOTE_MICROVM_VIRTIOFS_SOCKETS {
+            assert!(command.contains(socket));
+        }
+        assert!(command.contains("missing virtio-fs socket:"));
     }
 
     #[test]

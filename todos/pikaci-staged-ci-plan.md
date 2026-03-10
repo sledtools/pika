@@ -798,7 +798,7 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, and fifteenth narrow remote-execute forms, and is now sharpening the first real `microvm-run` launch boundary on `pika-build`.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, and sixteenth narrow remote-execute forms, and has now crossed the first real remote guest-boot boundary on `pika-build`.
 - Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
   - stop spending more slices on local `linux-builder` recovery,
   - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
@@ -810,9 +810,14 @@ We have at least one important Linux Rust lane where:
   - note that the run snapshot was still far too large for this boundary because it copied generated mobile build state (`android/app/build`, `ios/build`, Gradle caches) into the remote runner input,
   - note that snapshots now skip those generated nested build directories, shrinking the observed run snapshot from about `2.0G` to about `698M`,
   - note that the run-scoped remote snapshot was also being deleted and re-uploaded for sibling jobs, and that the execute path now reuses an already-populated remote snapshot instead of resetting it,
-  - note that the lane now reaches the first real remote launch boundary: both staged jobs log `starting remote x86_64 microvm` and `cloud-hypervisor` does start,
-  - note that the first concrete runtime failure is no longer runner realization but virtio-fs backend connection during boot,
-  - note that host-log stderr now shows `Failed connecting the backend after trying for 1 minute ... VhostUserConnect` followed by `Cannot create virtio-fs device`,
+  - note that the lane now reaches the first real remote launch boundary: both staged jobs log `starting remote x86_64 microvm`, `cloud-hypervisor` starts, and the guest kernel/systemd boot sequence is visible in the host log,
+  - note that the first concrete runtime failure is no longer runner realization but the unprivileged remote `virtiofsd` launcher trying to force `--socket-group=kvm`,
+  - note that direct host inspection proved each backend bound its socket and then died on `chown(..., group=kvm) = EPERM`, which surfaced to Cloud Hypervisor as `Connection refused`,
   - note that the remote runtime layout had another correctness bug: vm/runner/artifact directories were shared by job id across runs, so stale runner payloads embedded old snapshot paths,
   - note that the remote microVM layout is now run-scoped for vm/runner/artifact state while keeping the shared prepared-output mount locations intact,
-  - and treat the first missing virtio-fs backend socket on the fresh run-scoped runner path as the next boundary to fix, not runner generation or snapshot transfer.
+  - note that the execute wrapper now starts the generated `virtiofsd` backends itself for the remote lane, strips the privileged `--socket-group` flag, waits for all expected sockets, and only then launches `microvm-run`,
+  - note that this fix cleared the Cloud Hypervisor boot failure: the guest now reaches stage 2, mounts `/artifacts`, `/cargo-home`, `/cargo-target`, `/workspace/snapshot`, and both staged Linux Rust shares, starts `pikaci-job`, and powers off cleanly,
+  - note that the next blocker is now inside the staged `workspaceBuild` payload contract rather than the microVM runtime,
+  - note that both guest logs now fail with `missing staged pika_core test manifest ...`,
+  - note that the host-side `workspaceBuild` output and remote symlink exposure do contain the expected `share/pikaci/*.manifest` files, but the `pika-core-lib-app-flows.manifest` and `pika-core-messaging-e2e.manifest` files are still empty,
+  - and treat staged-manifest population for the `app_flows` and messaging e2e lanes as the next narrow boundary to fix, not more microVM transport or boot plumbing.

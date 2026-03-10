@@ -17,6 +17,12 @@ cargo_target_root() {
     return 0
   fi
 
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    CARGO_TARGET_ROOT_CACHE="$CARGO_TARGET_DIR"
+    printf '%s\n' "$CARGO_TARGET_ROOT_CACHE"
+    return 0
+  fi
+
   CARGO_TARGET_ROOT_CACHE="$(
     cargo metadata --no-deps --format-version 1 \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])'
@@ -33,6 +39,24 @@ cargo_target_dir() {
   local target="${1:?target is required}"
   local profile="${2:?profile is required}"
   printf '%s/%s/%s\n' "$(cargo_target_root)" "$target" "$profile"
+}
+
+find_target_binary() {
+  local bin_name="${1:?binary name is required}"
+  local target="${2:?target is required}"
+  local profile="${3:?profile is required}"
+  local target_dir
+  local candidate
+
+  target_dir="$(cargo_target_dir "$target" "$profile")"
+  candidate="$target_dir/$bin_name"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "error: missing built binary: $candidate" >&2
+  return 1
 }
 
 build_host_rust_packages() {

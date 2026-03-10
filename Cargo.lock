@@ -6348,8 +6348,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 

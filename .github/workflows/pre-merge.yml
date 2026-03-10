@@ -300,6 +300,7 @@ jobs:
           python3 scripts/pikaci-shadow-summary.py \
             --target-id pre-merge-pika-rust \
             --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
             --allow-missing \
             --github-output "$GITHUB_OUTPUT" \
             --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \

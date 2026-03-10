@@ -420,6 +420,7 @@ enum AgentCommand {
 
     /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
     #[command(after_help = "Behavior:
+  - waits for the guest agent service to report ready before first send
   - if --listen-timeout is 0, the command only sends the message
   - if listening times out without any reply message, the command exits with `no_reply_within_timeout`")]
     Chat {
@@ -443,10 +444,6 @@ enum AgentCommand {
         /// Delay between status polls (seconds)
         #[arg(long, default_value_t = 2)]
         poll_delay_sec: u64,
-
-        /// Trigger recover after this many creating-state polls (0 disables)
-        #[arg(long, default_value_t = 20)]
-        recover_after_attempt: u32,
     },
 }
 
@@ -766,7 +763,6 @@ async fn main() -> anyhow::Result<()> {
                 listen_timeout,
                 poll_attempts,
                 poll_delay_sec,
-                recover_after_attempt,
             } => {
                 cmd_agent_chat(
                     &cli,
@@ -777,7 +773,6 @@ async fn main() -> anyhow::Result<()> {
                         listen_timeout: *listen_timeout,
                         poll_attempts: *poll_attempts,
                         poll_delay_sec: *poll_delay_sec,
-                        recover_after_attempt: *recover_after_attempt,
                     },
                 )
                 .await
@@ -1827,7 +1822,6 @@ struct AgentChatExecutionOptions {
     listen_timeout: u64,
     poll_attempts: u32,
     poll_delay_sec: u64,
-    recover_after_attempt: u32,
 }
 
 async fn ensure_agent_idempotent(
@@ -1999,18 +1993,14 @@ async fn cmd_agent_chat(
     };
 
     let body = agent_provision_request(microvm);
-    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
-    let mut tried_optimistic_send = false;
-    let mut recovered_stalled_creating = false;
+    let _ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
-    let mut last_agent_npub = String::new();
 
     for attempt in 1..=options.poll_attempts {
         let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
         let (agent_npub, state) = parse_agent_fields(&me)?;
         last_state = state.clone();
-        last_agent_npub = agent_npub.clone();
 
         if state == "ready" {
             let outcome = send_to_agent_and_optionally_listen(
@@ -2023,23 +2013,6 @@ async fn cmd_agent_chat(
             return finish_chat_send(outcome, options.listen_timeout);
         }
 
-        if state == "creating" && !ensured.created && !tried_optimistic_send {
-            match send_to_agent_and_optionally_listen(
-                &chat_cli,
-                &agent_npub,
-                message,
-                options.listen_timeout,
-            )
-            .await
-            {
-                Ok(outcome) => return finish_chat_send(outcome, options.listen_timeout),
-                Err(_) => {
-                    tried_optimistic_send = true;
-                    eprintln!("optimistic send failed; continuing with recover/poll");
-                }
-            }
-        }
-
         if state == "error" {
             eprintln!("agent in error state; requesting recover");
             let _ = call_agent_api(
@@ -2049,20 +2022,6 @@ async fn cmd_agent_chat(
                 body.as_ref(),
             )
             .await;
-        } else if state == "creating"
-            && !recovered_stalled_creating
-            && options.recover_after_attempt > 0
-            && attempt >= options.recover_after_attempt
-        {
-            eprintln!("agent still creating after {attempt} checks; requesting recover");
-            let _ = call_agent_api(
-                http,
-                reqwest::Method::POST,
-                AGENT_API_RECOVER_PATH,
-                body.as_ref(),
-            )
-            .await;
-            recovered_stalled_creating = true;
         }
 
         if attempt < options.poll_attempts {
@@ -2070,30 +2029,13 @@ async fn cmd_agent_chat(
         }
     }
 
-    anyhow::ensure!(
-        !last_agent_npub.is_empty(),
-        "timed out waiting for personal agent"
-    );
-    eprintln!(
-        "agent did not become ready (state={}); trying best-effort send",
-        last_state
-    );
-    if let Ok(outcome) = send_to_agent_and_optionally_listen(
-        &chat_cli,
-        &last_agent_npub,
-        message,
-        options.listen_timeout,
-    )
-    .await
-    {
-        return finish_chat_send(outcome, options.listen_timeout);
-    }
     anyhow::bail!(
-        "agent chat failed: state remained {} and send failed; try `pikachat agent recover --api-base-url {} --nsec <nsec>`",
+        "agent did not become ready within {} checks (last state: {}). wait longer or run `pikachat agent recover --api-base-url {} --nsec <nsec>` if the agent is stuck",
+        options.poll_attempts,
         if last_state.is_empty() {
-            "unknown"
+            "unknown".to_string()
         } else {
-            &last_state
+            last_state
         },
         http.api_base_url
     );
@@ -2695,8 +2637,6 @@ mod tests {
             "7",
             "--poll-delay-sec",
             "3",
-            "--recover-after-attempt",
-            "4",
             "hello",
         ])
         .expect("parse args");
@@ -2710,7 +2650,6 @@ mod tests {
                         listen_timeout,
                         poll_attempts,
                         poll_delay_sec,
-                        recover_after_attempt,
                     },
             } => {
                 assert_eq!(http.api_base_url, "http://127.0.0.1:18080");
@@ -2722,10 +2661,27 @@ mod tests {
                 assert_eq!(listen_timeout, 9);
                 assert_eq!(poll_attempts, 7);
                 assert_eq!(poll_delay_sec, 3);
-                assert_eq!(recover_after_attempt, 4);
             }
             _ => panic!("expected agent chat command"),
         }
+    }
+
+    #[test]
+    fn agent_chat_rejects_removed_recover_after_flag() {
+        let err = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "chat",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--recover-after-attempt",
+            "4",
+            "hello",
+        ])
+        .expect_err("removed recover-after-attempt flag should be rejected");
+        assert!(err.to_string().contains("--recover-after-attempt"));
     }
 
     #[test]

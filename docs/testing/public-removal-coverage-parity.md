@@ -19,7 +19,7 @@ This ledger is about behavioral replacement, not CI-enforcement level. Use `docs
 | --- | --- | --- |
 | Android UI login + chat create + ping/pong against relay | `integration_deterministic::ui_e2e_local_android` | Covered (local relay fixture) |
 | Android emulator orchestration + APK install | `integration_deterministic::ui_e2e_local_android` | Covered (same orchestration path) |
-| Android legacy bot/media UI methods in `PikaE2eUiTest` | `integration_deterministic::ui_e2e_local_android` | Covered (local relay fixture; checked-in audio call probe removed) |
+| Android ping/hypernote UI methods in `PikaE2eUiTest` | `integration_deterministic::ui_e2e_local_android` | Covered (local relay fixture; selector now pins explicit methods) |
 
 ### `integration_public::ui_e2e_public_ios`
 

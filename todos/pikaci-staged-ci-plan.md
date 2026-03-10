@@ -883,6 +883,13 @@ We have at least one important Linux Rust lane where:
       - `just pikaci-pre-merge-pika-rust-prepares-remote-build` completed with its helper snapshots cleaned up on exit, and `/var/tmp/pikaci-prepared-output/helpers` was empty afterward apart from the directory root itself,
       - `just pikaci-remote-fulfill-pre-merge-pika-rust` still passed end-to-end (`20260310T192529Z-7c95792a`),
       - and the real lane logs again showed only remote `ssh pika-build nix build ... path:/var/tmp/pikaci-prepared-output/runs/.../snapshot#ci.x86_64-linux.workspace{Deps,Build}` prepares, not Mac-side `nix-store --serve --write` bounce.
+  - note that the next performance slice did remove one real duplicate snapshot upload:
+    - the helper snapshot stream is about `730460160` bytes (`~697 MiB`), and the real run snapshot is about `698M` locally / `699M` remotely for run `20260310T200509Z-9ff75180`,
+    - before this slice, the canonical `prepare` wrapper uploaded that helper snapshot twice because `workspaceDeps` and `workspaceBuild` each generated a different helper snapshot id,
+    - now the wrapper shares one helper snapshot id across both prepares, the first helper call uploads it once, and the second helper call logs `reusing existing remote helper snapshot` instead of re-uploading the same tree,
+    - the helper still cleans up its own shared snapshot root on exit and only prunes stale sibling helper dirs, so strict remote-authoritative behavior stays intact without making overlapping helper runs stomp each other,
+    - the fresh helper rerun (`just pikaci-pre-merge-pika-rust-prepares-remote-build`) completed in about `134s` and left `/var/tmp/pikaci-prepared-output/helpers` empty again,
+    - and the fresh real lane rerun (`20260310T200509Z-9ff75180`) still passed end-to-end in about `265s`, with exactly one run-snapshot sync followed by repeated `remote snapshot already available` reuse lines for the remaining prepares/runner steps.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

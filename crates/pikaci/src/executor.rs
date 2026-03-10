@@ -52,7 +52,6 @@ struct GuestRunnerConfig {
 struct RemoteMicrovmContext {
     remote_host: String,
     remote_snapshot_dir: PathBuf,
-    remote_job_dir: PathBuf,
     remote_vm_dir: PathBuf,
     remote_artifacts_dir: PathBuf,
     remote_cargo_home_dir: PathBuf,
@@ -1186,22 +1185,23 @@ fn remote_microvm_context(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?;
-    let remote_job_dir = remote_work_dir.join("jobs").join(job.id);
+    let remote_run_dir = remote_work_dir.join("runs").join(run_id);
+    let remote_job_dir = remote_run_dir.join("jobs").join(job.id);
+    let shared_job_dir = remote_work_dir.join("jobs").join(job.id);
     Ok(RemoteMicrovmContext {
         remote_host,
-        remote_snapshot_dir: remote_work_dir.join("runs").join(run_id).join("snapshot"),
+        remote_snapshot_dir: remote_run_dir.join("snapshot"),
         remote_vm_dir: remote_job_dir.join("vm"),
         remote_artifacts_dir: remote_job_dir.join("artifacts"),
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
         remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
-        remote_workspace_deps_dir: remote_job_dir
+        remote_workspace_deps_dir: shared_job_dir
             .join("staged-linux-rust")
             .join("workspace-deps"),
-        remote_workspace_build_dir: remote_job_dir
+        remote_workspace_build_dir: shared_job_dir
             .join("staged-linux-rust")
             .join("workspace-build"),
         remote_runner_link: remote_job_dir.join("vm").join("runner"),
-        remote_job_dir,
     })
 }
 
@@ -1230,19 +1230,14 @@ fn ensure_remote_microvm_directories(
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let command = format!(
-        "set -euo pipefail; mkdir -p {} {} {} {} {} {}",
+        "set -euo pipefail; mkdir -p {} {} {} {} {} {} {}",
         shell_single_quote(&remote.remote_snapshot_dir.display().to_string()),
         shell_single_quote(&remote.remote_vm_dir.display().to_string()),
         shell_single_quote(&remote.remote_artifacts_dir.display().to_string()),
         shell_single_quote(&remote.remote_cargo_home_dir.display().to_string()),
         shell_single_quote(&remote.remote_target_dir.display().to_string()),
-        shell_single_quote(
-            &remote
-                .remote_job_dir
-                .join("staged-linux-rust")
-                .display()
-                .to_string()
-        ),
+        shell_single_quote(&remote.remote_workspace_deps_dir.display().to_string()),
+        shell_single_quote(&remote.remote_workspace_build_dir.display().to_string()),
     );
     run_command_to_log(
         &mut run_ssh_command(&remote.remote_host, &command),

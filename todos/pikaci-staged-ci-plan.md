@@ -810,4 +810,9 @@ We have at least one important Linux Rust lane where:
   - note that the run snapshot was still far too large for this boundary because it copied generated mobile build state (`android/app/build`, `ios/build`, Gradle caches) into the remote runner input,
   - note that snapshots now skip those generated nested build directories, shrinking the observed run snapshot from about `2.0G` to about `698M`,
   - note that the run-scoped remote snapshot was also being deleted and re-uploaded for sibling jobs, and that the execute path now reuses an already-populated remote snapshot instead of resetting it,
-  - and treat the first actual `microvm-run` / `cloud-hypervisor` launch on `pika-build` as the next boundary to observe cleanly now that `declaredRunner` itself is no longer the active unknown.
+  - note that the lane now reaches the first real remote launch boundary: both staged jobs log `starting remote x86_64 microvm` and `cloud-hypervisor` does start,
+  - note that the first concrete runtime failure is no longer runner realization but virtio-fs backend connection during boot,
+  - note that host-log stderr now shows `Failed connecting the backend after trying for 1 minute ... VhostUserConnect` followed by `Cannot create virtio-fs device`,
+  - note that the remote runtime layout had another correctness bug: vm/runner/artifact directories were shared by job id across runs, so stale runner payloads embedded old snapshot paths,
+  - note that the remote microVM layout is now run-scoped for vm/runner/artifact state while keeping the shared prepared-output mount locations intact,
+  - and treat the first missing virtio-fs backend socket on the fresh run-scoped runner path as the next boundary to fix, not runner generation or snapshot transfer.

@@ -24,8 +24,8 @@ use crate::nostr_auth::{
 use crate::{RequestContext, State};
 use pika_agent_control_plane::{AgentProvisionRequest, MicrovmProvisionParams};
 use pika_agent_microvm::{
-    build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
-    ResolvedMicrovmParams,
+    build_create_vm_request, resolve_params, spawner_create_error, validate_resolved_params,
+    MicrovmSpawnerClient, ResolvedMicrovmParams,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -355,6 +355,7 @@ fn resolved_spawner_params(
         }
     }
     let resolved = resolve_params(&params);
+    validate_resolved_params(&resolved).context("validate microvm agent selection")?;
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
     Ok(resolved)
@@ -934,6 +935,21 @@ mod tests {
                 resolved.backend,
                 pika_agent_microvm::ResolvedMicrovmAgentBackend::Native
             );
+        });
+    }
+
+    #[test]
+    fn resolved_spawner_params_rejects_pi_native_mode() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            };
+
+            let err = resolved_spawner_params(Some(&requested)).expect_err("pi native should fail");
+            let msg = err.to_string();
+            assert!(msg.contains("validate microvm agent selection"));
         });
     }
 

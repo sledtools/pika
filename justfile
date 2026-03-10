@@ -992,16 +992,6 @@ shared-runtime-regression:
 cli-smoke-media:
     cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture
 
-# Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
-agent-microvm *ARGS="":
-    set -euo pipefail; \
-    if [ -f .env ]; then \
-      set -a; \
-      source .env; \
-      set +a; \
-    fi; \
-    ./scripts/demo-agent-microvm.sh {{ ARGS }}
-
 # Run the HTTP agent ensure demo for a Pi ACP-backed guest.
 agent-pi-ensure *ARGS="":
     PIKA_AGENT_MICROVM_KIND=pi PIKA_AGENT_MICROVM_BACKEND=acp ./scripts/demo-agent-microvm.sh {{ ARGS }}
@@ -1009,10 +999,6 @@ agent-pi-ensure *ARGS="":
 # Run the HTTP agent ensure demo for an OpenClaw guest over the daemon protocol.
 agent-claw-ensure *ARGS="":
     PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh {{ ARGS }}
-
-# Ensure/reuse agent, send one message, then optionally listen for reply.
-agent-microvm-chat MESSAGE="hello from pikachat cli" *ARGS="":
-    ./scripts/pikachat-cli.sh agent chat "{{ MESSAGE }}" {{ ARGS }}
 
 # Tail local pika-server logs from the pikahut backend state dir.
 agent-microvm-server-logs STATE_DIR=".pikahut":

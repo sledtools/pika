@@ -14,14 +14,14 @@ if [[ -z "$MICROVM_BACKEND" ]]; then
     pi) MICROVM_BACKEND="acp" ;;
     openclaw) MICROVM_BACKEND="native" ;;
     *)
-      echo "Unsupported PIKA_AGENT_MICROVM_KIND: $AGENT_KIND (expected pi or openclaw)"
+      echo "Unsupported PIKA_AGENT_MICROVM_KIND: $AGENT_KIND (expected pi or openclaw)" >&2
       exit 1
       ;;
   esac
 fi
 
 if [[ -z "$AGENT_API_NSEC" ]]; then
-  echo "PIKA_AGENT_API_NSEC (or PIKA_TEST_NSEC / AGENT_API_NSEC) is required."
+  echo "PIKA_AGENT_API_NSEC (or PIKA_TEST_NSEC / AGENT_API_NSEC) is required." >&2
   exit 1
 fi
 

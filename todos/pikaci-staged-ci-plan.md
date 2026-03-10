@@ -798,7 +798,7 @@ We have at least one important Linux Rust lane where:
 - Phase 3 is complete and landed.
 - Phase 4 is complete and landed in its narrowed form.
 - Phase 5 is complete and landed as a decision/update slice.
-- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, and sixteenth narrow remote-execute forms, and has now crossed the first real remote guest-boot boundary on `pika-build`.
+- Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth, and seventeenth narrow remote-execute forms, and has now crossed both the first real remote guest-boot boundary and the first real staged-test-execution boundary on `pika-build`.
 - Current recommended slice is a narrow execute follow-up on the now-hot `x86_64-linux` staged lane:
   - stop spending more slices on local `linux-builder` recovery,
   - keep `ci.x86_64-linux.*` as the staged Linux Rust target,
@@ -817,7 +817,22 @@ We have at least one important Linux Rust lane where:
   - note that the remote microVM layout is now run-scoped for vm/runner/artifact state while keeping the shared prepared-output mount locations intact,
   - note that the execute wrapper now starts the generated `virtiofsd` backends itself for the remote lane, strips the privileged `--socket-group` flag, waits for all expected sockets, and only then launches `microvm-run`,
   - note that this fix cleared the Cloud Hypervisor boot failure: the guest now reaches stage 2, mounts `/artifacts`, `/cargo-home`, `/cargo-target`, `/workspace/snapshot`, and both staged Linux Rust shares, starts `pikaci-job`, and powers off cleanly,
-  - note that the next blocker is now inside the staged `workspaceBuild` payload contract rather than the microVM runtime,
-  - note that both guest logs now fail with `missing staged pika_core test manifest ...`,
-  - note that the host-side `workspaceBuild` output and remote symlink exposure do contain the expected `share/pikaci/*.manifest` files, but the `pika-core-lib-app-flows.manifest` and `pika-core-messaging-e2e.manifest` files are still empty,
-  - and treat staged-manifest population for the `app_flows` and messaging e2e lanes as the next narrow boundary to fix, not more microVM transport or boot plumbing.
+  - note that the old staged-manifest blocker is now fixed,
+  - note that the root cause was twofold:
+    - the staged `ciPikaCoreWorkspaceSrc` source assembly was not explicitly carrying `rust/tests` and related support files for this lane,
+    - and `workspaceDeps` was still using Crane's manifest-only dummy source even though its custom build phase intentionally compiles real test targets, which also meant `workspaceBuild.src = workspaceDeps.src` was inheriting a tests-stripped source tree,
+  - note that the lane now explicitly stages the narrowed `rust` subtree with `build.rs`, `uniffi.toml`, `src`, and `tests`,
+  - note that `workspaceDeps` now uses that real narrowed source as `dummySrc` for this lane so the staged `cargo test --no-run` commands can actually see the named integration targets,
+  - note that staged test target realization is now driven by the explicit lane commands (`--test app_flows`, `--test e2e_messaging`, `--test e2e_group_profiles`) instead of relying on the broader `--tests` sweep,
+  - note that the resulting `workspaceBuild` payload now carries non-empty lane manifests:
+    - `pika-core-lib-app-flows.manifest` contains `debug/deps/app_flows-*` plus `debug/deps/pika_core-*`,
+    - `pika-core-messaging-e2e.manifest` contains `debug/deps/e2e_messaging-*` and `debug/deps/e2e_group_profiles-*`,
+  - note that a fresh `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun now gets past both staged prepares, both remote fulfillments, runner realization, remote `microvm-run`, guest boot, and the old missing-manifest failure,
+  - note that the remote guest now really executes the staged test binaries:
+    - the `app_flows` lane guest log shows `run-pika-core-lib-app-flows-tests` launching staged binaries and running Rust tests inside the remote microVM,
+    - the messaging lane guest log shows `run-pika-core-messaging-e2e-tests` launching the staged e2e binaries inside the remote microVM,
+  - note that the next blockers are now actual test/runtime failures inside the guest rather than staged-payload assembly:
+    - the `app_flows` lane currently fails one real Rust test: `min_version_check_e2e`,
+    - the messaging/group-profile lane currently fails earlier during `pikahut` fixture startup because Go tries to create its build cache under `/cargo-home/xdg-cache/go-build` and the guest-side mount/ownership setup leaves that path non-writable for the test user,
+    - the guest log also shows `chown: changing ownership of '/artifacts': Invalid argument`, `'/cargo-home'`, and `'/cargo-target'`, which likely points at the same remaining writable-mount contract issue for remote test execution,
+  - and treat the next narrow slice as guest runtime environment cleanup for writable caches/artifacts plus diagnosis of the real `app_flows` test failure, not more manifest, transport, or boot plumbing.

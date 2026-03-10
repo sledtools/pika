@@ -40,44 +40,125 @@ let
     echo "[pikaci] building pika_core with cargo jobs=$cargoJobs" >&2
     target_root="''${CARGO_TARGET_DIR:-target}"
     target_root_abs="$(pwd)/$target_root/"
+    : >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+
+    capture_artifacts() {
+      local cargo_build_log="$1"
+      ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+        select(.reason == "compiler-artifact" and .executable != null)
+        | [
+            .target.name,
+            (.target.kind | join(",")),
+            (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+          ]
+        | @tsv
+      ' <"$cargo_build_log" >>"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+    }
+
     cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo test --locked -j "$cargoJobs" -p pika_core --lib --tests --no-run --message-format json-render-diagnostics >"$cargoBuildLog"
-    ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
-      select(.reason == "compiler-artifact" and .profile.test == true and .executable != null)
-      | [
-          .target.name,
-          (.target.kind | join(",")),
-          (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
-        ]
-      | @tsv
-    ' <"$cargoBuildLog" >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+    cargo test --locked -j "$cargoJobs" -p pika_core \
+      --lib \
+      --bin kp_debug \
+      --bin interop_openclaw_voice \
+      --bin interop_rustbot_baseline \
+      --bin nostr_connect_tap \
+      --no-run \
+      --message-format json-render-diagnostics >"$cargoBuildLog"
+    capture_artifacts "$cargoBuildLog"
 
-    ${pkgs.gawk}/bin/awk -F '\t' '
-      { print $3 }
-    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST"
+    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+    cargo test --locked -j "$cargoJobs" -p pika_core \
+      --lib \
+      --test app_flows \
+      --no-run \
+      --message-format json-render-diagnostics >"$cargoBuildLog"
+    capture_artifacts "$cargoBuildLog"
 
-    ${pkgs.gawk}/bin/awk -F '\t' '
-      ($1 == "pika_core" && $2 == "lib") || $1 == "app_flows" { print $3 }
-    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST"
+    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+    cargo test --locked -j "$cargoJobs" -p pika_core \
+      --test e2e_messaging \
+      --test e2e_group_profiles \
+      --no-run \
+      --message-format json-render-diagnostics >"$cargoBuildLog"
+    capture_artifacts "$cargoBuildLog"
 
-    ${pkgs.gawk}/bin/awk -F '\t' '
-      $1 == "e2e_messaging" || $1 == "e2e_group_profiles" { print $3 }
-    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST"
+    sort -u -o "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" "$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+
+    manifest_from_targets() {
+      local manifest_path="$1"
+      local strict="$2"
+      shift
+      shift
+      : >"$manifest_path"
+      for target_name in "$@"; do
+        local matched=0
+        while IFS= read -r executable_path; do
+          [ -n "$executable_path" ] || continue
+          matched=1
+          printf '%s\n' "''${executable_path#$target_root/}" >>"$manifest_path"
+        done < <(
+          find "$target_root/debug/deps" -maxdepth 1 -type f -perm -0100 \
+            -name "''${target_name}-*" \
+            ! -name '*.d' \
+            ! -name '*.rlib' \
+            ! -name '*.rmeta' \
+            ! -name '*.so' \
+            ! -name '*.so.*' \
+            | sort
+        )
+        if [ "$matched" -eq 0 ]; then
+          if [ "$strict" != "1" ]; then
+            continue
+          fi
+          echo "missing staged pika_core test executable for target $target_name" >&2
+          echo "captured compiler-artifact rows:" >&2
+          cat "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >&2
+          echo "debug/deps candidates:" >&2
+          find "$target_root/debug/deps" -maxdepth 1 -type f | sort >&2 || true
+          exit 1
+        fi
+      done
+      sort -u -o "$manifest_path" "$manifest_path"
+    }
+
+    requireIntegrationTests="''${PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES:-0}"
+
+    manifest_from_targets "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" 1 \
+      pika_core \
+      kp_debug \
+      interop_openclaw_voice \
+      interop_rustbot_baseline \
+      nostr_connect_tap
+
+    manifest_from_targets "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$requireIntegrationTests" \
+      pika_core \
+      app_flows
+
+    manifest_from_targets "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$requireIntegrationTests" \
+      e2e_messaging \
+      e2e_group_profiles
 
     # Keep the fanout guard strict for new integration suites, but allow the
     # currently deferred ignored lanes to remain outside the staged split until
     # we intentionally migrate them.
     unassignedIntegrationTests="$TMPDIR/pika-core-unassigned-integration-tests.tsv"
-    ${pkgs.gawk}/bin/awk -F '\t' '
-      $2 == "test" \
-        && $1 != "app_flows" \
-        && $1 != "e2e_messaging" \
-        && $1 != "e2e_group_profiles" \
-        && $1 != "e2e_calls" \
-        && $1 != "perf_relay_latency" {
-        print $0
-      }
-    ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >"$unassignedIntegrationTests"
+    cargo metadata --format-version 1 --no-deps \
+      | ${pkgs.jq}/bin/jq -r '
+          .packages[]
+          | select(.name == "pika_core")
+          | .targets[]
+          | select(.kind | index("test"))
+          | .name
+        ' \
+      | ${pkgs.gawk}/bin/awk '
+          $1 != "app_flows" \
+            && $1 != "e2e_messaging" \
+            && $1 != "e2e_group_profiles" \
+            && $1 != "e2e_calls" \
+            && $1 != "perf_relay_latency" {
+            print $0
+          }
+        ' >"$unassignedIntegrationTests"
     if [ -s "$unassignedIntegrationTests" ]; then
       echo "unassigned pika_core integration test targets detected; update staged manifest partitioning:" >&2
       cat "$unassignedIntegrationTests" >&2
@@ -86,8 +167,9 @@ let
   '';
 in
 rec {
-  workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
+  workspaceDeps = craneLib.buildDepsOnly ((builtins.removeAttrs commonArgs [ "src" ]) // {
     pname = "${commonArgs.pname}-deps";
+    dummySrc = src;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
   });
@@ -98,6 +180,7 @@ rec {
     cargoArtifacts = workspaceDeps;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
+    PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES = "1";
     doInstallCargoArtifacts = false;
     installPhaseCommand = ''
       target_root="''${CARGO_TARGET_DIR:-target}"

@@ -79,9 +79,19 @@
           ./uniffi-bindgen
         ];
       };
+      ciPikaCoreRustSrc = ciLinuxPkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = ciLinuxPkgs.lib.fileset.unions [
+          ./rust/Cargo.toml
+          ./rust/build.rs
+          ./rust/uniffi.toml
+          ./rust/src
+          ./rust/tests
+        ];
+      };
       ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
         mkdir -p "$out/crates"
-        cp -R ${./rust} "$out/rust"
+        cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
         chmod -R u+w "$out/rust"
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"

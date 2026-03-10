@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus, RunnerKind};
 use crate::snapshot::{SnapshotMetadata, read_snapshot_metadata};
@@ -52,6 +53,7 @@ struct GuestRunnerConfig {
 
 struct RemoteMicrovmContext {
     remote_host: String,
+    remote_work_dir: PathBuf,
     remote_snapshot_dir: PathBuf,
     remote_vm_dir: PathBuf,
     remote_artifacts_dir: PathBuf,
@@ -60,6 +62,13 @@ struct RemoteMicrovmContext {
     remote_workspace_deps_dir: PathBuf,
     remote_workspace_build_dir: PathBuf,
     remote_runner_link: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RunnerFlakeMetadata {
+    schema_version: u32,
+    content_hash: String,
+    remote_store_path: String,
 }
 
 const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
@@ -233,6 +242,7 @@ fn run_remote_microvm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Jo
         &ctx.host_log_path,
     )?;
     ensure_remote_microvm_runner(job, ctx, &remote, &ctx.host_log_path)?;
+    reset_remote_microvm_artifacts(&remote, &ctx.host_log_path)?;
 
     append_line(
         &ctx.host_log_path,
@@ -420,6 +430,12 @@ fn materialize_remote_microvm_runner_flake(
     fs::write(flake_dir.join("flake.nix"), flake_nix)
         .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
     Ok(vfkit_runner_installable(&flake_dir))
+}
+
+fn runner_flake_content_hash(flake_dir: &Path) -> anyhow::Result<String> {
+    let flake_path = flake_dir.join("flake.nix");
+    let bytes = fs::read(&flake_path).with_context(|| format!("read {}", flake_path.display()))?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
 fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -1206,9 +1222,10 @@ fn remote_microvm_context(
     let shared_job_dir = remote_work_dir.join("jobs").join(job.id);
     Ok(RemoteMicrovmContext {
         remote_host,
+        remote_work_dir: remote_work_dir.clone(),
         remote_snapshot_dir,
         remote_vm_dir: remote_job_dir.join("vm"),
-        remote_artifacts_dir: remote_job_dir.join("artifacts"),
+        remote_artifacts_dir: shared_job_dir.join("artifacts"),
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
         remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
         remote_workspace_deps_dir: shared_job_dir
@@ -1274,6 +1291,22 @@ fn ensure_remote_microvm_directories(
         &mut run_ssh_command(&remote.remote_host, &command),
         log_path,
         "[pikaci] ensure remote execute dirs",
+    )
+}
+
+fn reset_remote_microvm_artifacts(
+    remote: &RemoteMicrovmContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let command = format!(
+        "set -euo pipefail; rm -rf {}; mkdir -p {}",
+        shell_single_quote(&remote.remote_artifacts_dir.display().to_string()),
+        shell_single_quote(&remote.remote_artifacts_dir.display().to_string()),
+    );
+    run_command_to_log(
+        &mut run_ssh_command(&remote.remote_host, &command),
+        log_path,
+        "[pikaci] reset remote artifacts dir",
     )
 }
 
@@ -1369,6 +1402,87 @@ fn load_remote_snapshot_metadata(
         )
     })?;
     Ok(Some(metadata))
+}
+
+fn load_remote_runner_flake_metadata(
+    remote_host: &str,
+    metadata_path: &Path,
+) -> anyhow::Result<Option<RunnerFlakeMetadata>> {
+    let command = format!(
+        "if test -f {}; then cat {}; fi",
+        shell_single_quote(&metadata_path.display().to_string()),
+        shell_single_quote(&metadata_path.display().to_string())
+    );
+    let output = run_ssh_command(remote_host, &command)
+        .output()
+        .with_context(|| format!("read remote runner metadata from {remote_host}"))?;
+    if !output.status.success() {
+        bail!(
+            "read remote runner metadata from {} failed with status {}",
+            remote_host,
+            output.status
+        );
+    }
+    if output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let metadata: RunnerFlakeMetadata =
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "decode remote runner metadata from {}",
+                metadata_path.display()
+            )
+        })?;
+    Ok(Some(metadata))
+}
+
+fn write_remote_json<T: Serialize>(
+    remote_host: &str,
+    path: &Path,
+    value: &T,
+    log_path: &Path,
+    label: &str,
+) -> anyhow::Result<()> {
+    let payload = serde_json::to_vec_pretty(value).context("encode remote json payload")?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("remote path {} has no parent", path.display()))?;
+    let command = format!(
+        "set -euo pipefail; mkdir -p {}; cat > {}",
+        shell_single_quote(&parent.display().to_string()),
+        shell_single_quote(&path.display().to_string()),
+    );
+    let mut child = run_ssh_command(remote_host, &command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn remote json writer on {remote_host}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("remote json writer stdin unavailable"))?
+        .write_all(&payload)
+        .with_context(|| format!("stream remote json payload to {remote_host}"))?;
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("wait for remote json writer on {remote_host}"))?;
+    append_line(log_path, label)?;
+    if !output.stdout.is_empty() {
+        append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
+    }
+    if !output.stderr.is_empty() {
+        append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
+    }
+    if !output.status.success() {
+        bail!(
+            "write remote json to {} on {} failed with status {:?}",
+            path.display(),
+            remote_host,
+            output.status.code()
+        );
+    }
+    Ok(())
 }
 
 fn sync_directory_to_remote(
@@ -1542,15 +1656,68 @@ fn ensure_remote_microvm_runner(
     }
 
     let local_flake_dir = ctx.job_dir.join("vm").join("flake");
-    let installable = materialize_runner_flake(job, ctx)?;
+    let _installable = materialize_runner_flake(job, ctx)?;
+    let flake_hash = runner_flake_content_hash(&local_flake_dir)?;
+    let remote_flake_root = remote
+        .remote_work_dir
+        .join("runner-flakes")
+        .join(&flake_hash);
+    let remote_flake_dir = remote_flake_root.join("flake");
+    let remote_flake_metadata = remote_flake_root.join("pikaci-runner-flake.json");
     append_line(
         log_path,
         &format!(
             "[pikaci] stage remote runner flake {} for `{}` on {}",
-            installable, job.id, remote.remote_host
+            local_flake_dir.display(),
+            job.id,
+            remote.remote_host
         ),
     )?;
-    let remote_flake_dir = remote.remote_vm_dir.join("flake");
+    if let Some(metadata) =
+        load_remote_runner_flake_metadata(&remote.remote_host, &remote_flake_metadata)?
+    {
+        if metadata.content_hash != flake_hash {
+            bail!(
+                "remote runner flake metadata mismatch at {} on {} (expected {}, got {})",
+                remote_flake_metadata.display(),
+                remote.remote_host,
+                flake_hash,
+                metadata.content_hash
+            );
+        }
+        let remote_store_path = PathBuf::from(&metadata.remote_store_path);
+        let verify_command = format!(
+            "test -e {}",
+            shell_single_quote(&remote_store_path.display().to_string())
+        );
+        if run_ssh_command(&remote.remote_host, &verify_command)
+            .status()
+            .with_context(|| format!("check remote runner store path on {}", remote.remote_host))?
+            .success()
+        {
+            append_line(
+                log_path,
+                &format!(
+                    "[pikaci] remote runner flake already available at {} (content hash {})",
+                    remote_flake_dir.display(),
+                    flake_hash
+                ),
+            )?;
+            return remote_symlink(
+                &remote_store_path,
+                &remote.remote_runner_link,
+                &remote.remote_host,
+                log_path,
+            );
+        }
+        bail!(
+            "remote runner metadata at {} points to missing store path {} on {}",
+            remote_flake_metadata.display(),
+            remote_store_path.display(),
+            remote.remote_host
+        );
+    }
+
     sync_directory_to_remote(
         &local_flake_dir,
         &remote_flake_dir,
@@ -1587,6 +1754,17 @@ fn ensure_remote_microvm_runner(
         .find(|line| line.starts_with("/nix/store/"))
         .ok_or_else(|| anyhow!("remote runner build produced no store path"))?;
     append_line(log_path, stdout.trim_end())?;
+    write_remote_json(
+        &remote.remote_host,
+        &remote_flake_metadata,
+        &RunnerFlakeMetadata {
+            schema_version: 1,
+            content_hash: flake_hash,
+            remote_store_path: remote_store_path.to_string(),
+        },
+        log_path,
+        "[pikaci] record remote runner flake metadata",
+    )?;
     remote_symlink(
         Path::new(remote_store_path),
         &remote.remote_runner_link,
@@ -2061,6 +2239,7 @@ mod tests {
     fn remote_microvm_launch_starts_virtiofsd_and_waits_for_sockets() {
         let command = build_remote_microvm_launch_command(&RemoteMicrovmContext {
             remote_host: "pika-build".to_string(),
+            remote_work_dir: Path::new("/var/tmp/pikaci").to_path_buf(),
             remote_snapshot_dir: Path::new("/var/tmp/pikaci/runs/run/snapshot").to_path_buf(),
             remote_vm_dir: Path::new("/var/tmp/pikaci/jobs/job/vm").to_path_buf(),
             remote_artifacts_dir: Path::new("/var/tmp/pikaci/jobs/job/artifacts").to_path_buf(),

@@ -904,6 +904,13 @@ We have at least one important Linux Rust lane where:
     - the first unchanged rerun (`20260310T205036Z-e56ce4a5`) uploaded the `19M` snapshot once to `/var/tmp/pikaci-prepared-output/snapshots/02d9abe340ea69a5f8e92360ea12bb97b8931dd752b15e101d5991250c33b245/snapshot` and still passed end-to-end in about `159s`,
     - the second unchanged rerun (`20260310T205318Z-3ecb177c`) skipped snapshot upload entirely, started with `remote snapshot already available ... (content hash 02d9abe3...)`, and still passed end-to-end in about `152s`,
     - so the next biggest visible cost after snapshot reuse is no longer the run snapshot at all; it is the per-run runner-flake sync / realization and the rest of the small dynamic remote setup.
+  - note that the next reuse slice moved that remaining per-run runner staging onto the same strict content-addressed footing:
+    - each staged Linux remote microVM runner flake is now keyed by the SHA-256 content hash of its rendered `flake.nix`, under `/var/tmp/pikaci-prepared-output/runner-flakes/<hash>/flake` on `pika-build`,
+    - `pikaci` records `pikaci-runner-flake.json` next to that remote flake payload with the exact `content_hash` and realized remote runner store path, then validates both on reuse by requiring an exact hash match and a still-existing remote store path; it now hard-fails on mismatch or stale metadata instead of silently re-rendering ambiguous state,
+    - the remote artifacts mount for staged Linux remote microVM jobs now points at the shared per-job path under `/var/tmp/pikaci-prepared-output/jobs/<job>/artifacts`, and each run resets that directory before launch so the rendered runner flake stays content-stable across unchanged reruns,
+    - the first rerun on that path (`20260310T211932Z-b37b4cd9`) uploaded and realized the runner flakes once and still passed end-to-end in about `171.51s`,
+    - the second unchanged rerun (`20260310T212231Z-3eca55c5`) logged `remote runner flake already available ...` for both staged jobs, skipped both runner-flake uploads and both remote `microvm.declaredRunner` realizations, and still passed end-to-end in about `133.49s`,
+    - so the next biggest remaining per-run cost is no longer snapshot sync or runner-flake staging; it is the smaller residual remote setup and the guest execution time itself.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

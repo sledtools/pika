@@ -869,7 +869,7 @@ We have at least one important Linux Rust lane where:
     - instead it now syncs a filtered helper snapshot to `/var/tmp/pikaci-prepared-output/helpers/<id>/snapshot` on `pika-build`, runs `ssh pika-build ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix} build --accept-flake-config --no-link --print-out-paths path:...#ci.x86_64-linux.workspace{Deps,Build}`, and requires the returned `/nix/store/...` path to exist remotely,
     - `just pikaci-pre-merge-pika-rust-prepares-remote-build` therefore no longer misrepresents a fast path while secretly bouncing the final Linux output through the Mac,
     - and the helper still hard-fails by construction if it cannot stay on that remote-authoritative path,
-    - the helper now cleans up its own `/var/tmp/pikaci-prepared-output/helpers/<id>` snapshot directory on exit, and only prunes sibling helper dirs once they are stale (default: older than 15 minutes), so repeated prepare-only runs do not leak full repo snapshots onto `pika-build` and overlapping helper runs do not delete each other’s in-flight snapshots,
+    - the helper now cleans up only its own `/var/tmp/pikaci-prepared-output/helpers/<id>` snapshot directory on exit, so repeated prepare-only runs do not leak full repo snapshots onto `pika-build` and overlapping helper runs do not delete each other’s in-flight snapshots,
     - a fresh helper rerun completed both outputs on the strict path and reported only remote-authoritative results:
       - `ci.x86_64-linux.workspaceDeps` -> `/nix/store/lw2m7kd6l0bfssd0cpkiqv2hxmmz8mbm-pika-linux-rust-workspace-deps-deps-0.1.0`
       - `ci.x86_64-linux.workspaceBuild` -> `/nix/store/y1rdyafqd4zyyxiam8cj8rknaa662w63-pika-linux-rust-workspace-build-0.1.0`
@@ -887,9 +887,10 @@ We have at least one important Linux Rust lane where:
     - the helper snapshot stream is about `730460160` bytes (`~697 MiB`), and the real run snapshot is about `698M` locally / `699M` remotely for run `20260310T200509Z-9ff75180`,
     - before this slice, the canonical `prepare` wrapper uploaded that helper snapshot twice because `workspaceDeps` and `workspaceBuild` each generated a different helper snapshot id,
     - now the wrapper shares one helper snapshot id across both prepares, the first helper call uploads it once, and the second helper call logs `reusing existing remote helper snapshot` instead of re-uploading the same tree,
-    - the helper still cleans up its own shared snapshot root on exit and only prunes stale sibling helper dirs, so strict remote-authoritative behavior stays intact without making overlapping helper runs stomp each other,
-    - the fresh helper rerun (`just pikaci-pre-merge-pika-rust-prepares-remote-build`) completed in about `134s` and left `/var/tmp/pikaci-prepared-output/helpers` empty again,
-    - and the fresh real lane rerun (`20260310T200509Z-9ff75180`) still passed end-to-end in about `265s`, with exactly one run-snapshot sync followed by repeated `remote snapshot already available` reuse lines for the remaining prepares/runner steps.
+    - the helper still cleans up its own shared snapshot root on exit and no longer touches sibling helper dirs at all, so strict remote-authoritative behavior stays intact without making overlapping helper runs stomp each other,
+    - the canonical wrapper and both helper scripts now `cd` to the repo root before any `nix derivation show`, tar snapshotting, or helper invocation, so `scripts/pikaci-pre-merge-pika-rust-remote.sh prepare` is self-contained even when it is invoked outside `just`,
+    - the fresh helper rerun (`just pikaci-pre-merge-pika-rust-prepares-remote-build`) completed in about `160s` and left `/var/tmp/pikaci-prepared-output/helpers` empty again,
+    - and the fresh real lane rerun (`20260310T202126Z-c66767d9`) still passed end-to-end in about `268s`, with exactly one run-snapshot sync followed by repeated `remote snapshot already available` reuse lines for the remaining prepares/runner steps.
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,

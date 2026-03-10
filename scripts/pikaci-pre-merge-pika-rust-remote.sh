@@ -43,6 +43,7 @@ prepare_lane() {
 
   trap cleanup_prepare_snapshot EXIT
 
+  cd "$repo_root"
   "$script_dir/pika-build-prewarm-workspace-deps.sh" --installable .#ci.x86_64-linux.workspaceDeps
   "$script_dir/pika-build-run-workspace-deps.sh" \
     --installable .#ci.x86_64-linux.workspaceDeps \

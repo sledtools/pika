@@ -807,7 +807,7 @@ We have at least one important Linux Rust lane where:
   - use GitHub only as a thin trigger/reporting shell for now,
   - run the proven lane as a clearly labeled non-gating shadow job on pull requests,
   - keep the canonical operator/CI command path as `just pre-merge-pika-rust-shadow`, which delegates to `just pikaci-remote-fulfill-pre-merge-pika-rust`,
-  - note that `.github/workflows/pre-merge.yml` now exposes that path as the advisory `shadow-pikaci-pre-merge-pika-rust` job, which captures its exit code and reports it in the pre-merge summary without blocking merges,
+  - note that `.github/workflows/pre-merge.yml` now exposes that path as the advisory `shadow-pikaci-pre-merge-pika-rust` job, which captures its exit code and reports it in its own job summary while staying outside the blocking `pre-merge` aggregator,
   - note that the first local shadow-mode verification rerun (`20260310T220049Z-c2361db8`) still passed end-to-end in about `216s`,
   - use the shadow lane to gather pass/fail parity, runtime, and operator-friction data before promoting it over any legacy Linux path,
   - and keep the next cleanup focus on removing residual stringly staged-Linux detection and making the remote-authoritative prepare model more explicit in `pikaci`.

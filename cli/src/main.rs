@@ -1874,15 +1874,25 @@ fn parse_agent_fields(agent: &serde_json::Value) -> anyhow::Result<(String, Stri
     Ok((agent_id, state))
 }
 
+fn parse_agent_startup_phase_str(raw: &str) -> Option<AgentStartupPhase> {
+    match raw.trim() {
+        "requested" => Some(AgentStartupPhase::Requested),
+        "provisioning_vm" => Some(AgentStartupPhase::ProvisioningVm),
+        "booting_guest" => Some(AgentStartupPhase::BootingGuest),
+        "waiting_for_service_ready" => Some(AgentStartupPhase::WaitingForServiceReady),
+        "ready" => Some(AgentStartupPhase::Ready),
+        "failed" => Some(AgentStartupPhase::Failed),
+        _ => None,
+    }
+}
+
 fn parse_agent_startup_phase(agent: &serde_json::Value) -> anyhow::Result<AgentStartupPhase> {
     if let Some(raw) = agent
         .get("startup_phase")
         .and_then(serde_json::Value::as_str)
     {
-        return serde_json::from_value::<AgentStartupPhase>(serde_json::Value::String(
-            raw.to_string(),
-        ))
-        .context("parse agent startup_phase");
+        return parse_agent_startup_phase_str(raw)
+            .ok_or_else(|| anyhow!("parse agent startup_phase: {raw}"));
     }
     let (_, state) = parse_agent_fields(agent)?;
     Ok(match state.as_str() {

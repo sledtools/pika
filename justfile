@@ -559,144 +559,22 @@ release VERSION:
     echo "ok: pushed $tag"
 
 # Generate Swift bindings via UniFFI.
-ios-gen-swift: rust-build-host
-    mkdir -p ios/Bindings ios/NSEBindings ios/ShareBindings
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    TARGET_DIR="$TARGET_ROOT/$PROFILE"; \
-    LIB=""; \
-    for cand in "$TARGET_DIR/libpika_core.dylib" "$TARGET_DIR/libpika_core.so" "$TARGET_DIR/libpika_core.dll"; do \
-      if [ -f "$cand" ]; then LIB="$cand"; break; fi; \
-    done; \
-    if [ -z "$LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_core.*"; exit 1; fi; \
-    cargo run -q -p uniffi-bindgen -- generate \
-      --library "$LIB" \
-      --language swift \
-      --out-dir ios/Bindings \
-      --config rust/uniffi.toml
-    python3 -c 'from pathlib import Path; import re; p=Path("ios/Bindings/pika_core.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    TARGET_DIR="$TARGET_ROOT/$PROFILE"; \
-    NSE_LIB=""; \
-    for cand in "$TARGET_DIR/libpika_nse.dylib" "$TARGET_DIR/libpika_nse.so" "$TARGET_DIR/libpika_nse.dll"; do \
-      if [ -f "$cand" ]; then NSE_LIB="$cand"; break; fi; \
-    done; \
-    if [ -z "$NSE_LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_nse.*"; exit 1; fi; \
-    cargo run -q -p uniffi-bindgen -- generate \
-      --library "$NSE_LIB" \
-      --language swift \
-      --out-dir ios/NSEBindings \
-      --config crates/pika-nse/uniffi.toml
-    python3 -c 'from pathlib import Path; import re; p=Path("ios/NSEBindings/pika_nse.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGET_ROOT="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; \
-    TARGET_DIR="$TARGET_ROOT/$PROFILE"; \
-    SHARE_LIB=""; \
-    for cand in "$TARGET_DIR/libpika_share.dylib" "$TARGET_DIR/libpika_share.so" "$TARGET_DIR/libpika_share.dll"; do \
-      if [ -f "$cand" ]; then SHARE_LIB="$cand"; break; fi; \
-    done; \
-    if [ -z "$SHARE_LIB" ]; then echo "Missing built library: $TARGET_DIR/libpika_share.*"; exit 1; fi; \
-    cargo run -q -p uniffi-bindgen -- generate \
-      --library "$SHARE_LIB" \
-      --language swift \
-      --out-dir ios/ShareBindings \
-      --config crates/pika-share/uniffi.toml
-    python3 -c 'from pathlib import Path; import re; p=Path("ios/ShareBindings/pika_share.swift"); data=p.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n"); data=re.sub(r"[ \t]+$", "", data, flags=re.M); data=data.rstrip("\n")+"\n"; p.write_text(data, encoding="utf-8")'
+ios-gen-swift:
+    ./scripts/ios-build ios-gen-swift
 
 # Cross-compile Rust core for iOS (device + simulator).
 
 # Keep `PIKA_IOS_RUST_TARGETS` aligned with destination (device vs simulator) to avoid link errors.
 ios-rust:
-    # Nix shells often set CC/CXX/SDKROOT/MACOSX_DEPLOYMENT_TARGET for macOS builds.
-    # For iOS targets, force Xcode toolchain compilers + iOS SDK roots.
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGETS="${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"; \
-    case "$PROFILE" in \
-      release|debug) ;; \
-      *) echo "error: unsupported PIKA_RUST_PROFILE: $PROFILE (expected debug or release)"; exit 2 ;; \
-    esac; \
-    DEV_DIR="$(./tools/xcode-dev-dir)"; \
-    TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"; \
-    CC_BIN="$TOOLCHAIN_BIN/clang"; \
-    CXX_BIN="$TOOLCHAIN_BIN/clang++"; \
-    AR_BIN="$TOOLCHAIN_BIN/ar"; \
-    RANLIB_BIN="$TOOLCHAIN_BIN/ranlib"; \
-    IOS_MIN="16.0"; \
-    SDKROOT_IOS="$(DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk iphoneos --show-sdk-path)"; \
-    SDKROOT_SIM="$(DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path)"; \
-    base_env=(env -u LIBRARY_PATH -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET -u CC -u CXX -u AR -u RANLIB -u LD \
-      DEVELOPER_DIR="$DEV_DIR" CC="$CC_BIN" CXX="$CXX_BIN" AR="$AR_BIN" RANLIB="$RANLIB_BIN" IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN" \
-      CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$CC_BIN" \
-      CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$CC_BIN"); \
-    for target in $TARGETS; do \
-      case "$target" in \
-        aarch64-apple-ios) SDKROOT="$SDKROOT_IOS"; MIN_FLAG="-miphoneos-version-min=" ;; \
-        aarch64-apple-ios-sim) SDKROOT="$SDKROOT_SIM"; MIN_FLAG="-mios-simulator-version-min=" ;; \
-        *) echo "error: unsupported iOS Rust target: $target"; exit 2 ;; \
-      esac; \
-      if [ "$PROFILE" = "release" ]; then \
-        "${base_env[@]}" \
-          SDKROOT="$SDKROOT" \
-          RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
-          cargo build -p pika_core -p pika-nse -p pika-share --lib --target "$target" --release; \
-      else \
-        "${base_env[@]}" \
-          SDKROOT="$SDKROOT" \
-          RUSTFLAGS="-C linker=$CC_BIN -C link-arg=${MIN_FLAG}${IOS_MIN}" \
-          cargo build -p pika_core -p pika-nse -p pika-share --lib --target "$target"; \
-      fi; \
-    done
+    ./scripts/ios-build ios-rust
 
 # Build PikaCore.xcframework, PikaNSE.xcframework, and PikaShare.xcframework (device + simulator slices).
-ios-xcframework: ios-gen-swift ios-rust
-    set -euo pipefail; \
-    PROFILE="${PIKA_RUST_PROFILE:-release}"; \
-    TARGETS="${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"; \
-    rm -rf ios/Frameworks/PikaCore.xcframework ios/Frameworks/PikaNSE.xcframework ios/Frameworks/PikaShare.xcframework ios/.build; \
-    mkdir -p ios/.build/headers/pika_coreFFI ios/.build/nse-headers/pika_nseFFI ios/.build/share-headers/pika_shareFFI ios/Frameworks; \
-    cp ios/Bindings/pika_coreFFI.h ios/.build/headers/pika_coreFFI/pika_coreFFI.h; \
-    cp ios/Bindings/pika_coreFFI.modulemap ios/.build/headers/pika_coreFFI/module.modulemap; \
-    cp ios/NSEBindings/pika_nseFFI.h ios/.build/nse-headers/pika_nseFFI/pika_nseFFI.h; \
-    cp ios/NSEBindings/pika_nseFFI.modulemap ios/.build/nse-headers/pika_nseFFI/module.modulemap; \
-    cp ios/ShareBindings/pika_shareFFI.h ios/.build/share-headers/pika_shareFFI/pika_shareFFI.h; \
-    cp ios/ShareBindings/pika_shareFFI.modulemap ios/.build/share-headers/pika_shareFFI/module.modulemap; \
-    cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
-    nse_cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
-    share_cmd=(./tools/xcode-run xcodebuild -create-xcframework); \
-    for target in $TARGETS; do \
-      lib="target/$target/$PROFILE/libpika_core.a"; \
-      if [ ! -f "$lib" ]; then echo "error: missing iOS static lib: $lib"; exit 1; fi; \
-      cmd+=(-library "$lib" -headers ios/.build/headers); \
-      nse_lib="target/$target/$PROFILE/libpika_nse.a"; \
-      if [ ! -f "$nse_lib" ]; then echo "error: missing iOS static lib: $nse_lib"; exit 1; fi; \
-      nse_cmd+=(-library "$nse_lib" -headers ios/.build/nse-headers); \
-      share_lib="target/$target/$PROFILE/libpika_share.a"; \
-      if [ ! -f "$share_lib" ]; then echo "error: missing iOS static lib: $share_lib"; exit 1; fi; \
-      share_cmd+=(-library "$share_lib" -headers ios/.build/share-headers); \
-    done; \
-    cmd+=(-output ios/Frameworks/PikaCore.xcframework); \
-    "${cmd[@]}"; \
-    nse_cmd+=(-output ios/Frameworks/PikaNSE.xcframework); \
-    "${nse_cmd[@]}"; \
-    share_cmd+=(-output ios/Frameworks/PikaShare.xcframework); \
-    "${share_cmd[@]}"
+ios-xcframework:
+    ./scripts/ios-build ios-xcframework
 
 # Generate Xcode project via xcodegen.
 ios-xcodeproj:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd ios && rm -rf Pika.xcodeproj && xcodegen generate
-    # If PIKA_IOS_DEVELOPMENT_TEAM is set, stamp it on all targets so Xcode
-    # opens with signing already configured (no manual team picker step).
-    if [ -n "${PIKA_IOS_DEVELOPMENT_TEAM:-}" ]; then
-      sed -i.bak "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ${PIKA_IOS_DEVELOPMENT_TEAM};/" \
-        Pika.xcodeproj/project.pbxproj && rm -f Pika.xcodeproj/project.pbxproj.bak
-    fi
+    ./scripts/ios-build ios-xcodeproj
 
 # Prepare for App Store: build xcframework, regenerate project, open Xcode.
 
@@ -710,56 +588,12 @@ ios-appstore: ios-xcframework ios-xcodeproj
     open ios/Pika.xcodeproj
 
 # Build iOS app for simulator.
-ios-build-sim: ios-xcframework ios-xcodeproj
-    #!/usr/bin/env bash
-    set -euo pipefail
-    SIM_ARCH="${PIKA_IOS_SIM_ARCH:-arm64}"
-    DERIVED_DATA_PATH="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
-    CODE_SIGNING_ALLOWED="${PIKA_IOS_CODE_SIGNING_ALLOWED:-YES}"
-    if [ -n "${PIKA_IOS_SIM_UDID:-}" ]; then
-      DEST="id=${PIKA_IOS_SIM_UDID}"
-    else
-      DEST="platform=iOS Simulator,name=iPhone 16"
-    fi
-    ./tools/xcodebuild-compact \
-      -project ios/Pika.xcodeproj \
-      -scheme Pika \
-      -configuration Debug \
-      -destination "$DEST" \
-      -derivedDataPath "$DERIVED_DATA_PATH" \
-      build \
-      -skipMacroValidation \
-      ARCHS="$SIM_ARCH" \
-      ONLY_ACTIVE_ARCH=YES \
-      CODE_SIGNING_ALLOWED="$CODE_SIGNING_ALLOWED" \
-      PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
-      PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+ios-build-sim:
+    ./scripts/ios-build ios-build-sim
 
 # Build iOS app for simulator using existing Rust-generated artifacts.
 ios-build-swift-sim:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    SIM_ARCH="${PIKA_IOS_SIM_ARCH:-arm64}"
-    DERIVED_DATA_PATH="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
-    CODE_SIGNING_ALLOWED="${PIKA_IOS_CODE_SIGNING_ALLOWED:-YES}"
-    if [ -n "${PIKA_IOS_SIM_UDID:-}" ]; then
-      DEST="id=${PIKA_IOS_SIM_UDID}"
-    else
-      DEST="platform=iOS Simulator,name=iPhone 16"
-    fi
-    ./tools/xcodebuild-compact \
-      -project ios/Pika.xcodeproj \
-      -scheme Pika \
-      -configuration Debug \
-      -destination "$DEST" \
-      -derivedDataPath "$DERIVED_DATA_PATH" \
-      build \
-      -skipMacroValidation \
-      ARCHS="$SIM_ARCH" \
-      ONLY_ACTIVE_ARCH=YES \
-      CODE_SIGNING_ALLOWED="$CODE_SIGNING_ALLOWED" \
-      PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
-      PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+    ./scripts/ios-build ios-build-swift-sim
 
 # Run iOS UI tests on simulator (skips E2E deployed-bot test).
 ios-ui-test: ios-xcframework ios-xcodeproj

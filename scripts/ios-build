@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IOS_DIR="$ROOT/ios"
+IOS_BINDINGS_DIR="$IOS_DIR/Bindings"
+IOS_NSE_BINDINGS_DIR="$IOS_DIR/NSEBindings"
+IOS_SHARE_BINDINGS_DIR="$IOS_DIR/ShareBindings"
+IOS_FRAMEWORKS_DIR="$IOS_DIR/Frameworks"
+IOS_BUILD_DIR="$IOS_DIR/.build"
+
+# shellcheck disable=SC1091
+source "$ROOT/tools/lib/dotenv.sh"
+load_dotenv_no_override "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/mobile-build.sh"
+
+cd "$ROOT"
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/ios-build <ios-gen-swift|ios-rust|ios-xcframework|ios-xcodeproj|ios-build-sim|ios-build-swift-sim>
+EOF
+}
+
+ios_rust_profile() {
+  printf '%s\n' "${PIKA_RUST_PROFILE:-release}"
+}
+
+ios_rust_targets() {
+  printf '%s\n' "${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"
+}
+
+normalize_generated_swift() {
+  local path="${1:?path is required}"
+  python3 - "$path" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+data = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+data = re.sub(r"[ \t]+$", "", data, flags=re.M)
+path.write_text(data.rstrip("\n") + "\n", encoding="utf-8")
+PY
+}
+
+generate_swift_bindings() {
+  local lib_name="${1:?library name is required}"
+  local config_path="${2:?config path is required}"
+  local out_dir="${3:?output directory is required}"
+  local swift_path="${4:?swift path is required}"
+  local profile="${5:?profile is required}"
+  local lib_path
+
+  lib_path="$(find_host_dynamic_lib "$lib_name" "$profile")"
+  cargo run -q -p uniffi-bindgen -- generate \
+    --library "$lib_path" \
+    --language swift \
+    --out-dir "$out_dir" \
+    --config "$config_path"
+  normalize_generated_swift "$swift_path"
+}
+
+run_ios_gen_swift() {
+  local profile
+
+  profile="$(ios_rust_profile)"
+  require_rust_profile "$profile"
+  build_default_host_rust "$profile"
+  mkdir -p "$IOS_BINDINGS_DIR" "$IOS_NSE_BINDINGS_DIR" "$IOS_SHARE_BINDINGS_DIR"
+  generate_swift_bindings \
+    "pika_core" \
+    "rust/uniffi.toml" \
+    "$IOS_BINDINGS_DIR" \
+    "$IOS_BINDINGS_DIR/pika_core.swift" \
+    "$profile"
+  generate_swift_bindings \
+    "pika_nse" \
+    "crates/pika-nse/uniffi.toml" \
+    "$IOS_NSE_BINDINGS_DIR" \
+    "$IOS_NSE_BINDINGS_DIR/pika_nse.swift" \
+    "$profile"
+  generate_swift_bindings \
+    "pika_share" \
+    "crates/pika-share/uniffi.toml" \
+    "$IOS_SHARE_BINDINGS_DIR" \
+    "$IOS_SHARE_BINDINGS_DIR/pika_share.swift" \
+    "$profile"
+}
+
+run_ios_rust() {
+  local profile
+  local targets
+  local dev_dir
+  local toolchain_bin
+  local cc_bin
+  local cxx_bin
+  local ar_bin
+  local ranlib_bin
+  local ios_min="16.0"
+  local sdkroot_ios
+  local sdkroot_sim
+  local target
+  local sdkroot
+  local min_flag
+  local -a base_env
+  local -a cmd
+
+  profile="$(ios_rust_profile)"
+  targets="$(ios_rust_targets)"
+  require_rust_profile "$profile"
+  dev_dir="$(./tools/xcode-dev-dir)"
+  toolchain_bin="$dev_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+  cc_bin="$toolchain_bin/clang"
+  cxx_bin="$toolchain_bin/clang++"
+  ar_bin="$toolchain_bin/ar"
+  ranlib_bin="$toolchain_bin/ranlib"
+  sdkroot_ios="$(DEVELOPER_DIR="$dev_dir" /usr/bin/xcrun --sdk iphoneos --show-sdk-path)"
+  sdkroot_sim="$(DEVELOPER_DIR="$dev_dir" /usr/bin/xcrun --sdk iphonesimulator --show-sdk-path)"
+  base_env=(
+    env
+    -u LIBRARY_PATH
+    -u SDKROOT
+    -u MACOSX_DEPLOYMENT_TARGET
+    -u CC
+    -u CXX
+    -u AR
+    -u RANLIB
+    -u LD
+    DEVELOPER_DIR="$dev_dir"
+    CC="$cc_bin"
+    CXX="$cxx_bin"
+    AR="$ar_bin"
+    RANLIB="$ranlib_bin"
+    IPHONEOS_DEPLOYMENT_TARGET="$ios_min"
+    CARGO_TARGET_AARCH64_APPLE_IOS_LINKER="$cc_bin"
+    CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="$cc_bin"
+  )
+
+  for target in $targets; do
+    case "$target" in
+      aarch64-apple-ios)
+        sdkroot="$sdkroot_ios"
+        min_flag="-miphoneos-version-min="
+        ;;
+      aarch64-apple-ios-sim)
+        sdkroot="$sdkroot_sim"
+        min_flag="-mios-simulator-version-min="
+        ;;
+      *)
+        echo "error: unsupported iOS Rust target: $target" >&2
+        return 2
+        ;;
+    esac
+
+    cmd=(
+      "${base_env[@]}"
+      SDKROOT="$sdkroot"
+      RUSTFLAGS="-C linker=$cc_bin -C link-arg=${min_flag}${ios_min}"
+      cargo
+      build
+      -p pika_core
+      -p pika-nse
+      -p pika-share
+      --lib
+      --target "$target"
+    )
+    if [ "$profile" = "release" ]; then
+      cmd+=(--release)
+    fi
+    "${cmd[@]}"
+  done
+}
+
+stage_xcframework_headers() {
+  local ffi_name="${1:?ffi name is required}"
+  local source_dir="${2:?source directory is required}"
+  local headers_root="${3:?headers root is required}"
+  local target_dir="$headers_root/$ffi_name"
+
+  mkdir -p "$target_dir"
+  cp "$source_dir/$ffi_name.h" "$target_dir/$ffi_name.h"
+  cp "$source_dir/$ffi_name.modulemap" "$target_dir/module.modulemap"
+}
+
+build_ios_xcframework() {
+  local lib_name="${1:?library name is required}"
+  local headers_root="${2:?headers root is required}"
+  local output_path="${3:?output path is required}"
+  local profile="${4:?profile is required}"
+  local targets="${5:?targets are required}"
+  local target
+  local lib_path
+  local -a cmd
+
+  cmd=(./tools/xcode-run xcodebuild -create-xcframework)
+  for target in $targets; do
+    lib_path="$(find_target_static_lib "$lib_name" "$target" "$profile")"
+    cmd+=(-library "$lib_path" -headers "$headers_root")
+  done
+  cmd+=(-output "$output_path")
+  "${cmd[@]}"
+}
+
+run_ios_xcframework() {
+  local profile
+  local targets
+  local core_headers_root="$IOS_BUILD_DIR/headers"
+  local nse_headers_root="$IOS_BUILD_DIR/nse-headers"
+  local share_headers_root="$IOS_BUILD_DIR/share-headers"
+
+  profile="$(ios_rust_profile)"
+  targets="$(ios_rust_targets)"
+  run_ios_gen_swift
+  run_ios_rust
+  rm -rf \
+    "$IOS_FRAMEWORKS_DIR/PikaCore.xcframework" \
+    "$IOS_FRAMEWORKS_DIR/PikaNSE.xcframework" \
+    "$IOS_FRAMEWORKS_DIR/PikaShare.xcframework" \
+    "$IOS_BUILD_DIR"
+  mkdir -p "$core_headers_root" "$nse_headers_root" "$share_headers_root" "$IOS_FRAMEWORKS_DIR"
+  stage_xcframework_headers "pika_coreFFI" "$IOS_BINDINGS_DIR" "$core_headers_root"
+  stage_xcframework_headers "pika_nseFFI" "$IOS_NSE_BINDINGS_DIR" "$nse_headers_root"
+  stage_xcframework_headers "pika_shareFFI" "$IOS_SHARE_BINDINGS_DIR" "$share_headers_root"
+  build_ios_xcframework \
+    "pika_core" \
+    "$core_headers_root" \
+    "$IOS_FRAMEWORKS_DIR/PikaCore.xcframework" \
+    "$profile" \
+    "$targets"
+  build_ios_xcframework \
+    "pika_nse" \
+    "$nse_headers_root" \
+    "$IOS_FRAMEWORKS_DIR/PikaNSE.xcframework" \
+    "$profile" \
+    "$targets"
+  build_ios_xcframework \
+    "pika_share" \
+    "$share_headers_root" \
+    "$IOS_FRAMEWORKS_DIR/PikaShare.xcframework" \
+    "$profile" \
+    "$targets"
+}
+
+run_ios_xcodeproj() {
+  (
+    cd "$IOS_DIR"
+    rm -rf Pika.xcodeproj
+    xcodegen generate
+    if [ -n "${PIKA_IOS_DEVELOPMENT_TEAM:-}" ]; then
+      sed -i.bak "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ${PIKA_IOS_DEVELOPMENT_TEAM};/" \
+        Pika.xcodeproj/project.pbxproj
+      rm -f Pika.xcodeproj/project.pbxproj.bak
+    fi
+  )
+}
+
+ios_sim_destination() {
+  if [ -n "${PIKA_IOS_SIM_UDID:-}" ]; then
+    printf 'id=%s\n' "$PIKA_IOS_SIM_UDID"
+  else
+    printf 'platform=iOS Simulator,name=iPhone 16\n'
+  fi
+}
+
+run_ios_simulator_xcodebuild() {
+  local sim_arch="${PIKA_IOS_SIM_ARCH:-arm64}"
+  local derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
+  local code_signing_allowed="${PIKA_IOS_CODE_SIGNING_ALLOWED:-YES}"
+  local dest
+
+  dest="$(ios_sim_destination)"
+  ./tools/xcodebuild-compact \
+    -project ios/Pika.xcodeproj \
+    -scheme Pika \
+    -configuration Debug \
+    -destination "$dest" \
+    -derivedDataPath "$derived_data_path" \
+    build \
+    -skipMacroValidation \
+    ARCHS="$sim_arch" \
+    ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGNING_ALLOWED="$code_signing_allowed" \
+    PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
+    PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+}
+
+run_ios_build_sim() {
+  run_ios_xcframework
+  run_ios_xcodeproj
+  run_ios_simulator_xcodebuild
+}
+
+run_ios_build_swift_sim() {
+  run_ios_simulator_xcodebuild
+}
+
+main() {
+  case "${1:-}" in
+    ios-gen-swift)
+      run_ios_gen_swift
+      ;;
+    ios-rust)
+      run_ios_rust
+      ;;
+    ios-xcframework)
+      run_ios_xcframework
+      ;;
+    ios-xcodeproj)
+      run_ios_xcodeproj
+      ;;
+    ios-build-sim)
+      run_ios_build_sim
+      ;;
+    ios-build-swift-sim)
+      run_ios_build_swift_sim
+      ;;
+    -h | --help | help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

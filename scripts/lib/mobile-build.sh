@@ -29,6 +29,12 @@ cargo_profile_dir() {
   printf '%s/%s\n' "$(cargo_target_root)" "$profile"
 }
 
+cargo_target_dir() {
+  local target="${1:?target is required}"
+  local profile="${2:?profile is required}"
+  printf '%s/%s/%s\n' "$(cargo_target_root)" "$target" "$profile"
+}
+
 build_host_rust_packages() {
   local profile="${1:?profile is required}"
   shift
@@ -50,6 +56,24 @@ build_host_rust_packages() {
 build_default_host_rust() {
   local profile="${1:?profile is required}"
   build_host_rust_packages "$profile" pika_core pika-nse pika-share
+}
+
+find_target_static_lib() {
+  local lib_name="${1:?library name is required}"
+  local target="${2:?target is required}"
+  local profile="${3:?profile is required}"
+  local target_dir
+  local candidate
+
+  target_dir="$(cargo_target_dir "$target" "$profile")"
+  candidate="$target_dir/lib${lib_name}.a"
+  if [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "error: missing built library: $candidate" >&2
+  return 1
 }
 
 find_host_dynamic_lib() {

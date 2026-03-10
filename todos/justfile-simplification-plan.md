@@ -311,13 +311,72 @@ Deliverable:
 
 Workstream A2: extract iOS mobile build/binding logic out of the root `justfile`, reuse `scripts/lib/mobile-build.sh` for bindgen/library discovery where it fits, and collapse duplicated simulator build behavior where safe.
 
-Status: planned
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream A2 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Extract the iOS mobile build/binding implementation out of the root `justfile` while preserving behavior and existing recipe names, and reduce obvious duplication in the simulator build flow.
+
+Scope:
+- `ios-gen-swift`
+- `ios-rust`
+- `ios-xcframework`
+- `ios-xcodeproj`
+- `ios-build-sim`
+- `ios-build-swift-sim`
+
+Primary objectives:
+- Make the root `justfile` meaningfully shorter and easier to scan in the iOS section.
+- Turn the recipes above into thin wrappers that delegate to script(s).
+- Reuse `scripts/lib/mobile-build.sh` for host-library / cargo-target discovery where it actually helps.
+- Remove duplicated implementation logic, especially:
+  - repeated host-library lookup for UniFFI generation,
+  - repeated Swift output normalization,
+  - repeated simulator build command construction.
+
+Constraints:
+- Preserve current recipe names and the current env surface unless a change is clearly behavior-preserving.
+- Do not do module / `[private]` / namespace work in this slice.
+- Do not change CI entrypoint names.
+- Avoid unrelated cleanup outside the iOS build/binding area.
+- Do not rewrite the whole iOS pipeline into a different architecture in one pass.
+- Preserve the ability to build only the simulator/Xcode side without forcing unnecessary extra work.
+
+Implementation guidance:
+- Prefer moving logic into `scripts/` and optionally `scripts/lib/` so the root `justfile` becomes routing/orchestration.
+- It is fine to introduce one cohesive `scripts/ios-build` entrypoint with subcommands if that keeps ownership clear.
+- Keep the new script layout readable; factor helpers instead of moving one opaque block.
+- Reuse the new Android-side helper patterns where that improves consistency, but do not contort iOS behavior just to match Android mechanically.
+- For `ios-build-sim` vs `ios-build-swift-sim`, prefer one underlying implementation with an explicit flag or mode for “skip Rust rebuild” instead of two fully separate copies.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Run `bash -n` on any new or changed shell scripts.
+- Run the lightest relevant verification you can for the extracted iOS commands without assuming a full signing/device environment.
+- At minimum, validate help/dispatch and any pure-shell helper behavior you changed.
+- If heavy verification is not practical, say exactly what you did verify and what remains unverified.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 2 complete,
+  - add a short review note under the Review Log,
+  - adjust Prompt 3 if this slice changes the best next step.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on remaining risks or follow-up work.
+```
 
 ### Prompt 3
 
 Workstream B1: introduce `just` modules and private recipes, keep the existing public root entrypoints, and reduce `just --list` noise.
 
-Status: planned
+Status: ready
 
 ### Prompt 4
 
@@ -340,4 +399,13 @@ Status: planned
 - Chose Android-first extraction as the first implementation slice to keep the first agent prompt bounded and landable.
 - Completed Prompt 1 by moving `gen-kotlin`, `android-rust`, `android-local-properties`, and `android-release` implementation into `scripts/android-build`, with shared host-library discovery in `scripts/lib/mobile-build.sh`.
 - Review note: the root Android build/binding section is now wrapper-only, and the new helper boundary should let Prompt 2 reuse the bindgen/library-discovery path instead of copying it again.
+
+### 2026-03-10
+
+- Reviewed the corrected Prompt 1 implementation after the initial host-build regression was fixed.
+- Review result: no remaining findings in the A1 extraction itself.
+- Next step remains Prompt 2: extract the iOS build/binding path and collapse the duplicated simulator build flow onto one underlying implementation.
 - Review follow-up: `gen-kotlin` and `android-release` now force a host `cargo build` freshness check inside the extracted script path, so UniFFI generation no longer reuses stale host artifacts just because the dylibs already exist.
+- Completed Prompt 2 by moving `ios-gen-swift`, `ios-rust`, `ios-xcframework`, `ios-xcodeproj`, `ios-build-sim`, and `ios-build-swift-sim` implementation into `scripts/ios-build`.
+- Review note: the iOS section of the root `justfile` is now wrapper-only for the extracted recipes, `scripts/lib/mobile-build.sh` now owns the shared cargo target lookup used by xcframework assembly, and the simulator build flow now shares one underlying xcodebuild helper with an explicit swift-only mode.
+- Next step is Prompt 3: namespace and visibility cleanup now that the heavy mobile shell has been moved out of the root `justfile`.

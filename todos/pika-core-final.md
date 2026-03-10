@@ -279,6 +279,8 @@ Candidate PR 8: shared inbound session / notification-ingress shell
 - status:
   - first slice landed: shared relay-event ingress classification + seen-ID cache
   - app session loop and daemon notification loop both consume the same ingress helper
+  - second slice landed: classified inbound group-message processing now returns a shared neutral processed/ignored runtime outcome
+  - app and daemon both consume that shared group-message helper while keeping projection/protocol policy local
   - host-specific projection/protocol mapping remains local
 - extract:
   - duplicate suppression for inbound relay events

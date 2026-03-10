@@ -101,8 +101,11 @@ impl<'a> AppHostContext<'a> {
         self.runtime().finalize_published_evolution(prepared)
     }
 
-    pub(super) fn process_event(&self, event: &Event) -> anyhow::Result<Option<ConversationEvent>> {
-        self.runtime().process_event(event)
+    pub(super) fn process_group_message_event(
+        &self,
+        event: Event,
+    ) -> anyhow::Result<pika_marmot_runtime::runtime::InboundGroupMessageProcessing> {
+        self.runtime().process_group_message_event(event)
     }
 
     pub(super) fn interpret_processing_result(

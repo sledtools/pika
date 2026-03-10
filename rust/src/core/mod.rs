@@ -4447,10 +4447,11 @@ impl AppCore {
                 tracing::warn!("group_message but no session");
                 return;
             };
-            match sess.host_context().process_event(&event) {
-                Ok(outcome) => outcome,
+            let event_id = event.id;
+            match sess.host_context().process_group_message_event(event) {
+                Ok(processed) => processed.into_conversation_event(),
                 Err(e) => {
-                    tracing::error!(event_id = %event.id.to_hex(), %e, "process_message failed");
+                    tracing::error!(event_id = %event_id.to_hex(), %e, "process_message failed");
                     self.toast(format!("Message decrypt failed: {e}"));
                     return;
                 }
@@ -6634,6 +6635,23 @@ mod tests {
             }
         }
 
+        fn make_group_message_event(
+            core: &AppCore,
+            mls_group_id: &GroupId,
+            kind: Kind,
+            content: &str,
+            tags: Tags,
+        ) -> Event {
+            let session = core.session.as_ref().expect("session");
+            let rumor = EventBuilder::new(kind, content)
+                .tags(tags)
+                .build(session.pubkey);
+            session
+                .mdk
+                .create_message(mls_group_id, rumor)
+                .expect("create group message event")
+        }
+
         #[test]
         fn no_session_returns_early() {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -6764,6 +6782,28 @@ mod tests {
                 core.unread_counts.get(&chat_id).copied().unwrap_or(0),
                 1,
                 "shared conversation runtime should still drive unread updates"
+            );
+        }
+
+        #[test]
+        fn app_group_message_ingress_uses_shared_runtime_group_message_helper() {
+            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
+            let event = make_group_message_event(
+                &core,
+                &group_id,
+                Kind::ChatMessage,
+                "hello through shared inbound helper",
+                Tags::new(),
+            );
+
+            assert_eq!(core.unread_counts.get(&chat_id).copied().unwrap_or(0), 0);
+
+            core.handle_group_message(event);
+
+            assert_eq!(
+                core.unread_counts.get(&chat_id).copied().unwrap_or(0),
+                1,
+                "real group-message ingress should still flow through the shared runtime helper"
             );
         }
 

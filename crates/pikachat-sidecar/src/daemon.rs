@@ -199,14 +199,6 @@ fn accept_welcome_not_found_message() -> String {
     )
 }
 
-async fn classify_daemon_notification_event(
-    client: &Client,
-    seen: &mut InboundRelaySeenCache,
-    event: Event,
-) -> anyhow::Result<Option<InboundRelayEvent>> {
-    classify_inbound_relay_event(client, seen, event).await
-}
-
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::media::{
     MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, RuntimeMediaAttachment, resolve_upload_metadata,
@@ -3535,13 +3527,9 @@ pub async fn daemon_main(
                 let event = *event;
 
                 if subscription_id == gift_sub {
-                    let inbound = match classify_daemon_notification_event(
-                        &client,
-                        &mut seen_inbound,
-                        event,
-                    )
-                    .await
-                    {
+                    let inbound =
+                        match classify_inbound_relay_event(&client, &mut seen_inbound, event).await
+                        {
                         Ok(Some(inbound)) => inbound,
                         Ok(None) => continue,
                         Err(e) => {
@@ -3606,13 +3594,8 @@ pub async fn daemon_main(
                 if !group_subs.contains_key(&subscription_id) {
                     continue;
                 }
-                let inbound = match classify_daemon_notification_event(
-                    &client,
-                    &mut seen_inbound,
-                    event,
-                )
-                .await
-                {
+                let inbound =
+                    match classify_inbound_relay_event(&client, &mut seen_inbound, event).await {
                     Ok(Some(inbound)) => inbound,
                     Ok(None) => continue,
                     Err(e) => {
@@ -3620,220 +3603,233 @@ pub async fn daemon_main(
                         continue;
                     }
                 };
-                let InboundRelayEvent::GroupMessage { event } = inbound else {
+                let processed = match host.process_classified_inbound_group_message(inbound) {
+                    Ok(Some(processed)) => processed,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        warn!("[pikachat] process_message failed err={e:#}");
+                        continue;
+                    }
+                };
+                let event_id = processed.event_id();
+                seen_group_events.insert(event_id);
+
+                let Some(conversation_event) = processed.into_conversation_event() else {
                     continue;
                 };
-                seen_group_events.insert(event.id);
-
-                match host.process_event(&event) {
-                        Ok(Some(ConversationEvent::Application(runtime_msg))) => {
-                            let classification = runtime_msg.classification;
-                            let nostr_group_id = runtime_msg.nostr_group_id_hex;
-                            let msg = runtime_msg.message;
-                            let sender_hex = msg.pubkey.to_hex().to_lowercase();
-                            if !sender_allowed(&sender_hex) {
-                                warn!("[pikachat] drop message (sender not allowed) from={sender_hex}");
-                                continue;
-                            }
-                            if let Some(signal) = parse_call_signal(&msg.content) {
-                                let mls_group_id = match host.resolve_group(&nostr_group_id) {
-                                    Ok(group_id) => group_id,
-                                    Err(err) => {
+                match conversation_event {
+                    ConversationEvent::Application(runtime_msg) => {
+                        let classification = runtime_msg.classification;
+                        let nostr_group_id = runtime_msg.nostr_group_id_hex;
+                        let msg = runtime_msg.message;
+                        let sender_hex = msg.pubkey.to_hex().to_lowercase();
+                        if !sender_allowed(&sender_hex) {
+                            warn!("[pikachat] drop message (sender not allowed) from={sender_hex}");
+                            continue;
+                        }
+                        if let Some(signal) = parse_call_signal(&msg.content) {
+                            let mls_group_id = match host.resolve_group(&nostr_group_id) {
+                                Ok(group_id) => group_id,
+                                Err(err) => {
+                                    warn!(
+                                        "[pikachat] resolve call group failed group={} err={err:#}",
+                                        nostr_group_id
+                                    );
+                                    continue;
+                                }
+                            };
+                            let pending_outgoing = match &signal {
+                                ParsedCallSignal::Accept { call_id, .. } => {
+                                    pending_outgoing_call_invites.get(call_id)
+                                }
+                                _ => None,
+                            };
+                            match host.handle_inbound_call_signal(
+                                pika_marmot_runtime::call_runtime::InboundSignalContext {
+                                    target_id: &nostr_group_id,
+                                    sender_pubkey_hex: &sender_hex,
+                                    group: GroupCallContext {
+                                        mls_group_id: &mls_group_id,
+                                        local_pubkey_hex: &pubkey_hex,
+                                    },
+                                    policy: InboundCallPolicy {
+                                        allow_group_calls: true,
+                                        allow_video_calls: false,
+                                    },
+                                    has_live_call: active_call.is_some(),
+                                    pending_outgoing,
+                                },
+                                signal,
+                            ) {
+                                InboundCallSignalOutcome::Ignore => {}
+                                InboundCallSignalOutcome::RejectIncoming(rejected) => {
+                                    let label = match rejected.reason_code.as_str() {
+                                        "unsupported_video" => "call_video_reject",
+                                        "busy" => "call_busy_reject",
+                                        _ => "call_reject",
+                                    };
+                                    if let Some(err) = rejected.error {
                                         warn!(
-                                            "[pikachat] resolve call group failed group={} err={err:#}",
-                                            nostr_group_id
+                                            "[pikachat] reject incoming call call_id={} reason={} err={}",
+                                            rejected.call_id, rejected.reason_code, err
                                         );
+                                    }
+                                    let _ = host
+                                        .publish_call_payload(
+                                            &nostr_group_id,
+                                            rejected.signal.payload_json,
+                                            label,
+                                        )
+                                        .await;
+                                }
+                                InboundCallSignalOutcome::IncomingInvite(invite) => {
+                                    pending_call_invites
+                                        .insert(invite.call_id.clone(), (*invite).clone());
+                                    out_tx
+                                        .send(OutMsg::CallInviteReceived {
+                                            call_id: invite.call_id.clone(),
+                                            from_pubkey: invite.from_pubkey_hex.clone(),
+                                            nostr_group_id: invite.target_id.clone(),
+                                        })
+                                        .ok();
+                                }
+                                InboundCallSignalOutcome::OutgoingAccepted(accepted) => {
+                                    if active_call.is_some() {
                                         continue;
                                     }
-                                };
-                                let pending_outgoing = match &signal {
-                                    ParsedCallSignal::Accept { call_id, .. } => {
-                                        pending_outgoing_call_invites.get(call_id)
-                                    }
-                                    _ => None,
-                                };
-                                match host.handle_inbound_call_signal(
-                                    pika_marmot_runtime::call_runtime::InboundSignalContext {
-                                        target_id: &nostr_group_id,
-                                        sender_pubkey_hex: &sender_hex,
-                                        group: GroupCallContext {
-                                            mls_group_id: &mls_group_id,
-                                            local_pubkey_hex: &pubkey_hex,
-                                        },
-                                        policy: InboundCallPolicy {
-                                            allow_group_calls: true,
-                                            allow_video_calls: false,
-                                        },
-                                        has_live_call: active_call.is_some(),
-                                        pending_outgoing,
-                                    },
-                                    signal,
-                                ) {
-                                    InboundCallSignalOutcome::Ignore => {}
-                                    InboundCallSignalOutcome::RejectIncoming(rejected) => {
-                                        let label = match rejected.reason_code.as_str() {
-                                            "unsupported_video" => "call_video_reject",
-                                            "busy" => "call_busy_reject",
-                                            _ => "call_reject",
-                                        };
-                                        if let Some(err) = rejected.error {
-                                            warn!(
-                                                "[pikachat] reject incoming call call_id={} reason={} err={}",
-                                                rejected.call_id, rejected.reason_code, err
-                                            );
-                                        }
-                                        let _ = host
-                                            .publish_call_payload(
-                                                &nostr_group_id,
-                                                rejected.signal.payload_json,
-                                                label,
-                                            )
-                                            .await;
-                                    }
-                                    InboundCallSignalOutcome::IncomingInvite(invite) => {
-                                        pending_call_invites.insert(
-                                            invite.call_id.clone(),
-                                            (*invite).clone(),
-                                        );
-                                        out_tx
-                                            .send(OutMsg::CallInviteReceived {
-                                                call_id: invite.call_id.clone(),
-                                                from_pubkey: invite.from_pubkey_hex.clone(),
-                                                nostr_group_id: invite.target_id.clone(),
-                                            })
-                                            .ok();
-                                    }
-                                    InboundCallSignalOutcome::OutgoingAccepted(accepted) => {
-                                        if active_call.is_some() {
-                                            continue;
-                                        }
-                                        let mode = active_call_mode(&accepted.session);
-                                        let worker = match mode {
-                                            ActiveCallMode::Audio => {
-                                                if echo_mode_enabled() {
-                                                    match start_echo_worker(
-                                                        &accepted.pending.call_id,
-                                                        &accepted.session,
-                                                        accepted.media_crypto.clone(),
-                                                        out_tx.clone(),
-                                                    ) {
-                                                        Ok(v) => v,
-                                                        Err(err) => {
-                                                            warn!(
-                                                                "[pikachat] start echo worker failed call_id={} err={err:#}",
-                                                                accepted.pending.call_id
-                                                            );
-                                                            continue;
-                                                        }
+                                    let mode = active_call_mode(&accepted.session);
+                                    let worker = match mode {
+                                        ActiveCallMode::Audio => {
+                                            if echo_mode_enabled() {
+                                                match start_echo_worker(
+                                                    &accepted.pending.call_id,
+                                                    &accepted.session,
+                                                    accepted.media_crypto.clone(),
+                                                    out_tx.clone(),
+                                                ) {
+                                                    Ok(v) => v,
+                                                    Err(err) => {
+                                                        warn!(
+                                                            "[pikachat] start echo worker failed call_id={} err={err:#}",
+                                                            accepted.pending.call_id
+                                                        );
+                                                        continue;
                                                     }
-                                                } else {
-                                                    match start_stt_worker(
-                                                        &accepted.pending.call_id,
-                                                        &accepted.session,
-                                                        accepted.media_crypto.clone(),
-                                                        out_tx.clone(),
-                                                        call_evt_tx.clone(),
-                                                    ) {
-                                                        Ok(v) => v,
-                                                        Err(err) => {
-                                                            warn!(
-                                                                "[pikachat] start stt worker failed call_id={} err={err:#}",
-                                                                accepted.pending.call_id
-                                                            );
-                                                            continue;
-                                                        }
+                                                }
+                                            } else {
+                                                match start_stt_worker(
+                                                    &accepted.pending.call_id,
+                                                    &accepted.session,
+                                                    accepted.media_crypto.clone(),
+                                                    out_tx.clone(),
+                                                    call_evt_tx.clone(),
+                                                ) {
+                                                    Ok(v) => v,
+                                                    Err(err) => {
+                                                        warn!(
+                                                            "[pikachat] start stt worker failed call_id={} err={err:#}",
+                                                            accepted.pending.call_id
+                                                        );
+                                                        continue;
                                                     }
                                                 }
                                             }
-                                            ActiveCallMode::Data => match start_data_worker(
-                                                &accepted.pending.call_id,
-                                                &accepted.session,
-                                                accepted.media_crypto.clone(),
-                                                call_evt_tx.clone(),
-                                            ) {
-                                                Ok(v) => v,
-                                                Err(err) => {
-                                                    warn!(
-                                                        "[pikachat] start data worker failed call_id={} err={err:#}",
-                                                        accepted.pending.call_id
-                                                    );
-                                                    continue;
-                                                }
-                                            },
-                                        };
-                                        active_call = Some(ActiveCall {
-                                            call_id: accepted.pending.call_id.clone(),
-                                            nostr_group_id: accepted.pending.target_id.clone(),
-                                            session: accepted.session.clone(),
-                                            mode,
-                                            media_crypto: accepted.media_crypto,
-                                            next_voice_seq: 0,
-                                            next_data_seq: 0,
-                                            worker,
-                                        });
-                                        pending_outgoing_call_invites.remove(&accepted.pending.call_id);
-                                        out_tx
-                                            .send(OutMsg::CallSessionStarted {
-                                                call_id: accepted.pending.call_id,
-                                                from_pubkey: sender_hex,
-                                                nostr_group_id: accepted.pending.target_id,
-                                            })
-                                            .ok();
-                                    }
-                                    InboundCallSignalOutcome::IncomingAcceptFailed(failure) => {
-                                        warn!(
-                                            "[pikachat] call.accept failed call_id={} kind={:?} err={}",
-                                            failure.call_id, failure.kind, failure.error
-                                        );
-                                    }
-                                    InboundCallSignalOutcome::RemoteTermination(ended) => {
-                                        pending_call_invites.remove(&ended.call_id);
-                                        pending_outgoing_call_invites.remove(&ended.call_id);
-                                        if active_call
-                                            .as_ref()
-                                            .map(|c| c.call_id == ended.call_id)
-                                            .unwrap_or(false)
-                                        {
-                                            if let Some(current) = active_call.take() {
-                                                current.worker.stop().await;
-                                            }
-                                            out_tx
-                                                .send(OutMsg::CallSessionEnded {
-                                                    call_id: ended.call_id,
-                                                    reason: ended.reason,
-                                                })
-                                                .ok();
                                         }
-                                    }
+                                        ActiveCallMode::Data => match start_data_worker(
+                                            &accepted.pending.call_id,
+                                            &accepted.session,
+                                            accepted.media_crypto.clone(),
+                                            call_evt_tx.clone(),
+                                        ) {
+                                            Ok(v) => v,
+                                            Err(err) => {
+                                                warn!(
+                                                    "[pikachat] start data worker failed call_id={} err={err:#}",
+                                                    accepted.pending.call_id
+                                                );
+                                                continue;
+                                            }
+                                        },
+                                    };
+                                    active_call = Some(ActiveCall {
+                                        call_id: accepted.pending.call_id.clone(),
+                                        nostr_group_id: accepted.pending.target_id.clone(),
+                                        session: accepted.session.clone(),
+                                        mode,
+                                        media_crypto: accepted.media_crypto,
+                                        next_voice_seq: 0,
+                                        next_data_seq: 0,
+                                        worker,
+                                    });
+                                    pending_outgoing_call_invites
+                                        .remove(&accepted.pending.call_id);
+                                    out_tx
+                                        .send(OutMsg::CallSessionStarted {
+                                            call_id: accepted.pending.call_id,
+                                            from_pubkey: sender_hex,
+                                            nostr_group_id: accepted.pending.target_id,
+                                        })
+                                        .ok();
                                 }
-                                continue;
-                            }
-                            if classification == MessageClassification::TypingIndicator {
-                                continue;
-                            }
-                            let mut media: Vec<MediaAttachmentOut> = Vec::new();
-                            {
-                                let attachments = host.parse_message_media_attachments(&msg);
-                                for attachment in attachments {
-                                    let mut att = media_attachment_to_out(attachment.attachment.clone());
-                                    match host
-                                        .download_and_decrypt_media(
-                                            &msg.mls_group_id,
-                                            &attachment,
-                                            state_dir,
-                                        )
-                                        .await
+                                InboundCallSignalOutcome::IncomingAcceptFailed(failure) => {
+                                    warn!(
+                                        "[pikachat] call.accept failed call_id={} kind={:?} err={}",
+                                        failure.call_id, failure.kind, failure.error
+                                    );
+                                }
+                                InboundCallSignalOutcome::RemoteTermination(ended) => {
+                                    pending_call_invites.remove(&ended.call_id);
+                                    pending_outgoing_call_invites.remove(&ended.call_id);
+                                    if active_call
+                                        .as_ref()
+                                        .map(|c| c.call_id == ended.call_id)
+                                        .unwrap_or(false)
                                     {
-                                        Ok(path) => att.local_path = Some(path),
-                                        Err(e) => warn!("[pikachat] media download failed url={}: {e:#}", attachment.attachment.url),
+                                        if let Some(current) = active_call.take() {
+                                            current.worker.stop().await;
+                                        }
+                                        out_tx
+                                            .send(OutMsg::CallSessionEnded {
+                                                call_id: ended.call_id,
+                                                reason: ended.reason,
+                                            })
+                                            .ok();
                                     }
-                                    media.push(att);
                                 }
                             }
-                            let acp_nostr_group_id = nostr_group_id.clone();
-                            let acp_sender_hex = sender_hex.clone();
-                            let acp_content = msg.content.clone();
-                            out_tx.send(OutMsg::MessageReceived {
+                            continue;
+                        }
+                        if classification == MessageClassification::TypingIndicator {
+                            continue;
+                        }
+                        let mut media: Vec<MediaAttachmentOut> = Vec::new();
+                        {
+                            let attachments = host.parse_message_media_attachments(&msg);
+                            for attachment in attachments {
+                                let mut att =
+                                    media_attachment_to_out(attachment.attachment.clone());
+                                match host
+                                    .download_and_decrypt_media(
+                                        &msg.mls_group_id,
+                                        &attachment,
+                                        state_dir,
+                                    )
+                                    .await
+                                {
+                                    Ok(path) => att.local_path = Some(path),
+                                    Err(e) => warn!(
+                                        "[pikachat] media download failed url={}: {e:#}",
+                                        attachment.attachment.url
+                                    ),
+                                }
+                                media.push(att);
+                            }
+                        }
+                        let acp_nostr_group_id = nostr_group_id.clone();
+                        let acp_sender_hex = sender_hex.clone();
+                        let acp_content = msg.content.clone();
+                        out_tx
+                            .send(OutMsg::MessageReceived {
                                 nostr_group_id,
                                 from_pubkey: sender_hex,
                                 content: msg.content,
@@ -3842,33 +3838,34 @@ pub async fn daemon_main(
                                 event_id: msg.id.to_hex(),
                                 message_id: msg.id.to_hex(),
                                 media,
-                            }).ok();
-                            if let Some(acp) = acp_backend.as_ref()
-                                && should_prompt_acp_reply(
-                                    classification,
-                                    &acp_sender_hex,
-                                    &pubkey_hex,
-                                    &acp_content,
-                                )
+                            })
+                            .ok();
+                        if let Some(acp) = acp_backend.as_ref()
+                            && should_prompt_acp_reply(
+                                classification,
+                                &acp_sender_hex,
+                                &pubkey_hex,
+                                &acp_content,
+                            )
+                        {
+                            let prompt = build_acp_prompt(
+                                &acp_nostr_group_id,
+                                &acp_sender_hex,
+                                &acp_content,
+                            );
+                            if let Err(err) =
+                                acp.enqueue_prompt(&acp_nostr_group_id, &prompt).await
                             {
-                                let prompt = build_acp_prompt(
-                                    &acp_nostr_group_id,
-                                    &acp_sender_hex,
-                                    &acp_content,
+                                warn!(
+                                    "[pikachat] ACP enqueue failed group={} sender={} err={err:#}",
+                                    acp_nostr_group_id, acp_sender_hex
                                 );
-                                if let Err(err) = acp.enqueue_prompt(&acp_nostr_group_id, &prompt).await {
-                                    warn!(
-                                        "[pikachat] ACP enqueue failed group={} sender={} err={err:#}",
-                                        acp_nostr_group_id, acp_sender_hex
-                                    );
-                                }
                             }
                         }
-                    Ok(Some(_)) => {}
-                    Ok(None) => {}
-                    Err(e) => {
-                        warn!("[pikachat] process_message failed id={} err={e:#}", event.id.to_hex());
                     }
+                    ConversationEvent::GroupUpdate(_)
+                    | ConversationEvent::UnresolvedGroup { .. }
+                    | ConversationEvent::PreviouslyFailed => {}
                 }
             }
         }
@@ -3939,6 +3936,21 @@ mod tests {
             epoch: None,
             state: message_types::MessageState::Processed,
         }
+    }
+
+    fn make_group_message_event(
+        mdk: &crate::PikaMdk,
+        keys: &Keys,
+        mls_group_id: &GroupId,
+        kind: Kind,
+        content: &str,
+        tags: Tags,
+    ) -> Event {
+        let rumor = EventBuilder::new(kind, content)
+            .tags(tags)
+            .build(keys.public_key());
+        mdk.create_message(mls_group_id, rumor)
+            .expect("create group message event")
     }
 
     fn make_pending_welcome(
@@ -4184,53 +4196,57 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn daemon_notification_ingress_uses_shared_runtime_classifier_for_welcome() {
-        let inviter_keys = Keys::generate();
-        let invitee_keys = Keys::generate();
-        let client = Client::builder().signer(invitee_keys.clone()).build();
-        let rumor = UnsignedEvent::new(
-            inviter_keys.public_key(),
-            Timestamp::from(1_u64),
-            Kind::MlsWelcome,
+    #[test]
+    fn daemon_group_message_processing_uses_shared_runtime_helper() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let mdk = crate::open_mdk(tempdir.path()).expect("open mdk");
+        let config = NostrGroupConfigData::new(
+            "daemon inbound group message".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![keys.public_key()],
+        );
+        let created = mdk
+            .create_group(&keys.public_key(), vec![], config)
+            .expect("create group");
+        mdk.merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        let event = make_group_message_event(
+            &mdk,
+            &keys,
+            &created.group.mls_group_id,
+            Kind::ChatMessage,
+            "hello through daemon helper",
             Tags::new(),
-            "{}".to_string(),
         );
-        let wrapper = EventBuilder::gift_wrap(
-            &inviter_keys,
-            &invitee_keys.public_key(),
-            rumor.clone(),
-            Vec::<Tag>::new(),
-        )
-        .await
-        .expect("gift wrap");
-        let mut seen = InboundRelaySeenCache::unbounded();
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
 
-        let first = classify_daemon_notification_event(&client, &mut seen, wrapper.clone())
-            .await
-            .expect("classify daemon inbound event");
-        let duplicate = classify_daemon_notification_event(&client, &mut seen, wrapper.clone())
-            .await
-            .expect("classify duplicate daemon inbound event");
+        let processed = host
+            .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
+                event: event.clone(),
+            })
+            .expect("process classified group message")
+            .expect("group message processing result");
 
-        match first {
-            Some(InboundRelayEvent::Welcome {
-                wrapper: first_wrapper,
-                sender,
-                rumor: first_rumor,
-            }) => {
-                assert_eq!(first_wrapper.id, wrapper.id);
-                assert_eq!(sender, inviter_keys.public_key());
-                assert_eq!(first_rumor.pubkey, rumor.pubkey);
-                assert_eq!(first_rumor.kind, rumor.kind);
-                assert_eq!(first_rumor.content, rumor.content);
+        assert_eq!(processed.event_id(), event.id);
+        match processed.into_conversation_event() {
+            Some(ConversationEvent::Application(message)) => {
+                assert_eq!(message.classification, MessageClassification::Chat);
+                assert_eq!(
+                    message.nostr_group_id_hex,
+                    hex::encode(created.group.nostr_group_id)
+                );
+                assert_eq!(message.message.content, "hello through daemon helper");
             }
-            other => panic!("expected shared welcome ingress event, got {other:?}"),
+            other => panic!("expected processed application message, got {other:?}"),
         }
-        assert!(
-            duplicate.is_none(),
-            "shared ingress classifier should suppress duplicate relay events for the daemon"
-        );
     }
 
     #[test]

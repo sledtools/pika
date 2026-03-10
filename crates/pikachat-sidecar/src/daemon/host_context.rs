@@ -225,8 +225,12 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().prepare_end_call_signal(call_id, reason)
     }
 
-    pub(super) fn process_event(&self, event: &Event) -> anyhow::Result<Option<ConversationEvent>> {
-        self.runtime().process_event(event)
+    pub(super) fn process_classified_inbound_group_message(
+        &self,
+        inbound: InboundRelayEvent,
+    ) -> anyhow::Result<Option<pika_marmot_runtime::runtime::InboundGroupMessageProcessing>> {
+        self.runtime()
+            .process_classified_inbound_group_message(inbound)
     }
 
     pub(super) fn handle_inbound_call_signal(

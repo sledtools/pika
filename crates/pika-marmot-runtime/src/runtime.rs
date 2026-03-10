@@ -40,6 +40,34 @@ pub enum InboundRelayEvent {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum InboundGroupMessageProcessing {
+    Ignored {
+        event_id: EventId,
+    },
+    Processed {
+        event_id: EventId,
+        conversation_event: ConversationEvent,
+    },
+}
+
+impl InboundGroupMessageProcessing {
+    pub fn event_id(&self) -> EventId {
+        match self {
+            Self::Ignored { event_id } | Self::Processed { event_id, .. } => *event_id,
+        }
+    }
+
+    pub fn into_conversation_event(self) -> Option<ConversationEvent> {
+        match self {
+            Self::Ignored { .. } => None,
+            Self::Processed {
+                conversation_event, ..
+            } => Some(conversation_event),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboundRelaySeenCache {
     seen: HashSet<EventId>,
@@ -240,6 +268,30 @@ impl<'a> MarmotRuntime<'a> {
 
     pub fn process_event(&self, event: &Event) -> Result<Option<ConversationEvent>> {
         self.conversation().process_event(event)
+    }
+
+    pub fn process_group_message_event(
+        &self,
+        event: Event,
+    ) -> Result<InboundGroupMessageProcessing> {
+        let event_id = event.id;
+        match self.conversation().process_event(&event)? {
+            Some(conversation_event) => Ok(InboundGroupMessageProcessing::Processed {
+                event_id,
+                conversation_event,
+            }),
+            None => Ok(InboundGroupMessageProcessing::Ignored { event_id }),
+        }
+    }
+
+    pub fn process_classified_inbound_group_message(
+        &self,
+        inbound: InboundRelayEvent,
+    ) -> Result<Option<InboundGroupMessageProcessing>> {
+        let InboundRelayEvent::GroupMessage { event } = inbound else {
+            return Ok(None);
+        };
+        self.process_group_message_event(event).map(Some)
     }
 
     pub fn interpret_processing_result(
@@ -600,6 +652,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::RuntimeApplicationMessage;
     use mdk_core::prelude::NostrGroupConfigData;
 
     fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
@@ -615,6 +668,21 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    fn make_group_message_event(
+        mdk: &PikaMdk,
+        keys: &Keys,
+        mls_group_id: &GroupId,
+        kind: Kind,
+        content: &str,
+        tags: Tags,
+    ) -> Event {
+        let rumor = EventBuilder::new(kind, content)
+            .tags(tags)
+            .build(keys.public_key());
+        mdk.create_message(mls_group_id, rumor)
+            .expect("create group message event")
     }
 
     #[tokio::test]
@@ -681,6 +749,84 @@ mod tests {
             duplicate.is_none(),
             "duplicate event id should be suppressed"
         );
+    }
+
+    #[test]
+    fn process_classified_inbound_group_message_returns_processed_application_outcome() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let mdk = open_test_mdk(&tempdir);
+        let config = NostrGroupConfigData::new(
+            "runtime inbound group message".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![keys.public_key()],
+        );
+        let created = mdk
+            .create_group(&keys.public_key(), vec![], config)
+            .expect("create group");
+        mdk.merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        let event = make_group_message_event(
+            &mdk,
+            &keys,
+            &created.group.mls_group_id,
+            Kind::ChatMessage,
+            "hello through shared runtime",
+            Tags::new(),
+        );
+        let runtime = MarmotRuntime::new(&mdk);
+
+        let processed = runtime
+            .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
+                event: event.clone(),
+            })
+            .expect("process classified group message")
+            .expect("group message processing result");
+
+        assert_eq!(processed.event_id(), event.id);
+        match processed.into_conversation_event() {
+            Some(ConversationEvent::Application(message)) => {
+                let RuntimeApplicationMessage {
+                    nostr_group_id_hex,
+                    classification,
+                    message,
+                    ..
+                } = *message;
+                assert_eq!(classification, crate::message::MessageClassification::Chat);
+                assert_eq!(
+                    nostr_group_id_hex,
+                    hex::encode(created.group.nostr_group_id)
+                );
+                assert_eq!(message.content, "hello through shared runtime");
+            }
+            other => panic!("expected processed application message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_group_message_event_ignores_non_group_events() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let mdk = open_test_mdk(&tempdir);
+        let runtime = MarmotRuntime::new(&mdk);
+        let event = EventBuilder::new(Kind::TextNote, "not a group message")
+            .sign_with_keys(&keys)
+            .expect("sign text note");
+
+        let processed = runtime
+            .process_group_message_event(event.clone())
+            .expect("process non-group event");
+
+        match processed {
+            InboundGroupMessageProcessing::Ignored { event_id } => {
+                assert_eq!(event_id, event.id);
+            }
+            other => panic!("expected ignored non-group event, got {other:?}"),
+        }
     }
 
     #[test]

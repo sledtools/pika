@@ -242,19 +242,25 @@ Candidate PR 5: welcome/group lifecycle investigation and convergence
 Candidate PR 6: shared welcome/group workflow service
 - status:
   - first slice landed: shared `accept_welcome_and_catch_up(...)`
+  - second slice landed: shared local `create_group_and_plan_welcome_delivery(...)`
+  - existing `create_group_and_publish_welcomes(...)` now layers over the shared plan primitive
   - daemon uses the shared accept + post-accept catch-up path
-  - app also reuses the same primitive for its narrow eager-accept path
+  - app also reuses the shared accept and create-group planning primitives for its narrow eager flows
   - CLI manual accept remains host-local for now to avoid broadening behavior
 - extract:
   - shared accept known pending welcome + post-accept backlog catch-up
   - publish welcomes
+  - local group creation + welcome-delivery planning
   - create group
   - join/merge lifecycle
 - acceptance:
   - accept + catch-up lives in `pika-marmot-runtime`
+  - create-group planning lives in `pika-marmot-runtime`
   - host-specific policy stays local:
     - app eager-vs-manual accept policy
+    - app immediate refresh/navigate after local group creation
     - daemon `OutMsg` mapping and subscription bookkeeping
+    - daemon/CLI success timing around synchronous welcome delivery
     - CLI command UX/output
   - future slices can widen the shared welcome/group workflow service from this primitive
 

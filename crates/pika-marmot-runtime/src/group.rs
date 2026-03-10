@@ -1,14 +1,80 @@
 use anyhow::{Context, Result};
 use mdk_core::prelude::NostrGroupConfigData;
-use nostr_sdk::prelude::{Event, Keys, PublicKey, Tag};
+use nostr_sdk::prelude::{Event, Keys, PublicKey, Tag, UnsignedEvent};
 
 use crate::PikaMdk;
 use crate::welcome::{PublishedWelcome, publish_welcome_rumors};
 
 #[derive(Debug, Clone)]
+pub struct GroupWelcomeDeliveryPlan {
+    pub recipients: Vec<PublicKey>,
+    pub welcome_rumors: Vec<UnsignedEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannedGroupCreation {
+    pub group: mdk_storage_traits::groups::types::Group,
+    pub welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
+}
+
+#[derive(Debug, Clone)]
 pub struct CreatedGroup {
     pub group: mdk_storage_traits::groups::types::Group,
     pub published_welcomes: Vec<PublishedWelcome>,
+}
+
+pub fn create_group_and_plan_welcome_delivery(
+    creator_pubkey: &PublicKey,
+    mdk: &PikaMdk,
+    peer_key_packages: Vec<Event>,
+    config: NostrGroupConfigData,
+    recipients: &[PublicKey],
+) -> Result<PlannedGroupCreation> {
+    if recipients.len() != peer_key_packages.len() {
+        anyhow::bail!(
+            "recipient/keypackage mismatch: {} recipients for {} key packages",
+            recipients.len(),
+            peer_key_packages.len()
+        );
+    }
+
+    let result = mdk
+        .create_group(creator_pubkey, peer_key_packages, config)
+        .context("create group")?;
+
+    let welcome_delivery = if result.welcome_rumors.is_empty() {
+        None
+    } else {
+        Some(GroupWelcomeDeliveryPlan {
+            recipients: recipients.to_vec(),
+            welcome_rumors: result.welcome_rumors,
+        })
+    };
+
+    Ok(PlannedGroupCreation {
+        group: result.group,
+        welcome_delivery,
+    })
+}
+
+pub async fn publish_group_welcome_delivery<F, Fut>(
+    keys: &Keys,
+    plan: &GroupWelcomeDeliveryPlan,
+    welcome_tags: Vec<Tag>,
+    publish_giftwrap: F,
+) -> Result<Vec<PublishedWelcome>>
+where
+    F: FnMut(PublicKey, Event) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    publish_welcome_rumors(
+        keys,
+        &plan.welcome_rumors,
+        &plan.recipients,
+        welcome_tags,
+        publish_giftwrap,
+    )
+    .await
 }
 
 pub async fn create_group_and_publish_welcomes<F, Fut>(
@@ -24,29 +90,23 @@ where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    if recipients.len() != peer_key_packages.len() {
-        anyhow::bail!(
-            "recipient/keypackage mismatch: {} recipients for {} key packages",
-            recipients.len(),
-            peer_key_packages.len()
-        );
-    }
-
-    let result = mdk
-        .create_group(&keys.public_key(), peer_key_packages, config)
-        .context("create group")?;
-
-    let published_welcomes = publish_welcome_rumors(
-        keys,
-        &result.welcome_rumors,
+    let creator_pubkey = keys.public_key();
+    let planned = create_group_and_plan_welcome_delivery(
+        &creator_pubkey,
+        mdk,
+        peer_key_packages,
+        config,
         recipients,
-        welcome_tags,
-        publish_giftwrap,
-    )
-    .await?;
+    )?;
+    let published_welcomes = match planned.welcome_delivery.as_ref() {
+        Some(plan) => {
+            publish_group_welcome_delivery(keys, plan, welcome_tags, publish_giftwrap).await?
+        }
+        None => Vec::new(),
+    };
 
     Ok(CreatedGroup {
-        group: result.group,
+        group: planned.group,
         published_welcomes,
     })
 }
@@ -68,6 +128,73 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    #[test]
+    fn create_group_and_plan_welcome_delivery_returns_group_and_welcome_plan() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime create plan test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+
+        let planned = create_group_and_plan_welcome_delivery(
+            &inviter_keys.public_key(),
+            &inviter_mdk,
+            vec![invitee_kp],
+            config,
+            &[invitee_keys.public_key()],
+        )
+        .expect("create group and plan welcomes");
+
+        assert_eq!(planned.group.name, "Runtime create plan test");
+        let welcome_delivery = planned.welcome_delivery.expect("welcome delivery plan");
+        assert_eq!(welcome_delivery.recipients, vec![invitee_keys.public_key()]);
+        assert_eq!(welcome_delivery.welcome_rumors.len(), 1);
+    }
+
+    #[test]
+    fn create_group_and_plan_welcome_delivery_returns_no_plan_without_recipients() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let inviter_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+
+        let config = NostrGroupConfigData::new(
+            "Runtime local create plan test".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key()],
+        );
+
+        let planned = create_group_and_plan_welcome_delivery(
+            &inviter_keys.public_key(),
+            &inviter_mdk,
+            vec![],
+            config,
+            &[],
+        )
+        .expect("create local-only group");
+
+        assert_eq!(planned.group.name, "Runtime local create plan test");
+        assert!(
+            planned.welcome_delivery.is_none(),
+            "local-only create should not enqueue welcome delivery work"
+        );
     }
 
     #[tokio::test]
@@ -132,8 +259,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn create_group_and_publish_welcomes_rejects_mismatch_before_create() {
+    #[test]
+    fn create_group_and_plan_welcome_delivery_rejects_mismatch_before_create() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -152,16 +279,13 @@ mod tests {
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
 
-        let err = create_group_and_publish_welcomes(
-            &inviter_keys,
+        let err = create_group_and_plan_welcome_delivery(
+            &inviter_keys.public_key(),
             &inviter_mdk,
             vec![invitee_kp],
             config,
             &[],
-            vec![],
-            |_receiver, _giftwrap| async move { Ok(()) },
         )
-        .await
         .expect_err("recipient/keypackage mismatch should fail");
 
         assert!(err.to_string().contains("recipient/keypackage mismatch"));

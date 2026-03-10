@@ -303,6 +303,9 @@ async fn refresh_agent_from_spawner(
     row: AgentInstance,
     request_id: &str,
 ) -> Result<AgentInstance, AgentApiError> {
+    if row.phase == AGENT_PHASE_READY {
+        return Ok(row);
+    }
     let Some(vm_id) = row.vm_id.as_deref() else {
         return Ok(row);
     };

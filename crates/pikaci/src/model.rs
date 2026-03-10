@@ -96,6 +96,10 @@ impl JobSpec {
         match self.id {
             "pika-core-lib-app-flows-tests" => Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             "pika-core-messaging-e2e-tests" => Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+            "agent-control-plane-unit" => Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
+            "agent-microvm-tests" => Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
+            "server-agent-api-tests" => Some(StagedLinuxRustLane::AgentContractsServerAgentApi),
+            "core-agent-nip98-test" => Some(StagedLinuxRustLane::AgentContractsCoreNip98),
             _ => None,
         }
     }
@@ -125,12 +129,20 @@ impl JobSpec {
 pub enum StagedLinuxRustLane {
     PikaCoreLibAppFlows,
     PikaCoreMessagingE2e,
+    AgentContractsControlPlaneUnit,
+    AgentContractsMicrovmTests,
+    AgentContractsServerAgentApi,
+    AgentContractsCoreNip98,
 }
 
 impl StagedLinuxRustLane {
     pub fn shared_prepare_node_prefix(self) -> &'static str {
         match self {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => "pika-core-linux-rust",
+            Self::AgentContractsControlPlaneUnit
+            | Self::AgentContractsMicrovmTests
+            | Self::AgentContractsServerAgentApi
+            | Self::AgentContractsCoreNip98 => "agent-contracts-linux-rust",
         }
     }
 
@@ -139,6 +151,10 @@ impl StagedLinuxRustLane {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
                 "pika_core staged Linux Rust lane"
             }
+            Self::AgentContractsControlPlaneUnit
+            | Self::AgentContractsMicrovmTests
+            | Self::AgentContractsServerAgentApi
+            | Self::AgentContractsCoreNip98 => "agent contracts staged Linux Rust lane",
         }
     }
 
@@ -147,6 +163,10 @@ impl StagedLinuxRustLane {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
                 "ci.x86_64-linux.workspaceDeps"
             }
+            Self::AgentContractsControlPlaneUnit
+            | Self::AgentContractsMicrovmTests
+            | Self::AgentContractsServerAgentApi
+            | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceDeps",
         }
     }
 
@@ -155,12 +175,21 @@ impl StagedLinuxRustLane {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
                 "ci.x86_64-linux.workspaceBuild"
             }
+            Self::AgentContractsControlPlaneUnit
+            | Self::AgentContractsMicrovmTests
+            | Self::AgentContractsServerAgentApi
+            | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceBuild",
         }
     }
 
     pub fn workspace_output_system(self) -> &'static str {
         match self {
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => "x86_64-linux",
+            Self::PikaCoreLibAppFlows
+            | Self::PikaCoreMessagingE2e
+            | Self::AgentContractsControlPlaneUnit
+            | Self::AgentContractsMicrovmTests
+            | Self::AgentContractsServerAgentApi
+            | Self::AgentContractsCoreNip98 => "x86_64-linux",
         }
     }
 
@@ -171,6 +200,18 @@ impl StagedLinuxRustLane {
             }
             Self::PikaCoreMessagingE2e => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
+            }
+            Self::AgentContractsControlPlaneUnit => {
+                "/staged/linux-rust/workspace-build/bin/run-agent-control-plane-unit-tests"
+            }
+            Self::AgentContractsMicrovmTests => {
+                "/staged/linux-rust/workspace-build/bin/run-agent-microvm-tests"
+            }
+            Self::AgentContractsServerAgentApi => {
+                "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
+            }
+            Self::AgentContractsCoreNip98 => {
+                "/staged/linux-rust/workspace-build/bin/run-core-agent-nip98-test"
             }
         }
     }
@@ -207,6 +248,48 @@ pub enum PreparedOutputConsumerKind {
 pub enum PreparedOutputInvocationMode {
     DirectHelperExecV1,
     ExternalWrapperCommandV1,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GuestCommand, JobSpec, StagedLinuxRustLane};
+
+    #[test]
+    fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
+        let spec = JobSpec {
+            id: "agent-control-plane-unit",
+            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::PackageUnitTests {
+                package: "pika-agent-control-plane",
+            },
+        };
+
+        assert_eq!(
+            spec.staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+        );
+        assert_eq!(spec.runner_kind(), super::RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
+        let lane = StagedLinuxRustLane::AgentContractsServerAgentApi;
+
+        assert_eq!(
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.agentContractsWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.agentContractsWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]

@@ -766,21 +766,35 @@ EOF
       # nix-darwin linux-builder. Keep the aarch64-linux namespace as a legacy
       # compatibility output while the local vfkit execute path still hard-codes
       # an aarch64-linux guest.
-      ci.x86_64-linux = import ./nix/ci/linux-rust.nix {
-        pkgs = ciLinuxPkgs;
-        crane = crane;
-        src = ciPikaCoreWorkspaceSrc;
-        cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
-        pikaRelayPkg = pikaRelayPkg;
-        outputHashes = {
-          "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
-            "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
-          "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
-            "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
-          "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
-            "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+      ci.x86_64-linux =
+        let
+          commonStagedLinuxRustArgs = {
+            pkgs = ciLinuxPkgs;
+            crane = crane;
+            src = ciPikaCoreWorkspaceSrc;
+            cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
+            pikaRelayPkg = pikaRelayPkg;
+            outputHashes = {
+              "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
+                "sha256-40WIlLAR3MevImSErv9im12ogPd5/oAG6saRiVKpNPY=";
+              "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
+                "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+              "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
+                "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+            };
+          };
+          pikaCoreLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+            lane = "pika-core";
+          });
+          agentContractsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+            lane = "agent-contracts";
+          });
+        in
+        pikaCoreLane
+        // {
+          agentContractsWorkspaceDeps = agentContractsLane.workspaceDeps;
+          agentContractsWorkspaceBuild = agentContractsLane.workspaceBuild;
         };
-      };
 
       ci.aarch64-linux = import ./nix/ci/linux-rust.nix {
         pkgs = ciArmPkgs;

@@ -88,7 +88,7 @@ pre-merge-agent-contracts:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-agent-contracts
+        just pikaci-remote-fulfill-pre-merge-agent-contracts
     else
         cargo test -p pika-agent-microvm
         cargo test -p pika-server -- agent_api::tests

@@ -84,10 +84,10 @@ done
 cd "$repo_root"
 
 case "$installable" in
-  .#ci.x86_64-linux.workspaceDeps|.#ci.x86_64-linux.workspaceBuild)
+  .#ci.x86_64-linux.workspaceDeps|.#ci.x86_64-linux.workspaceBuild|.#ci.x86_64-linux.agentContractsWorkspaceDeps|.#ci.x86_64-linux.agentContractsWorkspaceBuild)
     ;;
   *)
-    echo "error: strict staged remote helper only supports .#ci.x86_64-linux.workspaceDeps or .#ci.x86_64-linux.workspaceBuild" >&2
+    echo "error: strict staged remote helper only supports the staged x86_64-linux workspaceDeps/workspaceBuild installables" >&2
     exit 2
     ;;
 esac

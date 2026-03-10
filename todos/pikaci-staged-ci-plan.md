@@ -802,7 +802,28 @@ We have at least one important Linux Rust lane where:
 - Phase 5 is complete and landed as a decision/update slice.
 - Phase 6 is complete in its first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh, twelfth, thirteenth, fourteenth, fifteenth, sixteenth, seventeenth, eighteenth, nineteenth, and twentieth narrow remote-execute forms, and the first staged Linux Rust lane now passes end-to-end on `pika-build`.
 - Phase 7 is the GitHub shadow-mode slice for that first staged Linux Rust lane.
-- Current recommended slice is a narrow shadow-mode follow-up on the now-stable `x86_64-linux` staged lane:
+- Current recommended slice is the first second-lane migration follow-up:
+  - `pre-merge-agent-contracts` was the next best target because it is Linux/Rust-first, narrower than the full matrix, and structurally simpler than notifications while still reusing the same staged-build and remote-execute shape as `pre-merge-pika-rust`,
+  - this slice migrated the `pikaci`-managed Rust sublane of `pre-merge-agent-contracts` onto the same remote-authoritative `x86_64-linux` pattern:
+    - shared staged outputs `ci.x86_64-linux.agentContractsWorkspaceDeps` and `ci.x86_64-linux.agentContractsWorkspaceBuild`,
+    - the canonical staged Linux wrapper `scripts/pikaci-staged-linux-remote.sh`,
+    - strict remote fulfillment on `pika-build`,
+    - remote `microvm.nix` runner realization and execute,
+  - the migrated `pikaci` jobs are:
+    - `agent-control-plane-unit`
+    - `agent-microvm-tests`
+    - `server-agent-api-tests`
+    - `core-agent-nip98-test`,
+  - the extra local deterministic `pikahut` tests that still live after `just pre-merge-agent-contracts` remain intentionally out of scope for this slice,
+  - the first fresh full rerun after landing the lane-specific fixes (`20260310T234554Z-019aa2bd`) passed all four migrated jobs end-to-end on `pika-build`,
+  - the two lane-specific adaptations this second lane needed were concrete rather than architectural:
+    - `pika-agent-microvm` needed a staged copy of the OpenClaw extension tree plus a runtime override (`PIKACI_OPENCLAW_EXTENSION_SOURCE_ROOT`) so `openclaw_extension_file_list_matches_source_tree` no longer depended on vanished Nix build-sandbox paths,
+    - the staged `server-agent-api-tests` wrapper now exports a harmless default `DATABASE_URL=postgres://pikaci@127.0.0.1:1/pikaci`, which lets the DB-backed tests skip cleanly when Postgres is absent instead of panicking on an unset environment variable,
+  - this makes the first structural cleanup pressure much clearer:
+    - the template is holding across two Linux lanes,
+    - but staged-lane selection and lane-specific runtime inputs are still somewhat stringly inside `pikaci` and the staged Nix wrapper scripts,
+    - so the next worthwhile cleanup is to make remote-authoritative staged prepare/execute more explicit in the model before migrating a third lane,
+  - historical notes for the first lane and shadow-mode path remain below:
   - keep the passing staged Linux Rust lane on the strict remote-authoritative path,
   - use GitHub only as a thin trigger/reporting shell for now,
   - run the proven lane as a clearly labeled non-gating shadow job on pull requests,

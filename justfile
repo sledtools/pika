@@ -270,6 +270,7 @@ alias relay-build := infra::relay-build
 alias pikahut := infra::pikahut
 alias pikaci-remote-fulfill-deploy := infra::pikaci-remote-fulfill-deploy
 alias pikaci-remote-fulfill-pre-merge-pika-rust := infra::pikaci-remote-fulfill-pre-merge-pika-rust
+alias pikaci-remote-fulfill-pre-merge-agent-contracts := infra::pikaci-remote-fulfill-pre-merge-agent-contracts
 alias pikaci-pre-merge-pika-rust-prepares-remote-build := infra::pikaci-pre-merge-pika-rust-prepares-remote-build
 alias linux-builder-repair := infra::linux-builder-repair
 alias linux-builder-recreate := infra::linux-builder-recreate

@@ -1,4 +1,4 @@
-{ pkgs, crane, src, cargoLock, outputHashes, pikaRelayPkg ? null }:
+{ pkgs, crane, src, cargoLock, outputHashes, pikaRelayPkg ? null, lane ? "pika-core" }:
 let
   craneLib = (crane.mkLib pkgs).overrideToolchain (
     pkgs.rust-bin.stable.latest.default.override {
@@ -6,8 +6,16 @@ let
     }
   );
 
+  lanePname =
+    if lane == "pika-core" then
+      "pika-linux-rust-workspace"
+    else if lane == "agent-contracts" then
+      "pika-linux-rust-agent-contracts-workspace"
+    else
+      throw "unsupported staged Linux Rust lane `${lane}`";
+
   commonArgs = {
-    pname = "pika-linux-rust-workspace";
+    pname = lanePname;
     version = "0.1.0";
     inherit src cargoLock outputHashes;
     strictDeps = true;
@@ -24,175 +32,482 @@ let
     ];
   };
 
-  workspaceDummySrc = pkgs.runCommand "ci-pika-core-workspace-dummy-src" { } ''
-    cp -R ${craneLib.mkDummySrc commonArgs} "$out"
-    chmod -R u+w "$out"
-    mkdir -p "$out/rust/tests"
-    cat >"$out/rust/tests/app_flows.rs" <<'EOF'
-    fn main() {}
-    EOF
-    cat >"$out/rust/tests/e2e_messaging.rs" <<'EOF'
-    fn main() {}
-    EOF
-    cat >"$out/rust/tests/e2e_group_profiles.rs" <<'EOF'
-    fn main() {}
-    EOF
-  '';
+  workspaceDummySrc =
+    if lane == "pika-core" then
+      pkgs.runCommand "ci-pika-core-workspace-dummy-src" { } ''
+        cp -R ${craneLib.mkDummySrc commonArgs} "$out"
+        chmod -R u+w "$out"
+        mkdir -p "$out/rust/tests"
+        cat >"$out/rust/tests/app_flows.rs" <<'EOF'
+        fn main() {}
+        EOF
+        cat >"$out/rust/tests/e2e_messaging.rs" <<'EOF'
+        fn main() {}
+        EOF
+        cat >"$out/rust/tests/e2e_group_profiles.rs" <<'EOF'
+        fn main() {}
+        EOF
+      ''
+    else
+      craneLib.mkDummySrc commonArgs;
 
-  # Phase 2a stays intentionally narrow: these outputs model the first staged
-  # Linux Rust lane family (`pre-merge-pika-rust`) by compiling the deterministic
-  # `pika_core` lib + test targets without executing them.
-  laneCompileCommand = ''
-    export PIKACI_PIKA_CORE_TEST_EXECUTABLES="$TMPDIR/pika-core-test-executables.tsv"
-    export PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST="$TMPDIR/pika-core-lib-tests.manifest"
-    export PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST="$TMPDIR/pika-core-lib-app-flows.manifest"
-    export PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST="$TMPDIR/pika-core-messaging-e2e.manifest"
-    export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
-    cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
-    case "$cargoJobs" in
-      ""|0)
-        cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
-        ;;
-    esac
-    echo "[pikaci] building pika_core with cargo jobs=$cargoJobs" >&2
-    target_root="''${CARGO_TARGET_DIR:-target}"
-    target_root_abs="$(pwd)/$target_root/"
-    : >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+  laneCompileCommand =
+    if lane == "pika-core" then
+      ''
+        export PIKACI_PIKA_CORE_TEST_EXECUTABLES="$TMPDIR/pika-core-test-executables.tsv"
+        export PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST="$TMPDIR/pika-core-lib-tests.manifest"
+        export PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST="$TMPDIR/pika-core-lib-app-flows.manifest"
+        export PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST="$TMPDIR/pika-core-messaging-e2e.manifest"
+        export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
+        cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+        case "$cargoJobs" in
+          ""|0)
+            cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+            ;;
+        esac
+        echo "[pikaci] building pika_core with cargo jobs=$cargoJobs" >&2
+        target_root="''${CARGO_TARGET_DIR:-target}"
+        target_root_abs="$(pwd)/$target_root/"
+        : >"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
 
-    capture_artifacts() {
-      local cargo_build_log="$1"
-      ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
-        select(.reason == "compiler-artifact" and .executable != null)
-        | [
-            .target.name,
-            (.target.kind | join(",")),
-            (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
-          ]
-        | @tsv
-      ' <"$cargo_build_log" >>"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
-    }
+        capture_artifacts() {
+          local cargo_build_log="$1"
+          ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+            select(.reason == "compiler-artifact" and .executable != null)
+            | [
+                .target.name,
+                (.target.kind | join(",")),
+                (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+              ]
+            | @tsv
+          ' <"$cargo_build_log" >>"$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
+        }
 
-    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo test --locked -j "$cargoJobs" -p pika_core \
-      --lib \
-      --bin kp_debug \
-      --bin interop_openclaw_voice \
-      --bin interop_rustbot_baseline \
-      --bin nostr_connect_tap \
-      --no-run \
-      --message-format json-render-diagnostics >"$cargoBuildLog"
-    capture_artifacts "$cargoBuildLog"
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika_core \
+          --lib \
+          --bin kp_debug \
+          --bin interop_openclaw_voice \
+          --bin interop_rustbot_baseline \
+          --bin nostr_connect_tap \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
 
-    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo test --locked -j "$cargoJobs" -p pika_core \
-      --lib \
-      --test app_flows \
-      --no-run \
-      --message-format json-render-diagnostics >"$cargoBuildLog"
-    capture_artifacts "$cargoBuildLog"
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika_core \
+          --lib \
+          --test app_flows \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
 
-    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo test --locked -j "$cargoJobs" -p pika_core \
-      --test e2e_messaging \
-      --test e2e_group_profiles \
-      --no-run \
-      --message-format json-render-diagnostics >"$cargoBuildLog"
-    capture_artifacts "$cargoBuildLog"
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika_core \
+          --test e2e_messaging \
+          --test e2e_group_profiles \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
 
-    cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo build --locked -j "$cargoJobs" -p pika-server \
-      --bin pika-server \
-      --message-format json-render-diagnostics >"$cargoBuildLog"
-    ${pkgs.jq}/bin/jq -r '
-      select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
-      | .executable
-    ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
-    if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
-      echo "missing staged pika-server executable" >&2
-      cat "$cargoBuildLog" >&2
-      exit 1
-    fi
-
-    sort -u -o "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" "$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
-
-    manifest_from_targets() {
-      local manifest_path="$1"
-      local strict="$2"
-      shift
-      shift
-      : >"$manifest_path"
-      for target_name in "$@"; do
-        local executable_path
-        executable_path="$(${pkgs.gawk}/bin/awk -F '\t' -v target="$target_name" '
-          $1 == target && $3 != "" {
-            path = $3
-          }
-          END {
-            if (path != "") {
-              print path
-            }
-          }
-        ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES")"
-        if [ -n "$executable_path" ]; then
-          printf '%s\n' "$executable_path" >>"$manifest_path"
-          continue
-        fi
-        if [ "$strict" = "1" ]; then
-          echo "missing staged pika_core test executable for target $target_name" >&2
-          echo "captured compiler-artifact rows:" >&2
-          cat "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >&2
-          echo "debug/deps candidates:" >&2
-          find "$target_root/debug/deps" -maxdepth 1 -type f | sort >&2 || true
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo build --locked -j "$cargoJobs" -p pika-server \
+          --bin pika-server \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        ${pkgs.jq}/bin/jq -r '
+          select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
+          | .executable
+        ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
+        if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
+          echo "missing staged pika-server executable" >&2
+          cat "$cargoBuildLog" >&2
           exit 1
         fi
-      done
-      sort -u -o "$manifest_path" "$manifest_path"
-    }
 
-    requireIntegrationTests="''${PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES:-0}"
+        sort -u -o "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" "$PIKACI_PIKA_CORE_TEST_EXECUTABLES"
 
-    manifest_from_targets "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" 1 \
-      pika_core \
-      kp_debug \
-      interop_openclaw_voice \
-      interop_rustbot_baseline \
-      nostr_connect_tap
+        manifest_from_targets() {
+          local manifest_path="$1"
+          local strict="$2"
+          shift
+          shift
+          : >"$manifest_path"
+          for target_name in "$@"; do
+            local executable_path
+            executable_path="$(${pkgs.gawk}/bin/awk -F '\t' -v target="$target_name" '
+              $1 == target && $3 != "" {
+                path = $3
+              }
+              END {
+                if (path != "") {
+                  print path
+                }
+              }
+            ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES")"
+            if [ -n "$executable_path" ]; then
+              printf '%s\n' "$executable_path" >>"$manifest_path"
+              continue
+            fi
+            if [ "$strict" = "1" ]; then
+              echo "missing staged pika_core test executable for target $target_name" >&2
+              echo "captured compiler-artifact rows:" >&2
+              cat "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >&2
+              echo "debug/deps candidates:" >&2
+              find "$target_root/debug/deps" -maxdepth 1 -type f | sort >&2 || true
+              exit 1
+            fi
+          done
+          sort -u -o "$manifest_path" "$manifest_path"
+        }
 
-    manifest_from_targets "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$requireIntegrationTests" \
-      pika_core \
-      app_flows
+        requireIntegrationTests="''${PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES:-0}"
 
-    manifest_from_targets "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$requireIntegrationTests" \
-      e2e_messaging \
-      e2e_group_profiles
+        manifest_from_targets "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" 1 \
+          pika_core \
+          kp_debug \
+          interop_openclaw_voice \
+          interop_rustbot_baseline \
+          nostr_connect_tap
 
-    # Keep the fanout guard strict for new integration suites, but allow the
-    # currently deferred ignored lanes to remain outside the staged split until
-    # we intentionally migrate them.
-    unassignedIntegrationTests="$TMPDIR/pika-core-unassigned-integration-tests.tsv"
-    cargo metadata --format-version 1 --no-deps \
-      | ${pkgs.jq}/bin/jq -r '
-          .packages[]
-          | select(.name == "pika_core")
-          | .targets[]
-          | select(.kind | index("test"))
-          | .name
-        ' \
-      | ${pkgs.gawk}/bin/awk '
-          $1 != "app_flows" \
-            && $1 != "e2e_messaging" \
-            && $1 != "e2e_group_profiles" \
-            && $1 != "e2e_calls" \
-            && $1 != "perf_relay_latency" {
-            print $0
-          }
-        ' >"$unassignedIntegrationTests"
-    if [ -s "$unassignedIntegrationTests" ]; then
-      echo "unassigned pika_core integration test targets detected; update staged manifest partitioning:" >&2
-      cat "$unassignedIntegrationTests" >&2
-      exit 1
-    fi
-  '';
+        manifest_from_targets "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$requireIntegrationTests" \
+          pika_core \
+          app_flows
+
+        manifest_from_targets "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$requireIntegrationTests" \
+          e2e_messaging \
+          e2e_group_profiles
+
+        unassignedIntegrationTests="$TMPDIR/pika-core-unassigned-integration-tests.tsv"
+        cargo metadata --format-version 1 --no-deps \
+          | ${pkgs.jq}/bin/jq -r '
+              .packages[]
+              | select(.name == "pika_core")
+              | .targets[]
+              | select(.kind | index("test"))
+              | .name
+            ' \
+          | ${pkgs.gawk}/bin/awk '
+              $1 != "app_flows" \
+                && $1 != "e2e_messaging" \
+                && $1 != "e2e_group_profiles" \
+                && $1 != "e2e_calls" \
+                && $1 != "perf_relay_latency" {
+                print $0
+              }
+            ' >"$unassignedIntegrationTests"
+        if [ -s "$unassignedIntegrationTests" ]; then
+          echo "unassigned pika_core integration test targets detected; update staged manifest partitioning:" >&2
+          cat "$unassignedIntegrationTests" >&2
+          exit 1
+        fi
+      ''
+    else
+      ''
+        export PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES="$TMPDIR/agent-contracts-test-executables.tsv"
+        export PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST="$TMPDIR/agent-control-plane-unit.manifest"
+        export PIKACI_AGENT_MICROVM_TESTS_MANIFEST="$TMPDIR/agent-microvm-tests.manifest"
+        export PIKACI_SERVER_AGENT_API_TESTS_MANIFEST="$TMPDIR/server-agent-api-tests.manifest"
+        export PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST="$TMPDIR/core-agent-nip98-test.manifest"
+        cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+        case "$cargoJobs" in
+          ""|0)
+            cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+            ;;
+        esac
+        echo "[pikaci] building agent contracts with cargo jobs=$cargoJobs" >&2
+        target_root="''${CARGO_TARGET_DIR:-target}"
+        target_root_abs="$(pwd)/$target_root/"
+        : >"$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES"
+
+        capture_artifacts() {
+          local cargo_build_log="$1"
+          ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+            select(.reason == "compiler-artifact" and .executable != null)
+            | [
+                .target.name,
+                (.target.kind | join(",")),
+                (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+              ]
+            | @tsv
+          ' <"$cargo_build_log" >>"$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES"
+        }
+
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika-agent-control-plane \
+          --lib \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
+
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika-agent-microvm \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
+
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika-server \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
+
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pika_core \
+          --lib \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
+
+        sort -u -o "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES" "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES"
+
+        manifest_from_targets() {
+          local manifest_path="$1"
+          shift
+          : >"$manifest_path"
+          for target_name in "$@"; do
+            local executable_path
+            executable_path="$(${pkgs.gawk}/bin/awk -F '\t' -v target="$target_name" '
+              $1 == target && $3 != "" {
+                path = $3
+              }
+              END {
+                if (path != "") {
+                  print path
+                }
+              }
+            ' "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES")"
+            if [ -z "$executable_path" ]; then
+              echo "missing staged agent contracts test executable for target $target_name" >&2
+              echo "captured compiler-artifact rows:" >&2
+              cat "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES" >&2
+              echo "debug/deps candidates:" >&2
+              find "$target_root/debug/deps" -maxdepth 1 -type f | sort >&2 || true
+              exit 1
+            fi
+            printf '%s\n' "$executable_path" >>"$manifest_path"
+          done
+          sort -u -o "$manifest_path" "$manifest_path"
+        }
+
+        manifest_from_targets "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" pika_agent_control_plane
+        manifest_from_targets "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" pika_agent_microvm
+        manifest_from_targets "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" pika-server
+        manifest_from_targets "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" pika_core
+      '';
+
+  installPhaseCommand =
+    if lane == "pika-core" then
+      ''
+        target_root="''${CARGO_TARGET_DIR:-target}"
+        target_root_abs="$(pwd)/$target_root/"
+        mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+        cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/pikaci/pika-core-lib-tests.manifest"
+        cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/pikaci/pika-core-lib-app-flows.manifest"
+        cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/pikaci/pika-core-messaging-e2e.manifest"
+
+        copy_target_relative() {
+          local relative="$1"
+          if [ ! -e "$target_root/$relative" ]; then
+            echo "missing staged pika_core runtime artifact at $target_root/$relative" >&2
+            exit 1
+          fi
+          (
+            cd "$target_root"
+            cp --parents -P "$relative" "$out/target"
+          )
+        }
+
+        staged_runtime_manifest="$TMPDIR/pika-core-staged-runtime.manifest"
+        cat \
+          "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" \
+          "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" \
+          "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" \
+          | sort -u >"$staged_runtime_manifest"
+
+        while IFS= read -r relative; do
+          [ -n "$relative" ] || continue
+          copy_target_relative "$relative"
+        done <"$staged_runtime_manifest"
+
+        server_executable="$(cat "$PIKACI_PIKA_SERVER_EXECUTABLE")"
+        case "$server_executable" in
+          "$target_root_abs"*)
+            server_relative="''${server_executable#$target_root_abs}"
+            ;;
+          "$target_root"*)
+            server_relative="''${server_executable#$target_root/}"
+            ;;
+          *)
+            echo "unexpected staged pika-server executable path: $server_executable" >&2
+            exit 1
+            ;;
+        esac
+        copy_target_relative "$server_relative"
+        ln -s "../target/$server_relative" "$out/bin/pika-server"
+
+        if [ -d "$target_root/debug/deps" ]; then
+          while IFS= read -r shared_object; do
+            copy_target_relative "''${shared_object#$target_root/}"
+          done < <(
+            find "$target_root/debug/deps" -maxdepth 1 -type f \
+              \( -name '*.so' -o -name '*.so.*' \) \
+              | sort
+          )
+        fi
+
+        ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
+        ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        ''}
+
+        cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+
+        if [ "$#" -ne 1 ]; then
+          echo "usage: $(basename "$0") <manifest>" >&2
+          exit 1
+        fi
+
+        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+        manifest="$root/share/pikaci/$1"
+        if [ ! -s "$manifest" ]; then
+          echo "missing staged pika_core test manifest at $manifest" >&2
+          exit 1
+        fi
+
+        if [ -x "$root/bin/pika-server" ]; then
+          export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
+        fi
+        if [ -x "$root/bin/pika-relay" ]; then
+          export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
+        fi
+
+        while IFS= read -r relative; do
+          [ -n "$relative" ] || continue
+          echo "[pikaci] running staged pika_core test binary $relative"
+          "$root/target/$relative" --nocapture
+        done <"$manifest"
+        EOF
+        cat >"$out/bin/run-pika-core-lib-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-tests.manifest
+        EOF
+        cat >"$out/bin/run-pika-core-lib-app-flows-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
+        EOF
+        cat >"$out/bin/run-pika-core-messaging-e2e-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-messaging-e2e.manifest
+        EOF
+        chmod +x \
+          "$out/bin/run-pika-core-test-manifest" \
+          "$out/bin/run-pika-core-lib-tests" \
+          "$out/bin/run-pika-core-lib-app-flows-tests" \
+          "$out/bin/run-pika-core-messaging-e2e-tests"
+      ''
+    else
+      ''
+        target_root="''${CARGO_TARGET_DIR:-target}"
+        mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+        cp "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" "$out/share/pikaci/agent-control-plane-unit.manifest"
+        cp "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" "$out/share/pikaci/agent-microvm-tests.manifest"
+        cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/pikaci/server-agent-api-tests.manifest"
+        cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/pikaci/core-agent-nip98-test.manifest"
+        cp -R "$src/pikachat-openclaw/openclaw/extensions/pikachat-openclaw" \
+          "$out/share/pikaci/pikachat-openclaw-extension"
+
+        copy_target_relative() {
+          local relative="$1"
+          if [ ! -e "$target_root/$relative" ]; then
+            echo "missing staged agent contracts runtime artifact at $target_root/$relative" >&2
+            exit 1
+          fi
+          (
+            cd "$target_root"
+            cp --parents -P "$relative" "$out/target"
+          )
+        }
+
+        staged_runtime_manifest="$TMPDIR/agent-contracts-staged-runtime.manifest"
+        cat \
+          "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" \
+          "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" \
+          "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" \
+          "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" \
+          | sort -u >"$staged_runtime_manifest"
+
+        while IFS= read -r relative; do
+          [ -n "$relative" ] || continue
+          copy_target_relative "$relative"
+        done <"$staged_runtime_manifest"
+
+        if [ -d "$target_root/debug/deps" ]; then
+          while IFS= read -r shared_object; do
+            copy_target_relative "''${shared_object#$target_root/}"
+          done < <(
+            find "$target_root/debug/deps" -maxdepth 1 -type f \
+              \( -name '*.so' -o -name '*.so.*' \) \
+              | sort
+          )
+        fi
+
+        cat >"$out/bin/run-staged-test-manifest" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+
+        if [ "$#" -lt 1 ]; then
+          echo "usage: $(basename "$0") <manifest> [test-binary-args...]" >&2
+          exit 1
+        fi
+
+        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+        manifest="$root/share/pikaci/$1"
+        shift
+        if [ ! -s "$manifest" ]; then
+          echo "missing staged test manifest at $manifest" >&2
+          exit 1
+        fi
+
+        while IFS= read -r relative; do
+          [ -n "$relative" ] || continue
+          echo "[pikaci] running staged test binary $relative"
+          "$root/target/$relative" "$@"
+        done <"$manifest"
+        EOF
+        cat >"$out/bin/run-agent-control-plane-unit-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        exec "$(dirname "$0")/run-staged-test-manifest" agent-control-plane-unit.manifest --nocapture
+        EOF
+        cat >"$out/bin/run-agent-microvm-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+        export PIKACI_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/pikaci/pikachat-openclaw-extension"
+        exec "$(dirname "$0")/run-staged-test-manifest" agent-microvm-tests.manifest --nocapture
+        EOF
+        cat >"$out/bin/run-server-agent-api-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        export DATABASE_URL="''${DATABASE_URL:-postgres://pikaci@127.0.0.1:1/pikaci}"
+        exec "$(dirname "$0")/run-staged-test-manifest" server-agent-api-tests.manifest agent_api::tests --nocapture
+        EOF
+        cat >"$out/bin/run-core-agent-nip98-test" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        exec "$(dirname "$0")/run-staged-test-manifest" core-agent-nip98-test.manifest core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization --exact --nocapture
+        EOF
+        chmod +x \
+          "$out/bin/run-staged-test-manifest" \
+          "$out/bin/run-agent-control-plane-unit-tests" \
+          "$out/bin/run-agent-microvm-tests" \
+          "$out/bin/run-server-agent-api-tests" \
+          "$out/bin/run-core-agent-nip98-test"
+      '';
 in
 rec {
   workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
@@ -209,116 +524,6 @@ rec {
     buildPhaseCargoCommand = laneCompileCommand;
     PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES = "1";
     doInstallCargoArtifacts = false;
-    installPhaseCommand = ''
-      target_root="''${CARGO_TARGET_DIR:-target}"
-      mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-      cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/pikaci/pika-core-lib-tests.manifest"
-      cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/pikaci/pika-core-lib-app-flows.manifest"
-      cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/pikaci/pika-core-messaging-e2e.manifest"
-
-      copy_target_relative() {
-        local relative="$1"
-        if [ ! -e "$target_root/$relative" ]; then
-          echo "missing staged pika_core runtime artifact at $target_root/$relative" >&2
-          exit 1
-        fi
-        (
-          cd "$target_root"
-          cp --parents -P "$relative" "$out/target"
-        )
-      }
-
-      staged_runtime_manifest="$TMPDIR/pika-core-staged-runtime.manifest"
-      cat \
-        "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" \
-        "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" \
-        "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" \
-        | sort -u >"$staged_runtime_manifest"
-
-      while IFS= read -r relative; do
-        [ -n "$relative" ] || continue
-        copy_target_relative "$relative"
-      done <"$staged_runtime_manifest"
-
-      server_executable="$(cat "$PIKACI_PIKA_SERVER_EXECUTABLE")"
-      case "$server_executable" in
-        "$target_root_abs"*)
-          server_relative="''${server_executable#$target_root_abs}"
-          ;;
-        "$target_root"*)
-          server_relative="''${server_executable#$target_root/}"
-          ;;
-        *)
-          echo "unexpected staged pika-server executable path: $server_executable" >&2
-          exit 1
-          ;;
-      esac
-      copy_target_relative "$server_relative"
-      ln -s "../target/$server_relative" "$out/bin/pika-server"
-
-      if [ -d "$target_root/debug/deps" ]; then
-        while IFS= read -r shared_object; do
-          copy_target_relative "''${shared_object#$target_root/}"
-        done < <(
-          find "$target_root/debug/deps" -maxdepth 1 -type f \
-            \( -name '*.so' -o -name '*.so.*' \) \
-            | sort
-        )
-      fi
-
-      ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-      ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
-      ''}
-
-      cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
-      #!${pkgs.bash}/bin/bash
-      set -euo pipefail
-
-      if [ "$#" -ne 1 ]; then
-        echo "usage: $(basename "$0") <manifest>" >&2
-        exit 1
-      fi
-
-      root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-      manifest="$root/share/pikaci/$1"
-      if [ ! -s "$manifest" ]; then
-        echo "missing staged pika_core test manifest at $manifest" >&2
-        exit 1
-      fi
-
-      if [ -x "$root/bin/pika-server" ]; then
-        export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
-      fi
-      if [ -x "$root/bin/pika-relay" ]; then
-        export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
-      fi
-
-      while IFS= read -r relative; do
-        [ -n "$relative" ] || continue
-        echo "[pikaci] running staged pika_core test binary $relative"
-        "$root/target/$relative" --nocapture
-      done <"$manifest"
-      EOF
-      cat >"$out/bin/run-pika-core-lib-tests" <<'EOF'
-      #!${pkgs.bash}/bin/bash
-      set -euo pipefail
-      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-tests.manifest
-      EOF
-      cat >"$out/bin/run-pika-core-lib-app-flows-tests" <<'EOF'
-      #!${pkgs.bash}/bin/bash
-      set -euo pipefail
-      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
-      EOF
-      cat >"$out/bin/run-pika-core-messaging-e2e-tests" <<'EOF'
-      #!${pkgs.bash}/bin/bash
-      set -euo pipefail
-      exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-messaging-e2e.manifest
-      EOF
-      chmod +x \
-        "$out/bin/run-pika-core-test-manifest" \
-        "$out/bin/run-pika-core-lib-tests" \
-        "$out/bin/run-pika-core-lib-app-flows-tests" \
-        "$out/bin/run-pika-core-messaging-e2e-tests"
-    '';
+    inherit installPhaseCommand;
   });
 }

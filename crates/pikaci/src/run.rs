@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use crate::executor::{
     HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
-    prepare_vfkit_runner_link, run_job_on_runner, ssh_nix_binary, sync_snapshot_to_remote,
+    prepare_vfkit_runner_link, run_job_on_runner, ssh_nix_binary, staged_linux_remote_snapshot_dir,
+    sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -3096,15 +3097,25 @@ fn staged_linux_rust_remote_realization(
             remote_work_dir.display()
         )
     })?;
-    let remote_snapshot_dir = remote_work_dir
-        .join("runs")
-        .join(
-            run_dir
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?,
-        )
-        .join(snapshot_relative);
+    let run_id = run_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?;
+    let remote_snapshot_root =
+        staged_linux_remote_snapshot_dir(&snapshot_dir, remote_work_dir, run_id)?;
+    let remote_snapshot_dir = if snapshot_relative == Path::new("snapshot") {
+        remote_snapshot_root
+    } else {
+        let nested = snapshot_relative
+            .strip_prefix("snapshot")
+            .with_context(|| {
+                format!(
+                    "translate nested staged Linux Rust snapshot path {}",
+                    snapshot_relative.display()
+                )
+            })?;
+        remote_snapshot_root.join(nested)
+    };
     Ok(Some(RemotePreparedOutputRealization {
         remote_host,
         remote_snapshot_dir: remote_snapshot_dir.clone(),
@@ -4773,6 +4784,58 @@ mod tests {
             remote.remote_installable,
             "path:/var/tmp/pikaci-prepared-output/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild"
         );
+    }
+
+    #[test]
+    fn staged_linux_rust_remote_realization_uses_content_addressed_snapshot_when_hashed() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-remote-realization-hash-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let snapshot_dir = root.join("snapshot");
+        std::fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
+        std::fs::write(
+            snapshot_dir.join("pikaci-snapshot.json"),
+            format!(
+                "{{\"source_root\":\"{}\",\"snapshot_dir\":\"{}\",\"git_head\":null,\"git_dirty\":false,\"created_at\":\"2026-03-10T00:00:00Z\",\"content_hash\":\"deadbeef\"}}",
+                root.display(),
+                snapshot_dir.display()
+            ),
+        )
+        .expect("write metadata");
+
+        let installable = format!(
+            "path:{}#ci.x86_64-linux.workspaceBuild",
+            snapshot_dir.display()
+        );
+        let remote = staged_linux_rust_remote_realization(
+            &root,
+            &installable,
+            "ci.x86_64-linux.workspaceBuild",
+            PreparedOutputInvocationConfig {
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_work_dir: Some(Path::new(
+                    "/var/tmp/pikaci-prepared-output",
+                )),
+                ..PreparedOutputInvocationConfig::default()
+            },
+        )
+        .expect("translate remote realization")
+        .expect("staged remote realization");
+
+        assert_eq!(
+            remote.remote_snapshot_dir,
+            Path::new("/var/tmp/pikaci-prepared-output/snapshots/deadbeef/snapshot")
+        );
+        assert_eq!(
+            remote.remote_installable,
+            "path:/var/tmp/pikaci-prepared-output/snapshots/deadbeef/snapshot#ci.x86_64-linux.workspaceBuild"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

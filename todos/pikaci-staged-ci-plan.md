@@ -864,14 +864,22 @@ We have at least one important Linux Rust lane where:
     - instead, the run-scoped prepare path now syncs the snapshot to `pika-build`, runs `ssh pika-build nix build --accept-flake-config --no-link --print-out-paths path:/var/tmp/pikaci-prepared-output/runs/<run>/snapshot#ci.x86_64-linux.workspace{Deps,Build}`, and treats the returned remote `/nix/store/...` path as authoritative for fulfillment,
     - the ssh fulfillment transport now hard-fails for `ci.x86_64-linux.workspaceDeps` and `ci.x86_64-linux.workspaceBuild` if the realized path is not already present on `pika-build`, instead of silently falling back to `nix copy --to ssh://pika-build ...`,
     - and a fresh real rerun (`20260310T053556Z-187b5368`) confirmed the intended behavior: both staged prepared outputs were realized remotely, fulfilled remotely, and the run advanced straight into remote runner staging and guest boot without any local `nix-store --serve --write` / `nix copy` bounce for prepared-output fulfillment,
+  - note that the remaining operational helper path has now been aligned with that strict contract too:
+    - `scripts/pika-build-run-workspace-deps.sh` no longer runs a local `nix build --no-link` for staged Linux Rust outputs,
+    - instead it now syncs a filtered helper snapshot to `/var/tmp/pikaci-prepared-output/helpers/<id>/snapshot` on `pika-build`, runs `ssh pika-build ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix} build --accept-flake-config --no-link --print-out-paths path:...#ci.x86_64-linux.workspace{Deps,Build}`, and requires the returned `/nix/store/...` path to exist remotely,
+    - `just pikaci-pre-merge-pika-rust-prepares-remote-build` therefore no longer misrepresents a fast path while secretly bouncing the final Linux output through the Mac,
+    - and the helper still hard-fails by construction if it cannot stay on that remote-authoritative path,
+    - a fresh helper rerun completed both outputs on the strict path and reported only remote-authoritative results:
+      - `ci.x86_64-linux.workspaceDeps` -> `/nix/store/lw2m7kd6l0bfssd0cpkiqv2hxmmz8mbm-pika-linux-rust-workspace-deps-deps-0.1.0`
+      - `ci.x86_64-linux.workspaceBuild` -> `/nix/store/y1rdyafqd4zyyxiam8cj8rknaa662w63-pika-linux-rust-workspace-build-0.1.0`
   - note that the hardening changes still hold on that remote-authoritative path:
     - the rerun still passed end-to-end on `pika-build`,
     - both remote microVM jobs booted and passed,
     - the guest logs continued to show local loopback relay usage (`ws://localhost:*`) rather than the old public-relay / API noise,
     - and the remaining visible transport cost before execute is now the run snapshot tar sync itself, not multi-GB Linux prepared-output round-tripping through the Mac,
+    - a fresh real rerun (`20260310T190801Z-854856ef`) again realized both staged outputs remotely, fulfilled them remotely, avoided any local `nix-store --serve --write` / `nix copy --to ssh` prepared-output bounce, and passed both remote microVM jobs,
   - note that the next narrow cleanup target is now explicit:
-    - either teach the checked-in dual-prepare helper to use the same remote-authoritative staged-output path,
-    - or stop treating that helper as representative for this lane and focus on shrinking the remaining run-snapshot sync cost instead of prepared-output bounce.
+    - focus on shrinking the remaining run-snapshot sync cost instead of prepared-output bounce.
     - the guest logs no longer show `hypernote-mdx` git fetches or `proxy.golang.org` module fetches,
     - so this staged lane is now materially more self-contained and no longer depends on live Rust/Go dependency fetches inside the guest,
   - note that the first rerun after those offline fixture changes now passes end-to-end on the remote `x86_64-linux` microVM path:

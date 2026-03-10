@@ -1792,6 +1792,10 @@ pub async fn daemon_main(
         relay_urls
             .push(RelayUrl::parse("ws://127.0.0.1:18080").context("parse default relay url")?);
     }
+    let primary_relay_url = relay_urls
+        .first()
+        .cloned()
+        .context("missing primary relay after relay setup")?;
     let (acp_backend, mut acp_completion_rx) = match acp_backend {
         Some(config) => {
             let (manager, completion_rx) = AcpBackendManager::spawn(config)
@@ -1814,14 +1818,14 @@ pub async fn daemon_main(
 
     // Daemon keeps its primary-relay-first connect policy local.
     client
-        .add_relay(primary_relay)
+        .add_relay(primary_relay_url.clone())
         .await
         .with_context(|| format!("add primary relay {primary_relay}"))?;
     for r in startup_sync
         .relay_roles
         .session_connect_relays
         .iter()
-        .filter(|relay| relay.as_str() != primary_relay)
+        .filter(|relay| *relay != &primary_relay_url)
     {
         let _ = client.add_relay(r.clone()).await;
     }

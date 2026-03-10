@@ -1004,34 +1004,7 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, RwLock};
-
-    fn make_core_with_config(
-        config: crate::core::config::AppConfig,
-    ) -> (AppCore, tempfile::TempDir) {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let data_dir = tempdir.path().to_string_lossy().into_owned();
-        let (update_tx, _update_rx) = flume::unbounded();
-        let (core_tx, _core_rx) = flume::unbounded();
-        let external_signer_bridge: crate::external_signer::SharedExternalSignerBridge =
-            Arc::new(RwLock::new(None));
-        let bunker_signer_connector: crate::bunker_signer::SharedBunkerSignerConnector =
-            Arc::new(RwLock::new(Arc::new(
-                crate::bunker_signer::NostrConnectBunkerSignerConnector::default(),
-            )));
-        let mut core = AppCore::new(
-            update_tx,
-            core_tx,
-            data_dir,
-            String::new(),
-            String::new(),
-            Arc::new(RwLock::new(crate::state::AppState::empty())),
-            external_signer_bridge,
-            bunker_signer_connector,
-        );
-        core.config = config;
-        (core, tempdir)
-    }
+    use crate::core::config::make_core_with_config_for_tests as make_core_with_config;
 
     fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
         crate::mdk_support::open_mdk(

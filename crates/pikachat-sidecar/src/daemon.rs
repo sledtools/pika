@@ -78,6 +78,13 @@ fn bootstrap_runtime_for_daemon(
     })
 }
 
+fn plan_daemon_group_subscriptions(
+    host: &DaemonHostContext<'_>,
+    subscribed_group_ids: Vec<String>,
+) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
+    host.plan_group_subscriptions(subscribed_group_ids)
+}
+
 async fn accept_welcome_with_backfill<F, Fut>(
     mdk: &MDK<MdkSqliteStorage>,
     client: &Client,
@@ -1802,9 +1809,11 @@ pub async fn daemon_main(
     seen_inbound.extend(seen_group_events.iter().copied());
 
     // Track group subscriptions.
-    let mut group_subs: HashMap<SubscriptionId, String> =
-        subscribe_group_messages_individual(&client, &bootstrapped.startup.existing_group_ids)
-            .await?;
+    let mut group_subs: HashMap<SubscriptionId, String> = subscribe_group_messages_individual(
+        &client,
+        &bootstrapped.startup.group_subscriptions.target_group_ids,
+    )
+    .await?;
     let mut pending_call_invites: HashMap<String, PendingIncomingCall> = HashMap::new();
     let mut pending_outgoing_call_invites: HashMap<String, PendingOutgoingCall> = HashMap::new();
     let mut active_call: Option<ActiveCall> = None;
@@ -3344,13 +3353,36 @@ pub async fn daemon_main(
                         // waits for welcome delivery and subscribes before
                         // reporting success to the host protocol.
 
-                        // Subscribe to new group messages.
-                        match crate::subscribe_group_msgs(&client, &nostr_group_id_hex).await {
-                            Ok(sid) => {
-                                group_subs.insert(sid, nostr_group_id_hex.clone());
-                            }
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let subscription_plan = match plan_daemon_group_subscriptions(
+                            &host,
+                            group_subs.values().cloned().collect(),
+                        ) {
+                            Ok(plan) => plan,
                             Err(err) => {
-                                warn!("[pikachat] subscribe group msgs failed after init_group: {err:#}");
+                                reply_tx
+                                    .send(out_error(
+                                        request_id,
+                                        "runtime_error",
+                                        format!("plan group subscriptions: {err:#}"),
+                                    ))
+                                    .ok();
+                                continue;
+                            }
+                        };
+
+                        // Subscribe to newly planned group message targets.
+                        for planned_group_id in subscription_plan.added_group_ids {
+                            match crate::subscribe_group_msgs(&client, &planned_group_id).await {
+                                Ok(sid) => {
+                                    group_subs.insert(sid, planned_group_id);
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        "[pikachat] subscribe group msgs failed after init_group: {err:#}"
+                                    );
+                                }
                             }
                         }
 
@@ -4369,6 +4401,48 @@ mod tests {
     }
 
     #[test]
+    fn daemon_subscription_planning_uses_shared_runtime_targets() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "Daemon subscription planning".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    relay_urls.clone(),
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let plan = plan_daemon_group_subscriptions(&host, vec!["stale-group".to_string()])
+            .expect("plan daemon group subscriptions");
+
+        assert_eq!(
+            plan.current.target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(plan.current.relay_urls, relay_urls);
+        assert_eq!(plan.added_group_ids, vec![expected_group_id]);
+        assert_eq!(plan.removed_group_ids, vec!["stale-group".to_string()]);
+    }
+
+    #[test]
     fn daemon_runtime_bootstrap_uses_shared_session_service() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
@@ -4396,8 +4470,12 @@ mod tests {
 
         assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
         assert_eq!(
-            bootstrapped.startup.existing_group_ids,
+            bootstrapped.startup.group_subscriptions.target_group_ids,
             vec![hex::encode(created.group.nostr_group_id)]
+        );
+        assert_eq!(
+            bootstrapped.startup.group_subscriptions.relay_urls,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")]
         );
     }
 

@@ -155,11 +155,14 @@ Use `just --list` for the curated root recipes. For the expanded module tree, us
 just test                    # Unit tests
 just cli-smoke               # CLI smoke test (requires local Nostr relay)
 just e2e-local-relay         # Deterministic E2E with local relay + local bot
-just e2e-public              # E2E against public relays (nondeterministic)
-just ios-ui-test             # iOS UI tests on simulator
-just android-ui-test         # Android instrumentation tests
+just ios-ui-test             # Deterministic iOS XCTest suite on simulator
+just ios-ui-e2e-local        # Heavy iOS bot/media flows against local fixtures
+just android-ui-test         # Deterministic Android instrumentation suite
+just android-ui-e2e-local    # Heavy Android bot/media flows against local fixtures
 just desktop-ui-test         # Desktop UI/manager tests
 ```
+
+Public-network and deployed-bot probes are intentionally out of scope for the checked-in core app CI policy. Prefer the Rust-first and local-fixture-backed paths above.
 
 ## Architecture
 

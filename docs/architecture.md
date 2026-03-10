@@ -63,6 +63,8 @@ iOS/Android never "fetches" chat data; it only renders `AppState`.
 Long-ish operation state that affects UX lives in Rust as `AppState.busy` (e.g. `creating_chat`, `logging_in`).
 This avoids iOS/Android heuristics like "stop spinner when a toast appears" and keeps UI purely reactive to Rust state.
 
+Testing follows the same boundary: prefer Rust-level action/state assertions and local fixtures for business logic, and reserve native tests for renderer behavior or true platform-bridge concerns.
+
 ## Related Docs
 
 - `docs/rmp.md` — Rust Multiplatform ownership model + adapter window pattern

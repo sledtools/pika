@@ -524,9 +524,11 @@ final class PikaUITests: XCTestCase {
         XCTAssertFalse(copyButton.exists)
     }
 
+    // Legacy `testE2E_*` names are retained because `just ios-ui-e2e-local`
+    // selects these methods directly. In steady-state policy they are
+    // local-fixture bot/media flows, not part of the default `ios-ui-test`
+    // simulator suite.
     func testE2E_deployedRustBot_pingPong() throws {
-        // Opt-in test: run it explicitly via xcodebuild `-only-testing:`. This hits public relays,
-        // so it is intentionally not part of the deterministic smoke suite.
         let env = ProcessInfo.processInfo.environment
         let dotenv = loadDotenv()
         let botNpub = env["PIKA_UI_E2E_BOT_NPUB"] ?? dotenv["PIKA_UI_E2E_BOT_NPUB"] ?? ""
@@ -538,7 +540,7 @@ final class PikaUITests: XCTestCase {
         let relays = env["PIKA_UI_E2E_RELAYS"] ?? dotenv["PIKA_UI_E2E_RELAYS"] ?? ""
         let kpRelays = env["PIKA_UI_E2E_KP_RELAYS"] ?? dotenv["PIKA_UI_E2E_KP_RELAYS"] ?? ""
 
-        // Public-relay E2E should be explicit. Defaults hide misconfiguration and cause flaky hangs.
+        // Fixture-backed UI runs should be explicit. Defaults hide misconfiguration and cause flaky hangs.
         if botNpub.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_BOT_NPUB"); return }
         if testNsec.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_NSEC (or PIKA_TEST_NSEC)"); return }
         if relays.isEmpty { XCTFail("Missing env var: PIKA_UI_E2E_RELAYS"); return }

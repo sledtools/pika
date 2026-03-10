@@ -726,8 +726,13 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
 
     match args.platform {
         UiPlatform::Android => {
-            let test_class = std::env::var("PIKA_ANDROID_E2E_TEST_CLASS")
-                .unwrap_or_else(|_| "com.pika.app.PikaE2eUiTest".to_string());
+            let test_class = std::env::var("PIKA_ANDROID_E2E_TEST_CLASS").unwrap_or_else(|_| {
+                [
+                    "com.pika.app.PikaE2eUiTest#e2e_deployedRustBot_pingPong",
+                    "com.pika.app.PikaE2eUiTest#e2e_hypernoteDetailsAndCodeBlock",
+                ]
+                .join(",")
+            });
             let test_suffix = std::env::var("PIKA_ANDROID_TEST_APPLICATION_ID_SUFFIX")
                 .unwrap_or_else(|_| ".test".to_string());
             let test_app_id = format!("org.pikachat.pika{test_suffix}");

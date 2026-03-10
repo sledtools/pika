@@ -20,6 +20,11 @@ This matrix is the canonical ownership map for integration coverage.
 - `nondeterministic`: public/deployed infrastructure dependent, `#[ignore]`, lane-selected.
 - `manual`: runbook-contract selectors and developer-driven tooling.
 
+Current policy note:
+
+- Public-network, deployed-bot, and perf probes are out of scope for the core app CI truth surface. Prefer local-fixture selectors as the checked-in replacement coverage.
+- Any retained public-network lanes below are external-system carve-outs, not justification for keeping public probes around core Rust-owned behavior.
+
 ## Capability Keys
 
 - `host-macos`: macOS runner required.
@@ -37,8 +42,8 @@ This matrix is the canonical ownership map for integration coverage.
 | --- | --- | --- | --- | --- | --- | --- |
 | `just cli-smoke` | `cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture` | `integration_deterministic::cli_smoke_local` | deterministic | pre-merge-pikachat | none | Local relay fixture. |
 | `just cli-smoke-media` | `cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture` | `integration_deterministic::cli_smoke_media_local` | nondeterministic | nightly-pika-e2e | public-network | Media upload/download path. Runs in nightly-pika-e2e. |
-| `just android-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_android` | heavy | nightly-pika-ui-android/manual | android | Capability-gated skip when Android tooling is absent. |
-| `just ios-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_ios` | heavy | manual | host-macos, xcode | Capability-gated skip on non-macOS or missing Xcode. |
+| `just android-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_android` | heavy | nightly-pika-ui-android/manual | android | Capability-gated skip when Android tooling is absent. Explicitly runs the `PikaE2eUiTest` ping/hypernote methods against a local relay/bot fixture; it no longer defaults to the whole class. |
+| `just ios-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_ios` | heavy | manual | host-macos, xcode | Capability-gated skip on non-macOS or missing Xcode. Reuses legacy `PikaUITests/testE2E_*` methods against a local relay/bot fixture and is intentionally separate from `just ios-ui-test`; this selector is manual-only today, not CI-enforced. |
 | `just desktop-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_desktop` | deterministic | pre-merge-pikachat | none | Local deterministic desktop UI contract. Runs in pre-merge-pikachat. |
 | `just interop-rust-baseline` | `cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture` | `integration_deterministic::interop_rust_baseline` | heavy | nightly/manual | interop-rust-repo | Capability-gated skip when interop repo is missing; fails fast on workspace/harness MDK revision skew. |
 | `just interop-rust-manual` | `cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture` | `integration_manual::manual_interop_rust_runbook_contract` | manual | manual only | interop-rust-repo | Manual runbook contract selector. |
@@ -49,7 +54,7 @@ This matrix is the canonical ownership map for integration coverage.
 | `just pre-merge-pikachat` rebase boundary checks | selector command | `integration_deterministic::post_rebase_invalid_event_rejection_boundary`, `integration_deterministic::post_rebase_logout_session_convergence_boundary` | deterministic | pre-merge-pikachat | none | Regression boundaries pinned to deterministic lane. |
 | `just openclaw-pikachat-e2e` | `cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture` | `integration_openclaw::openclaw_gateway_e2e` | heavy | pre-merge path-scoped + nightly-pikachat | openclaw-repo, public-network | Preserves OpenClaw logs/config artifacts on failure. |
 | `just nightly-pikachat` | `just openclaw-pikachat-e2e` | `integration_openclaw::openclaw_gateway_e2e` | heavy | nightly-pikachat | openclaw-repo, public-network | Canonical nightly OpenClaw selector. |
-| `just nightly-pika-e2e` | local-only call-path boundary selectors + media smoke | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` | heavy | nightly-pika-e2e | public-network | Local-only nightly call-path regression boundaries from `pika_core::e2e_calls` plus Blossom media smoke. Public-infra selectors removed (see `docs/testing/public-removal-coverage-parity.md`). |
+| `just nightly-pika-e2e` | local-only call-path boundary selectors + media smoke | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` | heavy | nightly-pika-e2e | public-network | Local-only nightly call-path regression boundaries from `pika_core::e2e_calls` plus Blossom media smoke. Deployed-bot and relay-latency probes were removed from the checked-in suite (see `docs/testing/public-removal-coverage-parity.md`). |
 | `just nightly-primal-ios-interop` | `cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture` | `integration_primal::primal_nostrconnect_smoke` | heavy | nightly-primal-ios-interop | host-macos, xcode, public-network | Rust scenario clones into an isolated checkout under scenario state and validates marker/log artifacts without mutating a default local repo. |
 | `just primal-ios-lab` | manual tooling + selector contract | `integration_manual::manual_primal_lab_runbook_contract` | manual | manual only | host-macos, xcode, primal-repo | Manual lab remains intentionally non-CI. |
 | `just primal-ios-lab-patch-primal` | manual helper | `integration_manual::manual_primal_lab_runbook_contract` | manual | manual only | host-macos, primal-repo | Manual-only helper command. |
@@ -83,9 +88,9 @@ This matrix is the canonical ownership map for integration coverage.
 | `check-pikachat-openclaw-e2e` (path-scoped) | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-e2e` | call-path boundary selectors (`call_over_local_moq_relay_boundary`, `call_with_pikachat_daemon_boundary`, `cli_smoke_media_local`) |
-| `nightly-pika-ui-android` | full Android instrumentation suite via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-pika-ui-ios` | iOS Swift unit tests via `just ios-ui-test` |
-| `nightly-primal-ios-interop` | iOS Swift unit tests via `just ios-ui-test`, `integration_primal::primal_nostrconnect_smoke` |
+| `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
+| `nightly-pika-ui-ios` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
+| `nightly-primal-ios-interop` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local`, plus `integration_primal::primal_nostrconnect_smoke` |
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 ## Migration Notes

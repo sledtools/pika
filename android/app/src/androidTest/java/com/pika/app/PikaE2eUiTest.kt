@@ -1,6 +1,5 @@
 package com.pika.app
 
-import android.Manifest
 import android.util.Log
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertIsDisplayed
@@ -9,7 +8,6 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.test.rule.GrantPermissionRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pika.app.rust.AppAction
@@ -20,13 +18,16 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/**
+ * Legacy-name UI selectors that `pikahut` drives against local relay/bot fixtures.
+ *
+ * These are not part of the default offline instrumentation suite and should not be treated as
+ * public-network coverage.
+ */
 @RunWith(AndroidJUnit4::class)
 class PikaE2eUiTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
-
-    @get:Rule
-    val micPermission: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
 
     private val uiReadyTimeoutMs = 90_000L
 
@@ -34,7 +35,7 @@ class PikaE2eUiTest {
     fun e2e_deployedRustBot_pingPong() {
         val args = InstrumentationRegistry.getArguments()
         Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable the fixture-backed UI selector.",
             args.getString("pika_e2e") == "1",
         )
 
@@ -42,7 +43,7 @@ class PikaE2eUiTest {
         val testNsec = args.getString("pika_nsec") ?: args.getString("pika_test_nsec") ?: ""
         val botNpub = args.getString("pika_peer_npub") ?: ""
 
-        // Public-relay E2E should be explicit. Defaults hide misconfiguration and cause flaky hangs.
+        // Fixture-backed UI runs should be explicit. Defaults hide misconfiguration and cause flaky hangs.
         check(botNpub.isNotBlank()) { "Missing instrumentation arg: pika_peer_npub" }
         check(testNsec.isNotBlank()) { "Missing instrumentation arg: pika_nsec" }
 
@@ -112,106 +113,10 @@ class PikaE2eUiTest {
     }
 
     @Test
-    fun e2e_deployedRustBot_callAudio() {
-        val args = InstrumentationRegistry.getArguments()
-        Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
-            args.getString("pika_e2e") == "1",
-        )
-
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        val testNsec = args.getString("pika_nsec") ?: args.getString("pika_test_nsec") ?: ""
-        val botNpub = args.getString("pika_peer_npub") ?: ""
-
-        check(botNpub.isNotBlank()) { "Missing instrumentation arg: pika_peer_npub" }
-        check(testNsec.isNotBlank()) { "Missing instrumentation arg: pika_nsec" }
-
-        // Start from a known auth state.
-        runOnMain { AppManager.getInstance(ctx).logout() }
-        waitUntilState(uiReadyTimeoutMs, ctx, "logged out") { it.auth is com.pika.app.rust.AuthState.LoggedOut }
-
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.Login(testNsec)) }
-        waitUntilState(120_000, ctx, "logged in") { it.auth is com.pika.app.rust.AuthState.LoggedIn }
-
-        // Create + open chat via actions to avoid UI flakes.
-        // 3 attempts x 60s (same total budget as old single 180s wait).
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) }
-        retryOnTimeout(
-            maxAttempts = 3,
-            beforeRetry = { runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.CreateChat(botNpub)) } },
-        ) {
-            waitUntilState(60_000, ctx, "chat created") { st ->
-                st.chatList.any { !it.isGroup && it.members.any { m -> m.npub == botNpub } }
-            }
-        }
-        val chatId =
-            runOnMain {
-                AppManager.getInstance(ctx).state.chatList.first { !it.isGroup && it.members.any { m -> m.npub == botNpub } }.chatId
-            }
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.OpenChat(chatId)) }
-        waitUntilState(60_000, ctx, "chat opened") { it.currentChat?.chatId == chatId }
-
-        // Preflight: confirm bot is responsive before starting a call (reduces flakes on real devices).
-        run {
-            val nonce = java.util.UUID.randomUUID().toString().replace("-", "").lowercase()
-            val probe = "ping:$nonce"
-            val expect = "pong:$nonce"
-            runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.SendMessage(chatId, probe, null, null)) }
-            compose.waitUntil(90_000) {
-                runOnMain {
-                    AppManager.getInstance(ctx).state.currentChat?.messages?.any {
-                        it.content.trim() == expect
-                    }
-                        ?: false
-                }
-            }
-        }
-
-        // Start call.
-        fun waitForActiveMedia(timeoutMs: Long) {
-            val minTx = 100UL
-            compose.waitUntil(timeoutMs) {
-                runOnMain {
-                    val call = AppManager.getInstance(ctx).state.activeCall
-                    val active = call?.status is com.pika.app.rust.CallStatus.Active
-                    val tx = call?.debug?.txFrames ?: 0UL
-                    val rx = call?.debug?.rxFrames ?: 0UL
-                    active && tx >= minTx && rx >= 1UL
-                }
-            }
-        }
-
-        // Public relays + deployed bot are nondeterministic. Allow a retry if the bot
-        // doesn't accept quickly (common when relays are flaky).
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.StartCall(chatId)) }
-        retryOnTimeout(
-            maxAttempts = 2,
-            beforeRetry = {
-                runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.EndCall) }
-                Thread.sleep(1000)
-                runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.StartCall(chatId)) }
-            },
-        ) {
-            waitForActiveMedia(180_000)
-        }
-
-        // End call.
-        runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.EndCall) }
-
-        // Wait for call to be gone or ended.
-        compose.waitUntil(60_000) {
-            runOnMain {
-                val call = AppManager.getInstance(ctx).state.activeCall
-                call == null || call.status is com.pika.app.rust.CallStatus.Ended
-            }
-        }
-    }
-
-    @Test
     fun e2e_hypernoteDetailsAndCodeBlock() {
         val args = InstrumentationRegistry.getArguments()
         Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable the fixture-backed UI selector.",
             args.getString("pika_e2e") == "1",
         )
 

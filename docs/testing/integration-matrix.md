@@ -42,8 +42,8 @@ Current policy note:
 | --- | --- | --- | --- | --- | --- | --- |
 | `just cli-smoke` | `cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture` | `integration_deterministic::cli_smoke_local` | deterministic | pre-merge-pikachat | none | Local relay fixture. |
 | `just cli-smoke-media` | `cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture` | `integration_deterministic::cli_smoke_media_local` | nondeterministic | nightly-pika-e2e | public-network | Media upload/download path. Runs in nightly-pika-e2e. |
-| `just android-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_android` | heavy | nightly-pika-ui-android/manual | android | Capability-gated skip when Android tooling is absent. Uses the legacy `PikaE2eUiTest` class against a local relay/bot fixture; public-relay probes are intentionally out of scope. |
-| `just ios-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_ios` | heavy | manual | host-macos, xcode | Capability-gated skip on non-macOS or missing Xcode. Reuses legacy `PikaUITests/testE2E_*` methods against a local relay/bot fixture and is intentionally separate from `just ios-ui-test`. |
+| `just android-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_android -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_android` | heavy | nightly-pika-ui-android/manual | android | Capability-gated skip when Android tooling is absent. Uses the legacy `PikaE2eUiTest` ping/hypernote methods against a local relay/bot fixture; the public-MoQ audio probe was removed from the checked-in selector surface. |
+| `just ios-ui-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_ios -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_ios` | heavy | manual | host-macos, xcode | Capability-gated skip on non-macOS or missing Xcode. Reuses legacy `PikaUITests/testE2E_*` methods against a local relay/bot fixture and is intentionally separate from `just ios-ui-test`; this selector is manual-only today, not CI-enforced. |
 | `just desktop-e2e-local` | `cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture` | `integration_deterministic::ui_e2e_local_desktop` | deterministic | pre-merge-pikachat | none | Local deterministic desktop UI contract. Runs in pre-merge-pikachat. |
 | `just interop-rust-baseline` | `cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture` | `integration_deterministic::interop_rust_baseline` | heavy | nightly/manual | interop-rust-repo | Capability-gated skip when interop repo is missing; fails fast on workspace/harness MDK revision skew. |
 | `just interop-rust-manual` | `cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture` | `integration_manual::manual_interop_rust_runbook_contract` | manual | manual only | interop-rust-repo | Manual runbook contract selector. |
@@ -88,9 +88,9 @@ Current policy note:
 | `check-pikachat-openclaw-e2e` (path-scoped) | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-e2e` | call-path boundary selectors (`call_over_local_moq_relay_boundary`, `call_with_pikachat_daemon_boundary`, `cli_smoke_media_local`) |
-| `nightly-pika-ui-android` | full Android instrumentation suite via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-pika-ui-ios` | deterministic iOS XCTest suite via `just ios-ui-test` (fixture-backed bot/media UI flows skipped) |
-| `nightly-primal-ios-interop` | deterministic iOS XCTest suite via `just ios-ui-test` (fixture-backed bot/media UI flows skipped), `integration_primal::primal_nostrconnect_smoke` |
+| `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
+| `nightly-pika-ui-ios` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
+| `nightly-primal-ios-interop` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local`, plus `integration_primal::primal_nostrconnect_smoke` |
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 ## Migration Notes

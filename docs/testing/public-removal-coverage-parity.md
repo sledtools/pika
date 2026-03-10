@@ -9,6 +9,7 @@ read_when:
 
 This document records the deterministic or local-fixture coverage that replaces removed public-network, deployed-bot, and perf probes.
 The goal is to keep core app correctness on Rust-first, local-fixture-backed tests rather than public infrastructure.
+This ledger is about behavioral replacement, not CI-enforcement level. Use `docs/testing/integration-matrix.md` for current lane ownership.
 
 ## Public Selector Coverage Mapping
 
@@ -18,20 +19,20 @@ The goal is to keep core app correctness on Rust-first, local-fixture-backed tes
 | --- | --- | --- |
 | Android UI login + chat create + ping/pong against relay | `integration_deterministic::ui_e2e_local_android` | Covered (local relay fixture) |
 | Android emulator orchestration + APK install | `integration_deterministic::ui_e2e_local_android` | Covered (same orchestration path) |
-| Android instrumented test class (`PikaE2eUiTest`) | `integration_deterministic::ui_e2e_local_android` | Covered (same test class, local relay) |
+| Android legacy bot/media UI methods in `PikaE2eUiTest` | `integration_deterministic::ui_e2e_local_android` | Covered (local relay fixture; checked-in audio call probe removed) |
 
 ### `integration_public::ui_e2e_public_ios`
 
 | Assertion | Local equivalent | Coverage status |
 | --- | --- | --- |
-| iOS UI login + chat create + ping/pong against relay | `integration_deterministic::ui_e2e_local_ios` | Covered (local relay fixture) |
-| iOS simulator orchestration + xcodebuild test | `integration_deterministic::ui_e2e_local_ios` | Covered (same orchestration path) |
+| iOS UI login + chat create + ping/pong against relay | `integration_deterministic::ui_e2e_local_ios` | Covered by local relay fixture selector; manual-only today |
+| iOS simulator orchestration + xcodebuild test | `integration_deterministic::ui_e2e_local_ios` | Covered by same orchestration path; manual-only today |
 
 ### `integration_public::ui_e2e_public_all`
 
 | Assertion | Local equivalent | Coverage status |
 | --- | --- | --- |
-| Combined iOS + Android UI flow | `ui_e2e_local_android` + `ui_e2e_local_ios` | Covered (individual local selectors) |
+| Combined iOS + Android UI flow | `ui_e2e_local_android` + `ui_e2e_local_ios` | Covered by individual local selectors; iOS side is manual-only today |
 
 ### `integration_public::deployed_bot_call_flow`
 
@@ -51,11 +52,12 @@ The goal is to keep core app correctness on Rust-first, local-fixture-backed tes
 | --- | --- | --- |
 | `rust/tests/e2e_calls.rs::call_deployed_bot` | Duplicated Rust-owned message + call behavior while depending on public relays, a deployed bot, and prod-like MoQ infra. | `integration_deterministic::openclaw_scenario_invite_and_chat`, `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary` |
 | `rust/tests/perf_relay_latency.rs::relay_latency_comparison` | Latency benchmark / infrastructure canary, not a correctness test. | No test replacement by design. Treat as manual benchmarking or monitoring work, not CI coverage. |
+| `android/app/src/androidTest/java/com/pika/app/PikaE2eUiTest.kt::e2e_deployedRustBot_callAudio` | Android UI probe still depended on the public default MoQ relay, so it was not a truthful local-fixture selector. | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary` |
 | `ios/UITests/CallE2ETests.swift::testCallDeployedBot` and `tools/run-call-e2e-device` | Real-device deployed-bot probe that mostly re-tested Rust-owned call state and depended on public infra without asserting a unique iOS bridge contract. | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`; remaining iOS UI/native coverage stays focused on true native concerns such as deep links and external signer launch. |
 
 ## Intentionally Retained Native UI Coverage
 
-The remaining bot/media UI selectors under `ios/UITests/PikaUITests.swift` and `android/app/src/androidTest/.../PikaE2eUiTest.kt` are retained because `pikahut` runs them against local relay/bot fixtures. They are not public-network canaries and should stay separate from the default native smoke suites.
+The remaining bot/media UI selectors under `ios/UITests/PikaUITests.swift` and `android/app/src/androidTest/.../PikaE2eUiTest.kt` are retained because `pikahut` runs them against local relay/bot fixtures. They are not public-network canaries and should stay separate from the default native smoke suites. The iOS selector is manual-only today.
 
 ## Intentionally Deferred (External-Only Behavior)
 
@@ -72,4 +74,4 @@ These can be reintroduced later as deliberate canary lanes with explicit ownersh
 
 ## Conclusion
 
-All removed public-network and deployed-bot behavior is either covered by existing local/deterministic selectors or intentionally dropped because it was monitoring/benchmarking rather than product correctness. No public-infra backfill is required in the checked-in suite.
+All removed public-network and deployed-bot behavior is either covered by existing local/deterministic selectors or intentionally dropped because it was monitoring/benchmarking rather than product correctness. No public-infra backfill is required in the checked-in suite, but some replacement selectors remain manual-only rather than CI-enforced.

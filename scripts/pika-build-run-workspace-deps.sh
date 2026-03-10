@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: pika-build-run-workspace-deps.sh [--installable TARGET] [--remote-host HOST] [--remote-work-dir DIR] [--ssh-binary PATH] [--remote-nix-binary PATH] [--snapshot-id ID]
+Usage: pika-build-run-workspace-deps.sh [--installable TARGET] [--remote-host HOST] [--remote-work-dir DIR] [--ssh-binary PATH] [--remote-nix-binary PATH] [--snapshot-id ID] [--keep-remote-snapshot] [--reuse-existing-snapshot]
 
 Sync the current filtered worktree snapshot to pika-build and realize one staged x86_64 Linux
 prepare output there. This is the strict remote-authoritative path for staged Linux Rust
@@ -19,6 +19,8 @@ Options:
   --remote-nix-binary    Remote nix binary. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}
   --snapshot-id ID       Remote helper snapshot id. Default: helper-<timestamp>-<pid>
   --stale-minutes N      Prune sibling helper dirs older than N minutes. Default: ${PIKACI_X86_64_REMOTE_HELPER_STALE_MINUTES:-15}
+  --keep-remote-snapshot Leave this invocation's helper snapshot in place on exit.
+  --reuse-existing-snapshot  Reuse the remote helper snapshot when its ready marker already exists.
   -h, --help             Show this help.
 EOF
 }
@@ -30,6 +32,8 @@ ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}"
 remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}"
 snapshot_id="helper-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 stale_minutes="${PIKACI_X86_64_REMOTE_HELPER_STALE_MINUTES:-15}"
+keep_remote_snapshot=0
+reuse_existing_snapshot=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +64,14 @@ while [[ $# -gt 0 ]]; do
     --stale-minutes)
       stale_minutes="${2:?missing value for --stale-minutes}"
       shift 2
+      ;;
+    --keep-remote-snapshot)
+      keep_remote_snapshot=1
+      shift
+      ;;
+    --reuse-existing-snapshot)
+      reuse_existing_snapshot=1
+      shift
       ;;
     -h|--help)
       usage
@@ -93,6 +105,9 @@ remote_q() {
 }
 
 cleanup_remote_snapshot() {
+  if [[ "$keep_remote_snapshot" -eq 1 ]]; then
+    return
+  fi
   "$ssh_binary" "$remote_host" "rm -rf $(remote_q "$remote_snapshot_root")" >/dev/null 2>&1 || true
 }
 
@@ -106,23 +121,28 @@ echo "    remote nix: $remote_nix_binary"
 echo "    remote snapshot: $remote_snapshot_dir"
 echo "    stale helper prune threshold (minutes): $stale_minutes"
 
-"$ssh_binary" "$remote_host" \
-  "set -euo pipefail; mkdir -p $(remote_q "${remote_work_dir}/helpers"); find $(remote_q "${remote_work_dir}/helpers") -mindepth 1 -maxdepth 1 -type d -mmin +${stale_minutes} ! -name $(remote_q "$snapshot_id") -exec rm -rf {} +; rm -rf $(remote_q "$remote_snapshot_root"); mkdir -p $(remote_q "$remote_snapshot_dir")"
+if [[ "$reuse_existing_snapshot" -eq 1 ]] && "$ssh_binary" "$remote_host" "test -f $(remote_q "$remote_marker")"; then
+  echo "==> reusing existing remote helper snapshot"
+else
+  "$ssh_binary" "$remote_host" \
+    "set -euo pipefail; mkdir -p $(remote_q "${remote_work_dir}/helpers"); find $(remote_q "${remote_work_dir}/helpers") -mindepth 1 -maxdepth 1 -type d -mmin +${stale_minutes} ! -name $(remote_q "$snapshot_id") -exec rm -rf {} +; rm -rf $(remote_q "$remote_snapshot_root"); mkdir -p $(remote_q "$remote_snapshot_dir")"
 
-tar -C "$PWD" \
-  --exclude=.git \
-  --exclude=.pikaci \
-  --exclude=.direnv \
-  --exclude=target \
-  --exclude='*/node_modules' \
-  --exclude='*/.gradle' \
-  --exclude='*/DerivedData' \
-  --exclude='*/build' \
-  -cf - . \
-  | "$ssh_binary" "$remote_host" \
-      "set -euo pipefail; tar -C $(remote_q "$remote_snapshot_dir") -xf -; printf '{\"schema_version\":1}\n' > $(remote_q "$remote_marker")"
+  echo "==> syncing helper snapshot"
+  tar -C "$PWD" \
+    --exclude=.git \
+    --exclude=.pikaci \
+    --exclude=.direnv \
+    --exclude=target \
+    --exclude='*/node_modules' \
+    --exclude='*/.gradle' \
+    --exclude='*/DerivedData' \
+    --exclude='*/build' \
+    -cf - . \
+    | "$ssh_binary" "$remote_host" \
+        "set -euo pipefail; tar -C $(remote_q "$remote_snapshot_dir") -xf -; printf '{\"schema_version\":1}\n' > $(remote_q "$remote_marker")"
 
-"$ssh_binary" "$remote_host" "test -f $(remote_q "$remote_marker")"
+  "$ssh_binary" "$remote_host" "test -f $(remote_q "$remote_marker")"
+fi
 
 echo "==> realizing remotely"
 output="$("$ssh_binary" "$remote_host" "$remote_nix_binary" build --accept-flake-config --no-link --print-out-paths "$remote_installable")"

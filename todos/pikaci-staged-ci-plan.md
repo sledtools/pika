@@ -833,6 +833,7 @@ We have at least one important Linux Rust lane where:
     - GitHub now records the fresh `pikaci` `run_id`, overall run status, wall-clock duration, and per-job durations/statuses in the shadow job summary,
     - the shadow job also uploads a compact `pikaci-shadow-<run_id>` artifact bundle containing `run.json`, `plan.json`, `prepared-outputs.json`, and the per-job host/guest logs for debugging,
     - metadata collection now keys off the pre-run baseline `created_at` timestamp rather than excluding only one old run id, so the shadow summary only accepts a run that is actually newer than the job's starting point,
+    - metadata collection now keys off the pre-run baseline `created_at` timestamp rather than excluding only one old run id, so the shadow summary only accepts a run that is actually newer than the job's starting point,
     - and if the advisory job exits before `pikaci` actually starts, the summary now reports that cleanly instead of turning the reporting step into a second failure mode,
     - a fresh local validation rerun (`20260310T223310Z-e53c83eb`) still passed end-to-end in about `212s`, and the generated summary now shows the overall run plus the two per-job durations (`54s` app-flows, `40s` messaging) alongside the uploaded debug bundle name,
   - note that the first local shadow-mode verification rerun (`20260310T220049Z-c2361db8`) still passed end-to-end in about `216s`,

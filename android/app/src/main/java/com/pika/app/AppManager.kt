@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.pika.app.rust.AgentKind
 import com.pika.app.rust.AppAction
 import com.pika.app.rust.AppReconciler
 import com.pika.app.rust.AppState
@@ -86,6 +87,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
             callTimeline = emptyList(),
             toast = null,
             developerMode = false,
+            showAgentMarketplace = false,
             updateRequired = false,
             agentButton = null,
             agentProvisioning = null,
@@ -203,6 +205,20 @@ class AppManager private constructor(context: Context) : AppReconciler {
 
     fun enableDeveloperMode() {
         rust.dispatch(AppAction.EnableDeveloperMode)
+    }
+
+    fun isShowAgentMarketplaceEnabled(): Boolean = state.showAgentMarketplace
+
+    fun setShowAgentMarketplaceEnabled(enabled: Boolean) {
+        rust.dispatch(AppAction.SetShowAgentMarketplace(enabled))
+    }
+
+    fun ensureAgent() {
+        rust.dispatch(AppAction.EnsureAgent)
+    }
+
+    fun ensureAgent(kind: AgentKind) {
+        rust.dispatch(AppAction.EnsureAgentKind(kind))
     }
 
     fun wipeLocalDataForDeveloperTools() {

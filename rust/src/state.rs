@@ -21,6 +21,7 @@ pub struct AppState {
     pub call_timeline: Vec<CallTimelineEvent>,
     pub toast: Option<String>,
     pub developer_mode: bool,
+    pub show_agent_marketplace: bool,
     pub update_required: bool,
     pub agent_button: Option<AgentMenuItemState>,
     pub agent_provisioning: Option<AgentProvisioningState>,
@@ -47,6 +48,7 @@ impl AppState {
             call_timeline: vec![],
             toast: None,
             developer_mode: false,
+            show_agent_marketplace: false,
             update_required: false,
             agent_button: None,
             agent_provisioning: None,
@@ -62,10 +64,25 @@ pub struct AgentMenuItemState {
     pub is_busy: bool,
 }
 
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentKind {
+    // App-facing mirror of control-plane `MicrovmAgentKind`.
+    // Keep the mapping in `core::agent` in sync when adding kinds.
+    Openclaw,
+    Pi,
+}
+
 #[derive(uniffi::Enum, Clone, Debug, PartialEq)]
 pub enum AgentProvisioningPhase {
     Ensuring,
-    Provisioning,
+    // Mirrors the shared control-plane startup subset in `AgentStartupPhase`.
+    // Keep `provisioning_phase_from_startup` in sync when adding variants here
+    // or in the control-plane enum. The remaining variants are app-local phases
+    // after the guest service is already ready.
+    Requested,
+    ProvisioningVm,
+    BootingGuest,
+    WaitingForServiceReady,
     Recovering,
     PublishingKeyPackage,
     CreatingChat,
@@ -74,12 +91,11 @@ pub enum AgentProvisioningPhase {
 
 #[derive(uniffi::Record, Clone, Debug)]
 pub struct AgentProvisioningState {
+    pub agent_kind: AgentKind,
     pub phase: AgentProvisioningPhase,
     pub agent_npub: Option<String>,
     pub status_message: String,
     pub elapsed_secs: u32,
-    pub poll_attempt: Option<u32>,
-    pub poll_max: Option<u32>,
 }
 
 #[derive(uniffi::Record, Clone, Debug)]

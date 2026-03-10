@@ -236,18 +236,6 @@ private fun AgentProvisioningScreen(
                 else MaterialTheme.colorScheme.onSurface,
         )
 
-        provisioning?.pollAttempt?.let { attempt ->
-            val max = provisioning.pollMax ?: 0u
-            if (!isError && max > 0u) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "$attempt / $max",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
         if (!isError && (provisioning?.elapsedSecs ?: 0u) > 0u) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(

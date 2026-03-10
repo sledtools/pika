@@ -2,6 +2,9 @@ use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
+use pika_agent_control_plane::{
+    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
+};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -10,7 +13,6 @@ use super::*;
 const DEFAULT_AGENT_API_URL: &str = "https://api.pikachat.org";
 const AGENT_POLL_MAX_ATTEMPTS: u32 = 45;
 const AGENT_POLL_DELAY: Duration = Duration::from_secs(2);
-const AGENT_RECOVER_AFTER_ATTEMPT: u32 = 20;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,6 +26,8 @@ enum AgentAppState {
 struct AgentStateResponse {
     agent_id: String,
     state: AgentAppState,
+    #[serde(default = "default_agent_startup_phase")]
+    startup_phase: AgentStartupPhase,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +70,10 @@ fn endpoint(base: &str, path: &str) -> String {
         base.trim().trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+fn default_agent_startup_phase() -> AgentStartupPhase {
+    AgentStartupPhase::ProvisioningVm
 }
 
 fn resolve_agent_api_url(
@@ -117,6 +125,7 @@ async fn send_agent_request(
     keys: &Keys,
     method: Method,
     url: &str,
+    body: Option<&serde_json::Value>,
 ) -> Result<reqwest::Response, AgentFlowError> {
     let auth = build_nip98_authorization_header_with_keys(keys, &method, url)
         .ok_or(AgentFlowError::SigningFailed)?;
@@ -125,9 +134,10 @@ async fn send_agent_request(
         .header("Authorization", auth)
         .header("Accept", "application/json");
     if method == Method::POST {
+        let request_body = body.cloned().unwrap_or_else(|| serde_json::json!({}));
         request = request
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({}));
+            .json(&request_body);
     }
     request
         .send()
@@ -139,12 +149,25 @@ async fn ensure_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
+    agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
+    let body = serde_json::to_value(AgentProvisionRequest {
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            kind: Some(match agent_kind {
+                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
+                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
+            }),
+            backend: None,
+        }),
+    })
+    .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
         Method::POST,
         &endpoint(base_url, "/v1/agents/ensure"),
+        Some(&body),
     )
     .await?;
     match response.status().as_u16() {
@@ -185,6 +208,7 @@ async fn get_my_agent(
         keys,
         Method::GET,
         &endpoint(base_url, "/v1/agents/me"),
+        None,
     )
     .await?;
     match response.status().as_u16() {
@@ -218,12 +242,25 @@ async fn recover_my_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
+    agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
+    let body = serde_json::to_value(AgentProvisionRequest {
+        microvm: Some(MicrovmProvisionParams {
+            spawner_url: None,
+            kind: Some(match agent_kind {
+                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
+                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
+            }),
+            backend: None,
+        }),
+    })
+    .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
         Method::POST,
         &endpoint(base_url, "/v1/agents/me/recover"),
+        Some(&body),
     )
     .await?;
     match response.status().as_u16() {
@@ -257,6 +294,7 @@ async fn probe_agent_allowlist(
         keys,
         Method::GET,
         &endpoint(base_url, "/v1/agents/me"),
+        None,
     )
     .await?;
     match response.status().as_u16() {
@@ -279,36 +317,56 @@ fn send_progress(
     flow_token: u64,
     phase: crate::state::AgentProvisioningPhase,
     agent_npub: Option<String>,
-    poll_attempt: Option<u32>,
 ) {
     let _ = tx.send(CoreMsg::Internal(Box::new(
         InternalEvent::AgentFlowProgress {
             flow_token,
             phase,
             agent_npub,
-            poll_attempt,
         },
     )));
+}
+
+fn provisioning_phase_from_startup(
+    startup_phase: AgentStartupPhase,
+) -> crate::state::AgentProvisioningPhase {
+    // Keep this app-side subset mapping in sync with `AgentProvisioningPhase`.
+    // The app owns a couple of extra local phases after the shared startup
+    // lifecycle reaches `Ready`.
+    match startup_phase {
+        AgentStartupPhase::Requested => crate::state::AgentProvisioningPhase::Requested,
+        AgentStartupPhase::ProvisioningVm => crate::state::AgentProvisioningPhase::ProvisioningVm,
+        AgentStartupPhase::BootingGuest => crate::state::AgentProvisioningPhase::BootingGuest,
+        AgentStartupPhase::WaitingForServiceReady => {
+            crate::state::AgentProvisioningPhase::WaitingForServiceReady
+        }
+        AgentStartupPhase::Ready => {
+            debug_assert!(
+                false,
+                "ready startup phase should be handled by AgentAppState::Ready before app mapping"
+            );
+            crate::state::AgentProvisioningPhase::CreatingChat
+        }
+        AgentStartupPhase::Failed => crate::state::AgentProvisioningPhase::Error,
+    }
 }
 
 async fn run_agent_flow(
     client: reqwest::Client,
     keys: Keys,
     base_url: String,
+    agent_kind: crate::state::AgentKind,
     tx: flume::Sender<CoreMsg>,
     flow_token: u64,
 ) -> Result<String, AgentFlowError> {
-    ensure_agent(&client, &keys, &base_url).await?;
+    ensure_agent(&client, &keys, &base_url, agent_kind).await?;
 
     send_progress(
         &tx,
         flow_token,
-        crate::state::AgentProvisioningPhase::Provisioning,
-        None,
+        crate::state::AgentProvisioningPhase::Requested,
         None,
     );
-
-    let mut recovered_stalled_creating = false;
 
     for attempt in 1..=AGENT_POLL_MAX_ATTEMPTS {
         match get_my_agent(&client, &keys, &base_url).await {
@@ -318,21 +376,9 @@ async fn run_agent_flow(
                     send_progress(
                         &tx,
                         flow_token,
-                        crate::state::AgentProvisioningPhase::Provisioning,
+                        provisioning_phase_from_startup(state.startup_phase),
                         Some(state.agent_id.clone()),
-                        Some(attempt),
                     );
-                    if !recovered_stalled_creating && attempt >= AGENT_RECOVER_AFTER_ATTEMPT {
-                        send_progress(
-                            &tx,
-                            flow_token,
-                            crate::state::AgentProvisioningPhase::Recovering,
-                            Some(state.agent_id.clone()),
-                            Some(attempt),
-                        );
-                        recover_my_agent(&client, &keys, &base_url).await?;
-                        recovered_stalled_creating = true;
-                    }
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
                     }
@@ -343,9 +389,8 @@ async fn run_agent_flow(
                         flow_token,
                         crate::state::AgentProvisioningPhase::Recovering,
                         Some(state.agent_id.clone()),
-                        Some(attempt),
                     );
-                    recover_my_agent(&client, &keys, &base_url).await?;
+                    recover_my_agent(&client, &keys, &base_url, agent_kind).await?;
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
                     }
@@ -364,21 +409,16 @@ async fn run_agent_flow(
     Err(AgentFlowError::Timeout)
 }
 
-pub(super) fn provisioning_status_message(
-    phase: &crate::state::AgentProvisioningPhase,
-    poll_attempt: Option<u32>,
-) -> String {
+pub(super) fn provisioning_status_message(phase: &crate::state::AgentProvisioningPhase) -> String {
     match phase {
         crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
-        crate::state::AgentProvisioningPhase::Provisioning => {
-            if let Some(attempt) = poll_attempt {
-                format!(
-                    "Starting microVM... (attempt {}/{})",
-                    attempt, AGENT_POLL_MAX_ATTEMPTS
-                )
-            } else {
-                "Starting microVM...".to_string()
-            }
+        crate::state::AgentProvisioningPhase::Requested => "Request received...".to_string(),
+        crate::state::AgentProvisioningPhase::ProvisioningVm => {
+            "Provisioning microVM...".to_string()
+        }
+        crate::state::AgentProvisioningPhase::BootingGuest => "Booting guest...".to_string(),
+        crate::state::AgentProvisioningPhase::WaitingForServiceReady => {
+            "Waiting for guest service to become ready...".to_string()
         }
         crate::state::AgentProvisioningPhase::Recovering => "Recovering agent...".to_string(),
         crate::state::AgentProvisioningPhase::PublishingKeyPackage => {
@@ -462,6 +502,18 @@ impl AppCore {
     }
 
     pub(super) fn ensure_agent(&mut self) {
+        let retry_kind = self
+            .state
+            .agent_provisioning
+            .as_ref()
+            .and_then(|provisioning| {
+                (provisioning.phase == crate::state::AgentProvisioningPhase::Error)
+                    .then_some(provisioning.agent_kind)
+            });
+        self.ensure_agent_kind(retry_kind.unwrap_or(crate::state::AgentKind::Openclaw));
+    }
+
+    pub(super) fn ensure_agent_kind(&mut self, agent_kind: crate::state::AgentKind) {
         if !self.is_logged_in() {
             self.toast("Please log in first");
             return;
@@ -523,12 +575,11 @@ impl AppCore {
         self.agent_flow_start = Some(std::time::Instant::now());
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            agent_kind,
             phase: crate::state::AgentProvisioningPhase::Ensuring,
             agent_npub: None,
             status_message: "Requesting agent...".to_string(),
             elapsed_secs: 0,
-            poll_attempt: None,
-            poll_max: None,
         });
         // Only push the screen if it isn't already on the stack (e.g. retry from error state).
         let already_on_stack = self
@@ -544,19 +595,21 @@ impl AppCore {
 
         let progress_tx = tx.clone();
         let handle = self.runtime.spawn(async move {
-            let event = match run_agent_flow(client, keys, base_url, progress_tx, flow_token).await
-            {
-                Ok(agent_id) => InternalEvent::AgentFlowCompleted {
-                    flow_token,
-                    agent_id: Some(agent_id),
-                    error: None,
-                },
-                Err(err) => InternalEvent::AgentFlowCompleted {
-                    flow_token,
-                    agent_id: None,
-                    error: Some(err.to_user_message()),
-                },
-            };
+            let event =
+                match run_agent_flow(client, keys, base_url, agent_kind, progress_tx, flow_token)
+                    .await
+                {
+                    Ok(agent_id) => InternalEvent::AgentFlowCompleted {
+                        flow_token,
+                        agent_id: Some(agent_id),
+                        error: None,
+                    },
+                    Err(err) => InternalEvent::AgentFlowCompleted {
+                        flow_token,
+                        agent_id: None,
+                        error: Some(err.to_user_message()),
+                    },
+                };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
         });
         self.agent_flow_task = Some(handle);
@@ -567,7 +620,6 @@ impl AppCore {
         flow_token: u64,
         phase: crate::state::AgentProvisioningPhase,
         agent_npub: Option<String>,
-        poll_attempt: Option<u32>,
     ) {
         if flow_token != self.agent_flow_token {
             return;
@@ -577,15 +629,19 @@ impl AppCore {
             .agent_flow_start
             .map(|start| start.elapsed().as_secs() as u32)
             .unwrap_or(0);
-        let status_message = provisioning_status_message(&phase, poll_attempt);
+        let status_message = provisioning_status_message(&phase);
 
         self.state.agent_provisioning = Some(crate::state::AgentProvisioningState {
+            agent_kind: self
+                .state
+                .agent_provisioning
+                .as_ref()
+                .map(|state| state.agent_kind)
+                .unwrap_or(crate::state::AgentKind::Openclaw),
             phase,
             agent_npub,
             status_message,
             elapsed_secs,
-            poll_attempt,
-            poll_max: Some(AGENT_POLL_MAX_ATTEMPTS),
         });
         self.emit_state();
     }
@@ -614,7 +670,6 @@ impl AppCore {
                 flow_token,
                 crate::state::AgentProvisioningPhase::CreatingChat,
                 Some(agent_id.clone()),
-                None,
             );
             if let Err(message) = self.open_or_create_direct_chat_for_agent(&agent_id) {
                 self.set_busy(|b| b.starting_agent = false);
@@ -689,12 +744,12 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    type CapturedAgentRequest = (String, String);
+    type CapturedAgentRequest = (String, String, String);
     type AgentFlowMockJoinHandle = thread::JoinHandle<anyhow::Result<Vec<CapturedAgentRequest>>>;
 
     fn read_http_request(
         stream: &mut std::net::TcpStream,
-    ) -> anyhow::Result<(String, Option<String>)> {
+    ) -> anyhow::Result<(String, Option<String>, String)> {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .context("set read timeout")?;
@@ -730,13 +785,19 @@ mod tests {
         }
 
         let already_body = buf.len().saturating_sub(header_end);
+        let mut body = buf[header_end..].to_vec();
         if content_length > already_body {
             let mut remaining = vec![0u8; content_length - already_body];
             stream
                 .read_exact(&mut remaining)
                 .context("read request body")?;
+            body.extend_from_slice(&remaining);
         }
-        Ok((request_line, authorization))
+        Ok((
+            request_line,
+            authorization,
+            String::from_utf8_lossy(&body).to_string(),
+        ))
     }
 
     fn respond_json(
@@ -755,7 +816,9 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_agent_flow_mock_server() -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
+    fn spawn_agent_flow_mock_server_scripted(
+        scripted: Vec<(&'static str, &'static str)>,
+    ) -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
         let listener = TcpListener::bind("127.0.0.1:0").context("bind mock agent server")?;
         let addr = listener
             .local_addr()
@@ -763,36 +826,45 @@ mod tests {
         let base_url = format!("http://{addr}");
         let handle = thread::spawn(move || -> anyhow::Result<Vec<CapturedAgentRequest>> {
             let mut captured = Vec::new();
-            for _ in 0..2 {
+            for (expected_prefix, response_body) in scripted {
                 let (mut stream, _) = listener.accept().context("accept request")?;
-                let (request_line, authorization) = read_http_request(&mut stream)?;
+                let (request_line, authorization, body) = read_http_request(&mut stream)?;
                 let authorization =
                     authorization.ok_or_else(|| anyhow!("missing Authorization header"))?;
-                if request_line.starts_with("POST /v1/agents/ensure ") {
-                    respond_json(
-                        &mut stream,
-                        "202 Accepted",
-                        r#"{"agent_id":"npub1temp","state":"creating"}"#,
-                    )?;
-                } else if request_line.starts_with("GET /v1/agents/me ") {
-                    respond_json(
-                        &mut stream,
-                        "200 OK",
-                        r#"{"agent_id":"npub1testagent","state":"ready"}"#,
-                    )?;
-                } else {
+                if !request_line.starts_with(expected_prefix) {
                     respond_json(
                         &mut stream,
                         "404 Not Found",
                         r#"{"error":"unexpected path"}"#,
                     )?;
-                    return Err(anyhow!("unexpected request line: {request_line}"));
+                    return Err(anyhow!(
+                        "unexpected request line: {request_line} (expected prefix {expected_prefix})"
+                    ));
                 }
-                captured.push((request_line, authorization));
+                let status = if expected_prefix.starts_with("POST /v1/agents/ensure ") {
+                    "202 Accepted"
+                } else {
+                    "200 OK"
+                };
+                respond_json(&mut stream, status, response_body)?;
+                captured.push((request_line, authorization, body));
             }
             Ok(captured)
         });
         Ok((base_url, handle))
+    }
+
+    fn spawn_agent_flow_mock_server() -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
+        spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1testagent","state":"ready","startup_phase":"ready"}"#,
+            ),
+        ])
     }
 
     #[test]
@@ -837,11 +909,25 @@ mod tests {
     }
 
     #[test]
-    fn provisioning_status_message_omits_attempt_counter_before_first_poll() {
+    fn provisioning_status_message_uses_typed_startup_messages() {
         assert_eq!(
-            provisioning_status_message(&crate::state::AgentProvisioningPhase::Provisioning, None),
-            "Starting microVM..."
+            provisioning_status_message(&crate::state::AgentProvisioningPhase::ProvisioningVm),
+            "Provisioning microVM..."
         );
+        assert_eq!(
+            provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
+            "Booting guest..."
+        );
+    }
+
+    #[test]
+    fn legacy_agent_state_response_without_startup_phase_still_deserializes() {
+        let response: AgentStateResponse =
+            serde_json::from_str(r#"{"agent_id":"npub1legacy","state":"creating"}"#)
+                .expect("legacy response should deserialize");
+        assert_eq!(response.agent_id, "npub1legacy");
+        assert!(matches!(response.state, AgentAppState::Creating));
+        assert_eq!(response.startup_phase, AgentStartupPhase::ProvisioningVm);
     }
 
     #[tokio::test]
@@ -851,9 +937,16 @@ mod tests {
         let keys = Keys::generate();
 
         let (tx, _rx) = flume::unbounded();
-        let agent_id = run_agent_flow(client, keys, base_url, tx, 1)
-            .await
-            .expect("run agent flow");
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
         assert_eq!(agent_id, "npub1testagent");
 
         let captured = handle
@@ -866,5 +959,96 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
+        assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_waits_for_ready_without_recovering_stuck_creating() {
+        let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"provisioning_vm"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"booting_guest"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1testagent","state":"ready","startup_phase":"ready"}"#,
+            ),
+        ])
+        .expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
+        assert_eq!(agent_id, "npub1testagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        assert_eq!(captured.len(), 4);
+        assert!(captured
+            .iter()
+            .all(|(request_line, _, _)| !request_line.starts_with("POST /v1/agents/me/recover ")));
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_recover_sends_selected_agent_kind() {
+        let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"requested"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"error","startup_phase":"failed"}"#,
+            ),
+            (
+                "POST /v1/agents/me/recover ",
+                r#"{"agent_id":"npub1temp","state":"creating","startup_phase":"provisioning_vm"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1piagent","state":"ready","startup_phase":"ready"}"#,
+            ),
+        ])
+        .expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(client, keys, base_url, crate::state::AgentKind::Pi, tx, 1)
+            .await
+            .expect("run agent flow");
+        assert_eq!(agent_id, "npub1piagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        let recover = captured
+            .iter()
+            .find(|(request_line, _, _)| request_line.starts_with("POST /v1/agents/me/recover "))
+            .expect("recover request");
+        assert!(recover.2.contains("\"kind\":\"pi\""));
     }
 }

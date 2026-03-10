@@ -15,7 +15,8 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
-    AgentProvisionRequest, MicrovmAgentBackend, MicrovmProvisionParams,
+    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentBackend, MicrovmAgentKind,
+    MicrovmProvisionParams,
 };
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
@@ -420,6 +421,7 @@ enum AgentCommand {
 
     /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
     #[command(after_help = "Behavior:
+  - waits for the guest agent service to report ready before first send
   - if --listen-timeout is 0, the command only sends the message
   - if listening times out without any reply message, the command exits with `no_reply_within_timeout`")]
     Chat {
@@ -443,10 +445,6 @@ enum AgentCommand {
         /// Delay between status polls (seconds)
         #[arg(long, default_value_t = 2)]
         poll_delay_sec: u64,
-
-        /// Trigger recover after this many creating-state polls (0 disables)
-        #[arg(long, default_value_t = 20)]
-        recover_after_attempt: u32,
     },
 }
 
@@ -468,6 +466,10 @@ struct AgentHttpArgs {
 
 #[derive(Clone, Debug, Args, Default)]
 struct AgentMicrovmArgs {
+    /// Select the agent product/runtime deployed in the microVM guest.
+    #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
+    microvm_kind: Option<AgentMicrovmKindCli>,
+
     /// Select the microVM guest backend used for agent replies.
     #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
     microvm_backend: Option<AgentMicrovmBackendCli>,
@@ -485,6 +487,12 @@ struct AgentMicrovmArgs {
 enum AgentMicrovmBackendCli {
     Native,
     Acp,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentMicrovmKindCli {
+    Pi,
+    Openclaw,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -756,7 +764,6 @@ async fn main() -> anyhow::Result<()> {
                 listen_timeout,
                 poll_attempts,
                 poll_delay_sec,
-                recover_after_attempt,
             } => {
                 cmd_agent_chat(
                     &cli,
@@ -767,7 +774,6 @@ async fn main() -> anyhow::Result<()> {
                         listen_timeout: *listen_timeout,
                         poll_attempts: *poll_attempts,
                         poll_delay_sec: *poll_delay_sec,
-                        recover_after_attempt: *recover_after_attempt,
                     },
                 )
                 .await
@@ -1745,6 +1751,11 @@ async fn cmd_download_media(
 }
 
 fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
+    let kind = match microvm.microvm_kind {
+        Some(AgentMicrovmKindCli::Pi) => Some(MicrovmAgentKind::Pi),
+        Some(AgentMicrovmKindCli::Openclaw) => Some(MicrovmAgentKind::Openclaw),
+        None => None,
+    };
     let backend = match microvm.microvm_backend {
         Some(AgentMicrovmBackendCli::Native) => Some(MicrovmAgentBackend::Native),
         Some(AgentMicrovmBackendCli::Acp) => Some(MicrovmAgentBackend::Acp {
@@ -1753,13 +1764,14 @@ fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionR
         }),
         None => None,
     };
-    let has_microvm_fields = backend.is_some();
+    let has_microvm_fields = kind.is_some() || backend.is_some();
     if !has_microvm_fields {
         return None;
     }
     Some(AgentProvisionRequest {
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
+            kind,
             backend,
         }),
     })
@@ -1811,7 +1823,6 @@ struct AgentChatExecutionOptions {
     listen_timeout: u64,
     poll_attempts: u32,
     poll_delay_sec: u64,
-    recover_after_attempt: u32,
 }
 
 async fn ensure_agent_idempotent(
@@ -1861,6 +1872,56 @@ fn parse_agent_fields(agent: &serde_json::Value) -> anyhow::Result<(String, Stri
         .ok_or_else(|| anyhow!("agent response missing state"))?
         .to_string();
     Ok((agent_id, state))
+}
+
+fn parse_agent_startup_phase_str(raw: &str) -> Option<AgentStartupPhase> {
+    match raw.trim() {
+        "requested" => Some(AgentStartupPhase::Requested),
+        "provisioning_vm" => Some(AgentStartupPhase::ProvisioningVm),
+        "booting_guest" => Some(AgentStartupPhase::BootingGuest),
+        "waiting_for_service_ready" => Some(AgentStartupPhase::WaitingForServiceReady),
+        "ready" => Some(AgentStartupPhase::Ready),
+        "failed" => Some(AgentStartupPhase::Failed),
+        _ => None,
+    }
+}
+
+fn parse_agent_startup_phase(agent: &serde_json::Value) -> anyhow::Result<AgentStartupPhase> {
+    if let Some(raw) = agent
+        .get("startup_phase")
+        .and_then(serde_json::Value::as_str)
+    {
+        return parse_agent_startup_phase_str(raw)
+            .ok_or_else(|| anyhow!("parse agent startup_phase: {raw}"));
+    }
+    let (_, state) = parse_agent_fields(agent)?;
+    Ok(match state.as_str() {
+        "ready" => AgentStartupPhase::Ready,
+        "error" => AgentStartupPhase::Failed,
+        _ => AgentStartupPhase::ProvisioningVm,
+    })
+}
+
+fn agent_startup_status_message(
+    kind: Option<MicrovmAgentKind>,
+    phase: AgentStartupPhase,
+) -> &'static str {
+    match (kind, phase) {
+        (_, AgentStartupPhase::Requested) => "Requesting agent...",
+        (_, AgentStartupPhase::ProvisioningVm) => "Provisioning microVM...",
+        (_, AgentStartupPhase::BootingGuest) => "Booting guest...",
+        (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForServiceReady) => {
+            "Starting Pi daemon and waiting for ACP service..."
+        }
+        (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForServiceReady) => {
+            "Starting OpenClaw gateway and waiting for health check..."
+        }
+        (_, AgentStartupPhase::WaitingForServiceReady) => {
+            "Waiting for guest service to become ready..."
+        }
+        (_, AgentStartupPhase::Ready) => "Agent ready.",
+        (_, AgentStartupPhase::Failed) => "Agent startup failed.",
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1983,18 +2044,31 @@ async fn cmd_agent_chat(
     };
 
     let body = agent_provision_request(microvm);
-    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
-    let mut tried_optimistic_send = false;
-    let mut recovered_stalled_creating = false;
+    let agent_kind = body
+        .as_ref()
+        .and_then(|req| req.microvm.as_ref())
+        .and_then(|microvm| microvm.kind);
+    let _ = ensure_agent_idempotent(http, body.as_ref()).await?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
-    let mut last_agent_npub = String::new();
+    let mut last_phase = Some(AgentStartupPhase::Requested);
+    eprintln!(
+        "{}",
+        agent_startup_status_message(agent_kind, AgentStartupPhase::Requested)
+    );
 
     for attempt in 1..=options.poll_attempts {
         let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
         let (agent_npub, state) = parse_agent_fields(&me)?;
+        let startup_phase = parse_agent_startup_phase(&me)?;
         last_state = state.clone();
-        last_agent_npub = agent_npub.clone();
+        if last_phase != Some(startup_phase) {
+            eprintln!(
+                "{}",
+                agent_startup_status_message(agent_kind, startup_phase)
+            );
+            last_phase = Some(startup_phase);
+        }
 
         if state == "ready" {
             let outcome = send_to_agent_and_optionally_listen(
@@ -2007,23 +2081,6 @@ async fn cmd_agent_chat(
             return finish_chat_send(outcome, options.listen_timeout);
         }
 
-        if state == "creating" && !ensured.created && !tried_optimistic_send {
-            match send_to_agent_and_optionally_listen(
-                &chat_cli,
-                &agent_npub,
-                message,
-                options.listen_timeout,
-            )
-            .await
-            {
-                Ok(outcome) => return finish_chat_send(outcome, options.listen_timeout),
-                Err(_) => {
-                    tried_optimistic_send = true;
-                    eprintln!("optimistic send failed; continuing with recover/poll");
-                }
-            }
-        }
-
         if state == "error" {
             eprintln!("agent in error state; requesting recover");
             let _ = call_agent_api(
@@ -2033,20 +2090,6 @@ async fn cmd_agent_chat(
                 body.as_ref(),
             )
             .await;
-        } else if state == "creating"
-            && !recovered_stalled_creating
-            && options.recover_after_attempt > 0
-            && attempt >= options.recover_after_attempt
-        {
-            eprintln!("agent still creating after {attempt} checks; requesting recover");
-            let _ = call_agent_api(
-                http,
-                reqwest::Method::POST,
-                AGENT_API_RECOVER_PATH,
-                body.as_ref(),
-            )
-            .await;
-            recovered_stalled_creating = true;
         }
 
         if attempt < options.poll_attempts {
@@ -2054,30 +2097,16 @@ async fn cmd_agent_chat(
         }
     }
 
-    anyhow::ensure!(
-        !last_agent_npub.is_empty(),
-        "timed out waiting for personal agent"
-    );
-    eprintln!(
-        "agent did not become ready (state={}); trying best-effort send",
-        last_state
-    );
-    if let Ok(outcome) = send_to_agent_and_optionally_listen(
-        &chat_cli,
-        &last_agent_npub,
-        message,
-        options.listen_timeout,
-    )
-    .await
-    {
-        return finish_chat_send(outcome, options.listen_timeout);
-    }
     anyhow::bail!(
-        "agent chat failed: state remained {} and send failed; try `pikachat agent recover --api-base-url {} --nsec <nsec>`",
+        "agent did not become ready within {} checks (last phase: {}, last state: {}). wait longer or run `pikachat agent recover --api-base-url {} --nsec <nsec>` if the agent is stuck",
+        options.poll_attempts,
+        serde_json::to_string(&last_phase.unwrap_or(AgentStartupPhase::Requested))
+            .unwrap_or_else(|_| "\"requested\"".to_string())
+            .trim_matches('"'),
         if last_state.is_empty() {
-            "unknown"
+            "unknown".to_string()
         } else {
-            &last_state
+            last_state
         },
         http.api_base_url
     );
@@ -2679,8 +2708,6 @@ mod tests {
             "7",
             "--poll-delay-sec",
             "3",
-            "--recover-after-attempt",
-            "4",
             "hello",
         ])
         .expect("parse args");
@@ -2694,7 +2721,6 @@ mod tests {
                         listen_timeout,
                         poll_attempts,
                         poll_delay_sec,
-                        recover_after_attempt,
                     },
             } => {
                 assert_eq!(http.api_base_url, "http://127.0.0.1:18080");
@@ -2706,10 +2732,56 @@ mod tests {
                 assert_eq!(listen_timeout, 9);
                 assert_eq!(poll_attempts, 7);
                 assert_eq!(poll_delay_sec, 3);
-                assert_eq!(recover_after_attempt, 4);
             }
             _ => panic!("expected agent chat command"),
         }
+    }
+
+    #[test]
+    fn agent_chat_rejects_removed_recover_after_flag() {
+        let err = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "chat",
+            "--api-base-url",
+            "http://127.0.0.1:18080",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--recover-after-attempt",
+            "4",
+            "hello",
+        ])
+        .expect_err("removed recover-after-attempt flag should be rejected");
+        assert!(err.to_string().contains("--recover-after-attempt"));
+    }
+
+    #[test]
+    fn parse_agent_startup_phase_reads_typed_field() {
+        let payload = json!({
+            "agent_id": "npub1test",
+            "state": "creating",
+            "startup_phase": "booting_guest"
+        });
+        let phase = parse_agent_startup_phase(&payload).expect("startup phase");
+        assert_eq!(phase, AgentStartupPhase::BootingGuest);
+    }
+
+    #[test]
+    fn agent_startup_status_message_uses_kind_specific_waiting_text() {
+        assert!(
+            agent_startup_status_message(
+                Some(MicrovmAgentKind::Pi),
+                AgentStartupPhase::WaitingForServiceReady
+            )
+            .contains("ACP")
+        );
+        assert!(
+            agent_startup_status_message(
+                Some(MicrovmAgentKind::Openclaw),
+                AgentStartupPhase::WaitingForServiceReady
+            )
+            .contains("OpenClaw")
+        );
     }
 
     #[test]
@@ -2748,6 +2820,8 @@ mod tests {
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "pi",
             "--microvm-backend",
             "acp",
             "--microvm-acp-exec",
@@ -2761,6 +2835,7 @@ mod tests {
             Command::Agent {
                 cmd: AgentCommand::New { microvm, .. },
             } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Pi));
                 assert_eq!(microvm.microvm_backend, Some(AgentMicrovmBackendCli::Acp));
                 assert_eq!(microvm.microvm_acp_exec.as_deref(), Some("npx -y pi-acp"));
                 assert_eq!(
@@ -2780,6 +2855,8 @@ mod tests {
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "openclaw",
             "--microvm-backend",
             "native",
         ])
@@ -2789,12 +2866,37 @@ mod tests {
             Command::Agent {
                 cmd: AgentCommand::New { microvm, .. },
             } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
                 assert_eq!(
                     microvm.microvm_backend,
                     Some(AgentMicrovmBackendCli::Native)
                 );
                 assert!(microvm.microvm_acp_exec.is_none());
                 assert!(microvm.microvm_acp_cwd.is_none());
+            }
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    #[test]
+    fn agent_new_parses_openclaw_kind_without_backend() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--microvm-kind",
+            "openclaw",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
+                assert!(microvm.microvm_backend.is_none());
             }
             _ => panic!("expected agent new command"),
         }

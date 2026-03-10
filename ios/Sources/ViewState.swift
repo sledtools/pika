@@ -10,6 +10,7 @@ struct ChatListViewState: Equatable {
     let myNpub: String?
     let myProfile: MyProfileState
     let agentButton: AgentButtonState?
+    let showAgentMarketplace: Bool
 }
 
 typealias AgentButtonState = AgentMenuItemState

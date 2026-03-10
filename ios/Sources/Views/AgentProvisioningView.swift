@@ -34,12 +34,6 @@ struct AgentProvisioningView: View {
                     .font(.headline)
                     .foregroundStyle(.secondary)
 
-                if let attempt = state?.pollAttempt, let max = state?.pollMax {
-                    Text("\(attempt) / \(max)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
                 if let elapsed = state?.elapsedSecs, elapsed > 0 {
                     Text("\(elapsed)s elapsed")
                         .font(.caption2)

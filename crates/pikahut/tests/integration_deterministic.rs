@@ -154,13 +154,14 @@ fn spawn_mock_vm_spawner(
                 buf.extend_from_slice(&remaining);
             }
 
-            let is_create_or_recover = request_line.starts_with("POST /vms ")
-                || request_line.starts_with("POST /vms/vm-test-1/recover ");
-            let (status, body) = if is_create_or_recover {
+            let is_known = request_line.starts_with("POST /vms ")
+                || request_line.starts_with("POST /vms/vm-test-1/recover ")
+                || request_line.starts_with("GET /vms/vm-test-1 ");
+            let (status, body) = if is_known {
                 let body = if request_line.starts_with("POST /vms/vm-test-1/recover ") {
-                    r#"{"id":"vm-test-1","status":"running"}"#
+                    r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#
                 } else {
-                    r#"{"id":"vm-test-1","status":"starting"}"#
+                    r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#
                 };
                 ("200 OK", body)
             } else {
@@ -462,7 +463,7 @@ async fn agent_http_ensure_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(3)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -604,6 +605,12 @@ async fn agent_http_ensure_local() -> Result<()> {
     }
     if !spawner_request_lines
         .iter()
+        .any(|line| line.starts_with("GET /vms/vm-test-1 "))
+    {
+        bail!("expected vm-spawner GET /vms/vm-test-1, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines
+        .iter()
         .any(|line| line.starts_with("POST /vms/vm-test-1/recover "))
     {
         bail!("expected vm-spawner POST /vms/vm-test-1/recover, got: {spawner_request_lines:?}");
@@ -624,7 +631,7 @@ async fn agent_http_cli_new_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(1)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -709,11 +716,17 @@ async fn agent_http_cli_new_local() -> Result<()> {
     let spawner_request_lines = spawner_thread
         .join()
         .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
-    let spawner_request_line = spawner_request_lines
-        .first()
-        .ok_or_else(|| anyhow!("mock vm-spawner captured no requests"))?;
-    if !spawner_request_line.starts_with("POST /vms ") {
-        bail!("expected vm-spawner POST /vms, got: {spawner_request_line}");
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("POST /vms "))
+    {
+        bail!("expected vm-spawner POST /vms, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("GET /vms/vm-test-1 "))
+    {
+        bail!("expected vm-spawner GET /vms/vm-test-1, got: {spawner_request_lines:?}");
     }
 
     context.mark_success();
@@ -864,7 +877,7 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
 
-    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(2)?;
+    let (spawner_url, spawner_thread) = spawn_mock_vm_spawner(3)?;
     let owner_keys = Keys::generate();
     let owner_npub = owner_keys
         .public_key()
@@ -999,6 +1012,12 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         .any(|line| line.starts_with("POST /vms "))
     {
         bail!("expected vm-spawner POST /vms request, got: {spawner_request_lines:?}");
+    }
+    if !spawner_request_lines
+        .iter()
+        .any(|line| line.starts_with("GET /vms/vm-test-1 "))
+    {
+        bail!("expected vm-spawner GET /vms/vm-test-1 request, got: {spawner_request_lines:?}");
     }
     if !spawner_request_lines
         .iter()

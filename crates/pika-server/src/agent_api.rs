@@ -22,10 +22,13 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::{RequestContext, State};
-use pika_agent_control_plane::{AgentProvisionRequest, MicrovmProvisionParams};
+use pika_agent_control_plane::{
+    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
+    SpawnerVmResponse,
+};
 use pika_agent_microvm::{
-    build_create_vm_request, resolve_params, spawner_create_error, MicrovmSpawnerClient,
-    ResolvedMicrovmParams,
+    build_create_vm_request, resolve_params, spawner_create_error, validate_resolved_params,
+    MicrovmSpawnerClient, ResolvedMicrovmParams,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -93,6 +96,7 @@ pub(crate) struct AgentStateResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     vm_id: Option<String>,
     state: AgentAppState,
+    startup_phase: AgentStartupPhase,
 }
 
 fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
@@ -105,9 +109,23 @@ fn required_microvm_spawner_url_from_env() -> anyhow::Result<String> {
     required_microvm_spawner_url(std::env::var(MICROVM_SPAWNER_URL_ENV).ok())
 }
 
+fn microvm_kind_from_env() -> Option<MicrovmAgentKind> {
+    match std::env::var("PIKA_AGENT_MICROVM_KIND")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some("openclaw") => Some(MicrovmAgentKind::Openclaw),
+        Some("pi") => Some(MicrovmAgentKind::Pi),
+        _ => None,
+    }
+}
+
 fn default_microvm_params_from_env() -> anyhow::Result<MicrovmProvisionParams> {
     Ok(MicrovmProvisionParams {
         spawner_url: Some(required_microvm_spawner_url_from_env()?),
+        kind: microvm_kind_from_env(),
         ..MicrovmProvisionParams::default()
     })
 }
@@ -218,7 +236,19 @@ fn phase_to_state(phase: &str) -> Option<AgentAppState> {
     }
 }
 
-fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentApiError> {
+fn startup_phase_from_row_phase(phase: &str) -> Option<AgentStartupPhase> {
+    match phase {
+        AGENT_PHASE_CREATING => Some(AgentStartupPhase::ProvisioningVm),
+        AGENT_PHASE_READY => Some(AgentStartupPhase::Ready),
+        AGENT_PHASE_ERROR => Some(AgentStartupPhase::Failed),
+        _ => None,
+    }
+}
+
+fn map_row_to_response(
+    row: AgentInstance,
+    startup_phase: AgentStartupPhase,
+) -> Result<AgentStateResponse, AgentApiError> {
     let Some(state) = phase_to_state(&row.phase) else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
     };
@@ -226,22 +256,35 @@ fn map_row_to_response(row: AgentInstance) -> Result<AgentStateResponse, AgentAp
         agent_id: row.agent_id,
         vm_id: row.vm_id,
         state,
+        startup_phase,
     })
 }
 
 fn json_response(
     row: AgentInstance,
+    startup_phase: AgentStartupPhase,
     request_id: &str,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
-    Ok(Json(map_row_to_response(row).map_err(|err| {
-        err.with_request_id(request_id.to_string())
-    })?))
+    Ok(Json(map_row_to_response(row, startup_phase).map_err(
+        |err| err.with_request_id(request_id.to_string()),
+    )?))
 }
 
-fn phase_from_spawner_status(status: &str) -> &'static str {
-    match status {
-        "running" => AGENT_PHASE_READY,
+fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
+    match (vm.status.as_str(), vm.guest_ready) {
+        ("failed", _) => AGENT_PHASE_ERROR,
+        ("running", true) => AGENT_PHASE_READY,
         _ => AGENT_PHASE_CREATING,
+    }
+}
+
+fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
+    match (vm.status.as_str(), vm.guest_ready) {
+        ("failed", _) => AgentStartupPhase::Failed,
+        ("running", true) => AgentStartupPhase::Ready,
+        ("running", false) => AgentStartupPhase::WaitingForServiceReady,
+        ("starting", _) => AgentStartupPhase::BootingGuest,
+        _ => AgentStartupPhase::ProvisioningVm,
     }
 }
 
@@ -278,7 +321,103 @@ fn visible_agent_response(
     else {
         return Err(AgentApiError::from_code(missing_code).with_request_id(request_id.to_string()));
     };
-    json_response(active, request_id)
+    let startup_phase = startup_phase_from_row_phase(&active.phase)
+        .ok_or_else(|| AgentApiError::from_code(AgentApiErrorCode::Internal))
+        .map_err(|err| err.with_request_id(request_id.to_string()))?;
+    json_response(active, startup_phase, request_id)
+}
+
+struct RefreshedAgentStatus {
+    row: AgentInstance,
+    startup_phase: AgentStartupPhase,
+}
+
+async fn refresh_agent_from_spawner(
+    conn: &mut PgConnection,
+    row: AgentInstance,
+    request_id: &str,
+) -> Result<RefreshedAgentStatus, AgentApiError> {
+    if row.phase == AGENT_PHASE_READY {
+        return Ok(RefreshedAgentStatus {
+            row,
+            startup_phase: AgentStartupPhase::Ready,
+        });
+    }
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return Ok(RefreshedAgentStatus {
+            row,
+            startup_phase: AgentStartupPhase::Requested,
+        });
+    };
+    let resolved = match resolved_spawner_params(None) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "failed to resolve spawner params while refreshing agent readiness"
+            );
+            return Ok(RefreshedAgentStatus {
+                startup_phase: startup_phase_from_row_phase(&row.phase)
+                    .unwrap_or(AgentStartupPhase::ProvisioningVm),
+                row,
+            });
+        }
+    };
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let vm = match spawner
+        .get_vm_with_request_id(vm_id, Some(request_id))
+        .await
+    {
+        Ok(vm) => vm,
+        Err(err) if is_vm_not_found_error(&err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "agent vm missing during readiness refresh; marking row errored"
+            );
+            let errored = mark_agent_errored(conn, &row.agent_id)
+                .map_err(|err| err.with_request_id(request_id.to_string()))?;
+            return Ok(RefreshedAgentStatus {
+                row: errored,
+                startup_phase: AgentStartupPhase::Failed,
+            });
+        }
+        Err(err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "failed to refresh agent readiness from spawner; keeping existing phase"
+            );
+            return Ok(RefreshedAgentStatus {
+                startup_phase: startup_phase_from_row_phase(&row.phase)
+                    .unwrap_or(AgentStartupPhase::ProvisioningVm),
+                row,
+            });
+        }
+    };
+
+    let next_phase = phase_from_spawner_vm(&vm);
+    let startup_phase = startup_phase_from_spawner_vm(&vm);
+    if row.phase == next_phase && row.vm_id.as_deref() == Some(vm.id.as_str()) {
+        return Ok(RefreshedAgentStatus { row, startup_phase });
+    }
+
+    let updated = AgentInstance::update_phase(conn, &row.agent_id, next_phase, Some(&vm.id))
+        .map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal)
+                .with_request_id(request_id.to_string())
+        })?;
+    Ok(RefreshedAgentStatus {
+        row: updated,
+        startup_phase,
+    })
 }
 
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
@@ -347,11 +486,15 @@ fn resolved_spawner_params(
         {
             params.spawner_url = requested.spawner_url.clone();
         }
+        if requested.kind.is_some() {
+            params.kind = requested.kind;
+        }
         if requested.backend.is_some() {
             params.backend = requested.backend.clone();
         }
     }
     let resolved = resolve_params(&params);
+    validate_resolved_params(&resolved).context("validate microvm agent selection")?;
     ensure_private_microvm_spawner_url(&resolved.spawner_url)
         .context("validate private microvm spawner URL")?;
     Ok(resolved)
@@ -439,7 +582,7 @@ async fn provision_agent_for_owner(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        phase_from_spawner_status(&vm.status),
+        phase_from_spawner_vm(&vm),
         Some(&vm.id),
     )
     .map_err(|err| {
@@ -469,7 +612,9 @@ async fn reprovision_agent_response(
     requested: Option<&MicrovmProvisionParams>,
 ) -> Result<Json<AgentStateResponse>, AgentApiError> {
     match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
-        Ok(reprovisioned) => json_response(reprovisioned, request_id),
+        Ok(reprovisioned) => {
+            json_response(reprovisioned, AgentStartupPhase::ProvisioningVm, request_id)
+        }
         Err(err) if err.code == AgentApiErrorCode::AgentExists => {
             let mut conn = state.db_pool.get().map_err(|_| {
                 AgentApiError::from_code(AgentApiErrorCode::Internal)
@@ -517,7 +662,11 @@ pub async fn ensure_agent(
 
     Ok((
         StatusCode::ACCEPTED,
-        json_response(updated, &request_context.request_id)?,
+        json_response(
+            updated,
+            AgentStartupPhase::ProvisioningVm,
+            &request_context.request_id,
+        )?,
     ))
 }
 
@@ -552,7 +701,13 @@ pub async fn get_my_agent(
         }
         None => active,
     };
-    json_response(normalized, &request_context.request_id)
+    let refreshed =
+        refresh_agent_from_spawner(&mut conn, normalized, &request_context.request_id).await?;
+    json_response(
+        refreshed.row,
+        refreshed.startup_phase,
+        &request_context.request_id,
+    )
 }
 
 pub async fn recover_my_agent(
@@ -644,14 +799,18 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        phase_from_spawner_status(&recovered.status),
+        phase_from_spawner_vm(&recovered),
         Some(&recovered.id),
     )
     .map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal)
             .with_request_id(request_context.request_id.clone())
     })?;
-    json_response(updated, &request_context.request_id)
+    json_response(
+        updated,
+        startup_phase_from_spawner_vm(&recovered),
+        &request_context.request_id,
+    )
 }
 
 pub fn agent_api_healthcheck() -> anyhow::Result<()> {
@@ -889,6 +1048,7 @@ mod tests {
         with_spawner_env("http://127.0.0.1:8080", || {
             let requested = MicrovmProvisionParams {
                 spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
                 backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Acp {
                     exec_command: Some("npx -y pi-acp".to_string()),
                     cwd: Some("/root/pika-agent/acp".to_string()),
@@ -898,12 +1058,53 @@ mod tests {
             let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
             assert_eq!(resolved.spawner_url, "http://127.0.0.1:8080");
             assert_eq!(
+                resolved.kind,
+                pika_agent_microvm::ResolvedMicrovmAgentKind::Pi
+            );
+            assert_eq!(
                 resolved.backend,
                 pika_agent_microvm::ResolvedMicrovmAgentBackend::Acp {
                     exec_command: "npx -y pi-acp".to_string(),
                     cwd: "/root/pika-agent/acp".to_string(),
                 }
             );
+        });
+    }
+
+    #[test]
+    fn resolved_spawner_params_overlays_requested_openclaw_kind() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            };
+
+            let resolved = resolved_spawner_params(Some(&requested)).expect("resolve params");
+            assert_eq!(resolved.spawner_url, "http://127.0.0.1:8080");
+            assert_eq!(
+                resolved.kind,
+                pika_agent_microvm::ResolvedMicrovmAgentKind::Openclaw
+            );
+            assert_eq!(
+                resolved.backend,
+                pika_agent_microvm::ResolvedMicrovmAgentBackend::Native
+            );
+        });
+    }
+
+    #[test]
+    fn resolved_spawner_params_rejects_pi_native_mode() {
+        with_spawner_env("http://127.0.0.1:8080", || {
+            let requested = MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            };
+
+            let err = resolved_spawner_params(Some(&requested)).expect_err("pi native should fail");
+            let msg = err.to_string();
+            assert!(msg.contains("validate microvm agent selection"));
         });
     }
 
@@ -963,12 +1164,50 @@ mod tests {
     }
 
     #[test]
-    fn phase_from_spawner_status_only_marks_running_ready() {
-        assert_eq!(phase_from_spawner_status("running"), AGENT_PHASE_READY);
-        assert_eq!(phase_from_spawner_status("starting"), AGENT_PHASE_CREATING);
+    fn phase_from_spawner_vm_requires_guest_ready_before_ready_phase() {
         assert_eq!(
-            phase_from_spawner_status("anything-else"),
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                guest_ready: true,
+            }),
+            AGENT_PHASE_READY
+        );
+        assert_eq!(
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                guest_ready: false,
+            }),
             AGENT_PHASE_CREATING
+        );
+        assert_eq!(
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "failed".to_string(),
+                guest_ready: false,
+            }),
+            AGENT_PHASE_ERROR
+        );
+    }
+
+    #[test]
+    fn startup_phase_from_spawner_vm_surfaces_boot_and_waiting_detail() {
+        assert_eq!(
+            startup_phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "starting".to_string(),
+                guest_ready: false,
+            }),
+            AgentStartupPhase::BootingGuest
+        );
+        assert_eq!(
+            startup_phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                guest_ready: false,
+            }),
+            AgentStartupPhase::WaitingForServiceReady
         );
     }
 
@@ -1042,6 +1281,7 @@ mod tests {
         assert_eq!(response.0.agent_id, "agent-ready");
         assert_eq!(response.0.vm_id.as_deref(), Some("vm-ready"));
         assert_eq!(response.0.state, AgentAppState::Ready);
+        assert_eq!(response.0.startup_phase, AgentStartupPhase::Ready);
 
         clear_test_database(&mut conn);
     }

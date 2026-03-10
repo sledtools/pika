@@ -1797,6 +1797,8 @@ public object FfiConverterTypeAgentMenuItemState: FfiConverterRustBuffer<AgentMe
 
 
 data class AgentProvisioningState (
+    var `agentKind`: AgentKind
+    , 
     var `phase`: AgentProvisioningPhase
     , 
     var `agentNpub`: kotlin.String?
@@ -1804,10 +1806,6 @@ data class AgentProvisioningState (
     var `statusMessage`: kotlin.String
     , 
     var `elapsedSecs`: kotlin.UInt
-    , 
-    var `pollAttempt`: kotlin.UInt?
-    , 
-    var `pollMax`: kotlin.UInt?
     
 ){
     
@@ -1824,31 +1822,28 @@ data class AgentProvisioningState (
 public object FfiConverterTypeAgentProvisioningState: FfiConverterRustBuffer<AgentProvisioningState> {
     override fun read(buf: ByteBuffer): AgentProvisioningState {
         return AgentProvisioningState(
+            FfiConverterTypeAgentKind.read(buf),
             FfiConverterTypeAgentProvisioningPhase.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterUInt.read(buf),
-            FfiConverterOptionalUInt.read(buf),
-            FfiConverterOptionalUInt.read(buf),
         )
     }
 
     override fun allocationSize(value: AgentProvisioningState) = (
+            FfiConverterTypeAgentKind.allocationSize(value.`agentKind`) +
             FfiConverterTypeAgentProvisioningPhase.allocationSize(value.`phase`) +
             FfiConverterOptionalString.allocationSize(value.`agentNpub`) +
             FfiConverterString.allocationSize(value.`statusMessage`) +
-            FfiConverterUInt.allocationSize(value.`elapsedSecs`) +
-            FfiConverterOptionalUInt.allocationSize(value.`pollAttempt`) +
-            FfiConverterOptionalUInt.allocationSize(value.`pollMax`)
+            FfiConverterUInt.allocationSize(value.`elapsedSecs`)
     )
 
     override fun write(value: AgentProvisioningState, buf: ByteBuffer) {
+            FfiConverterTypeAgentKind.write(value.`agentKind`, buf)
             FfiConverterTypeAgentProvisioningPhase.write(value.`phase`, buf)
             FfiConverterOptionalString.write(value.`agentNpub`, buf)
             FfiConverterString.write(value.`statusMessage`, buf)
             FfiConverterUInt.write(value.`elapsedSecs`, buf)
-            FfiConverterOptionalUInt.write(value.`pollAttempt`, buf)
-            FfiConverterOptionalUInt.write(value.`pollMax`, buf)
     }
 }
 
@@ -1880,6 +1875,8 @@ data class AppState (
     var `toast`: kotlin.String?
     , 
     var `developerMode`: kotlin.Boolean
+    , 
+    var `showAgentMarketplace`: kotlin.Boolean
     , 
     var `updateRequired`: kotlin.Boolean
     , 
@@ -1920,6 +1917,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
             FfiConverterOptionalTypeAgentMenuItemState.read(buf),
             FfiConverterOptionalTypeAgentProvisioningState.read(buf),
             FfiConverterOptionalTypeVoiceRecordingState.read(buf),
@@ -1941,6 +1939,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeCallTimelineEvent.allocationSize(value.`callTimeline`) +
             FfiConverterOptionalString.allocationSize(value.`toast`) +
             FfiConverterBoolean.allocationSize(value.`developerMode`) +
+            FfiConverterBoolean.allocationSize(value.`showAgentMarketplace`) +
             FfiConverterBoolean.allocationSize(value.`updateRequired`) +
             FfiConverterOptionalTypeAgentMenuItemState.allocationSize(value.`agentButton`) +
             FfiConverterOptionalTypeAgentProvisioningState.allocationSize(value.`agentProvisioning`) +
@@ -1962,6 +1961,7 @@ public object FfiConverterTypeAppState: FfiConverterRustBuffer<AppState> {
             FfiConverterSequenceTypeCallTimelineEvent.write(value.`callTimeline`, buf)
             FfiConverterOptionalString.write(value.`toast`, buf)
             FfiConverterBoolean.write(value.`developerMode`, buf)
+            FfiConverterBoolean.write(value.`showAgentMarketplace`, buf)
             FfiConverterBoolean.write(value.`updateRequired`, buf)
             FfiConverterOptionalTypeAgentMenuItemState.write(value.`agentButton`, buf)
             FfiConverterOptionalTypeAgentProvisioningState.write(value.`agentProvisioning`, buf)
@@ -3390,10 +3390,47 @@ public object FfiConverterTypeVoiceRecordingState: FfiConverterRustBuffer<VoiceR
 
 
 
+enum class AgentKind {
+    
+    OPENCLAW,
+    PI;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAgentKind: FfiConverterRustBuffer<AgentKind> {
+    override fun read(buf: ByteBuffer) = try {
+        AgentKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: AgentKind) = 4UL
+
+    override fun write(value: AgentKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
 enum class AgentProvisioningPhase {
     
     ENSURING,
-    PROVISIONING,
+    REQUESTED,
+    PROVISIONING_VM,
+    BOOTING_GUEST,
+    WAITING_FOR_SERVICE_READY,
     RECOVERING,
     PUBLISHING_KEY_PACKAGE,
     CREATING_CHAT,
@@ -3802,6 +3839,15 @@ sealed class AppAction {
     object EnableDeveloperMode : AppAction()
     
     
+    data class SetShowAgentMarketplace(
+        val `enabled`: kotlin.Boolean) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
+    
     object WipeProfileCache : AppAction()
     
     
@@ -3915,6 +3961,15 @@ sealed class AppAction {
     
     object EnsureAgent : AppAction()
     
+    
+    data class EnsureAgentKind(
+        val `kind`: com.pika.app.rust.AgentKind) : AppAction()
+        
+    {
+        
+
+        companion object
+    }
     
 
     
@@ -4079,44 +4134,50 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 )
             44 -> AppAction.ClearToast
             45 -> AppAction.EnableDeveloperMode
-            46 -> AppAction.WipeProfileCache
-            47 -> AppAction.VoiceRecordingStart
-            48 -> AppAction.VoiceRecordingPause
-            49 -> AppAction.VoiceRecordingResume
-            50 -> AppAction.VoiceRecordingStop
-            51 -> AppAction.VoiceRecordingCancel
-            52 -> AppAction.VoiceRecordingAudioLevel(
+            46 -> AppAction.SetShowAgentMarketplace(
+                FfiConverterBoolean.read(buf),
+                )
+            47 -> AppAction.WipeProfileCache
+            48 -> AppAction.VoiceRecordingStart
+            49 -> AppAction.VoiceRecordingPause
+            50 -> AppAction.VoiceRecordingResume
+            51 -> AppAction.VoiceRecordingStop
+            52 -> AppAction.VoiceRecordingCancel
+            53 -> AppAction.VoiceRecordingAudioLevel(
                 FfiConverterFloat.read(buf),
                 )
-            53 -> AppAction.VoiceRecordingTranscript(
+            54 -> AppAction.VoiceRecordingTranscript(
                 FfiConverterString.read(buf),
                 )
-            54 -> AppAction.Foregrounded
-            55 -> AppAction.NostrConnectCallback(
+            55 -> AppAction.Foregrounded
+            56 -> AppAction.NostrConnectCallback(
                 FfiConverterString.read(buf),
                 )
-            56 -> AppAction.ReloadConfig
-            57 -> AppAction.LoadMediaGallery(
+            57 -> AppAction.ReloadConfig
+            58 -> AppAction.LoadMediaGallery(
                 FfiConverterString.read(buf),
                 )
-            58 -> AppAction.ClearMediaGallery
-            59 -> AppAction.WipeMediaCache
-            60 -> AppAction.OpenPeerProfile(
+            59 -> AppAction.ClearMediaGallery
+            60 -> AppAction.WipeMediaCache
+            61 -> AppAction.OpenPeerProfile(
                 FfiConverterString.read(buf),
                 )
-            61 -> AppAction.ClosePeerProfile
-            62 -> AppAction.SetPushToken(
+            62 -> AppAction.ClosePeerProfile
+            63 -> AppAction.SetPushToken(
                 FfiConverterString.read(buf),
                 )
-            63 -> AppAction.ReregisterPush
-            64 -> AppAction.RefreshFollowList
-            65 -> AppAction.FollowUser(
+            64 -> AppAction.ReregisterPush
+            65 -> AppAction.RefreshFollowList
+            66 -> AppAction.FollowUser(
                 FfiConverterString.read(buf),
                 )
-            66 -> AppAction.UnfollowUser(
+            67 -> AppAction.UnfollowUser(
                 FfiConverterString.read(buf),
                 )
-            67 -> AppAction.EnsureAgent
+            68 -> AppAction.EnsureAgent
+            69 -> AppAction.EnsureAgentKind(
+                FfiConverterTypeAgentKind.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4460,6 +4521,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 4UL
             )
         }
+        is AppAction.SetShowAgentMarketplace -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`enabled`)
+            )
+        }
         is AppAction.WipeProfileCache -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -4598,6 +4666,13 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
+            )
+        }
+        is AppAction.EnsureAgentKind -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeAgentKind.allocationSize(value.`kind`)
             )
         }
     }
@@ -4852,100 +4927,110 @@ public object FfiConverterTypeAppAction : FfiConverterRustBuffer<AppAction>{
                 buf.putInt(45)
                 Unit
             }
-            is AppAction.WipeProfileCache -> {
+            is AppAction.SetShowAgentMarketplace -> {
                 buf.putInt(46)
+                FfiConverterBoolean.write(value.`enabled`, buf)
                 Unit
             }
-            is AppAction.VoiceRecordingStart -> {
+            is AppAction.WipeProfileCache -> {
                 buf.putInt(47)
                 Unit
             }
-            is AppAction.VoiceRecordingPause -> {
+            is AppAction.VoiceRecordingStart -> {
                 buf.putInt(48)
                 Unit
             }
-            is AppAction.VoiceRecordingResume -> {
+            is AppAction.VoiceRecordingPause -> {
                 buf.putInt(49)
                 Unit
             }
-            is AppAction.VoiceRecordingStop -> {
+            is AppAction.VoiceRecordingResume -> {
                 buf.putInt(50)
                 Unit
             }
-            is AppAction.VoiceRecordingCancel -> {
+            is AppAction.VoiceRecordingStop -> {
                 buf.putInt(51)
                 Unit
             }
-            is AppAction.VoiceRecordingAudioLevel -> {
+            is AppAction.VoiceRecordingCancel -> {
                 buf.putInt(52)
+                Unit
+            }
+            is AppAction.VoiceRecordingAudioLevel -> {
+                buf.putInt(53)
                 FfiConverterFloat.write(value.`level`, buf)
                 Unit
             }
             is AppAction.VoiceRecordingTranscript -> {
-                buf.putInt(53)
+                buf.putInt(54)
                 FfiConverterString.write(value.`text`, buf)
                 Unit
             }
             is AppAction.Foregrounded -> {
-                buf.putInt(54)
+                buf.putInt(55)
                 Unit
             }
             is AppAction.NostrConnectCallback -> {
-                buf.putInt(55)
+                buf.putInt(56)
                 FfiConverterString.write(value.`url`, buf)
                 Unit
             }
             is AppAction.ReloadConfig -> {
-                buf.putInt(56)
+                buf.putInt(57)
                 Unit
             }
             is AppAction.LoadMediaGallery -> {
-                buf.putInt(57)
+                buf.putInt(58)
                 FfiConverterString.write(value.`chatId`, buf)
                 Unit
             }
             is AppAction.ClearMediaGallery -> {
-                buf.putInt(58)
-                Unit
-            }
-            is AppAction.WipeMediaCache -> {
                 buf.putInt(59)
                 Unit
             }
-            is AppAction.OpenPeerProfile -> {
+            is AppAction.WipeMediaCache -> {
                 buf.putInt(60)
+                Unit
+            }
+            is AppAction.OpenPeerProfile -> {
+                buf.putInt(61)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
             is AppAction.ClosePeerProfile -> {
-                buf.putInt(61)
+                buf.putInt(62)
                 Unit
             }
             is AppAction.SetPushToken -> {
-                buf.putInt(62)
+                buf.putInt(63)
                 FfiConverterString.write(value.`token`, buf)
                 Unit
             }
             is AppAction.ReregisterPush -> {
-                buf.putInt(63)
-                Unit
-            }
-            is AppAction.RefreshFollowList -> {
                 buf.putInt(64)
                 Unit
             }
-            is AppAction.FollowUser -> {
+            is AppAction.RefreshFollowList -> {
                 buf.putInt(65)
-                FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
-            is AppAction.UnfollowUser -> {
+            is AppAction.FollowUser -> {
                 buf.putInt(66)
                 FfiConverterString.write(value.`pubkey`, buf)
                 Unit
             }
-            is AppAction.EnsureAgent -> {
+            is AppAction.UnfollowUser -> {
                 buf.putInt(67)
+                FfiConverterString.write(value.`pubkey`, buf)
+                Unit
+            }
+            is AppAction.EnsureAgent -> {
+                buf.putInt(68)
+                Unit
+            }
+            is AppAction.EnsureAgentKind -> {
+                buf.putInt(69)
+                FfiConverterTypeAgentKind.write(value.`kind`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }

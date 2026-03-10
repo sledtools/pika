@@ -35,6 +35,17 @@ pub enum RuntimeLifecyclePhase {
     Teardown,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStartupPhase {
+    Requested,
+    ProvisioningVm,
+    BootingGuest,
+    WaitingForServiceReady,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct AuthContext {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +57,16 @@ pub struct MicrovmProvisionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spawner_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MicrovmAgentKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<MicrovmAgentBackend>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrovmAgentKind {
+    Pi,
+    Openclaw,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -86,6 +106,8 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default)]
+    pub guest_ready: bool,
 }
 
 fn default_spawner_vm_status() -> String {
@@ -333,6 +355,7 @@ mod tests {
                 bot_secret_key_hex: Some("deadbeef".to_string()),
                 microvm: Some(MicrovmProvisionParams {
                     spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                    kind: Some(MicrovmAgentKind::Pi),
                     backend: Some(MicrovmAgentBackend::Acp {
                         exec_command: Some("npx -y pi-acp".to_string()),
                         cwd: Some("/root/pika-agent/acp".to_string()),
@@ -497,6 +520,7 @@ mod tests {
         let request = AgentProvisionRequest {
             microvm: Some(MicrovmProvisionParams {
                 spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                kind: Some(MicrovmAgentKind::Pi),
                 backend: Some(MicrovmAgentBackend::Acp {
                     exec_command: Some("npx -y pi-acp".to_string()),
                     cwd: Some("/root/pika-agent/acp".to_string()),
@@ -514,6 +538,7 @@ mod tests {
         let request = AgentProvisionRequest {
             microvm: Some(MicrovmProvisionParams {
                 spawner_url: Some("http://127.0.0.1:8080".to_string()),
+                kind: Some(MicrovmAgentKind::Openclaw),
                 backend: Some(MicrovmAgentBackend::Native),
             }),
         };
@@ -521,6 +546,26 @@ mod tests {
         let decoded: AgentProvisionRequest =
             serde_json::from_str(&encoded).expect("decode request");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn microvm_agent_kind_serde_uses_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&MicrovmAgentKind::Pi).unwrap(),
+            "\"pi\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MicrovmAgentKind::Openclaw).unwrap(),
+            "\"openclaw\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MicrovmAgentKind>("\"pi\"").unwrap(),
+            MicrovmAgentKind::Pi
+        );
+        assert_eq!(
+            serde_json::from_str::<MicrovmAgentKind>("\"openclaw\"").unwrap(),
+            MicrovmAgentKind::Openclaw
+        );
     }
 
     #[test]

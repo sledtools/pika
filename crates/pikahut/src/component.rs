@@ -375,6 +375,7 @@ impl Server {
 
         // Required env vars that may not be set in test/local environments.
         for (key, val) in [
+            env_or("PIKA_AGENT_MICROVM_KIND", "openclaw"),
             env_or("PIKA_AGENT_MICROVM_SPAWNER_URL", "http://127.0.0.1:1"),
             env_or(
                 "PIKA_ADMIN_BOOTSTRAP_NPUBS",

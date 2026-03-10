@@ -255,7 +255,8 @@ private func screenView(
             onArchiveChat: { manager.dispatch(.archiveChat(chatId: $0)) },
             onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
             onNewGroupChat: { manager.dispatch(.pushScreen(screen: .newGroupChat)) },
-            onEnsureAgent: { manager.ensureAgent() },
+            onEnsureOpenclawAgent: { manager.ensureAgent() },
+            onEnsurePiAgent: { manager.ensureAgent(kind: .pi) },
             onRefreshProfile: { manager.refreshMyProfile() },
             onSaveProfile: { name, about in
                 manager.saveMyProfile(name: name, about: about)
@@ -265,6 +266,8 @@ private func screenView(
             },
             isDeveloperModeEnabledProvider: { manager.isDeveloperModeEnabled },
             onEnableDeveloperMode: { manager.enableDeveloperMode() },
+            isShowAgentMarketplaceEnabledProvider: { manager.isShowAgentMarketplaceEnabled },
+            onSetShowAgentMarketplace: { manager.setShowAgentMarketplaceEnabled($0) },
             onWipeProfileCache: { manager.wipeProfileCacheForDeveloperTools() },
             onWipeMediaCache: { manager.dispatch(.wipeMediaCache) },
             onWipeLocalData: { manager.wipeLocalDataForDeveloperTools() },
@@ -535,7 +538,8 @@ private func chatListState(from state: AppState, manager: AppManager) -> ChatLis
         chats: state.chatList,
         myNpub: myNpub,
         myProfile: state.myProfile,
-        agentButton: state.agentButton
+        agentButton: state.agentButton,
+        showAgentMarketplace: state.showAgentMarketplace
     )
 }
 

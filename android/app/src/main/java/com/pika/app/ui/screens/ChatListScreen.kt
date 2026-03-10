@@ -19,6 +19,7 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -26,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,13 +49,16 @@ import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.GroupAdd
+import com.pika.app.rust.AgentKind
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
     var showMyProfile by remember { mutableStateOf(false) }
+    var showAgentChooser by remember { mutableStateOf(false) }
     val myProfile = manager.state.myProfile
     val shareSummary = manager.pendingShareSelectionSummary()
     val isShareSelectionMode = shareSummary != null
@@ -98,6 +103,21 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                         }
                         IconButton(onClick = { manager.dispatch(AppAction.PushScreen(Screen.NewGroupChat)) }) {
                             Icon(Icons.Default.GroupAdd, contentDescription = "New Group")
+                        }
+                        manager.state.agentButton?.let { agent ->
+                            IconButton(
+                                onClick = {
+                                    if (manager.state.showAgentMarketplace) {
+                                        showAgentChooser = true
+                                    } else {
+                                        manager.ensureAgent()
+                                    }
+                                },
+                                enabled = !agent.isBusy,
+                                modifier = Modifier.testTag("chatlist_agent"),
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = agent.title)
+                            }
                         }
                     }
                 },
@@ -175,6 +195,52 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
             npub = myNpub,
             onDismiss = { showMyProfile = false },
         )
+    }
+
+    if (showAgentChooser) {
+        ModalBottomSheet(
+            onDismissRequest = { showAgentChooser = false },
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Create Agent",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "Choose which agent to create.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(
+                    onClick = {
+                        showAgentChooser = false
+                        manager.ensureAgent(AgentKind.OPENCLAW)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("OpenClaw")
+                }
+                Button(
+                    onClick = {
+                        showAgentChooser = false
+                        manager.ensureAgent(AgentKind.PI)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Pi")
+                }
+                TextButton(
+                    onClick = { showAgentChooser = false },
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text("Cancel")
+                }
+            }
+        }
     }
 }
 

@@ -231,6 +231,12 @@ pub fn clear_all(conn: &Connection) {
     }
 }
 
+pub fn clear_app_settings(conn: &Connection) {
+    if let Err(e) = conn.execute_batch("DELETE FROM app_settings;") {
+        tracing::warn!(%e, "failed to clear app settings db");
+    }
+}
+
 pub fn load_developer_mode(conn: &Connection) -> bool {
     conn.query_row(
         "SELECT value FROM app_settings WHERE key = 'developer_mode'",
@@ -250,6 +256,28 @@ pub fn save_developer_mode(conn: &Connection, enabled: bool) {
         [value],
     ) {
         tracing::warn!(%e, enabled, "failed to save developer mode setting");
+    }
+}
+
+pub fn load_show_agent_marketplace(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'show_agent_marketplace'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+    .unwrap_or(false)
+}
+
+pub fn save_show_agent_marketplace(conn: &Connection, enabled: bool) {
+    let value = if enabled { "1" } else { "0" };
+    if let Err(e) = conn.execute(
+        "INSERT INTO app_settings (key, value)
+         VALUES ('show_agent_marketplace', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [value],
+    ) {
+        tracing::warn!(%e, enabled, "failed to save show agent marketplace setting");
     }
 }
 
@@ -559,6 +587,18 @@ mod tests {
     }
 
     #[test]
+    fn clear_app_settings_resets_developer_flags() {
+        let conn = test_db();
+        save_developer_mode(&conn, true);
+        save_show_agent_marketplace(&conn, true);
+
+        clear_app_settings(&conn);
+
+        assert!(!load_developer_mode(&conn));
+        assert!(!load_show_agent_marketplace(&conn));
+    }
+
+    #[test]
     fn follows_roundtrip() {
         let conn = test_db();
         assert!(load_follows(&conn).is_empty());
@@ -602,6 +642,18 @@ mod tests {
 
         save_developer_mode(&conn, false);
         assert!(!load_developer_mode(&conn));
+    }
+
+    #[test]
+    fn show_agent_marketplace_roundtrip() {
+        let conn = test_db();
+        assert!(!load_show_agent_marketplace(&conn));
+
+        save_show_agent_marketplace(&conn, true);
+        assert!(load_show_agent_marketplace(&conn));
+
+        save_show_agent_marketplace(&conn, false);
+        assert!(!load_show_agent_marketplace(&conn));
     }
 
     #[test]

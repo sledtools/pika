@@ -62,6 +62,8 @@ struct VmCleanupState {
 }
 
 const CREATE_STAGING_PREFIX: &str = ".creating__";
+const GUEST_READY_MARKER_PATH: &str = "workspace/pika-agent/service-ready.json";
+const GUEST_FAILED_MARKER_PATH: &str = "workspace/pika-agent/service-failed.json";
 
 #[derive(Debug, Clone, Copy)]
 struct CurrentVmMetadata {
@@ -246,6 +248,7 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
+                    guest_ready: false,
                 })
             }
             Err(err) => {
@@ -270,6 +273,25 @@ impl VmManager {
         let vm = self.load_vm_cleanup_state(id)?;
         self.cleanup_artifacts_for_paths(id, &vm.tap_name, &vm.microvm_state_dir)
             .await
+    }
+
+    pub async fn status(&self, id: &str) -> anyhow::Result<VmResponse> {
+        let vm = self.load_vm_cleanup_state(id)?;
+        let unit_name = self.microvm_unit_name(id);
+        let status = match unit_active_state(&self.cfg.systemctl_cmd, &unit_name)
+            .await
+            .as_deref()
+        {
+            Some("active") => "running",
+            Some("failed") => "failed",
+            Some("activating") | Some("reloading") => "starting",
+            Some(_) | None => "starting",
+        };
+        Ok(VmResponse {
+            id: id.to_string(),
+            status: status.to_string(),
+            guest_ready: guest_ready_marker_exists(&vm.microvm_state_dir),
+        })
     }
 
     pub async fn recover(&self, id: &str) -> anyhow::Result<VmResponse> {
@@ -315,6 +337,7 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            guest_ready: false,
         })
     }
 
@@ -1623,6 +1646,11 @@ fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
+    vm_state_dir.join(GUEST_READY_MARKER_PATH).is_file()
+        && !vm_state_dir.join(GUEST_FAILED_MARKER_PATH).is_file()
+}
+
 async fn run_command(cmd: &mut Command, context: &str) -> anyhow::Result<()> {
     let output = cmd
         .output()
@@ -1927,6 +1955,85 @@ mod tests {
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
         assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
+    }
+
+    #[tokio::test]
+    async fn status_reports_guest_ready_from_workspace_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::create_dir_all(
+            cfg.state_dir.join(vm_id).join(
+                std::path::Path::new(GUEST_READY_MARKER_PATH)
+                    .parent()
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join(GUEST_READY_MARKER_PATH),
+            "{\"ready\":true}\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        let status = manager.status(vm_id).await.unwrap();
+        assert_eq!(status.status, "running");
+        assert!(status.guest_ready);
+    }
+
+    #[tokio::test]
+    async fn status_prefers_failed_marker_over_ready_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let systemctl_script = scripts_dir.join("systemctl");
+        fs::write(
+            &systemctl_script,
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::create_dir_all(
+            cfg.state_dir.join(vm_id).join(
+                std::path::Path::new(GUEST_READY_MARKER_PATH)
+                    .parent()
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join(GUEST_READY_MARKER_PATH),
+            "{\"ready\":true}\n",
+        )
+        .unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join(GUEST_FAILED_MARKER_PATH),
+            "{\"ready\":false}\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg).await.unwrap();
+
+        let status = manager.status(vm_id).await.unwrap();
+        assert_eq!(status.status, "running");
+        assert!(!status.guest_ready);
     }
 
     #[tokio::test]

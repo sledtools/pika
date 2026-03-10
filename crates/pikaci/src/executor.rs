@@ -1269,7 +1269,13 @@ fn shell_single_quote(value: &str) -> String {
 
 fn run_ssh_command(remote_host: &str, command: &str) -> Command {
     let mut cmd = Command::new(ssh_binary());
-    cmd.arg(remote_host).arg(command);
+    cmd.arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=5")
+        .arg(remote_host)
+        .arg(command)
+        .stdin(Stdio::null());
     cmd
 }
 
@@ -2300,7 +2306,7 @@ mod tests {
     #[test]
     fn guest_flake_can_run_all_package_unit_tests() {
         let spec = JobSpec {
-            id: "agent-control-plane-unit",
+            id: "agent-control-plane-unit-local",
             description: "test",
             timeout_secs: 120,
             writable_workspace: false,
@@ -2332,7 +2338,7 @@ mod tests {
     #[test]
     fn guest_flake_can_run_filtered_and_full_package_tests() {
         let package_spec = JobSpec {
-            id: "agent-microvm-tests",
+            id: "agent-microvm-tests-local",
             description: "test",
             timeout_secs: 120,
             writable_workspace: false,
@@ -2361,7 +2367,7 @@ mod tests {
         );
 
         let filtered_spec = JobSpec {
-            id: "server-agent-api-tests",
+            id: "server-agent-api-tests-local",
             description: "test",
             timeout_secs: 120,
             writable_workspace: false,

@@ -36,12 +36,17 @@ pikaci-remote-fulfill-deploy:
 # Run the staged `pre-merge-pika-rust` lane with strict remote-authoritative fulfillment on pika-build.
 [private]
 pikaci-remote-fulfill-pre-merge-pika-rust:
-    ./scripts/pikaci-pre-merge-pika-rust-remote.sh run
+    ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust
 
 # Realize both staged Linux Rust prepare outputs directly on pika-build without a Mac-side output bounce.
 [private]
 pikaci-pre-merge-pika-rust-prepares-remote-build:
-    ./scripts/pikaci-pre-merge-pika-rust-remote.sh prepare
+    ./scripts/pikaci-staged-linux-remote.sh prepare pre-merge-pika-rust
+
+# Run the staged `pre-merge-agent-contracts` lane with strict remote-authoritative fulfillment on pika-build.
+[private]
+pikaci-remote-fulfill-pre-merge-agent-contracts:
+    ./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts
 
 # Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
 [private]

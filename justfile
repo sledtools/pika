@@ -171,7 +171,6 @@ mod rmp_tools 'just/rmp_tools.just'
 # cargo test -p pikahut --test integration_manual manual_interop_rust_runbook_contract -- --ignored --nocapture
 # cargo test -p pikahut --test integration_manual manual_primal_lab_runbook_contract -- --ignored --nocapture
 
-<<<<<<< HEAD
 alias rust-build-host := build::rust-build-host
 alias gen-kotlin := build::gen-kotlin
 alias android-rust := build::android-rust

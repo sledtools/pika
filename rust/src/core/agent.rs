@@ -10,7 +10,6 @@ use super::*;
 const DEFAULT_AGENT_API_URL: &str = "https://api.pikachat.org";
 const AGENT_POLL_MAX_ATTEMPTS: u32 = 45;
 const AGENT_POLL_DELAY: Duration = Duration::from_secs(2);
-const AGENT_RECOVER_AFTER_ATTEMPT: u32 = 20;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -308,8 +307,6 @@ async fn run_agent_flow(
         None,
     );
 
-    let mut recovered_stalled_creating = false;
-
     for attempt in 1..=AGENT_POLL_MAX_ATTEMPTS {
         match get_my_agent(&client, &keys, &base_url).await {
             Ok(state) => match state.state {
@@ -322,17 +319,6 @@ async fn run_agent_flow(
                         Some(state.agent_id.clone()),
                         Some(attempt),
                     );
-                    if !recovered_stalled_creating && attempt >= AGENT_RECOVER_AFTER_ATTEMPT {
-                        send_progress(
-                            &tx,
-                            flow_token,
-                            crate::state::AgentProvisioningPhase::Recovering,
-                            Some(state.agent_id.clone()),
-                            Some(attempt),
-                        );
-                        recover_my_agent(&client, &keys, &base_url).await?;
-                        recovered_stalled_creating = true;
-                    }
                     if attempt < AGENT_POLL_MAX_ATTEMPTS {
                         tokio::time::sleep(AGENT_POLL_DELAY).await;
                     }
@@ -755,7 +741,9 @@ mod tests {
         Ok(())
     }
 
-    fn spawn_agent_flow_mock_server() -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
+    fn spawn_agent_flow_mock_server_scripted(
+        scripted: Vec<(&'static str, &'static str)>,
+    ) -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
         let listener = TcpListener::bind("127.0.0.1:0").context("bind mock agent server")?;
         let addr = listener
             .local_addr()
@@ -763,36 +751,45 @@ mod tests {
         let base_url = format!("http://{addr}");
         let handle = thread::spawn(move || -> anyhow::Result<Vec<CapturedAgentRequest>> {
             let mut captured = Vec::new();
-            for _ in 0..2 {
+            for (expected_prefix, response_body) in scripted {
                 let (mut stream, _) = listener.accept().context("accept request")?;
                 let (request_line, authorization) = read_http_request(&mut stream)?;
                 let authorization =
                     authorization.ok_or_else(|| anyhow!("missing Authorization header"))?;
-                if request_line.starts_with("POST /v1/agents/ensure ") {
-                    respond_json(
-                        &mut stream,
-                        "202 Accepted",
-                        r#"{"agent_id":"npub1temp","state":"creating"}"#,
-                    )?;
-                } else if request_line.starts_with("GET /v1/agents/me ") {
-                    respond_json(
-                        &mut stream,
-                        "200 OK",
-                        r#"{"agent_id":"npub1testagent","state":"ready"}"#,
-                    )?;
-                } else {
+                if !request_line.starts_with(expected_prefix) {
                     respond_json(
                         &mut stream,
                         "404 Not Found",
                         r#"{"error":"unexpected path"}"#,
                     )?;
-                    return Err(anyhow!("unexpected request line: {request_line}"));
+                    return Err(anyhow!(
+                        "unexpected request line: {request_line} (expected prefix {expected_prefix})"
+                    ));
                 }
+                let status = if expected_prefix.starts_with("POST /v1/agents/ensure ") {
+                    "202 Accepted"
+                } else {
+                    "200 OK"
+                };
+                respond_json(&mut stream, status, response_body)?;
                 captured.push((request_line, authorization));
             }
             Ok(captured)
         });
         Ok((base_url, handle))
+    }
+
+    fn spawn_agent_flow_mock_server() -> anyhow::Result<(String, AgentFlowMockJoinHandle)> {
+        spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1testagent","state":"ready"}"#,
+            ),
+        ])
     }
 
     #[test]
@@ -866,5 +863,46 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_waits_for_ready_without_recovering_stuck_creating() {
+        let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
+            (
+                "POST /v1/agents/ensure ",
+                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1temp","state":"creating"}"#,
+            ),
+            (
+                "GET /v1/agents/me ",
+                r#"{"agent_id":"npub1testagent","state":"ready"}"#,
+            ),
+        ])
+        .expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(client, keys, base_url, tx, 1)
+            .await
+            .expect("run agent flow");
+        assert_eq!(agent_id, "npub1testagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        assert_eq!(captured.len(), 4);
+        assert!(captured
+            .iter()
+            .all(|(request_line, _)| !request_line.starts_with("POST /v1/agents/me/recover ")));
     }
 }

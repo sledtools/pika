@@ -8,7 +8,7 @@ use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use tracing::{error, info, warn};
@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/vms", post(create_vm))
-        .route("/vms/:id", delete(delete_vm))
+        .route("/vms/:id", get(get_vm).delete(delete_vm))
         .route("/vms/:id/recover", post(recover_vm))
         .layer(middleware::from_fn(trace_http_request))
         .with_state(manager.clone());
@@ -154,6 +154,20 @@ async fn delete_vm(
         .map_err(map_manager_error_to_api)
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_vm(
+    State(manager): State<Arc<VmManager>>,
+    Extension(request_context): Extension<RequestContext>,
+    Path(id): Path<String>,
+) -> Result<Json<VmResponse>, ApiError> {
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let vm = manager
+        .status(&id)
+        .await
+        .map_err(map_manager_error_to_api)
+        .map_err(|err| err.with_request_id(request_context.request_id))?;
+    Ok(Json(vm))
 }
 
 async fn recover_vm(

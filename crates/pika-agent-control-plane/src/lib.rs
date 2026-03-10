@@ -95,6 +95,8 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default)]
+    pub guest_ready: bool,
 }
 
 fn default_spawner_vm_status() -> String {

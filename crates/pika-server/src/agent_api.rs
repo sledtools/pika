@@ -22,7 +22,9 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::{RequestContext, State};
-use pika_agent_control_plane::{AgentProvisionRequest, MicrovmProvisionParams};
+use pika_agent_control_plane::{
+    AgentProvisionRequest, MicrovmAgentKind, MicrovmProvisionParams, SpawnerVmResponse,
+};
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, validate_resolved_params,
     MicrovmSpawnerClient, ResolvedMicrovmParams,
@@ -105,9 +107,23 @@ fn required_microvm_spawner_url_from_env() -> anyhow::Result<String> {
     required_microvm_spawner_url(std::env::var(MICROVM_SPAWNER_URL_ENV).ok())
 }
 
+fn microvm_kind_from_env() -> Option<MicrovmAgentKind> {
+    match std::env::var("PIKA_AGENT_MICROVM_KIND")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some("openclaw") => Some(MicrovmAgentKind::Openclaw),
+        Some("pi") => Some(MicrovmAgentKind::Pi),
+        _ => None,
+    }
+}
+
 fn default_microvm_params_from_env() -> anyhow::Result<MicrovmProvisionParams> {
     Ok(MicrovmProvisionParams {
         spawner_url: Some(required_microvm_spawner_url_from_env()?),
+        kind: microvm_kind_from_env(),
         ..MicrovmProvisionParams::default()
     })
 }
@@ -238,9 +254,10 @@ fn json_response(
     })?))
 }
 
-fn phase_from_spawner_status(status: &str) -> &'static str {
-    match status {
-        "running" => AGENT_PHASE_READY,
+fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
+    match (vm.status.as_str(), vm.guest_ready) {
+        ("failed", _) => AGENT_PHASE_ERROR,
+        ("running", true) => AGENT_PHASE_READY,
         _ => AGENT_PHASE_CREATING,
     }
 }
@@ -279,6 +296,67 @@ fn visible_agent_response(
         return Err(AgentApiError::from_code(missing_code).with_request_id(request_id.to_string()));
     };
     json_response(active, request_id)
+}
+
+async fn refresh_agent_from_spawner(
+    conn: &mut PgConnection,
+    row: AgentInstance,
+    request_id: &str,
+) -> Result<AgentInstance, AgentApiError> {
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return Ok(row);
+    };
+    let resolved = match resolved_spawner_params(None) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "failed to resolve spawner params while refreshing agent readiness"
+            );
+            return Ok(row);
+        }
+    };
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let vm = match spawner
+        .get_vm_with_request_id(vm_id, Some(request_id))
+        .await
+    {
+        Ok(vm) => vm,
+        Err(err) if is_vm_not_found_error(&err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "agent vm missing during readiness refresh; marking row errored"
+            );
+            return mark_agent_errored(conn, &row.agent_id)
+                .map_err(|err| err.with_request_id(request_id.to_string()));
+        }
+        Err(err) => {
+            tracing::warn!(
+                request_id,
+                agent_id = %row.agent_id,
+                vm_id,
+                error = %err,
+                "failed to refresh agent readiness from spawner; keeping existing phase"
+            );
+            return Ok(row);
+        }
+    };
+
+    let next_phase = phase_from_spawner_vm(&vm);
+    if row.phase == next_phase && row.vm_id.as_deref() == Some(vm.id.as_str()) {
+        return Ok(row);
+    }
+
+    AgentInstance::update_phase(conn, &row.agent_id, next_phase, Some(&vm.id)).map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal)
+            .with_request_id(request_id.to_string())
+    })
 }
 
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
@@ -443,7 +521,7 @@ async fn provision_agent_for_owner(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &created.agent_id,
-        phase_from_spawner_status(&vm.status),
+        phase_from_spawner_vm(&vm),
         Some(&vm.id),
     )
     .map_err(|err| {
@@ -556,6 +634,8 @@ pub async fn get_my_agent(
         }
         None => active,
     };
+    let normalized =
+        refresh_agent_from_spawner(&mut conn, normalized, &request_context.request_id).await?;
     json_response(normalized, &request_context.request_id)
 }
 
@@ -648,7 +728,7 @@ pub async fn recover_my_agent(
     let updated = AgentInstance::update_phase(
         &mut conn,
         &active.agent_id,
-        phase_from_spawner_status(&recovered.status),
+        phase_from_spawner_vm(&recovered),
         Some(&recovered.id),
     )
     .map_err(|_| {
@@ -1009,12 +1089,30 @@ mod tests {
     }
 
     #[test]
-    fn phase_from_spawner_status_only_marks_running_ready() {
-        assert_eq!(phase_from_spawner_status("running"), AGENT_PHASE_READY);
-        assert_eq!(phase_from_spawner_status("starting"), AGENT_PHASE_CREATING);
+    fn phase_from_spawner_vm_requires_guest_ready_before_ready_phase() {
         assert_eq!(
-            phase_from_spawner_status("anything-else"),
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                guest_ready: true,
+            }),
+            AGENT_PHASE_READY
+        );
+        assert_eq!(
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                guest_ready: false,
+            }),
             AGENT_PHASE_CREATING
+        );
+        assert_eq!(
+            phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "failed".to_string(),
+                guest_ready: false,
+            }),
+            AGENT_PHASE_ERROR
         );
     }
 

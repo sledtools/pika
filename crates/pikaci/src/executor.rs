@@ -1484,7 +1484,6 @@ fn write_remote_json<T: Serialize>(
     }
     Ok(())
 }
-
 fn sync_directory_to_remote(
     local_dir: &Path,
     remote_dir: &Path,

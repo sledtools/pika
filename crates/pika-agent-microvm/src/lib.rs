@@ -15,12 +15,15 @@ pub const DEFAULT_SPAWNER_URL: &str = "http://127.0.0.1:8080";
 pub const AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
 pub const AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
 pub const AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
+pub const AGENT_READY_PATH: &str = "workspace/pika-agent/service-ready.json";
+pub const AGENT_FAILED_PATH: &str = "workspace/pika-agent/service-failed.json";
 pub const OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
 pub const OPENCLAW_EXTENSION_ROOT: &str =
     "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
 pub const DEFAULT_ACP_EXEC_COMMAND: &str = "npx -y pi-acp";
 pub const DEFAULT_ACP_CWD: &str = "/root/pika-agent/acp";
 pub const DEFAULT_OPENCLAW_EXEC_COMMAND: &str = "npx -y openclaw";
+pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -177,6 +180,38 @@ impl MicrovmSpawnerClient {
             );
         }
         resp.json().await.context("decode recover vm response")
+    }
+
+    pub async fn get_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        self.get_vm_with_request_id(vm_id, None).await
+    }
+
+    pub async fn get_vm_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        let url = format!("{}/vms/{vm_id}", self.base_url);
+        let resp = with_request_id(self.client.get(&url).timeout(DELETE_VM_TIMEOUT), request_id)
+            .send()
+            .await
+            .context("send get vm request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "get vm",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json().await.context("decode get vm response")
     }
 }
 
@@ -391,11 +426,14 @@ set -euo pipefail
 
 # Keep Marmot/MLS state under /root so VM restart/recovery preserves context.
 STATE_DIR="/root/pika-agent/state"
+READY_PATH="/workspace/pika-agent/service-ready.json"
+FAILED_PATH="/workspace/pika-agent/service-failed.json"
 mkdir -p "$STATE_DIR"
 # Seed the durable state dir from the provisioned identity on first boot only.
 if [[ -f "/workspace/pika-agent/state/identity.json" && ! -f "$STATE_DIR/identity.json" ]]; then
   cp "/workspace/pika-agent/state/identity.json" "$STATE_DIR/identity.json"
 fi
+rm -f "$READY_PATH" "$FAILED_PATH"
 
 if [[ -z "${PIKA_OWNER_PUBKEY:-}" ]]; then
   echo "[microvm-agent] missing PIKA_OWNER_PUBKEY" >&2
@@ -436,6 +474,76 @@ fi
 
 agent_kind="${PIKA_AGENT_KIND:-pi}"
 backend_mode="${PIKA_AGENT_BACKEND_MODE:-native}"
+
+write_ready_marker() {
+  local probe="$1"
+  cat >"$READY_PATH" <<EOF
+{
+  "ready": true,
+  "agent_kind": "${agent_kind}",
+  "backend_mode": "${backend_mode}",
+  "probe": "${probe}"
+}
+EOF
+  rm -f "$FAILED_PATH"
+}
+
+write_failed_marker() {
+  local reason="$1"
+  cat >"$FAILED_PATH" <<EOF
+{
+  "ready": false,
+  "agent_kind": "${agent_kind}",
+  "backend_mode": "${backend_mode}",
+  "reason": "${reason}"
+}
+EOF
+  rm -f "$READY_PATH"
+}
+
+wait_for_pi_ready() {
+  local agent_pid="$1"
+  local timeout_sec="${PIKA_AGENT_READY_TIMEOUT_SECS:-120}"
+  local deadline=$((SECONDS + timeout_sec))
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$agent_pid" 2>/dev/null; then
+      wait "$agent_pid"
+      return $?
+    fi
+    if [[ -f /workspace/pika-agent/agent.log ]] && grep -q '"type":"ready"' /workspace/pika-agent/agent.log; then
+      write_ready_marker "daemon_ready_event"
+      return 0
+    fi
+    sleep 1
+  done
+  write_failed_marker "timeout_waiting_for_daemon_ready"
+  kill "$agent_pid" 2>/dev/null || true
+  wait "$agent_pid" || true
+  return 1
+}
+
+wait_for_openclaw_ready() {
+  local agent_pid="$1"
+  local port="${PIKA_OPENCLAW_GATEWAY_PORT:-18789}"
+  local timeout_sec="${PIKA_AGENT_READY_TIMEOUT_SECS:-120}"
+  local deadline=$((SECONDS + timeout_sec))
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$agent_pid" 2>/dev/null; then
+      wait "$agent_pid"
+      return $?
+    fi
+    if curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      write_ready_marker "openclaw_gateway_health"
+      return 0
+    fi
+    sleep 1
+  done
+  write_failed_marker "timeout_waiting_for_openclaw_health"
+  kill "$agent_pid" 2>/dev/null || true
+  wait "$agent_pid" || true
+  return 1
+}
+
 case "$agent_kind" in
   pi)
     echo "[microvm-agent] starting pi agent daemon via $bin" >&2
@@ -464,7 +572,20 @@ case "$agent_kind" in
         exit 1
         ;;
     esac
-    exec "$bin" "${daemon_args[@]}"
+    "$bin" "${daemon_args[@]}" &
+    agent_pid=$!
+    if ! wait_for_pi_ready "$agent_pid"; then
+      exit 1
+    fi
+    wait "$agent_pid"
+    status=$?
+    rm -f "$READY_PATH"
+    if [[ $status -ne 0 ]]; then
+      write_failed_marker "pi_agent_exited"
+    else
+      rm -f "$FAILED_PATH"
+    fi
+    exit $status
     ;;
   openclaw)
     openclaw_exec="${PIKA_OPENCLAW_EXEC:-npx -y openclaw}"
@@ -485,10 +606,24 @@ case "$agent_kind" in
     export OPENCLAW_SKIP_GMAIL_WATCHER=1
     export OPENCLAW_SKIP_CANVAS_HOST=1
     export OPENCLAW_SKIP_CRON=1
+    export PIKA_OPENCLAW_GATEWAY_PORT="${PIKA_OPENCLAW_GATEWAY_PORT:-18789}"
     echo "[microvm-agent] starting openclaw agent via $openclaw_exec" >&2
     # Use a login shell so npx/openclaw installed via profile-managed Node setups
     # are available in the guest PATH.
-    exec bash -lc "$openclaw_exec gateway --allow-unconfigured"
+    bash -lc "$openclaw_exec gateway --allow-unconfigured" &
+    agent_pid=$!
+    if ! wait_for_openclaw_ready "$agent_pid"; then
+      exit 1
+    fi
+    wait "$agent_pid"
+    status=$?
+    rm -f "$READY_PATH"
+    if [[ $status -ne 0 ]]; then
+      write_failed_marker "openclaw_gateway_exited"
+    else
+      rm -f "$FAILED_PATH"
+    fi
+    exit $status
     ;;
   *)
     echo "[microvm-agent] unsupported agent kind (expected pi or openclaw): $agent_kind" >&2
@@ -520,6 +655,11 @@ fn openclaw_gateway_config(relay_urls: &[String], backend: &ResolvedMicrovmAgent
     // surface sees the same daemon launch settings.
     let entry_config = channel_config.clone();
     serde_json::to_string_pretty(&json!({
+        "gateway": {
+            "mode": "local",
+            "bind": "loopback",
+            "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
+        },
         "plugins": {
             "enabled": true,
             "allow": ["pikachat-openclaw"],
@@ -736,10 +876,15 @@ mod tests {
             script.contains("STATE_DIR=\"/root/pika-agent/state\""),
             "autostart script must keep state under /root for restart durability"
         );
+        assert!(script.contains("READY_PATH=\"/workspace/pika-agent/service-ready.json\""));
+        assert!(script.contains("FAILED_PATH=\"/workspace/pika-agent/service-failed.json\""));
         assert!(script.contains("--state-dir \"$STATE_DIR\""));
         assert!(script.contains("PIKA_PIKACHAT_BIN"));
         assert!(script.contains("PIKA_AGENT_KIND"));
         assert!(script.contains("PIKA_AGENT_BACKEND_MODE"));
+        assert!(script.contains("wait_for_pi_ready"));
+        assert!(script.contains("wait_for_openclaw_ready"));
+        assert!(script.contains("curl -fsS --max-time 2 \"http://127.0.0.1:${port}/health\""));
         assert!(script.contains("openclaw)"));
         assert!(script.contains("--acp-exec \"$acp_exec\""));
         assert!(script.contains("npx -y openclaw"));
@@ -835,6 +980,12 @@ mod tests {
             .expect("openclaw config");
         let openclaw_json: serde_json::Value =
             serde_json::from_str(openclaw_config).expect("parse openclaw config");
+        assert_eq!(openclaw_json["gateway"]["mode"], "local");
+        assert_eq!(openclaw_json["gateway"]["bind"], "loopback");
+        assert_eq!(
+            openclaw_json["gateway"]["port"],
+            serde_json::Value::Number(DEFAULT_OPENCLAW_GATEWAY_PORT.into())
+        );
         assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
@@ -971,6 +1122,34 @@ mod tests {
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
             Some("req-recover-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vm_contract_response_carries_guest_ready() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-123","status":"running","guest_ready":true}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let vm = client
+            .get_vm_with_request_id("vm-123", Some("req-get-123"))
+            .await
+            .expect("get vm succeeds");
+        assert_eq!(vm.id, "vm-123");
+        assert_eq!(vm.status, "running");
+        assert!(vm.guest_ready);
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-123");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-get-123")
         );
         assert!(captured.body.is_empty());
     }

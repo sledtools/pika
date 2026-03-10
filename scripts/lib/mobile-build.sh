@@ -29,45 +29,27 @@ cargo_profile_dir() {
   printf '%s/%s\n' "$(cargo_target_root)" "$profile"
 }
 
-ensure_host_rust_build() {
+build_host_rust_packages() {
   local profile="${1:?profile is required}"
   shift
-  local spec
-  local lib_name
   local package_name
-  local missing=0
-  local -a package_args=()
   local -a cmd
 
   require_rust_profile "$profile"
 
-  for spec in "$@"; do
-    lib_name="${spec%%=*}"
-    package_name="${spec#*=}"
-    if ! find_host_dynamic_lib "$lib_name" "$profile" >/dev/null 2>&1; then
-      package_args+=("-p" "$package_name")
-      missing=1
-    fi
-  done
-
-  if [ "$missing" -eq 0 ]; then
-    return 0
-  fi
-
   cmd=(cargo build)
-  cmd+=("${package_args[@]}")
+  for package_name in "$@"; do
+    cmd+=(-p "$package_name")
+  done
   if [ "$profile" = "release" ]; then
     cmd+=(--release)
   fi
   "${cmd[@]}"
 }
 
-ensure_default_host_rust_build() {
+build_default_host_rust() {
   local profile="${1:?profile is required}"
-  ensure_host_rust_build "$profile" \
-    "pika_core=pika_core" \
-    "pika_nse=pika-nse" \
-    "pika_share=pika-share"
+  build_host_rust_packages "$profile" pika_core pika-nse pika-share
 }
 
 find_host_dynamic_lib() {

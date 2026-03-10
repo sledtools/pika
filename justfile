@@ -450,7 +450,7 @@ rust-build-host:
     esac
 
 # Generate Kotlin bindings via UniFFI.
-gen-kotlin: rust-build-host
+gen-kotlin:
     ./scripts/android-build gen-kotlin
 
 # Cross-compile Rust core for Android (arm64, armv7, x86_64).

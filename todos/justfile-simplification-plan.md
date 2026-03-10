@@ -340,3 +340,4 @@ Status: planned
 - Chose Android-first extraction as the first implementation slice to keep the first agent prompt bounded and landable.
 - Completed Prompt 1 by moving `gen-kotlin`, `android-rust`, `android-local-properties`, and `android-release` implementation into `scripts/android-build`, with shared host-library discovery in `scripts/lib/mobile-build.sh`.
 - Review note: the root Android build/binding section is now wrapper-only, and the new helper boundary should let Prompt 2 reuse the bindgen/library-discovery path instead of copying it again.
+- Review follow-up: `gen-kotlin` and `android-release` now force a host `cargo build` freshness check inside the extracted script path, so UniFFI generation no longer reuses stale host artifacts just because the dylibs already exist.

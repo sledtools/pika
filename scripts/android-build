@@ -69,7 +69,7 @@ run_gen_kotlin() {
 
   profile="$(android_rust_profile)"
   require_rust_profile "$profile"
-  ensure_default_host_rust_build "$profile"
+  build_default_host_rust "$profile"
   mkdir -p "$ANDROID_RUST_PACKAGE_DIR"
   generate_kotlin_bindings "pika_core" "rust/uniffi.toml" "$profile"
   generate_kotlin_bindings "pika_share" "crates/pika-share/uniffi.toml" "$profile"

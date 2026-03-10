@@ -240,14 +240,23 @@ Candidate PR 5: welcome/group lifecycle investigation and convergence
   - one shared implementation where possible
 
 Candidate PR 6: shared welcome/group workflow service
+- status:
+  - first slice landed: shared `accept_welcome_and_catch_up(...)`
+  - daemon uses the shared accept + post-accept catch-up path
+  - app also reuses the same primitive for its narrow eager-accept path
+  - CLI manual accept remains host-local for now to avoid broadening behavior
 - extract:
+  - shared accept known pending welcome + post-accept backlog catch-up
   - publish welcomes
-  - accept welcome
   - create group
   - join/merge lifecycle
 - acceptance:
-  - app uses shared service first
-  - daemon follows onto the same service
+  - accept + catch-up lives in `pika-marmot-runtime`
+  - host-specific policy stays local:
+    - app eager-vs-manual accept policy
+    - daemon `OutMsg` mapping and subscription bookkeeping
+    - CLI command UX/output
+  - future slices can widen the shared welcome/group workflow service from this primitive
 
 Candidate PR 7: shared media helpers / workflow primitives
 - extract:

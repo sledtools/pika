@@ -808,6 +808,12 @@ We have at least one important Linux Rust lane where:
   - run the proven lane as a clearly labeled non-gating shadow job on pull requests,
   - keep the canonical operator/CI command path as `just pre-merge-pika-rust-shadow`, which delegates to `just pikaci-remote-fulfill-pre-merge-pika-rust`,
   - note that `.github/workflows/pre-merge.yml` now exposes that path as the advisory `shadow-pikaci-pre-merge-pika-rust` job, which captures its exit code and reports it in its own job summary while staying outside the blocking `pre-merge` aggregator,
+  - note that the next narrow shadow-ergonomics slice adds the first useful comparison metadata to that advisory job instead of more workflow machinery:
+    - GitHub now records the fresh `pikaci` `run_id`, overall run status, wall-clock duration, and per-job durations/statuses in the shadow job summary,
+    - the shadow job also uploads a compact `pikaci-shadow-<run_id>` artifact bundle containing `run.json`, `plan.json`, `prepared-outputs.json`, and the per-job host/guest logs for debugging,
+    - metadata collection is keyed off the newest `pre-merge-pika-rust` run that is newer than the job's pre-run baseline, so the shadow summary does not accidentally pick up a stale previous run,
+    - and if the advisory job exits before `pikaci` actually starts, the summary now reports that cleanly instead of turning the reporting step into a second failure mode,
+    - a fresh local validation rerun (`20260310T223310Z-e53c83eb`) still passed end-to-end in about `212s`, and the generated summary now shows the overall run plus the two per-job durations (`54s` app-flows, `40s` messaging) alongside the uploaded debug bundle name,
   - note that the first local shadow-mode verification rerun (`20260310T220049Z-c2361db8`) still passed end-to-end in about `216s`,
   - use the shadow lane to gather pass/fail parity, runtime, and operator-friction data before promoting it over any legacy Linux path,
   - and keep the next cleanup focus on removing residual stringly staged-Linux detection and making the remote-authoritative prepare model more explicit in `pikaci`.

@@ -177,6 +177,9 @@ jobs:
     outputs:
       result: ${{ steps.shadow.outputs.result }}
       exit_code: ${{ steps.shadow.outputs.exit_code }}
+      run_id: ${{ steps.metadata.outputs.run_id }}
+      run_status: ${{ steps.metadata.outputs.run_status }}
+      run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
     steps:
       - uses: actions/checkout@v4
 
@@ -208,6 +211,12 @@ jobs:
         run: |
           set +e
           exit_code=0
+          previous_run_id="$(
+            find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+              | LC_ALL=C sort -r \
+              | head -n1 \
+              || true
+          )"
 
           if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
             echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux Rust shadow lane" >&2
@@ -237,20 +246,44 @@ jobs:
             echo "::warning::Advisory staged Linux Rust shadow lane failed with exit code $exit_code"
           fi
 
-          echo "result=$result" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          {
+            echo "result=$result"
+            echo "exit_code=$exit_code"
+            echo "previous_run_id=$previous_run_id"
+          } >> "$GITHUB_OUTPUT"
           exit 0
+
+      - name: Collect shadow lane metadata
+        if: always()
+        id: metadata
+        run: |
+          python3 scripts/pikaci-shadow-summary.py \
+            --target-id pre-merge-pika-rust \
+            --exclude-run-id "${{ steps.shadow.outputs.previous_run_id }}" \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+
+      - name: Upload shadow lane debug bundle
+        if: always() && steps.metadata.outputs.run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          if-no-files-found: error
 
       - name: Summarize shadow lane
         if: always()
         run: |
           {
-            echo "### Advisory staged Linux Rust shadow lane"
-            echo ""
             echo "- command: \`nix develop .#default -c just pre-merge-pika-rust-shadow\`"
             echo "- result: \`${{ steps.shadow.outputs.result }}\`"
             echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
             echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
+            echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
+            echo ""
+            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat:

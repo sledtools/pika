@@ -29,6 +29,7 @@ pub fn write_config(data_dir: &str, relay_url: &str) {
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let v = serde_json::json!({
         "disable_network": false,
+        "disable_agent_allowlist_probe": true,
         "relay_urls": [relay_url],
         "key_package_relay_urls": [relay_url],
         "call_moq_url": "ws://moq.local/anon",
@@ -47,6 +48,7 @@ pub fn write_config_with_moq(
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let mut v = serde_json::json!({
         "disable_network": false,
+        "disable_agent_allowlist_probe": true,
         "relay_urls": [relay_url],
         "call_moq_url": moq_url,
         "call_broadcast_prefix": "pika/calls",
@@ -65,6 +67,7 @@ pub fn write_config_multi(data_dir: &str, relays: &[String], kp_relays: &[String
     let path = std::path::Path::new(data_dir).join("pika_config.json");
     let v = serde_json::json!({
         "disable_network": false,
+        "disable_agent_allowlist_probe": true,
         "relay_urls": relays,
         "key_package_relay_urls": kp_relays,
         "call_moq_url": moq_url,

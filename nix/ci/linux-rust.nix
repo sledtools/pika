@@ -122,25 +122,22 @@ let
       shift
       : >"$manifest_path"
       for target_name in "$@"; do
-        local matched=0
-        while IFS= read -r executable_path; do
-          [ -n "$executable_path" ] || continue
-          matched=1
-          printf '%s\n' "''${executable_path#$target_root/}" >>"$manifest_path"
-        done < <(
-          find "$target_root/debug/deps" -maxdepth 1 -type f -perm -0100 \
-            -name "''${target_name}-*" \
-            ! -name '*.d' \
-            ! -name '*.rlib' \
-            ! -name '*.rmeta' \
-            ! -name '*.so' \
-            ! -name '*.so.*' \
-            | sort
-        )
-        if [ "$matched" -eq 0 ]; then
-          if [ "$strict" != "1" ]; then
-            continue
-          fi
+        local executable_path
+        executable_path="$(${pkgs.gawk}/bin/awk -F '\t' -v target="$target_name" '
+          $1 == target && $3 != "" {
+            path = $3
+          }
+          END {
+            if (path != "") {
+              print path
+            }
+          }
+        ' "$PIKACI_PIKA_CORE_TEST_EXECUTABLES")"
+        if [ -n "$executable_path" ]; then
+          printf '%s\n' "$executable_path" >>"$manifest_path"
+          continue
+        fi
+        if [ "$strict" = "1" ]; then
           echo "missing staged pika_core test executable for target $target_name" >&2
           echo "captured compiler-artifact rows:" >&2
           cat "$PIKACI_PIKA_CORE_TEST_EXECUTABLES" >&2

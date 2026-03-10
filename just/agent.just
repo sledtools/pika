@@ -2,12 +2,6 @@ set working-directory := '..'
 
 # Run the HTTP agent ensure demo (`pikachat agent new --nsec ...`).
 agent-microvm *ARGS="":
-    set -euo pipefail; \
-    if [ -f .env ]; then \
-      set -a; \
-      source .env; \
-      set +a; \
-    fi; \
     ./scripts/demo-agent-microvm.sh {{ ARGS }}
 
 # Run the HTTP agent ensure demo with ACP microVM guest bootstrap.

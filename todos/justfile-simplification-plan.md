@@ -542,7 +542,108 @@ Deliverable:
 
 Workstream D1: simplify the agent/demo wrapper stack and standardize env ownership.
 
-Status: ready
+Status: complete
+
+Prompt text:
+
+```text
+You are working on Workstream D1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Simplify the agent/demo helper stack by making env loading and default resolution have one clear owner, while preserving the existing user-facing just commands and script entrypoints.
+
+Scope:
+- `scripts/agent-demo.sh`
+- `scripts/demo-agent-microvm.sh`
+- `scripts/pikachat-cli.sh`
+- `scripts/lib/pika-env.sh`
+- `just/agent.just`
+- any thin wiring in `justfile` / module aliases that is needed to preserve the current command surface
+
+Primary objectives:
+- Eliminate duplicated env-loading and env-default logic across the agent/demo helpers.
+- Remove wrapper-on-wrapper layering where it is not buying anything.
+- Make it obvious which layer owns:
+  - `.env` loading,
+  - `PIKA_AGENT_API_BASE_URL` defaulting,
+  - `PIKA_AGENT_API_NSEC` / `PIKA_TEST_NSEC` fallback behavior,
+  - `PIKA_AGENT_MICROVM_BACKEND` propagation.
+- Preserve the familiar commands:
+  - `just agent-microvm`
+  - `just agent-microvm-acp`
+  - `just agent-microvm-chat`
+  - `just agent-demo`
+  - `just agent-demo-acp`
+  - `just cli`
+
+Constraints:
+- Do not rewrite the Rust CLI itself in this slice unless a very small CLI change is clearly required to remove ambiguity.
+- Preserve explicit env overrides that people may already be using:
+  - `PIKA_AGENT_API_BASE_URL`
+  - `PIKA_SERVER_URL`
+  - `PIKA_AGENT_API_NSEC`
+  - `PIKA_TEST_NSEC`
+- Be conservative about removing older fallback names unless you confirm they are truly unused or you keep compatibility.
+- Do not re-open unrelated justfile/module cleanup outside the agent/demo surface.
+- Avoid changing release, mobile build, or CI behavior in this slice.
+
+Known problems to target:
+- `just/agent.just` manually sources `.env` for `agent-microvm`, while the scripts also have their own env logic.
+- `scripts/agent-demo.sh` and `scripts/demo-agent-microvm.sh` resolve base URL and auth env differently.
+- `scripts/agent-demo.sh` defaults to `https://api.pikachat.org`, while the CLI and shared env helper default to local `http://127.0.0.1:8080`; if that difference is intentional, make it explicit instead of implicit.
+- `scripts/demo-agent-microvm.sh` bypasses the shared env helper entirely.
+- `scripts/pikachat-cli.sh` is a thin wrapper but also participates in env loading, so the ownership boundary is muddy.
+
+Implementation guidance:
+- Pick one clear owner for agent/demo env resolution. `scripts/lib/pika-env.sh` is the most likely place, but if you see a better boundary, use it and make the ownership obvious.
+- Prefer making `just` recipes thin wrappers over script entrypoints, and script entrypoints thin wrappers over one shared env-resolution layer.
+- Remove the duplicate `.env` sourcing from `just/agent.just` if the scripts can own it safely.
+- Flatten wrapper stacks where possible, but do not sacrifice readability just to remove one process hop.
+- If a default behavior is intentionally different for “local dev” versus “remote demo”, encode that as an explicit mode or explicit script behavior rather than hidden drift between helpers.
+- Keep the resulting behavior easy for both humans and agents to understand from the code.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Run `bash -n` on any new or changed shell scripts.
+- Smoke-check the preserved command surface with non-destructive invocations where possible, for example:
+  - `just --dry-run agent-microvm`
+  - `just --dry-run agent-microvm-acp`
+  - `just --dry-run agent-demo`
+  - `just --dry-run agent-demo-acp`
+  - `just --dry-run agent-microvm-chat`
+  - `just cli --help`
+- Validate the env-resolution behavior you changed with a lightweight harness or targeted shell checks, especially for:
+  - `.env` loading,
+  - local-vs-explicit base URL selection,
+  - nsec fallback behavior,
+  - microVM backend propagation.
+- If you cannot safely run a real networked agent demo, say exactly what you verified and what remains unverified.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 5 complete,
+  - add a short review note under the Review Log,
+  - adjust Prompt 6 if this slice changes the best next step.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on compatibility tradeoffs and any remaining ambiguity you intentionally left in place.
+```
+
+### Prompt 6
+
+Workstream E1: relocate the remaining low-signal helper commands into coherent modules or feature-local homes.
+
+Status: draft
+
+Prompt focus:
+
+- relay helpers,
+- `news`,
+- manual QA and debug helpers,
+- RMP scaffold QA helpers,
+- preserving useful entrypoints while continuing to shrink the visible root command surface.
 
 ## Review Log
 
@@ -573,3 +674,7 @@ Status: ready
 - Review note: `release-bump`, `release-commit`, `release`, `scripts/set-release-version`, `scripts/sync-pikachat-version`, `scripts/version-read`, and `scripts/bump-pikachat.sh` now all route through the same implementation surface, and the ship module recipes are wrapper-only.
 - Review follow-up: while exercising the new release paths, verification surfaced that `just` module recipes were executing from their module directory; all `just/*.just` files now set `working-directory := '..'` so routed commands run from the repo root as intended.
 - Next step is Prompt 5: simplify the agent/demo wrapper stack now that the release/version logic has a single owner and the module execution root is fixed.
+- Completed Prompt 5 by moving agent/demo env resolution into `scripts/lib/pika-env.sh`, making the local-vs-remote API base URL default explicit by mode, and reducing the `just` agent recipes to script-only wrappers.
+- Review note: `.env` loading now happens in the scripts instead of `just`, `PIKA_AGENT_API_BASE_URL` / `PIKA_SERVER_URL` precedence is shared in one helper, `PIKA_AGENT_API_NSEC` now canonicalizes from `PIKA_TEST_NSEC` and legacy `AGENT_API_NSEC`, and `scripts/demo-agent-microvm.sh` now calls `scripts/pikachat-cli.sh` directly instead of routing back through `just`.
+- Review follow-up: `scripts/pikachat-cli.sh` now `cd`s to the repo root before `cargo run` so the direct script entrypoints remain location-independent after the wrapper stack was flattened.
+- Next step is Prompt 6: move the remaining low-signal relay/news/manual-QA/debug helpers into module or feature-local homes now that the mobile, release, and agent/demo surfaces each have a clearer owner.

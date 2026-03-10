@@ -18,6 +18,7 @@ run-relay-dev:
       go run .
 
 # Build pika-relay binary.
+[private]
 relay-build:
     cd cmd/pika-relay && go build -o ../../target/pika-relay .
 
@@ -25,14 +26,17 @@ relay-build:
 # Start local backend (postgres, pika-relay, pika-server with agent control).
 #
 # State persists in .pikahut/. Press Ctrl-C to stop all services.
+[private]
 pikahut-up:
     cargo run -p pikahut -- up --profile backend
 
 # TUI: pikahut-up + component logs + interactive shell via mprocs.
+[private]
 pikahut:
     mprocs
 
 # Deploy the `pikaci` helper and launcher binaries onto pika-build via the host NixOS config.
+[private]
 pikaci-remote-fulfill-deploy:
     nix develop .#infra -c just -f infra/justfile build-deploy
 
@@ -43,6 +47,7 @@ pikaci-remote-fulfill-deploy:
 # - ssh access to `{{env_var_or_default("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST", "pika-build")}}` works
 #
 # - nix can copy the realized prepared output to that host
+[private]
 pikaci-remote-fulfill-pre-merge-pika-rust:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -82,6 +87,7 @@ linux-builder-recreate:
     ./scripts/linux-builder-recreate.sh
 
 # Run pika-news with auto-rebuild on source changes.
+[private]
 news MAX_PRS="2":
     #!/usr/bin/env bash
     set -euo pipefail

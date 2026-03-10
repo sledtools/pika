@@ -149,15 +149,15 @@ rmp *ARGS:
 mod build 'just/build.just'
 # QA aggregates, CI lanes, and test selectors.
 mod checks 'just/checks.just'
-# Manual QA prompts, interop labs, and device helpers.
+# Visible lab entrypoints; manual prompts and niche helpers stay available via hidden aliases.
 mod labs 'just/labs.just'
 # Agent demos and microVM debugging helpers.
 mod agent 'just/agent.just'
-# Local backend, relay, and infra plumbing.
+# Local runtime entrypoints; remote/news plumbing stays available via hidden aliases.
 mod infra 'just/infra.just'
 # Release, versioning, and Zapstore helpers.
 mod ship 'just/ship.just'
-# RMP scaffold and nightly helpers.
+# RMP CI/nightly entrypoints; local scaffold QA helpers stay available via hidden aliases.
 mod rmp_tools 'just/rmp_tools.just'
 
 # Hidden root aliases preserve existing docs/CI entrypoints without crowding `just --list`.

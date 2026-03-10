@@ -1,10 +1,12 @@
 set working-directory := '..'
 
 # Run the new Rust `rmp` CLI.
+[private]
 rmp *ARGS:
     cargo run -p rmp-cli -- {{ ARGS }}
 
 # Smoke test `rmp init` output locally (scaffold + doctor + core check).
+[private]
 rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
     set -euo pipefail; \
     ROOT="$PWD"; \
@@ -19,6 +21,7 @@ rmp-init-smoke NAME="rmp-smoke" ORG="com.example":
     echo "ok: rmp init smoke passed ($TMP/{{ NAME }})"
 
 # End-to-end launch check for a freshly initialized project.
+[private]
 rmp-init-run PLATFORM="android" NAME="rmp-e2e" ORG="com.example":
     set -euo pipefail; \
     ROOT="$PWD"; \
@@ -34,6 +37,7 @@ rmp-init-run PLATFORM="android" NAME="rmp-e2e" ORG="com.example":
     "$BIN" run {{ PLATFORM }}
 
 # Phase 4 scaffold QA: core tests + workspace check + desktop runtime sanity.
+[private]
 rmp-phase4-qa NAME="rmp-phase4-qa" ORG="com.example":
     set -euo pipefail; \
     ROOT="$PWD"; \

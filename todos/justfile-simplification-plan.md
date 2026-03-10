@@ -635,15 +635,106 @@ Deliverable:
 
 Workstream E1: relocate the remaining low-signal helper commands into coherent modules or feature-local homes.
 
-Status: draft
+Status: complete
 
-Prompt focus:
+Prompt text:
 
-- relay helpers,
-- `news`,
-- manual QA and debug helpers,
-- RMP scaffold QA helpers,
-- preserving useful entrypoints while continuing to shrink the visible root command surface.
+```text
+You are working on Workstream E1 from `todos/justfile-simplification-plan.md`.
+
+Goal:
+Reduce the remaining “toolbox dump” feeling in the non-root `just` surface by regrouping low-signal helper commands into clearer homes, hiding what should not be discoverable by default, and preserving the few commands that are actually useful entrypoints.
+
+Scope:
+- `just/infra.just`
+- `just/labs.just`
+- `just/rmp_tools.just`
+- any related thin aliases or root/module wiring in `justfile`
+- any small helper script moves that make ownership clearer, if needed
+
+Primary objectives:
+- Make the expanded `just --list --list-submodules` surface easier to scan.
+- Separate real entrypoints from niche/manual/debug plumbing.
+- Keep useful commands available without making every helper equally prominent.
+- Preserve CI and documented commands.
+
+Constraints:
+- Do not break existing root entrypoints or documented commands that are still actively used.
+- Do not change mobile build, release/version, or agent/demo behavior in this slice.
+- Prefer organization and visibility cleanup over behavior changes.
+- Be conservative with deletions. Hide, regroup, or move first unless something is clearly dead.
+- Do not create another parallel command system; stay within the current `just` module structure unless a small feature-local file is genuinely clearer.
+
+Recommended targets:
+- Relay / local backend helpers:
+  - `run-relay`
+  - `run-relay-dev`
+  - `relay-build`
+  - `pikahut`
+  - `pikahut-up`
+  - `news`
+- Manual lab and debug helpers:
+  - `device`
+  - `integration-manual`
+  - `interop-rust-manual`
+  - `android-manual-qa`
+  - `ios-manual-qa`
+  - Primal lab helpers
+- RMP scaffold helpers:
+  - `rmp-init-smoke`
+  - `rmp-init-run`
+  - `rmp-phase4-qa`
+  - `rmp-init-smoke-ci`
+  - `rmp-nightly-linux`
+  - `rmp-nightly-macos`
+
+What “better” looks like:
+- A small number of clearly named modules or sub-areas instead of one grab-bag per topic.
+- Manual-only or niche debug commands marked `[private]` or moved behind narrower module names where that improves discovery.
+- High-value entrypoints kept visible, for example:
+  - likely keep `pikahut-up`
+  - likely keep `rmp`
+  - keep CI-facing RMP/nightly commands if they are referenced by workflows/docs
+- Commands that are basically prompts or notes should be reconsidered:
+  - maybe move them closer to the prompts/docs they point at,
+  - or keep them but hide them from general listing.
+
+Implementation guidance:
+- Start from actual references in docs and workflows; preserve those first.
+- Prefer grouping by user intent, not by implementation detail. For example:
+  - local infra/runtime
+  - manual labs
+  - RMP scaffold CI/nightly
+  - RMP local experimentation
+- If a module currently mixes “real command someone runs” with “rare debug plumbing”, split it.
+- Use `[private]` where it improves list hygiene without harming legitimate usage.
+- If a recipe is just printing the location of a prompt file, consider whether it should still be a visible command.
+- Keep command behavior unchanged unless a tiny cleanup is clearly behavior-preserving.
+
+Verification:
+- Run `JUST_UNSTABLE=1 just --fmt`.
+- Inspect the new discovery surface with:
+  - `just`
+  - `just --list`
+  - `JUST_UNSTABLE=1 just --list --list-submodules`
+- Smoke-check preserved commands with `just --dry-run` where appropriate, including a representative sample from:
+  - relay/local infra helpers,
+  - manual lab helpers,
+  - RMP helpers,
+  - any aliases you preserved for compatibility.
+- Verify every workflow- or docs-referenced command you touch still exists at the same call site.
+
+Documentation update:
+- Update `todos/justfile-simplification-plan.md` after the change:
+  - mark Prompt 6 complete,
+  - add a short review note under the Review Log,
+  - add Prompt 7 only if a clearly bounded next slice remains.
+
+Deliverable:
+- code changes,
+- verification results,
+- a short note on what stayed visible, what was hidden/moved, and what was intentionally left alone.
+```
 
 ## Review Log
 
@@ -678,3 +769,7 @@ Prompt focus:
 - Review note: `.env` loading now happens in the scripts instead of `just`, `PIKA_AGENT_API_BASE_URL` / `PIKA_SERVER_URL` precedence is shared in one helper, `PIKA_AGENT_API_NSEC` now canonicalizes from `PIKA_TEST_NSEC` and legacy `AGENT_API_NSEC`, and `scripts/demo-agent-microvm.sh` now calls `scripts/pikachat-cli.sh` directly instead of routing back through `just`.
 - Review follow-up: `scripts/pikachat-cli.sh` now `cd`s to the repo root before `cargo run` so the direct script entrypoints remain location-independent after the wrapper stack was flattened.
 - Next step is Prompt 6: move the remaining low-signal relay/news/manual-QA/debug helpers into module or feature-local homes now that the mobile, release, and agent/demo surfaces each have a clearer owner.
+- Completed Prompt 6 by marking low-signal infra, labs, and RMP helper recipes `[private]` while keeping the existing root aliases and CI/doc entrypoints intact.
+- Review note: `just --list --list-submodules` now keeps `infra`, `labs`, and `rmp_tools` focused on the few real entrypoints, while manual QA prompt pointers, rare debug helpers, remote fulfill plumbing, and local RMP scaffold QA commands remain callable through their established root names.
+- Review tradeoff: `pikahut-up`, `rmp`, relay entrypoints, `primal-ios-lab`, and the docs/workflow-facing RMP nightly commands stayed visible; the rest of the touched commands were hidden rather than renamed or deleted.
+- Review follow-up: no Prompt 7 was added because the remaining cleanup work is not yet shaped into a similarly bounded slice.

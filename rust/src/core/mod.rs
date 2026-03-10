@@ -54,7 +54,7 @@ use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
 };
 use pika_marmot_runtime::conversation::{
-    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate, RuntimeGroupUpdateKind,
+    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
 };
 use pika_marmot_runtime::group::{create_group_and_plan_welcome_delivery, PlannedGroupCreation};
 use pika_marmot_runtime::membership::{
@@ -69,7 +69,9 @@ pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation;
+use pika_marmot_runtime::runtime::{
+    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+};
 use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
@@ -4473,24 +4475,30 @@ impl AppCore {
     }
 
     fn handle_conversation_event(&mut self, event: Option<ConversationEvent>) {
-        match event {
-            Some(ConversationEvent::Application(message)) => {
+        let Some(event) = event else {
+            return;
+        };
+        let interpreted = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            sess.host_context().interpret_conversation_event(event)
+        };
+        match interpreted {
+            RuntimeConversationEventInterpretation::Application { message } => {
                 self.handle_runtime_application_message(*message);
             }
-            Some(ConversationEvent::GroupUpdate(update)) => {
-                self.handle_runtime_group_update(update);
+            RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit } => {
+                self.handle_runtime_group_update(update, is_commit);
             }
-            Some(
-                ConversationEvent::UnresolvedGroup { .. } | ConversationEvent::PreviouslyFailed,
-            ) => {
+            RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {
                 self.refresh_all_from_storage();
             }
-            None => {}
         }
     }
 
-    fn handle_runtime_group_update(&mut self, update: RuntimeGroupUpdate) {
-        if matches!(update.kind, RuntimeGroupUpdateKind::Commit) {
+    fn handle_runtime_group_update(&mut self, update: RuntimeGroupUpdate, is_commit: bool) {
+        if is_commit {
             self.maybe_rebroadcast_my_group_profile(
                 &update.nostr_group_id_hex,
                 &update.mls_group_id,
@@ -6567,10 +6575,16 @@ mod tests {
             build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
             ParsedCallSignal,
         };
-        use pika_marmot_runtime::conversation::RuntimeApplicationMessage;
+        use pika_marmot_runtime::conversation::{
+            ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
+            RuntimeGroupUpdateKind,
+        };
         use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
         use pika_marmot_runtime::outbound::OutboundConversationAction;
-        use pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation;
+        use pika_marmot_runtime::runtime::{
+            RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+            RuntimeConversationRefreshReason,
+        };
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -6844,6 +6858,44 @@ mod tests {
                 } => assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440000"),
                 other => panic!("expected shared call-signal interpretation, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn app_conversation_event_uses_shared_interpreter_for_group_update_and_refresh() {
+            let (core, _chat_id, _keys, group_id) = make_core_with_group();
+            let commit = ConversationEvent::GroupUpdate(RuntimeGroupUpdate {
+                mls_group_id: group_id.clone(),
+                nostr_group_id_hex: "deadbeef".to_string(),
+                kind: RuntimeGroupUpdateKind::Commit,
+            });
+            let unresolved = ConversationEvent::UnresolvedGroup {
+                mls_group_id: group_id.clone(),
+            };
+            let failed = ConversationEvent::PreviouslyFailed;
+            let host = core.host_context().expect("host context");
+
+            let interpreted_commit = host.interpret_conversation_event(commit);
+            let interpreted_unresolved = host.interpret_conversation_event(unresolved);
+            let interpreted_failed = host.interpret_conversation_event(failed);
+
+            match interpreted_commit {
+                RuntimeConversationEventInterpretation::GroupUpdate { is_commit, .. } => {
+                    assert!(is_commit)
+                }
+                other => panic!("expected group-update interpretation, got {other:?}"),
+            }
+            match interpreted_unresolved {
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
+                } => assert_eq!(mls_group_id, group_id),
+                other => panic!("expected unresolved-group refresh reason, got {other:?}"),
+            }
+            assert!(matches!(
+                interpreted_failed,
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::PreviouslyFailed
+                }
+            ));
         }
 
         #[test]

@@ -98,6 +98,26 @@ impl RuntimeApplicationMessageInterpretation {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum RuntimeConversationRefreshReason {
+    UnresolvedGroup { mls_group_id: GroupId },
+    PreviouslyFailed,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeConversationEventInterpretation {
+    Application {
+        message: Box<RuntimeApplicationMessage>,
+    },
+    GroupUpdate {
+        update: crate::conversation::RuntimeGroupUpdate,
+        is_commit: bool,
+    },
+    NeedsFullRefresh {
+        reason: RuntimeConversationRefreshReason,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InboundRelaySeenCache {
     seen: HashSet<EventId>,
@@ -351,6 +371,34 @@ impl<'a> MarmotRuntime<'a> {
             crate::message::MessageClassification::GroupProfile => {
                 RuntimeApplicationMessageInterpretation::GroupProfile {
                     message: runtime_msg,
+                }
+            }
+        }
+    }
+
+    pub fn interpret_conversation_event(
+        &self,
+        event: ConversationEvent,
+    ) -> RuntimeConversationEventInterpretation {
+        match event {
+            ConversationEvent::Application(message) => {
+                RuntimeConversationEventInterpretation::Application { message }
+            }
+            ConversationEvent::GroupUpdate(update) => {
+                let is_commit = matches!(
+                    update.kind,
+                    crate::conversation::RuntimeGroupUpdateKind::Commit
+                );
+                RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit }
+            }
+            ConversationEvent::UnresolvedGroup { mls_group_id } => {
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
+                }
+            }
+            ConversationEvent::PreviouslyFailed => {
+                RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: RuntimeConversationRefreshReason::PreviouslyFailed,
                 }
             }
         }
@@ -992,6 +1040,62 @@ mod tests {
         assert!(matches!(
             runtime.interpret_runtime_application_message(group_profile),
             RuntimeApplicationMessageInterpretation::GroupProfile { .. }
+        ));
+    }
+
+    #[test]
+    fn interpret_conversation_event_surfaces_group_update_commit_state() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&tempdir);
+        let runtime = MarmotRuntime::new(&mdk);
+        let update = crate::conversation::RuntimeGroupUpdate {
+            mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+            nostr_group_id_hex: "deadbeef".to_string(),
+            kind: crate::conversation::RuntimeGroupUpdateKind::Commit,
+        };
+
+        let interpreted =
+            runtime.interpret_conversation_event(ConversationEvent::GroupUpdate(update.clone()));
+
+        match interpreted {
+            RuntimeConversationEventInterpretation::GroupUpdate {
+                update: interpreted_update,
+                is_commit,
+            } => {
+                assert!(is_commit);
+                assert_eq!(
+                    interpreted_update.nostr_group_id_hex,
+                    update.nostr_group_id_hex
+                );
+                assert_eq!(interpreted_update.kind, update.kind);
+            }
+            other => panic!("expected group-update interpretation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_conversation_event_surfaces_refresh_reasons() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&tempdir);
+        let runtime = MarmotRuntime::new(&mdk);
+        let group_id = GroupId::from_slice(&[9, 9, 9]);
+
+        let unresolved = runtime.interpret_conversation_event(ConversationEvent::UnresolvedGroup {
+            mls_group_id: group_id.clone(),
+        });
+        let failed = runtime.interpret_conversation_event(ConversationEvent::PreviouslyFailed);
+
+        match unresolved {
+            RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                reason: RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
+            } => assert_eq!(mls_group_id, group_id),
+            other => panic!("expected unresolved-group refresh reason, got {other:?}"),
+        }
+        assert!(matches!(
+            failed,
+            RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                reason: RuntimeConversationRefreshReason::PreviouslyFailed
+            }
         ));
     }
 

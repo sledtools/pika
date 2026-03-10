@@ -241,6 +241,13 @@ impl<'a> DaemonHostContext<'a> {
             .interpret_runtime_application_message(runtime_msg)
     }
 
+    pub(super) fn interpret_conversation_event(
+        &self,
+        event: ConversationEvent,
+    ) -> pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation {
+        self.runtime().interpret_conversation_event(event)
+    }
+
     pub(super) fn handle_inbound_call_signal(
         &self,
         ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,

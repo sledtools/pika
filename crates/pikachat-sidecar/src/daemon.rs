@@ -29,8 +29,9 @@ use pika_marmot_runtime::message::{
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
-    RuntimeApplicationMessageInterpretation, bootstrap_runtime_session,
-    classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
+    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+    bootstrap_runtime_session, classify_inbound_relay_event, subscribe_group_messages_individual,
+    subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome, take_pending_welcome,
@@ -3617,10 +3618,9 @@ pub async fn daemon_main(
                 let Some(conversation_event) = processed.into_conversation_event() else {
                     continue;
                 };
-                match conversation_event {
-                    ConversationEvent::Application(runtime_msg) => {
-                        let interpreted =
-                            host.interpret_runtime_application_message(*runtime_msg);
+                match host.interpret_conversation_event(conversation_event) {
+                    RuntimeConversationEventInterpretation::Application { message } => {
+                        let interpreted = host.interpret_runtime_application_message(*message);
                         let sender_hex =
                             interpreted.message().message.pubkey.to_hex().to_lowercase();
                         if !sender_allowed(&sender_hex) {
@@ -3886,9 +3886,8 @@ pub async fn daemon_main(
                             }
                         }
                     }
-                    ConversationEvent::GroupUpdate(_)
-                    | ConversationEvent::UnresolvedGroup { .. }
-                    | ConversationEvent::PreviouslyFailed => {}
+                    RuntimeConversationEventInterpretation::GroupUpdate { .. }
+                    | RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {}
                 }
             }
         }
@@ -3910,6 +3909,7 @@ pub async fn daemon_main(
 mod tests {
     use super::*;
     use mdk_core::prelude::NostrGroupConfigData;
+    use pika_marmot_runtime::conversation::{RuntimeGroupUpdate, RuntimeGroupUpdateKind};
     use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
     use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 
@@ -4318,6 +4318,54 @@ mod tests {
             } => assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440000"),
             other => panic!("expected shared call-signal interpretation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn daemon_conversation_event_uses_shared_interpreter_for_group_update_and_refresh() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let mdk = crate::open_mdk(tempdir.path()).expect("open mdk");
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let group_id = GroupId::from_slice(&[7, 7, 7]);
+        let commit = ConversationEvent::GroupUpdate(RuntimeGroupUpdate {
+            mls_group_id: group_id.clone(),
+            nostr_group_id_hex: "deadbeef".to_string(),
+            kind: RuntimeGroupUpdateKind::Commit,
+        });
+        let unresolved = ConversationEvent::UnresolvedGroup {
+            mls_group_id: group_id.clone(),
+        };
+        let failed = ConversationEvent::PreviouslyFailed;
+
+        let interpreted_commit = host.interpret_conversation_event(commit);
+        let interpreted_unresolved = host.interpret_conversation_event(unresolved);
+        let interpreted_failed = host.interpret_conversation_event(failed);
+
+        match interpreted_commit {
+            RuntimeConversationEventInterpretation::GroupUpdate { is_commit, .. } => {
+                assert!(is_commit)
+            }
+            other => panic!("expected group-update interpretation, got {other:?}"),
+        }
+        match interpreted_unresolved {
+            RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                reason:
+                    pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::UnresolvedGroup {
+                        mls_group_id,
+                    },
+            } => assert_eq!(mls_group_id, group_id),
+            other => panic!("expected unresolved-group refresh reason, got {other:?}"),
+        }
+        assert!(matches!(
+            interpreted_failed,
+            RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                reason:
+                    pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::PreviouslyFailed
+            }
+        ));
     }
 
     #[test]

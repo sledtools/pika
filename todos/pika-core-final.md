@@ -283,6 +283,8 @@ Candidate PR 8: shared inbound session / notification-ingress shell
   - app and daemon both consume that shared group-message helper while keeping projection/protocol policy local
   - third slice landed: `RuntimeApplicationMessage` interpretation now lives in shared runtime for typing vs call-signal vs content vs group-profile branching
   - app and daemon both consume that shared interpreter while keeping host-specific side effects local
+  - fourth slice landed: top-level `ConversationEvent` interpretation now lives in shared runtime for application vs group-update vs unresolved/failure branching
+  - app and daemon both consume that shared conversation-event interpreter while keeping refresh/protocol behavior local
   - host-specific projection/protocol mapping remains local
 - extract:
   - duplicate suppression for inbound relay events

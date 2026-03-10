@@ -32,8 +32,8 @@ This document defines the selector contract for integration coverage in CI and n
 | `nightly-pika-e2e` | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | full Android instrumentation suite via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-pika-ui-ios` | iOS Swift unit tests via `just ios-ui-test` |
-| `nightly-primal-ios-interop` | iOS Swift unit tests via `just ios-ui-test`, `integration_primal::primal_nostrconnect_smoke` |
+| `nightly-pika-ui-ios` | deterministic iOS XCTest suite via `just ios-ui-test` (fixture-backed bot/media UI flows skipped) |
+| `nightly-primal-ios-interop` | deterministic iOS XCTest suite via `just ios-ui-test` (fixture-backed bot/media UI flows skipped), `integration_primal::primal_nostrconnect_smoke` |
 
 ## Manual-Only Lane
 
@@ -45,5 +45,6 @@ This document defines the selector contract for integration coverage in CI and n
 
 - Deterministic selectors are preferred for pre-merge gates.
 - Heavy and nondeterministic selectors remain `#[ignore]` and must be lane-selected explicitly.
+- Public-network, deployed-bot, and perf probes are out of scope for the core app CI truth surface; local-fixture selectors are the required replacement coverage.
 - Capability-dependent selectors must skip with explicit reason text via `pikahut::testing` requirement helpers.
 - Manual contracts are selectors in `integration_manual`; interactive/manual tooling remains out-of-band from CI lanes.

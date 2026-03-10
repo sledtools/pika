@@ -1,17 +1,17 @@
-//! E2E call tests: signaling + media transport via pikahut.
+//! Local-infra call tests: signaling + media transport via pikahut.
 //!
-//! All tests are #[ignore] -- they require moq-relay and/or pikachat binaries
-//! on PATH (use `nix develop`). They run in nightly, not pre-merge.
+//! All tests are `#[ignore]` because they require local helper binaries and
+//! fixtures (use `nix develop`). Public-network and deployed-bot probes are
+//! intentionally out of scope for this target.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
-use pika_relay_profiles::{app_default_key_package_relays, app_default_message_relays};
 use tempfile::tempdir;
 
 mod support;
-use support::{wait_until, write_config_multi, write_config_with_moq};
+use support::{wait_until, write_config_with_moq};
 
 #[derive(Clone, Copy, Debug)]
 struct CallStatsSnapshot {
@@ -795,161 +795,4 @@ fn call_with_pikachat_daemon() {
     let infra = support::TestInfra::start_relay_and_moq();
     let moq_url = infra.moq_url.as_ref().expect("moq_url required");
     run_pikachat_call_test(&infra.relay_url, moq_url);
-}
-
-// ---------------------------------------------------------------------------
-// Deployed bot call (requires PIKA_TEST_NSEC -- production)
-// ---------------------------------------------------------------------------
-
-const DEFAULT_BOT_NPUB: &str = "npub1z6ujr8rad5zp9sr9w22rkxm0truulf2jntrks6rlwskhdmqsawpqmnjlcp";
-const DEFAULT_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key)
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-}
-
-fn env_csv_or_default_fn(key: &str, defaults: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    if let Ok(s) = std::env::var(key) {
-        let v: Vec<String> = s
-            .split(',')
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect();
-        if !v.is_empty() {
-            return v;
-        }
-    }
-    defaults()
-}
-
-#[test]
-#[ignore] // requires PIKA_TEST_NSEC + production infrastructure
-fn call_deployed_bot() {
-    pika_core::init_rustls_crypto_provider();
-
-    let nsec = match std::env::var("PIKA_TEST_NSEC")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    {
-        Some(v) => v.trim().to_string(),
-        None => {
-            eprintln!("SKIP: set PIKA_TEST_NSEC to run this test");
-            return;
-        }
-    };
-    let bot_npub = env_or("PIKA_BOT_NPUB", DEFAULT_BOT_NPUB);
-    let relays = env_csv_or_default_fn("PIKA_E2E_RELAYS", app_default_message_relays);
-    let kp_relays = env_csv_or_default_fn("PIKA_E2E_KP_RELAYS", app_default_key_package_relays);
-    let moq_url = env_or("PIKA_CALL_MOQ_URL", DEFAULT_MOQ_URL);
-
-    if std::env::var("PIKA_AUDIO_FIXTURE").is_err() {
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/speech_prompt.wav"
-        );
-        if std::path::Path::new(fixture).exists() {
-            std::env::set_var("PIKA_AUDIO_FIXTURE", fixture);
-        }
-    }
-
-    eprintln!("[test] bot_npub={bot_npub}");
-    eprintln!("[test] relays={relays:?}");
-    eprintln!("[test] moq_url={moq_url}");
-
-    let dir = tempdir().unwrap();
-    write_config_multi(&dir.path().to_string_lossy(), &relays, &kp_relays, &moq_url);
-
-    let app = FfiApp::new(
-        dir.path().to_string_lossy().to_string(),
-        String::new(),
-        String::new(),
-    );
-
-    app.dispatch(AppAction::Login { nsec });
-    wait_until("logged in", Duration::from_secs(20), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
-    });
-
-    app.dispatch(AppAction::CreateChat {
-        peer_npub: bot_npub.clone(),
-    });
-    wait_until("chat opened", Duration::from_secs(120), || {
-        app.state().current_chat.is_some()
-    });
-    let chat_id = app.state().current_chat.as_ref().unwrap().chat_id.clone();
-
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let ping = format!("ping:{nonce}");
-    let pong = format!("pong:{nonce}");
-    app.dispatch(AppAction::SendMessage {
-        chat_id: chat_id.clone(),
-        content: ping,
-        kind: None,
-        reply_to_message_id: None,
-    });
-    wait_until("bot pong", Duration::from_secs(30), || {
-        app.state()
-            .current_chat
-            .as_ref()
-            .map(|c| c.messages.iter().any(|m| m.content == pong))
-            .unwrap_or(false)
-    });
-
-    app.dispatch(AppAction::StartCall {
-        chat_id: chat_id.clone(),
-    });
-    wait_until("call active", Duration::from_secs(60), || {
-        app.state()
-            .active_call
-            .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Active))
-            .unwrap_or(false)
-    });
-
-    wait_until("tx frames flowing", Duration::from_secs(10), || {
-        app.state()
-            .active_call
-            .as_ref()
-            .and_then(|c| c.debug.as_ref())
-            .map(|d| d.tx_frames > 10)
-            .unwrap_or(false)
-    });
-
-    let media_window = Duration::from_secs(20);
-    let media_start = Instant::now();
-    let mut max_rx: u64 = 0;
-    while media_start.elapsed() < media_window {
-        if let Some(dbg) = app
-            .state()
-            .active_call
-            .as_ref()
-            .and_then(|c| c.debug.as_ref())
-        {
-            if dbg.rx_frames > max_rx {
-                max_rx = dbg.rx_frames;
-            }
-        }
-        if max_rx >= 10 {
-            break;
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    assert!(
-        max_rx >= 5,
-        "expected at least 5 rx frames from bot (got {max_rx})"
-    );
-
-    app.dispatch(AppAction::EndCall);
-    wait_until("call ended", Duration::from_secs(15), || {
-        app.state()
-            .active_call
-            .as_ref()
-            .map(|c| matches!(c.status, CallStatus::Ended { .. }))
-            .unwrap_or(false)
-    });
-
-    eprintln!("[test] PASS: call_deployed_bot");
 }

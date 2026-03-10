@@ -60,9 +60,9 @@ Files:
 - Expand E2E call assertions to include video continuity windows.
 
 Files:
-- `ios/UITests/CallE2ETests.swift`
-- `rust/tests/e2e_real_moq_relay.rs`
-- `rust/tests/e2e_deployed_bot_call.rs`
+- `crates/pikahut/tests/integration_deterministic.rs`
+- `crates/pikahut/src/testing/scenarios/deterministic.rs`
+- `rust/tests/e2e_calls.rs`
 
 ## Acceptance Criteria
 - Single-frame corruption no longer kills the entire video session.

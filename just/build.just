@@ -81,12 +81,15 @@ ios-build-sim:
 ios-build-swift-sim:
     ./scripts/ios-build ios-build-swift-sim
 
-# Run iOS UI tests on simulator (skips E2E deployed-bot test).
+# Run the deterministic iOS XCTest suite on simulator.
+# Fixture-backed bot/media flows live under `just ios-ui-e2e-local`, not here.
 ios-ui-test: ios-xcframework ios-xcodeproj
     udid="$(./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p')"; \
     if [ -z "$udid" ]; then echo "error: could not determine simulator udid"; exit 1; fi; \
     ./tools/xcode-run xcodebuild -project ios/Pika.xcodeproj -scheme Pika -derivedDataPath ios/build -destination "id=$udid" test -skipMacroValidation ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}" \
-      -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+      -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong \
+      -skip-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock \
+      -skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid
 
 # Build, install, and launch Android app on emulator/device.
 run-android *ARGS:

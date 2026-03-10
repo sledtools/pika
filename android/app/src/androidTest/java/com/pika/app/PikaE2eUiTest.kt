@@ -20,6 +20,12 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/**
+ * Legacy-name UI selectors that `pikahut` drives against local relay/bot fixtures.
+ *
+ * These are not part of the default offline instrumentation suite and should not be treated as
+ * public-network coverage.
+ */
 @RunWith(AndroidJUnit4::class)
 class PikaE2eUiTest {
     @get:Rule
@@ -34,7 +40,7 @@ class PikaE2eUiTest {
     fun e2e_deployedRustBot_pingPong() {
         val args = InstrumentationRegistry.getArguments()
         Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable the fixture-backed UI selector.",
             args.getString("pika_e2e") == "1",
         )
 
@@ -42,7 +48,7 @@ class PikaE2eUiTest {
         val testNsec = args.getString("pika_nsec") ?: args.getString("pika_test_nsec") ?: ""
         val botNpub = args.getString("pika_peer_npub") ?: ""
 
-        // Public-relay E2E should be explicit. Defaults hide misconfiguration and cause flaky hangs.
+        // Fixture-backed UI runs should be explicit. Defaults hide misconfiguration and cause flaky hangs.
         check(botNpub.isNotBlank()) { "Missing instrumentation arg: pika_peer_npub" }
         check(testNsec.isNotBlank()) { "Missing instrumentation arg: pika_nsec" }
 
@@ -115,7 +121,7 @@ class PikaE2eUiTest {
     fun e2e_deployedRustBot_callAudio() {
         val args = InstrumentationRegistry.getArguments()
         Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable the fixture-backed UI selector.",
             args.getString("pika_e2e") == "1",
         )
 
@@ -181,8 +187,7 @@ class PikaE2eUiTest {
             }
         }
 
-        // Public relays + deployed bot are nondeterministic. Allow a retry if the bot
-        // doesn't accept quickly (common when relays are flaky).
+        // Device/runtime timing is still noisy enough that we allow one retry before failing.
         runOnMain { AppManager.getInstance(ctx).dispatch(AppAction.StartCall(chatId)) }
         retryOnTimeout(
             maxAttempts = 2,
@@ -211,7 +216,7 @@ class PikaE2eUiTest {
     fun e2e_hypernoteDetailsAndCodeBlock() {
         val args = InstrumentationRegistry.getArguments()
         Assume.assumeTrue(
-            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable public-relay E2E UI test.",
+            "Set -Pandroid.testInstrumentationRunnerArguments.pika_e2e=1 to enable the fixture-backed UI selector.",
             args.getString("pika_e2e") == "1",
         )
 

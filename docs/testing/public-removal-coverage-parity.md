@@ -1,13 +1,14 @@
 ---
-summary: Coverage parity ledger for public-infra test removal
+summary: Coverage parity ledger for public-network and deployed-bot test removal
 read_when:
   - evaluating whether public tests can be safely removed
   - understanding local test coverage vs former public tests
 ---
 
-# Public-Infra Removal Coverage Parity Ledger
+# Public-Network Removal Coverage Parity Ledger
 
-This document maps each `integration_public` assertion to existing local/deterministic coverage, proving that removing public-infra tests does not silently drop behavioral coverage.
+This document records the deterministic or local-fixture coverage that replaces removed public-network, deployed-bot, and perf probes.
+The goal is to keep core app correctness on Rust-first, local-fixture-backed tests rather than public infrastructure.
 
 ## Public Selector Coverage Mapping
 
@@ -44,6 +45,18 @@ This document maps each `integration_public` assertion to existing local/determi
 | Call end + cleanup | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (call end flow) |
 | Bot audio + daemon call flow | `integration_deterministic::call_with_pikachat_daemon_boundary` | Covered (daemon-based bot call) |
 
+## Additional Checked-In Probe Removals
+
+| Removed surface | Why removed or demoted | Replacement coverage |
+| --- | --- | --- |
+| `rust/tests/e2e_calls.rs::call_deployed_bot` | Duplicated Rust-owned message + call behavior while depending on public relays, a deployed bot, and prod-like MoQ infra. | `integration_deterministic::openclaw_scenario_invite_and_chat`, `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary` |
+| `rust/tests/perf_relay_latency.rs::relay_latency_comparison` | Latency benchmark / infrastructure canary, not a correctness test. | No test replacement by design. Treat as manual benchmarking or monitoring work, not CI coverage. |
+| `ios/UITests/CallE2ETests.swift::testCallDeployedBot` and `tools/run-call-e2e-device` | Real-device deployed-bot probe that mostly re-tested Rust-owned call state and depended on public infra without asserting a unique iOS bridge contract. | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`; remaining iOS UI/native coverage stays focused on true native concerns such as deep links and external signer launch. |
+
+## Intentionally Retained Native UI Coverage
+
+The remaining bot/media UI selectors under `ios/UITests/PikaUITests.swift` and `android/app/src/androidTest/.../PikaE2eUiTest.kt` are retained because `pikahut` runs them against local relay/bot fixtures. They are not public-network canaries and should stay separate from the default native smoke suites.
+
 ## Intentionally Deferred (External-Only Behavior)
 
 The following behaviors are inherently external and cannot be replicated locally. They are intentionally deferred, not silently dropped:
@@ -59,4 +72,4 @@ These can be reintroduced later as deliberate canary lanes with explicit ownersh
 
 ## Conclusion
 
-All behavioral assertions from `integration_public` selectors are already covered by existing local/deterministic selectors. No backfill is required. The public tests added value only as infrastructure health canaries, which is out of scope for CI integration testing.
+All removed public-network and deployed-bot behavior is either covered by existing local/deterministic selectors or intentionally dropped because it was monitoring/benchmarking rather than product correctness. No public-infra backfill is required in the checked-in suite.

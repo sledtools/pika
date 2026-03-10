@@ -7,7 +7,8 @@ read_when:
 
 # How To Run UI E2E Tests With Video
 
-This doc explains how to run local UI E2E tests and automatically save screen recordings.
+This doc explains how to run the local-fixture UI E2E selectors and automatically save screen recordings.
+These commands are for local relay/bot fixtures, not public-relay canaries.
 
 ## Video Output
 
@@ -59,6 +60,8 @@ Or ping-pong only:
 PIKA_IOS_E2E_TEST_METHOD=testE2E_deployedRustBot_pingPong just ios-ui-e2e-local
 ```
 
+The iOS `testE2E_*` names are legacy selector hooks. `just ios-ui-e2e-local` still runs them against a local fixture.
+
 ## Android: Run Specific E2E Methods
 
 Use `PIKA_ANDROID_E2E_TEST_CLASS` to limit runtime, for example ping-only:
@@ -80,6 +83,8 @@ nix develop -c env \
   PIKA_ANDROID_E2E_TEST_CLASS='com.pika.app.PikaE2eUiTest#e2e_hypernoteDetailsAndCodeBlock' \
   just android-ui-e2e-local
 ```
+
+The Android `PikaE2eUiTest` class name is also legacy. `just android-ui-e2e-local` injects a local relay/bot fixture rather than public infrastructure.
 
 ## Verify A Recording
 

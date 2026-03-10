@@ -46,6 +46,12 @@ Native owns:
 
 Native must not own app business logic.
 
+## Testing Implication
+
+- Prefer Rust tests that dispatch frontend-like actions and assert on Rust-owned state.
+- Prefer local fixture-backed integration coverage over public-network or deployed-bot probes.
+- Keep native tests for rendering behavior and true platform capability bridges rather than re-testing Rust-owned business logic.
+
 ## Native Capability Bridge Pattern
 
 (`adapter window` is an acceptable alias during transition.)

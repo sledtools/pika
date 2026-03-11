@@ -118,6 +118,7 @@ in
         "VM_IP_POOL_END=192.168.83.254"
         "VM_GATEWAY_IP=${microvmHostIp}"
         "VM_DNS_IP=${cfg.dnsIp}"
+        "VM_HOST_ID=${config.networking.hostName}"
       ];
       ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${spawnerStateDir} ${spawnerRunDir} ${spawnerRunDir}/cache ${spawnerRunDir}/runner-cache ${spawnerRunDir}/runner-flakes /data/microvm-shared/artifacts";
       ExecStart = "${vmSpawnerPkg}/bin/vm-spawner";

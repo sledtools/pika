@@ -1,0 +1,150 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Confirm Destructive Reset</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4ede2;
+      --panel: rgba(255, 251, 245, 0.96);
+      --border: #cfbea0;
+      --ink: #1d211c;
+      --muted: #62685d;
+      --ok: #13624d;
+      --warm: #8d5c13;
+      --error: #9d2f24;
+      --danger: #8a231a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0)),
+        radial-gradient(circle at top left, rgba(157, 47, 36, 0.14), transparent 30%),
+        linear-gradient(180deg, #faf6ef 0%, var(--bg) 100%);
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 18px 56px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 18px 60px rgba(72, 58, 31, 0.08);
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 6vw, 3.2rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    p {
+      margin: 0 0 14px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 0.92rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: white;
+      margin-bottom: 16px;
+    }
+    .tone-ok { background: var(--ok); }
+    .tone-warm { background: var(--warm); }
+    .tone-error { background: var(--error); }
+    dl {
+      margin: 18px 0 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px 18px;
+    }
+    dt {
+      margin: 0 0 4px;
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    dd {
+      margin: 0;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    code {
+      font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+      font-size: 0.92em;
+    }
+    .actions {
+      display: grid;
+      gap: 12px;
+      margin-top: 24px;
+    }
+    form { margin: 0; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 18px;
+      padding: 14px 18px;
+      font: inherit;
+      cursor: pointer;
+      color: white;
+      background: var(--danger);
+    }
+    .ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Confirm Destructive Reset</h1>
+      <div class="pill tone-{{ backup_state_tone }}">
+        <span>{{ backup_state_label }}</span>
+      </div>
+      <p>Signed in as <code>{{ owner_npub }}</code>.</p>
+      <p>{{ backup_status_copy }}</p>
+      <p>Destructive reset can still proceed, but it will replace the current managed OpenClaw environment with a fresh one and may leave you without a recent durable-home backup to fall back on.</p>
+
+      <dl>
+        <div>
+          <dt>Latest successful backup</dt>
+          <dd>{{ backup_last_successful_at }}</dd>
+        </div>
+        {% if has_backup_host %}
+        <div>
+          <dt>Backup host</dt>
+          <dd><code>{{ backup_host }}</code></dd>
+        </div>
+        {% endif %}
+      </dl>
+
+      <div class="actions">
+        <form method="post" action="/dashboard/reset">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}" />
+          <button type="submit">Reset Without Recent Backup</button>
+        </form>
+        <form method="get" action="/dashboard">
+          <button class="ghost" type="submit">Cancel</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

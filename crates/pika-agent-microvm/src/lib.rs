@@ -8,7 +8,8 @@ use pika_agent_control_plane::{
     GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan,
     MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
+    SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
 
@@ -36,6 +37,7 @@ const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
+const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -219,6 +221,43 @@ impl MicrovmSpawnerClient {
             );
         }
         resp.json().await.context("decode get vm response")
+    }
+
+    pub async fn get_vm_backup_status(&self, vm_id: &str) -> anyhow::Result<SpawnerVmBackupStatus> {
+        self.get_vm_backup_status_with_request_id(vm_id, None).await
+    }
+
+    pub async fn get_vm_backup_status_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+        let url = format!("{}/vms/{vm_id}/backup-status", self.base_url);
+        let resp = with_request_id(
+            self.client.get(&url).timeout(GET_VM_BACKUP_STATUS_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send get vm backup status request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "get vm backup status",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json()
+            .await
+            .context("decode get vm backup status response")
     }
 }
 
@@ -1520,6 +1559,33 @@ mod tests {
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
             Some("req-get-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vm_backup_status_contract_request_shape() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"vm_id":"vm-123","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-123/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let status = client
+            .get_vm_backup_status_with_request_id("vm-123", Some("req-backup-123"))
+            .await
+            .expect("get backup status succeeds");
+        assert_eq!(status.vm_id, "vm-123");
+        assert!(status.successful_backup_known);
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-123/backup-status");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-backup-123")
         );
         assert!(captured.body.is_empty());
     }

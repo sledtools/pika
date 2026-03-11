@@ -26,7 +26,7 @@ use crate::nostr_auth::{
 use crate::{RequestContext, State};
 use pika_agent_control_plane::{
     AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
-    SpawnerVmResponse,
+    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness,
 };
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, validate_resolved_params,
@@ -135,6 +135,24 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub startup_phase: Option<AgentStartupPhase>,
     pub environment_exists: bool,
     pub status_copy: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ManagedEnvironmentBackupFreshness {
+    NotProvisioned,
+    Healthy,
+    Stale,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedEnvironmentBackupStatus {
+    pub freshness: ManagedEnvironmentBackupFreshness,
+    pub backup_host: Option<String>,
+    pub latest_successful_backup_at: Option<String>,
+    pub status_copy: String,
+    pub reset_requires_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -417,6 +435,62 @@ fn managed_environment_status_copy(
     }
 }
 
+fn managed_environment_backup_status_from_spawner(
+    backup: SpawnerVmBackupStatus,
+) -> ManagedEnvironmentBackupStatus {
+    let freshness = match backup.freshness {
+        VmBackupFreshness::Healthy => ManagedEnvironmentBackupFreshness::Healthy,
+        VmBackupFreshness::Stale => ManagedEnvironmentBackupFreshness::Stale,
+        VmBackupFreshness::Missing => ManagedEnvironmentBackupFreshness::Missing,
+        VmBackupFreshness::Unavailable => ManagedEnvironmentBackupFreshness::Unavailable,
+    };
+    let backup_host = (!backup.backup_host.trim().is_empty()).then_some(backup.backup_host);
+    let latest_successful_backup_at = backup
+        .latest_successful_backup_at
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let status_copy = match freshness {
+        ManagedEnvironmentBackupFreshness::Healthy => {
+            "Recent durable-home backup protection is in place for this managed environment."
+                .to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Stale => {
+            "Backup protection is stale. The latest successful durable-home backup is older than the healthy window, so destructive reset now requires explicit confirmation.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Missing => {
+            "No successful durable-home backup is known yet. Treat destructive reset as unsafe until the first backup completes.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Unavailable => {
+            "Backup protection could not be verified from the control plane right now. Destructive reset now requires explicit confirmation.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::NotProvisioned => {
+            "No managed environment exists yet, so backup protection is not tracked.".to_string()
+        }
+    };
+
+    ManagedEnvironmentBackupStatus {
+        freshness,
+        backup_host,
+        latest_successful_backup_at,
+        reset_requires_confirmation: !matches!(
+            freshness,
+            ManagedEnvironmentBackupFreshness::Healthy
+                | ManagedEnvironmentBackupFreshness::NotProvisioned
+        ),
+        status_copy,
+    }
+}
+
+fn unavailable_backup_status(status_copy: impl Into<String>) -> ManagedEnvironmentBackupStatus {
+    ManagedEnvironmentBackupStatus {
+        freshness: ManagedEnvironmentBackupFreshness::Unavailable,
+        backup_host: None,
+        latest_successful_backup_at: None,
+        reset_requires_confirmation: true,
+        status_copy: status_copy.into(),
+    }
+}
+
 fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
     match (vm.status.as_str(), vm.guest_ready) {
         ("failed", _) => AGENT_PHASE_ERROR,
@@ -645,6 +719,63 @@ pub(crate) async fn load_managed_environment_status(
         app_state,
         startup_phase: Some(refreshed.startup_phase),
     })
+}
+
+pub(crate) async fn load_managed_environment_backup_status(
+    status: &ManagedEnvironmentStatus,
+    request_id: &str,
+) -> ManagedEnvironmentBackupStatus {
+    let Some(row) = status.row.as_ref() else {
+        return ManagedEnvironmentBackupStatus {
+            freshness: ManagedEnvironmentBackupFreshness::NotProvisioned,
+            backup_host: None,
+            latest_successful_backup_at: None,
+            reset_requires_confirmation: false,
+            status_copy: "No managed environment exists yet, so backup protection is not tracked."
+                .to_string(),
+        };
+    };
+
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return unavailable_backup_status(
+            "No current VM assignment is available, so backup protection cannot be verified from the control plane.",
+        );
+    };
+
+    let resolved = match resolved_spawner_params(None) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                agent_id = %row.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to resolve spawner params while loading backup status"
+            );
+            return unavailable_backup_status(
+                "Backup protection could not be verified because the backup host control plane is unavailable.",
+            );
+        }
+    };
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    match spawner
+        .get_vm_backup_status_with_request_id(vm_id, Some(request_id))
+        .await
+    {
+        Ok(backup) => managed_environment_backup_status_from_spawner(backup),
+        Err(err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                agent_id = %row.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to load backup status from spawner"
+            );
+            unavailable_backup_status(
+                "Backup protection could not be verified from the control plane right now.",
+            )
+        }
+    }
 }
 
 pub(crate) async fn load_launchable_managed_environment(

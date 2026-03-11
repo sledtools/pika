@@ -36,6 +36,7 @@ const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
+const RESTORE_VM_TIMEOUT: Duration = Duration::from_secs(120);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
 const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -189,6 +190,41 @@ impl MicrovmSpawnerClient {
             );
         }
         resp.json().await.context("decode recover vm response")
+    }
+
+    pub async fn restore_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
+        self.restore_vm_with_request_id(vm_id, None).await
+    }
+
+    pub async fn restore_vm_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<VmResponse> {
+        let url = format!("{}/vms/{vm_id}/restore", self.base_url);
+        let resp = with_request_id(
+            self.client.post(&url).timeout(RESTORE_VM_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send restore vm request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "restore vm",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json().await.context("decode restore vm response")
     }
 
     pub async fn get_vm(&self, vm_id: &str) -> anyhow::Result<VmResponse> {
@@ -2025,6 +2061,31 @@ done
     }
 
     #[tokio::test]
+    async fn restore_vm_contract_request_shape() {
+        let (base_url, rx) =
+            spawn_one_shot_server("200 OK", r#"{"id":"vm-restore-1","status":"starting"}"#);
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let restored = client
+            .restore_vm_with_request_id("vm-restore-1", Some("req-restore-123"))
+            .await
+            .expect("restore vm succeeds");
+        assert_eq!(restored.id, "vm-restore-1");
+        assert_eq!(restored.status, "starting");
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/vms/vm-restore-1/restore");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-restore-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn get_vm_contract_response_carries_guest_ready() {
         let (base_url, rx) = spawn_one_shot_server(
             "200 OK",
@@ -2131,6 +2192,22 @@ done
         assert!(msg.contains("failed to recover vm vm-bad"));
         assert!(msg.contains("503 Service Unavailable"));
         assert!(msg.contains("vm reboot failed"));
+    }
+
+    #[tokio::test]
+    async fn restore_vm_surfaces_error_body() {
+        let (base_url, _rx) =
+            spawn_one_shot_server("500 Internal Server Error", "restic restore failed");
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let err = client
+            .restore_vm("vm-bad")
+            .await
+            .expect_err("expected restore_vm failure");
+        let msg = err.to_string();
+        assert!(msg.contains("failed to restore vm vm-bad"));
+        assert!(msg.contains("500 Internal Server Error"));
+        assert!(msg.contains("restic restore failed"));
     }
 
     #[test]

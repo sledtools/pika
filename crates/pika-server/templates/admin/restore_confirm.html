@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Confirm Restore From Backup</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      margin: 0;
+      background: #f7f5f0;
+      color: #1d211c;
+    }
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 18px 56px;
+    }
+    .card {
+      background: white;
+      border: 1px solid #d9d0c2;
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 16px 48px rgba(46, 40, 30, 0.08);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 5vw, 3rem);
+      line-height: 1;
+    }
+    p {
+      margin: 0 0 14px;
+      line-height: 1.5;
+      color: #50584d;
+    }
+    dl {
+      margin: 18px 0 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px 18px;
+    }
+    dt {
+      margin: 0 0 4px;
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #687164;
+    }
+    dd {
+      margin: 0;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    code {
+      font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+      font-size: 0.92em;
+    }
+    .callout {
+      margin-top: 18px;
+      padding: 16px 18px;
+      border-radius: 16px;
+      background: #f3ede2;
+      border: 1px solid #d7c8a8;
+    }
+    .actions {
+      display: grid;
+      gap: 12px;
+      margin-top: 24px;
+    }
+    form {
+      margin: 0;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 16px;
+      padding: 14px 18px;
+      font: inherit;
+      cursor: pointer;
+      color: white;
+      background: #8a231a;
+    }
+    .ghost {
+      background: transparent;
+      color: #1d211c;
+      border: 1px solid #d9d0c2;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Confirm Restore From Backup</h1>
+      <p>Signed in as <code>{{ current_admin_npub }}</code>.</p>
+      <p>This replaces the current durable home for <code>{{ owner_npub }}</code> on <code>{{ vm_id }}</code> with the latest backup-restored contents, then recreates the managed OpenClaw environment from that restored state.</p>
+      <p>This is distinct from <strong>Recover</strong>, which tries to preserve the current durable home in place, and from <strong>Destructive Reset</strong>, which provisions fresh and can discard prior durable state.</p>
+
+      <dl>
+        <div>
+          <dt>Owner</dt>
+          <dd><code>{{ owner_npub }}</code></dd>
+        </div>
+        <div>
+          <dt>Agent</dt>
+          <dd><code>{{ agent_id }}</code></dd>
+        </div>
+        <div>
+          <dt>VM</dt>
+          <dd><code>{{ vm_id }}</code></dd>
+        </div>
+        <div>
+          <dt>App State</dt>
+          <dd>{{ app_state }}</dd>
+        </div>
+        <div>
+          <dt>Startup Phase</dt>
+          <dd>{{ startup_phase }}</dd>
+        </div>
+        <div>
+          <dt>Backup Freshness</dt>
+          <dd>{{ backup_freshness }}</dd>
+        </div>
+        <div>
+          <dt>Latest Successful Backup</dt>
+          <dd>{{ backup_last_successful_at }}</dd>
+        </div>
+        {% if has_backup_host %}
+        <div>
+          <dt>Backup Host</dt>
+          <dd><code>{{ backup_host }}</code></dd>
+        </div>
+        {% endif %}
+      </dl>
+
+      <div class="callout">
+        <p>{{ backup_status_copy }}</p>
+        <p>If a current guest is running, restore first quiesces it. The current durable home is then replaced from backup contents before the environment is recreated on the same VM slot.</p>
+      </div>
+
+      <div class="actions">
+        <form method="post" action="/admin/environments/{{ owner_npub }}/restore">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}" />
+          <button type="submit">Confirm Restore From Backup</button>
+        </form>
+        <form method="get" action="/admin">
+          <button class="ghost" type="submit">Cancel</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

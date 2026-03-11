@@ -17,6 +17,102 @@ fn clean_token(token: &str) -> String {
         .to_string()
 }
 
+fn indent_width(line: &str) -> usize {
+    line.chars().take_while(|ch| *ch == ' ').count()
+}
+
+fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut in_filters = false;
+    let mut filters_indent = 0usize;
+    let mut current_filter: Option<&str> = None;
+
+    for line in workflow.lines() {
+        if !in_filters {
+            if line.trim() == "filters: |" {
+                in_filters = true;
+                filters_indent = indent_width(line);
+            }
+            continue;
+        }
+
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+
+        if !trimmed.is_empty() && indent <= filters_indent {
+            break;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if indent == filters_indent + 2 && trimmed.ends_with(':') {
+            current_filter = Some(trimmed.trim_end_matches(':'));
+            continue;
+        }
+
+        if current_filter == Some(filter_name)
+            && indent >= filters_indent + 4
+            && trimmed.starts_with("- ")
+        {
+            entries.push(
+                trimmed
+                    .trim_start_matches("- ")
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        }
+    }
+
+    entries
+}
+
+fn extract_pikaci_target_filters(text: &str, target_name: &str) -> Vec<String> {
+    let marker = format!("\"{target_name}\" => Ok(TargetSpec {{");
+    let mut in_target = false;
+    let mut in_filters = false;
+    let mut filters = Vec::new();
+
+    for line in text.lines() {
+        if !in_target {
+            if line.contains(&marker) {
+                in_target = true;
+            }
+            continue;
+        }
+
+        if !in_filters {
+            if line.contains("filters: &[") {
+                in_filters = true;
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed == "]," {
+            break;
+        }
+
+        if let Some(filter) = trimmed
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix("\","))
+        {
+            filters.push(filter.to_string());
+        }
+    }
+
+    filters
+}
+
+fn extract_just_alias_target(text: &str, alias_name: &str) -> Option<String> {
+    let prefix = format!("alias {alias_name} := ");
+    text.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(|value| value.trim().to_string())
+    })
+}
+
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
     let mut selectors = HashSet::new();
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -324,6 +420,45 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
             "Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`."
         ),
         "integration-matrix.md must keep the retained non-selector exception explicit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
+    let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
+
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let alias_target = extract_just_alias_target(&justfile, "pre-merge-pikachat");
+    assert_eq!(
+        alias_target.as_deref(),
+        Some("checks::pre-merge-pikachat"),
+        "justfile must keep pre-merge-pikachat routed through checks::pre-merge-pikachat for this workflow guardrail"
+    );
+    assert!(
+        pikachat_filter.contains("just/checks.just"),
+        "pikachat workflow filter must include just/checks.just because pre-merge-pikachat is defined there"
+    );
+
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust");
+    assert!(
+        !rust_lane_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-pikachat-rust filters discoverable"
+    );
+
+    let missing_from_workflow: Vec<_> = rust_lane_filters
+        .into_iter()
+        .filter(|entry| !pikachat_filter.contains(entry))
+        .collect();
+    assert!(
+        missing_from_workflow.is_empty(),
+        "pikachat workflow filter must cover the checked-in pre-merge-pikachat-rust dependency surface; missing: {:?}",
+        missing_from_workflow
     );
 
     Ok(())

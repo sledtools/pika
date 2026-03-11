@@ -71,7 +71,6 @@ This document defines the selector-first contract and current policy ownership f
 
 ## Deferred Root CI / `pikaci` Mismatches
 
-- `.github/workflows/pre-merge.yml` still omits `crates/pikahut/**` from the `pikachat` path filter even though `pre-merge-pikachat` depends on `pikahut` selectors and scenarios.
 - On Apple Silicon, `just pre-merge-pikachat` still splits between staged Linux Rust work via `pikaci` and host-side desktop/TypeScript checks. That is a real current constraint, not a clean selector-only lane yet.
 - `nightly-pika-ui-ios` is CI-owned only through `just ios-ui-test`; the local-fixture selector `ios-ui-e2e-local` remains manual-only and should not be described as nightly-owned.
 

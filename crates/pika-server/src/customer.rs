@@ -65,6 +65,8 @@ struct DashboardTemplate {
     can_provision: bool,
     can_recover: bool,
     can_reset: bool,
+    control_loop_notice: &'static str,
+    has_control_loop_notice: bool,
     recover_action_label: &'static str,
     recover_semantics_copy: &'static str,
     recent_activity: Vec<DashboardActivityItem>,
@@ -182,6 +184,12 @@ fn dashboard_template(
     recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
+    let inflight_without_vm = row
+        .as_ref()
+        .map(|row| {
+            row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none()
+        })
+        .unwrap_or(false);
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
     DashboardTemplate {
         owner_npub: authenticated.npub,
@@ -207,14 +215,22 @@ fn dashboard_template(
         created_at: format_timestamp(row.as_ref().map(|row| row.created_at)),
         updated_at: format_timestamp(row.as_ref().map(|row| row.updated_at)),
         can_provision: row.is_none(),
-        can_recover: row.is_some(),
-        can_reset: row.is_some(),
+        can_recover: row.is_some() && !inflight_without_vm,
+        can_reset: row.is_some() && !inflight_without_vm,
+        control_loop_notice: if inflight_without_vm {
+            "Provisioning is already in flight. Recovery and reset stay locked until the current VM assignment finishes."
+        } else {
+            ""
+        },
+        has_control_loop_notice: inflight_without_vm,
         recover_action_label: if recoverable_vm_exists {
             "Recover Managed Environment"
         } else {
             "Provision Fresh Managed Environment"
         },
-        recover_semantics_copy: if recoverable_vm_exists {
+        recover_semantics_copy: if inflight_without_vm {
+            "stays locked while the initial VM assignment is still in flight. Wait for the current create request to finish before retrying any destructive action."
+        } else if recoverable_vm_exists {
             "asks the control plane to bring the managed environment back. If that VM is still recoverable, this path preserves the durable home. If the VM is already gone, Recover falls back to provisioning a fresh environment."
         } else {
             "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
@@ -1421,6 +1437,10 @@ mod tests {
         let body = response_body_string(response).await;
         assert!(body.contains("Provisioning a managed OpenClaw environment."));
         assert!(body.contains("agent-inflight"));
+        assert!(body.contains("Provisioning is already in flight."));
+        assert!(body.contains("stays locked while the initial VM assignment is still in flight"));
+        assert!(!body.contains("Recover Managed Environment"));
+        assert!(!body.contains("Provision Fresh Managed Environment"));
         assert!(!body.contains("needs recovery"));
 
         clear_test_database(&db_pool);

@@ -128,6 +128,7 @@ pub enum RuntimeConversationEventInterpretation {
 pub enum RuntimeOperationEvent {
     MembershipEvolution(MembershipEvolutionOperationEvent),
     OutboundConversationPublish(OutboundConversationPublishOperationEvent),
+    CallSignalPublish(CallSignalPublishOperationEvent),
 }
 
 impl RuntimeOperationEvent {
@@ -135,6 +136,7 @@ impl RuntimeOperationEvent {
         match self {
             Self::MembershipEvolution(event) => event.operation_id(),
             Self::OutboundConversationPublish(event) => event.operation_id(),
+            Self::CallSignalPublish(event) => event.operation_id(),
         }
     }
 
@@ -142,6 +144,7 @@ impl RuntimeOperationEvent {
         match self {
             Self::MembershipEvolution(event) => event.nostr_group_id_hex(),
             Self::OutboundConversationPublish(event) => event.nostr_group_id_hex(),
+            Self::CallSignalPublish(event) => event.nostr_group_id_hex(),
         }
     }
 
@@ -193,6 +196,37 @@ impl RuntimeOperationEvent {
                     },
                 )
             }
+        }
+    }
+
+    pub fn complete_call_signal_publish(
+        kind: CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        prepared: PreparedCallSignal,
+        publish_status: CallSignalPublishStatus,
+    ) -> Self {
+        match publish_status {
+            CallSignalPublishStatus::Published { wrapper_event_id } => {
+                Self::CallSignalPublish(CallSignalPublishOperationEvent::Completed {
+                    operation_id: wrapper_event_id,
+                    result: PublishedCallSignal {
+                        kind,
+                        nostr_group_id_hex,
+                        call_id: prepared.call_id,
+                        wrapper_event_id,
+                    },
+                })
+            }
+            CallSignalPublishStatus::PublishFailed {
+                wrapper_event_id,
+                error,
+            } => Self::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
+                operation_id: wrapper_event_id,
+                kind,
+                nostr_group_id_hex,
+                call_id: prepared.call_id,
+                error,
+            }),
         }
     }
 }
@@ -258,6 +292,67 @@ impl OutboundConversationPublishOperationEvent {
         match self {
             Self::Completed { result, .. } => &result.target.nostr_group_id_hex,
             Self::Failed { target, .. } => &target.nostr_group_id_hex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallSignalPublishKind {
+    Invite,
+    Accept,
+    Reject,
+    End,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishedCallSignal {
+    pub kind: CallSignalPublishKind,
+    pub nostr_group_id_hex: String,
+    pub call_id: String,
+    pub wrapper_event_id: EventId,
+}
+
+#[derive(Debug, Clone)]
+pub enum CallSignalPublishStatus {
+    Published {
+        wrapper_event_id: EventId,
+    },
+    PublishFailed {
+        wrapper_event_id: EventId,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CallSignalPublishOperationEvent {
+    Completed {
+        operation_id: EventId,
+        result: PublishedCallSignal,
+    },
+    Failed {
+        operation_id: EventId,
+        kind: CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        call_id: String,
+        error: String,
+    },
+}
+
+impl CallSignalPublishOperationEvent {
+    pub fn operation_id(&self) -> EventId {
+        match self {
+            Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
+                *operation_id
+            }
+        }
+    }
+
+    pub fn nostr_group_id_hex(&self) -> &str {
+        match self {
+            Self::Completed { result, .. } => &result.nostr_group_id_hex,
+            Self::Failed {
+                nostr_group_id_hex, ..
+            } => nostr_group_id_hex,
         }
     }
 }
@@ -756,6 +851,21 @@ impl<'a> RuntimeCommands<'a> {
         publish_status: OutboundConversationPublishStatus,
     ) -> RuntimeOperationEvent {
         RuntimeOperationEvent::complete_outbound_conversation_publish(prepared, publish_status)
+    }
+
+    pub fn complete_call_signal_publish_operation(
+        &self,
+        kind: CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        prepared: PreparedCallSignal,
+        publish_status: CallSignalPublishStatus,
+    ) -> RuntimeOperationEvent {
+        RuntimeOperationEvent::complete_call_signal_publish(
+            kind,
+            nostr_group_id_hex,
+            prepared,
+            publish_status,
+        )
     }
 
     pub async fn publish_prepared_action(
@@ -2444,6 +2554,77 @@ mod tests {
         assert_eq!(prepared.call_id, "550e8400-e29b-41d4-a716-446655440013");
         assert!(prepared.payload_json.contains("call.end"));
         assert!(prepared.payload_json.contains("\"user_hangup\""));
+    }
+
+    #[test]
+    fn runtime_commands_complete_call_signal_publish_operation_returns_completed_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+        let operation = RuntimeCommands::new(&mdk).complete_call_signal_publish_operation(
+            CallSignalPublishKind::Invite,
+            "deadbeef".to_string(),
+            PreparedCallSignal {
+                call_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                payload_json: "{\"type\":\"call.invite\"}".to_string(),
+            },
+            CallSignalPublishStatus::Published {
+                wrapper_event_id: EventId::all_zeros(),
+            },
+        );
+
+        match operation {
+            RuntimeOperationEvent::CallSignalPublish(
+                CallSignalPublishOperationEvent::Completed {
+                    operation_id,
+                    result,
+                },
+            ) => {
+                assert_eq!(operation_id, EventId::all_zeros());
+                assert_eq!(result.kind, CallSignalPublishKind::Invite);
+                assert_eq!(result.nostr_group_id_hex, "deadbeef");
+                assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440014");
+                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
+            }
+            other => panic!("expected completed call signal publish event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_commands_complete_call_signal_publish_operation_returns_failed_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+        let wrapper_event_id =
+            EventId::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+                .expect("event id");
+        let operation = RuntimeCommands::new(&mdk).complete_call_signal_publish_operation(
+            CallSignalPublishKind::Invite,
+            "deadbeef".to_string(),
+            PreparedCallSignal {
+                call_id: "550e8400-e29b-41d4-a716-446655440015".to_string(),
+                payload_json: "{\"type\":\"call.invite\"}".to_string(),
+            },
+            CallSignalPublishStatus::PublishFailed {
+                wrapper_event_id,
+                error: "relay down".to_string(),
+            },
+        );
+
+        match operation {
+            RuntimeOperationEvent::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
+                operation_id,
+                kind,
+                nostr_group_id_hex,
+                call_id,
+                error,
+            }) => {
+                assert_eq!(operation_id, wrapper_event_id);
+                assert_eq!(kind, CallSignalPublishKind::Invite);
+                assert_eq!(nostr_group_id_hex, "deadbeef");
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440015");
+                assert_eq!(error, "relay down");
+            }
+            other => panic!("expected failed call signal publish event, got {other:?}"),
+        }
     }
 
     #[test]

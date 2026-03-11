@@ -58,6 +58,9 @@ pub enum InternalEvent {
     OutboundPublishOperation {
         operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
     },
+    CallSignalPublishOperation {
+        operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
+    },
     ChatMediaUploadCompleted {
         request_id: String,
         uploaded_url: Option<String>,

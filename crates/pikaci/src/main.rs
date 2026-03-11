@@ -365,6 +365,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-media/**",
                 "crates/pika-marmot-runtime/**",
                 "crates/pika-relay-profiles/**",
+                "crates/pika-test-utils/**",
                 "crates/pika-tls/**",
                 "rust/**",
             ],

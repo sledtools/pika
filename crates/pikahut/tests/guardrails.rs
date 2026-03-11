@@ -69,21 +69,22 @@ fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String
 }
 
 fn extract_pikaci_target_filters(text: &str, target_name: &str) -> Vec<String> {
-    let marker = format!("\"{target_name}\" => Ok(TargetSpec {{");
+    let direct_marker = format!("\"{target_name}\" => Ok(TargetSpec {{");
+    let staged_marker = format!("\"{target_name}\" => Ok(staged_linux_target_spec(");
     let mut in_target = false;
     let mut in_filters = false;
     let mut filters = Vec::new();
 
     for line in text.lines() {
         if !in_target {
-            if line.contains(&marker) {
+            if line.contains(&direct_marker) || line.contains(&staged_marker) {
                 in_target = true;
             }
             continue;
         }
 
         if !in_filters {
-            if line.contains("filters: &[") {
+            if line.contains("filters: &[") || line.trim() == "&[" {
                 in_filters = true;
             }
             continue;
@@ -569,6 +570,139 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "pikachat workflow filter must include pikachat-openclaw/** while the Apple host follow-up runs the channel behavior test"
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let agent_filter = extract_paths_filter_entries(&workflow, "agent_contracts");
+    let agent_filter: HashSet<_> = agent_filter.into_iter().collect();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let alias_target = extract_just_alias_target(&justfile, "pre-merge-agent-contracts");
+    assert_eq!(
+        alias_target.as_deref(),
+        Some("checks::pre-merge-agent-contracts"),
+        "justfile must keep pre-merge-agent-contracts routed through checks::pre-merge-agent-contracts for this workflow guardrail"
+    );
+    assert!(
+        agent_filter.contains("just/checks.just"),
+        "agent_contracts workflow filter must include just/checks.just because pre-merge-agent-contracts is defined there"
+    );
+
+    let recipe = extract_just_recipe_body(&checks, "pre-merge-agent-contracts");
+    assert!(
+        !recipe.is_empty(),
+        "checks.just must keep a checked-in pre-merge-agent-contracts recipe body"
+    );
+    if recipe
+        .iter()
+        .any(|line| line.contains("pikaci-remote-fulfill-pre-merge-agent-contracts"))
+    {
+        let remote_alias_target =
+            extract_just_alias_target(&justfile, "pikaci-remote-fulfill-pre-merge-agent-contracts");
+        assert_eq!(
+            remote_alias_target.as_deref(),
+            Some("infra::pikaci-remote-fulfill-pre-merge-agent-contracts"),
+            "justfile must keep the Apple remote agent-contracts helper routed through infra::pikaci-remote-fulfill-pre-merge-agent-contracts for this workflow guardrail"
+        );
+        assert!(
+            agent_filter.contains("just/infra.just"),
+            "agent_contracts workflow filter must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
+        );
+
+        let infra = fs::read_to_string(root.join("just/infra.just"))?;
+        let remote_recipe =
+            extract_just_recipe_body(&infra, "pikaci-remote-fulfill-pre-merge-agent-contracts");
+        assert!(
+            !remote_recipe.is_empty(),
+            "just/infra.just must keep a checked-in pikaci-remote-fulfill-pre-merge-agent-contracts recipe body"
+        );
+        if remote_recipe
+            .iter()
+            .any(|line| line.contains("scripts/pikaci-staged-linux-remote.sh"))
+        {
+            assert!(
+                agent_filter.contains("scripts/pikaci-staged-linux-remote.sh"),
+                "agent_contracts workflow filter must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
+            );
+        }
+    }
+
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-agent-contracts");
+    assert!(
+        !rust_lane_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-agent-contracts filters discoverable"
+    );
+
+    let missing_from_workflow: Vec<_> = rust_lane_filters
+        .iter()
+        .filter(|entry| !agent_filter.contains(entry.as_str()))
+        .cloned()
+        .collect();
+    assert!(
+        missing_from_workflow.is_empty(),
+        "agent_contracts workflow filter must cover the checked-in pre-merge-agent-contracts dependency surface; missing: {:?}",
+        missing_from_workflow
+    );
+
+    let microvm_manifest = fs::read_to_string(root.join("crates/pika-agent-microvm/Cargo.toml"))?;
+    let server_manifest = fs::read_to_string(root.join("crates/pika-server/Cargo.toml"))?;
+    let staged_agent_tests_use_shared_test_utils =
+        microvm_manifest.contains("pika-test-utils") || server_manifest.contains("pika-test-utils");
+    if staged_agent_tests_use_shared_test_utils {
+        assert!(
+            rust_lane_filters
+                .iter()
+                .any(|entry| entry == "crates/pika-test-utils/**"),
+            "pre-merge-agent-contracts pikaci target filters must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
+        );
+        assert!(
+            agent_filter.contains("crates/pika-test-utils/**"),
+            "agent_contracts workflow filter must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
+        );
+    }
+
+    let selector_refs = parse_cli_selector_refs(&recipe.join("\n"));
+    let expected_host_selectors = [
+        "integration_deterministic::agent_http_ensure_local",
+        "integration_deterministic::agent_http_cli_new_local",
+        "integration_deterministic::agent_http_cli_new_idempotent_local",
+        "integration_deterministic::agent_http_cli_new_me_recover_local",
+    ];
+    for selector in expected_host_selectors {
+        assert!(
+            selector_refs.contains(selector),
+            "pre-merge-agent-contracts must keep host-side selector coverage for {selector}"
+        );
+    }
+    assert!(
+        agent_filter.contains("crates/pikahut/src/**"),
+        "agent_contracts workflow filter must include crates/pikahut/src/** while the lane keeps host-side agent selectors"
+    );
+    assert!(
+        agent_filter.contains("crates/pikahut/tests/**"),
+        "agent_contracts workflow filter must include crates/pikahut/tests/** while the lane keeps host-side agent selectors"
+    );
+    assert!(
+        agent_filter.contains("crates/pikahut/Cargo.toml"),
+        "agent_contracts workflow filter must include crates/pikahut/Cargo.toml while the lane keeps host-side agent selectors"
+    );
+    let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
+    if pikahut_manifest.contains("pika-desktop") {
+        assert!(
+            agent_filter.contains("crates/pika-desktop/**"),
+            "agent_contracts workflow filter must include crates/pika-desktop/** while host-side pikahut selectors depend on pika-desktop"
+        );
+    }
+    assert!(
+        agent_filter.contains("cli/**"),
+        "agent_contracts workflow filter must include cli/** while the lane keeps agent_http_cli_new selectors"
+    );
 
     Ok(())
 }

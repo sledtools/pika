@@ -77,6 +77,11 @@ Working assumptions:
    - the Apple Silicon branch of `just pre-merge-pikachat` now composes staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` helper
    - the checked-in host follow-up owns the remaining Apple-host `pikachat`/`pikachat-sidecar` clippy plus the desktop selector and TypeScript channel-behavior test without changing coverage
    - the next concrete ask there is Apple-host execution ownership/provisioning, not more split clarification
+
+7. Slice 8 aligned the `agent_contracts` blocking filter with the checked-in lane contract:
+   - `.github/workflows/pre-merge.yml` now covers the checked-in `pre-merge-agent-contracts` `pikaci` target surface, including `crates/pika-test-utils/**`, plus the checked-in host-side `just/checks.just` recipe, the Apple-path `just/infra.just` wrapper and `scripts/pikaci-staged-linux-remote.sh` helper, and the `pikahut` selector + manifest + `pika-desktop` surface
+   - a lane-specific guardrail now protects the workflow filter, root alias, checked-in recipe module, the Apple-path remote wrapper chain, the staged `pika-test-utils` edge, and the host-side `pikahut` agent HTTP selector surface
+   - the next filter-alignment candidates are `notifications` and `fixture`, not `agent_contracts`
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -114,7 +119,7 @@ Verified in the repo today:
 4. Many important `pikahut` selectors are intentionally `#[ignore]` and only matter because CI lanes select them explicitly.
 
 5. Current pre-merge enforcement is spread across separate lanes:
-   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests`, Android instrumentation compilation, `pikachat` build, desktop build-check, formatting/lint/docs/justfile checks
+   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests` with a temporary CI skip for `paging_loads_older_messages_in_pages`, Android instrumentation compilation, `pikachat` build, desktop build-check, formatting/lint/docs/justfile checks
    - `pre-merge-pikachat`: `pikachat` + `pikachat-sidecar` tests plus selected deterministic `pikahut` selectors
    - separate `agent-contracts`, `notifications`, `fixture`, `rmp`, and path-scoped heavy OpenClaw lanes
 
@@ -182,7 +187,9 @@ Verified in the repo today:
 
 5. Workflow change-detection and recipe ownership still do not line up cleanly everywhere.
    - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
-   - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, so the next ask there is Apple-host execution ownership/provisioning rather than another shape clarification.
+   - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, and Slice 8 aligned `agent_contracts` with the same workflow-vs-lane truth standard.
+   - `notifications` and `fixture` still rely on duplicated filter truth without a lane-specific guardrail.
+   - The next root-CI cleanup should consume one of those remaining lane-filter contract mismatches before deeper Apple-host execution work.
    - Recent staged-Linux rollout work is also creating the same mixed-mode shape in other Apple Silicon lanes such as `pre-merge-pika`, `pre-merge-agent-contracts`, and `pre-merge-fixture`, where remote/staged Rust execution is followed by host-side checks in `just/checks.just`.
    - After `pre-merge-pikachat`, we should decide whether those lane splits also need explicit checked-in contracts instead of accumulating more inline branch logic.
 
@@ -301,8 +308,15 @@ Acceptance criteria:
 
 Updated recommendation after Slice 7:
 1. The Apple Silicon `pre-merge-pikachat` split is now a checked-in contract instead of inline shell shape.
-2. The next best slice is the Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup`, not another docs or lane-coverage pass.
-3. Keep lane coverage stable while deciding whether that host follow-up remains on the Apple runner or moves under a more owned Apple target.
+2. At that point the next best root-CI slice was lane-filter contract alignment, starting with `agent_contracts`, because recent staged/shadow-lane work duplicated change-detection truth again.
+3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that filter-alignment cleanup.
+4. Keep lane coverage stable while deciding whether that host follow-up remains on the Apple runner or moves under a more owned Apple target.
+
+Updated recommendation after Slice 8:
+1. The `agent_contracts` workflow filter now matches the checked-in lane contract, including the Apple remote wrapper path, the staged `pika-test-utils` edge, and the host-side `pikahut` manifest + `pika-desktop` edge, and should stay closed.
+2. The next best root-CI slice is the same filter-alignment cleanup for `notifications`, with `fixture` close behind.
+3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that filter-alignment cleanup.
+4. Keep lane coverage stable while fixing the remaining workflow-vs-lane drift.
 
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
@@ -311,8 +325,10 @@ Default bias:
 Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
-3. Explicit CI tier clarification is now done in checked-in docs, the `check-pikachat` path-filter gap is fixed, and the Apple Silicon `pre-merge-pikachat` split is now explicit; the next best target is Apple-host execution/ownership for that checked-in follow-up.
-4. Keep avoiding root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
+3. Explicit CI tier clarification is now done in checked-in docs, the `check-pikachat` path-filter gap is fixed, and the Apple Silicon `pre-merge-pikachat` split is now explicit.
+4. The next best root-CI cleanup is lane-filter contract alignment for the remaining staged/shadow lanes, starting with `notifications` and then `fixture`.
+5. After that, the next best target is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
+6. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
 

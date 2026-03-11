@@ -7195,7 +7195,7 @@ mod tests {
 
         #[test]
         fn app_media_upload_commands_use_shared_command_boundary() {
-            let (core, _chat_id, _keys, group_id) = make_core_with_group();
+            let (core, chat_id, _keys, group_id) = make_core_with_group();
             let completed = core
                 .host_context()
                 .expect("host context")
@@ -7206,17 +7206,27 @@ mod tests {
                     Some("app-boundary.txt"),
                 )
                 .map(|prepared| {
-                    core.host_context().expect("host context").finish_upload(
-                        &group_id,
-                        &prepared.upload,
-                        pika_marmot_runtime::media::UploadedBlob {
-                            blossom_server: "https://example.com".to_string(),
-                            uploaded_url: "https://example.com/blob".to_string(),
-                            descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
-                        },
-                    )
+                    core.host_context()
+                        .expect("host context")
+                        .complete_media_upload_operation(
+                            &group_id,
+                            chat_id.clone(),
+                            &prepared.upload,
+                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                                pika_marmot_runtime::media::UploadedBlob {
+                                    blossom_server: "https://example.com".to_string(),
+                                    uploaded_url: "https://example.com/blob".to_string(),
+                                    descriptor_sha256_hex: hex::encode(
+                                        prepared.upload.encrypted_hash,
+                                    ),
+                                },
+                            ),
+                        )
+                        .into_media_upload_result()
+                        .expect("completed media upload")
+                        .result
                 })
-                .expect("prepare and finish upload");
+                .expect("prepare and complete upload");
 
             assert_eq!(completed.attachment.filename, "app-boundary.txt");
             assert_eq!(completed.attachment.mime_type, "text/plain");

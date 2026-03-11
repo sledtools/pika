@@ -34,7 +34,7 @@ use pika_marmot_runtime::runtime::{
     classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
-    AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome, take_pending_welcome,
+    AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome,
 };
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
 use pika_media::crypto::{FrameInfo, decrypt_frame, encrypt_frame};
@@ -2095,17 +2095,19 @@ pub async fn daemon_main(
                         }
                     }
                     InCmd::ListPendingWelcomes { request_id } => {
-                        match mdk.get_pending_welcomes(None) {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        match host.list_pending_welcome_snapshots() {
                             Ok(list) => {
                                 let out = list
                                     .iter()
                                     .map(|w| {
                                     json!({
                                         "wrapper_event_id": w.wrapper_event_id.to_hex(),
-                                        "welcome_event_id": w.id.to_hex(),
+                                        "welcome_event_id": w.welcome_event_id.to_hex(),
                                         "from_pubkey": w.welcomer.to_hex().to_lowercase(),
-                                        "nostr_group_id": hex::encode(w.nostr_group_id),
-                                        "group_name": w.group_name,
+                                        "nostr_group_id": w.nostr_group_id_hex.clone(),
+                                        "group_name": w.group_name.clone(),
                                     })
                                     })
                                     .collect::<Vec<_>>();
@@ -2130,19 +2132,10 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match mdk.get_pending_welcomes(None) {
-                            Ok(mut list) => {
-                                let found = take_pending_welcome(&mut list, &wrapper);
-                                let Some(w) = found else {
-                                    reply_tx
-                                        .send(out_error(
-                                            request_id,
-                                            "not_found",
-                                            accept_welcome_not_found_message(),
-                                        ))
-                                        .ok();
-                                    continue;
-                                };
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        match host.lookup_pending_welcome(&wrapper) {
+                            Ok(Some(w)) => {
                                 let subscribed_group =
                                     Arc::new(Mutex::new(None::<(SubscriptionId, String)>));
                                 let accept_client = client.clone();
@@ -2240,6 +2233,15 @@ pub async fn daemon_main(
                                         reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
                                     }
                                 }
+                            }
+                            Ok(None) => {
+                                reply_tx
+                                    .send(out_error(
+                                        request_id,
+                                        "not_found",
+                                        accept_welcome_not_found_message(),
+                                    ))
+                                    .ok();
                             }
                             Err(e) => {
                                 let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
@@ -4141,6 +4143,75 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn daemon_pending_welcome_queries_use_shared_runtime_helper() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon pending welcome query".to_string(),
+            "Shared pending welcome snapshot".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let mut welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let welcome_event_id = welcome_rumor.id();
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor.clone(),
+                    [],
+                )
+                .await
+                .expect("build giftwrap")
+            });
+        invitee_mdk
+            .process_welcome(&wrapper.id, &welcome_rumor)
+            .expect("process welcome");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(invitee_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&invitee_mdk, &invitee_keys, &client, &relay_urls);
+
+        let snapshots = host
+            .list_pending_welcome_snapshots()
+            .expect("list pending welcome snapshots");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].wrapper_event_id, wrapper.id);
+        assert_eq!(snapshots[0].welcome_event_id, welcome_event_id);
+        assert_eq!(
+            snapshots[0].nostr_group_id_hex,
+            hex::encode(group_result.group.nostr_group_id)
+        );
+        assert_eq!(snapshots[0].group_name, "Daemon pending welcome query");
+
+        let looked_up = host
+            .lookup_pending_welcome(&wrapper.id)
+            .expect("lookup pending welcome")
+            .expect("pending welcome should exist");
+        assert_eq!(looked_up.id, welcome_event_id);
+        assert_eq!(looked_up.wrapper_event_id, wrapper.id);
     }
 
     #[test]

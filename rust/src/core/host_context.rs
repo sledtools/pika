@@ -56,6 +56,20 @@ impl<'a> AppHostContext<'a> {
         self.runtime().load_message_page(chat_id, query)
     }
 
+    #[cfg(test)]
+    pub(super) fn list_pending_welcome_snapshots(
+        &self,
+    ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
+        self.runtime().list_pending_welcome_snapshots()
+    }
+
+    pub(super) fn lookup_pending_welcome(
+        &self,
+        target: &EventId,
+    ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+        self.runtime().lookup_pending_welcome(target)
+    }
+
     pub(super) fn prepare_outbound_action_for_chat(
         &self,
         chat_id: &str,

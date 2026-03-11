@@ -1,4 +1,3 @@
-mod app_manager;
 mod design;
 mod icons;
 mod screen;
@@ -8,27 +7,13 @@ mod video;
 mod video_shader;
 mod views;
 
-use app_manager::AppManager;
 use design::ALL_THEMES;
 use iced::widget::{column, container, text};
 use iced::{Element, Fill, Font, Size, Subscription, Task, Theme};
 use pika_core::{project_desktop, AppAction, AppState, AuthState, CallStatus, DesktopShellMode};
+use pika_desktop::app_manager::{self, AppManager};
 use std::path::PathBuf;
 use std::time::Duration;
-
-/// App version from the root VERSION file, embedded at compile time.
-pub fn app_version() -> &'static str {
-    include_str!("../../../VERSION").trim()
-}
-
-pub fn app_version_display() -> String {
-    let version = app_version();
-    if let Some(build) = option_env!("PIKA_BUILD_NUMBER") {
-        format!("v{version} ({build})")
-    } else {
-        format!("v{version}")
-    }
-}
 
 pub fn main() -> iced::Result {
     // Show core tracing output (errors, upload progress, etc.)
@@ -180,7 +165,7 @@ impl DesktopApp {
                 };
 
                 Self::Loaded {
-                    app_version_display: app_version_display(),
+                    app_version_display: pika_desktop::app_version_display(),
                     avatar_cache: std::cell::RefCell::new(views::avatar::AvatarCache::new()),
                     cached_profiles,
                     manager,

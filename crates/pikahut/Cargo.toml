@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 pika-marmot-runtime = { path = "../pika-marmot-runtime" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
+pika-desktop = { path = "../pika-desktop" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true }
 serde = { workspace = true }

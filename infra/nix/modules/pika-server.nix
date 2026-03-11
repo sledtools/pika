@@ -124,6 +124,8 @@ in
       # from the machine import instead of hardcoding it in the shared module.
       PIKA_AGENT_MICROVM_SPAWNER_URL=${microvmSpawnerUrl}
       ''}
+      # The customer managed-environment dashboard is OpenClaw-only for now.
+      PIKA_AGENT_MICROVM_KIND=openclaw
       PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," adminIdentities.prodAdminNpubs}
       RUST_LOG=info
     '';
@@ -173,6 +175,9 @@ in
 
   networking.firewall = {
     allowedTCPPorts = [ 80 443 ];
+    # Caddy advertises HTTP/3 for the OpenClaw UI host, so QUIC on 443 must
+    # be reachable as well or browsers can see connection failures.
+    allowedUDPPorts = [ 443 ];
   };
 
   disko.devices = {

@@ -13,11 +13,11 @@ use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tracing::warn;
 
 use crate::agent_api::{
-    list_recent_managed_environment_events, load_current_ready_managed_environment,
-    load_launchable_managed_environment, load_managed_environment_backup_status,
-    load_managed_environment_status, provision_managed_environment_if_missing,
-    recover_agent_for_owner, reset_agent_for_owner, spawner_base_url, AgentApiError,
-    ManagedEnvironmentBackupFreshness, ManagedEnvironmentBackupStatus, ManagedEnvironmentStatus,
+    list_recent_managed_environment_events, load_launchable_managed_environment,
+    load_managed_environment_backup_status, load_managed_environment_status,
+    provision_managed_environment_if_missing, recover_agent_for_owner, reset_agent_for_owner,
+    spawner_base_url, AgentApiError, ManagedEnvironmentBackupFreshness,
+    ManagedEnvironmentBackupStatus, ManagedEnvironmentStatus,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
@@ -112,7 +112,7 @@ struct LoginTemplate;
 #[template(path = "customer/dashboard.html")]
 struct DashboardTemplate {
     owner_npub: String,
-    template_name: &'static str,
+    template_name: String,
     environment_exists_label: &'static str,
     app_state_label: &'static str,
     startup_phase_label: &'static str,
@@ -757,6 +757,7 @@ fn dashboard_template(
     let row = status.row;
     let app_state = status.app_state;
     let startup_phase = status.startup_phase;
+    let runtime_kind = status.runtime_kind;
     let inflight_without_vm = row
         .as_ref()
         .map(|row| {
@@ -766,6 +767,7 @@ fn dashboard_template(
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
     let can_launch_openclaw = app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
         && startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
+        && runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Openclaw)
         && recoverable_vm_exists;
     let has_backup_host = backup.backup_host.is_some();
     let backup_host = backup
@@ -773,7 +775,12 @@ fn dashboard_template(
         .unwrap_or_else(|| "not_available".to_string());
     DashboardTemplate {
         owner_npub: authenticated.npub,
-        template_name: "OpenClaw",
+        template_name: match runtime_kind {
+            Some(pika_agent_control_plane::MicrovmAgentKind::Pi) => {
+                "Pi (unexpected runtime)".to_string()
+            }
+            _ => "OpenClaw".to_string(),
+        },
         environment_exists_label: if status.environment_exists {
             "yes"
         } else {
@@ -834,6 +841,8 @@ fn dashboard_template(
         can_launch_openclaw,
         launch_status_copy: if can_launch_openclaw {
             "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
+        } else if runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Pi) {
+            "This managed environment was provisioned with the Pi runtime instead of OpenClaw. Reset or reprovision it before using the built-in OpenClaw UI."
         } else if row.is_none() {
             "Provision Managed OpenClaw before launching the built-in UI."
         } else if inflight_without_vm {
@@ -1240,17 +1249,24 @@ pub async fn openclaw_proxy(
     }
     drop(conn);
 
-    let Some(current) = load_current_ready_managed_environment(
+    let current = match load_launchable_managed_environment(
         &state,
         &ui_session.npub,
         &request_context.request_id,
     )
-    .map_err(map_agent_api_error)?
-    else {
-        return Err((
-            StatusCode::CONFLICT,
-            "managed openclaw environment is not launchable".to_string(),
-        ));
+    .await
+    {
+        Ok(current) => current,
+        Err(err)
+            if err.status_code() == StatusCode::NOT_FOUND
+                || err.status_code() == StatusCode::BAD_REQUEST =>
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                "managed openclaw environment is not launchable".to_string(),
+            ));
+        }
+        Err(err) => return Err(map_agent_api_error(err)),
     };
     if current.agent_id != ui_session.agent_id || current.vm_id != ui_session.vm_id {
         return Err((
@@ -1910,6 +1926,11 @@ mod tests {
         )
         .expect("seed ready agent");
         let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_scripted_server(vec![(
+            "200 OK",
+            r#"{"id":"vm-existing","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
+        )]);
+        let _env = MicrovmEnvGuard::set(&base_url);
 
         let response = dashboard(Extension(state), request_context(), headers)
             .await
@@ -1920,6 +1941,45 @@ mod tests {
         assert!(body.contains("Managed OpenClaw is running and ready."));
         assert!(body.contains("Open OpenClaw"));
         assert!(body.contains("short-lived platform ticket"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn dashboard_hides_openclaw_launch_for_ready_pi_runtime() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1dashboardpiruntime";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-pi",
+            Some("vm-pi"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_scripted_server(vec![(
+            "200 OK",
+            r#"{"id":"vm-pi","status":"running","agent_kind":"pi","guest_ready":true}"#,
+        )]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Pi (unexpected runtime)"));
+        assert!(!body.contains("Open OpenClaw"));
+        assert!(body.contains(
+            "This managed environment was provisioned with the Pi runtime instead of OpenClaw."
+        ));
 
         clear_test_database(&db_pool);
     }
@@ -1947,7 +2007,7 @@ mod tests {
         let (base_url, _rx) = spawn_scripted_server(vec![
             (
                 "200 OK",
-                r#"{"id":"vm-backup-healthy","status":"running","guest_ready":true}"#,
+                r#"{"id":"vm-backup-healthy","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
             ),
             (
                 "200 OK",
@@ -1993,7 +2053,7 @@ mod tests {
         let (base_url, _rx) = spawn_scripted_server(vec![
             (
                 "200 OK",
-                r#"{"id":"vm-backup-stale","status":"running","guest_ready":true}"#,
+                r#"{"id":"vm-backup-stale","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
             ),
             (
                 "200 OK",
@@ -2192,7 +2252,7 @@ mod tests {
         let form = customer_action_form(&state, &headers);
         let (base_url, _rx) = spawn_one_shot_server(
             "200 OK",
-            r#"{"id":"vm-openclaw","status":"running","guest_ready":true}"#,
+            r#"{"id":"vm-openclaw","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
         );
         let _env = MicrovmEnvGuard::set(&base_url);
 
@@ -2236,6 +2296,41 @@ mod tests {
         let err = openclaw_launch(Extension(state), request_context(), headers, Form(form))
             .await
             .expect_err("launch should reject non-ready environment");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_rejects_when_ready_environment_is_not_openclaw() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawlaunchwrongruntime";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-pi",
+            Some("vm-pi"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_headers_for_host(&state, npub, "agents.example.com");
+        let form = customer_action_form(&state, &headers);
+        let (base_url, _rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-pi","status":"running","agent_kind":"pi","guest_ready":true}"#,
+        );
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let err = openclaw_launch(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("launch should reject wrong runtime");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
 
         clear_test_database(&db_pool);
@@ -2304,7 +2399,7 @@ mod tests {
         );
         let (base_url, _rx) = spawn_one_shot_server(
             "200 OK",
-            r#"{"id":"vm-openclaw","status":"running","guest_ready":true}"#,
+            r#"{"id":"vm-openclaw","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
         );
         let _env = MicrovmEnvGuard::set(&base_url);
 
@@ -2385,7 +2480,13 @@ mod tests {
             "vm-openclaw",
             "openclaw.agents.example.com",
         );
-        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"ok":true}"#);
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-openclaw","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
+            ),
+            ("200 OK", r#"{"ok":true}"#),
+        ]);
         let _env = MicrovmEnvGuard::set(&base_url);
 
         let response = openclaw_proxy(
@@ -2399,11 +2500,19 @@ mod tests {
         let body = response_body_string(response).await;
         assert!(body.contains("\"ok\":true"));
 
-        let captured = rx
+        let status_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.method, "GET");
+        assert_eq!(status_request.path, "/vms/vm-openclaw");
+        let proxy_request = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("captured proxy request");
-        assert_eq!(captured.method, "GET");
-        assert_eq!(captured.path, "/vms/vm-openclaw/openclaw/api/me?view=full");
+        assert_eq!(proxy_request.method, "GET");
+        assert_eq!(
+            proxy_request.path,
+            "/vms/vm-openclaw/openclaw/api/me?view=full"
+        );
 
         clear_test_database(&db_pool);
     }
@@ -2434,8 +2543,13 @@ mod tests {
             "vm-openclaw-root",
             "openclaw.localhost:19401",
         );
-        let (base_url, rx) =
-            spawn_one_shot_server("200 OK", "<!doctype html><openclaw-app></openclaw-app>");
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-openclaw-root","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
+            ),
+            ("200 OK", "<!doctype html><openclaw-app></openclaw-app>"),
+        ]);
         let _env = MicrovmEnvGuard::set(&base_url);
 
         let response = openclaw_proxy(
@@ -2449,11 +2563,16 @@ mod tests {
         let body = response_body_string(response).await;
         assert!(body.contains("<openclaw-app>"));
 
-        let captured = rx
+        let status_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.method, "GET");
+        assert_eq!(status_request.path, "/vms/vm-openclaw-root");
+        let proxy_request = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("captured proxy request");
-        assert_eq!(captured.method, "GET");
-        assert_eq!(captured.path, "/vms/vm-openclaw-root/openclaw/app");
+        assert_eq!(proxy_request.method, "GET");
+        assert_eq!(proxy_request.path, "/vms/vm-openclaw-root/openclaw/app");
 
         clear_test_database(&db_pool);
     }
@@ -2479,21 +2598,33 @@ mod tests {
         .expect("seed ready agent");
         drop(conn);
 
-        let spawner_app = Router::new().route(
-            "/vms/:id/openclaw",
-            get(
-                |Path(id): Path<String>, websocket: WebSocketUpgrade| async move {
-                    websocket.on_upgrade(move |mut socket| async move {
-                        while let Some(Ok(AxumWsMessage::Text(text))) = socket.recv().await {
-                            socket
-                                .send(AxumWsMessage::Text(format!("{id}:{text}")))
-                                .await
-                                .expect("send websocket echo");
-                        }
-                    })
-                },
-            ),
-        );
+        let spawner_app = Router::new()
+            .route(
+                "/vms/:id",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "id": "vm-openclaw-ws",
+                        "status": "running",
+                        "agent_kind": "openclaw",
+                        "guest_ready": true
+                    }))
+                }),
+            )
+            .route(
+                "/vms/:id/openclaw",
+                get(
+                    |Path(id): Path<String>, websocket: WebSocketUpgrade| async move {
+                        websocket.on_upgrade(move |mut socket| async move {
+                            while let Some(Ok(AxumWsMessage::Text(text))) = socket.recv().await {
+                                socket
+                                    .send(AxumWsMessage::Text(format!("{id}:{text}")))
+                                    .await
+                                    .expect("send websocket echo");
+                            }
+                        })
+                    },
+                ),
+            );
         let spawner_base_url = spawn_axum_server(spawner_app).await;
         let _env = MicrovmEnvGuard::set(&spawner_base_url);
 

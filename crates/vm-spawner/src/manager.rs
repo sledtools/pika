@@ -259,6 +259,7 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
+                    agent_kind: Some(req.guest_autostart.startup_plan.agent_kind),
                     startup_probe_satisfied: false,
                     guest_ready: false,
                 })
@@ -320,9 +321,22 @@ impl VmManager {
         } else {
             false
         };
+        let agent_kind = self
+            .load_guest_startup_plan(&vm.microvm_state_dir, id)
+            .map(|plan| plan.agent_kind)
+            .map(Some)
+            .unwrap_or_else(|err| {
+                warn!(
+                    vm_id = %id,
+                    error = %err,
+                    "failed to load guest startup plan while reporting vm runtime kind"
+                );
+                None
+            });
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            agent_kind,
             startup_probe_satisfied,
             guest_ready,
         })
@@ -371,6 +385,10 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            agent_kind: Some(
+                self.load_guest_startup_plan(&vm.microvm_state_dir, id)?
+                    .agent_kind,
+            ),
             startup_probe_satisfied: false,
             guest_ready: false,
         })
@@ -485,6 +503,10 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
+            agent_kind: Some(
+                self.load_guest_startup_plan(&vm.microvm_state_dir, id)?
+                    .agent_kind,
+            ),
             startup_probe_satisfied: false,
             guest_ready: false,
         })

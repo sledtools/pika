@@ -379,6 +379,8 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<MicrovmAgentKind>,
     #[serde(default)]
     #[serde(alias = "guest_service_ready")]
     pub startup_probe_satisfied: bool,
@@ -846,6 +848,7 @@ mod tests {
             "guest_ready": false
         }))
         .expect("decode vm response");
+        assert_eq!(decoded.agent_kind, None);
         assert!(decoded.startup_probe_satisfied);
         assert!(!decoded.guest_ready);
     }

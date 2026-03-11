@@ -943,15 +943,23 @@ pub async fn reset(
         load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
             .await
             .map_err(map_agent_api_error)?;
+    let Some(row) = status.row.as_ref() else {
+        return Err((
+            StatusCode::CONFLICT,
+            "destructive reset requires a current managed environment".to_string(),
+        ));
+    };
+    let inflight_without_vm =
+        row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none();
+    if inflight_without_vm {
+        return Err((
+            StatusCode::CONFLICT,
+            "destructive reset stays locked while the current VM assignment is still in flight"
+                .to_string(),
+        ));
+    }
     let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
     if backup.reset_requires_confirmation {
-        let Some(row) = status.row.as_ref() else {
-            return Err((
-                StatusCode::CONFLICT,
-                "destructive reset confirmation no longer matches a current managed environment"
-                    .to_string(),
-            ));
-        };
         verify_reset_confirmation_ticket(
             &state,
             &authenticated.npub,
@@ -1219,7 +1227,9 @@ mod tests {
     use pika_test_utils::{spawn_one_shot_server, CapturedRequest};
 
     use crate::admin::AdminConfig;
-    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_ERROR, AGENT_PHASE_READY};
+    use crate::models::agent_instance::{
+        AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
+    };
     use crate::models::group_subscription::GroupFilterInfo;
     use crate::models::managed_environment_event::ManagedEnvironmentEvent;
     use crate::models::MIGRATIONS;
@@ -2587,6 +2597,59 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("captured backup request");
         assert_eq!(backup_request.path, "/vms/vm-reset-weak/backup-status");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_rejects_when_no_managed_environment_exists() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let headers = customer_cookie_header(&state, &npub);
+        let form = customer_reset_form(&state, &headers);
+
+        let err = reset(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("reset without an environment should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("requires a current managed environment"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_rejects_while_initial_vm_assignment_is_inflight() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-inflight",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight creating agent");
+        let headers = customer_cookie_header(&state, &npub);
+        let form = customer_reset_form(&state, &headers);
+
+        let err = reset(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("reset should stay locked during inflight VM assignment");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("still in flight"));
 
         clear_test_database(&db_pool);
     }

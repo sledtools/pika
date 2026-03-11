@@ -280,6 +280,38 @@ fn migration_docs_do_not_reference_legacy_cli_harness_paths() -> Result<()> {
 }
 
 #[test]
+fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<()> {
+    let root = workspace_root();
+
+    let selectors = fs::read_to_string(root.join("docs/testing/ci-selectors.md"))?;
+    for heading in [
+        "## Policy Classes",
+        "## Compatibility-Only Wrappers",
+        "## Convenience / Advisory Surfaces",
+        "## Deferred Root CI / `pikaci` Mismatches",
+    ] {
+        assert!(
+            selectors.contains(heading),
+            "ci-selectors.md must keep policy-truth heading: {heading}"
+        );
+    }
+
+    let matrix = fs::read_to_string(root.join("docs/testing/integration-matrix.md"))?;
+    for heading in [
+        "## Policy Classes",
+        "## Non-Owner Entry Points",
+        "## Deferred Root CI / `pikaci` Asks",
+    ] {
+        assert!(
+            matrix.contains(heading),
+            "integration-matrix.md must keep policy-truth heading: {heading}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn no_public_infra_selectors_in_ci_lanes() -> Result<()> {
     let root = workspace_root();
 

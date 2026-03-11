@@ -11,6 +11,9 @@ This document records the deterministic or local-fixture coverage that replaces 
 The goal is to keep core app correctness on Rust-first, local-fixture-backed tests rather than public infrastructure.
 This ledger is about behavioral replacement, not CI-enforcement level. Use `docs/testing/integration-matrix.md` for current lane ownership.
 
+- Replacement coverage below may be pre-merge CI-owned, nightly-only, or manual-only today.
+- Coverage parity here does not imply that the replacement runs at the same enforcement tier as the removed public probe.
+
 ## Public Selector Coverage Mapping
 
 ### `integration_public::ui_e2e_public_android`
@@ -57,7 +60,7 @@ This ledger is about behavioral replacement, not CI-enforcement level. Use `docs
 
 ## Intentionally Retained Native UI Coverage
 
-The remaining bot/media UI selectors under `ios/UITests/PikaUITests.swift` and `android/app/src/androidTest/.../PikaE2eUiTest.kt` are retained because `pikahut` runs them against local relay/bot fixtures. They are not public-network canaries and should stay separate from the default native smoke suites. The iOS selector is manual-only today.
+The remaining bot/media UI selectors under `ios/UITests/PikaUITests.swift` and `android/app/src/androidTest/.../PikaE2eUiTest.kt` are retained because `pikahut` runs them against local relay/bot fixtures. They are not public-network canaries and should stay separate from the default native smoke suites. The Android local selector is nightly CI-owned today; the iOS local selector is manual-only today.
 
 ## Intentionally Deferred (External-Only Behavior)
 

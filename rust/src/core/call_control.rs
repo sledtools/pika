@@ -51,17 +51,6 @@ impl std::fmt::Display for CallEndReason {
     }
 }
 
-fn call_signal_failure_context(
-    kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
-) -> &'static str {
-    match kind {
-        pika_marmot_runtime::runtime::CallSignalPublishKind::Invite => "Call invite publish failed",
-        pika_marmot_runtime::runtime::CallSignalPublishKind::Accept => "Call accept publish failed",
-        pika_marmot_runtime::runtime::CallSignalPublishKind::Reject => "Call reject publish failed",
-        pika_marmot_runtime::runtime::CallSignalPublishKind::End => "Call end publish failed",
-    }
-}
-
 impl AppCore {
     fn has_live_call(&self) -> bool {
         self.state
@@ -206,7 +195,7 @@ impl AppCore {
     ) -> Result<(), String> {
         let network_enabled = self.network_enabled();
         let fallback_relays = self.default_relays();
-        let failure_context = call_signal_failure_context(kind);
+        let failure_context = super::call_signal_publish_failure_context(kind);
 
         let (client, wrapper, relays) = {
             let Some(sess) = self.session.as_mut() else {

@@ -868,6 +868,25 @@ impl<'a> RuntimeCommands<'a> {
         )
     }
 
+    pub fn prepare_upload(
+        &self,
+        mls_group_id: &GroupId,
+        bytes: &[u8],
+        mime_type: Option<&str>,
+        filename: Option<&str>,
+    ) -> Result<PreparedMediaUpload> {
+        MediaRuntime::new(self.mdk).prepare_upload(mls_group_id, bytes, mime_type, filename)
+    }
+
+    pub fn finish_upload(
+        &self,
+        mls_group_id: &GroupId,
+        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        uploaded_blob: crate::media::UploadedBlob,
+    ) -> RuntimeMediaUploadResult {
+        MediaRuntime::new(self.mdk).finish_upload(mls_group_id, upload, uploaded_blob)
+    }
+
     pub async fn publish_prepared_action(
         &self,
         relay_urls: &[RelayUrl],
@@ -1215,7 +1234,7 @@ impl<'a> MarmotRuntime<'a> {
         mime_type: Option<&str>,
         filename: Option<&str>,
     ) -> Result<PreparedMediaUpload> {
-        self.media()
+        self.commands()
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
 
@@ -1225,7 +1244,7 @@ impl<'a> MarmotRuntime<'a> {
         upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
         uploaded_blob: crate::media::UploadedBlob,
     ) -> RuntimeMediaUploadResult {
-        self.media()
+        self.commands()
             .finish_upload(mls_group_id, upload, uploaded_blob)
     }
 
@@ -2625,6 +2644,59 @@ mod tests {
             }
             other => panic!("expected failed call signal publish event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_commands_prepare_and_finish_media_upload_through_explicit_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime media command test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"runtime media upload",
+                Some("text/plain"),
+                Some("runtime.txt"),
+            )
+            .expect("prepare upload");
+        let completed = commands.finish_upload(
+            &created.group.mls_group_id,
+            &prepared.upload,
+            crate::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
+                uploaded_url: "https://example.com/blob".to_string(),
+                descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+            },
+        );
+
+        assert_eq!(completed.attachment.filename, "runtime.txt");
+        assert_eq!(completed.attachment.mime_type, "text/plain");
+        let expected_hash_hex = hex::encode(prepared.upload.encrypted_hash);
+        assert_eq!(
+            completed.attachment.encrypted_hash_hex.as_deref(),
+            Some(expected_hash_hex.as_str())
+        );
     }
 
     #[test]

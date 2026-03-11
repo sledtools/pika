@@ -6166,7 +6166,7 @@ impl AppCore {
     }
 }
 
-fn call_signal_publish_failure_context(kind: CallSignalPublishKind) -> &'static str {
+pub(super) fn call_signal_publish_failure_context(kind: CallSignalPublishKind) -> &'static str {
     match kind {
         CallSignalPublishKind::Invite => "Call invite publish failed",
         CallSignalPublishKind::Accept => "Call accept publish failed",
@@ -7190,6 +7190,36 @@ mod tests {
                 core.state.toast.as_deref(),
                 Some("Call invite publish failed: offline")
             );
+        }
+
+        #[test]
+        fn app_media_upload_commands_use_shared_command_boundary() {
+            let (core, _chat_id, _keys, group_id) = make_core_with_group();
+            let completed = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"hello from app media boundary",
+                    Some("text/plain"),
+                    Some("app-boundary.txt"),
+                )
+                .map(|prepared| {
+                    core.host_context().expect("host context").finish_upload(
+                        &group_id,
+                        &prepared.upload,
+                        pika_marmot_runtime::media::UploadedBlob {
+                            blossom_server: "https://example.com".to_string(),
+                            uploaded_url: "https://example.com/blob".to_string(),
+                            descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+                        },
+                    )
+                })
+                .expect("prepare and finish upload");
+
+            assert_eq!(completed.attachment.filename, "app-boundary.txt");
+            assert_eq!(completed.attachment.mime_type, "text/plain");
+            assert_eq!(completed.reference.url.as_str(), "https://example.com/blob");
         }
 
         #[test]

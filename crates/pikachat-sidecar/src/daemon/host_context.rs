@@ -284,6 +284,7 @@ impl<'a> DaemonHostContext<'a> {
             .plan_group_subscriptions(subscribed_group_ids)
     }
 
+    #[cfg(test)]
     pub(super) fn plan_session_sync(
         &self,
         subscribed_group_ids: Vec<String>,

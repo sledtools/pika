@@ -154,14 +154,14 @@ Use `just --list` for the curated root recipes. For the expanded module tree, us
 
 ```sh
 just test                    # Unit tests
-just cli-smoke               # Local relay selector; current pre-merge-owned contract
-just cli-smoke-media         # Local relay + media selector; current nightly-owned contract
+just cli-smoke               # Compatibility entrypoint to the pre-merge-owned local relay selector
+just cli-smoke-media         # Compatibility entrypoint to the nightly-owned media selector; requires internet for default Blossom server
 just e2e-local-relay         # Convenience aggregate for iOS + Android local UI E2E; not a policy owner
-just ios-ui-test             # Deterministic iOS XCTest suite; nightly CI-owned
-just ios-ui-e2e-local        # Heavy iOS bot/media selector; manual-only today
+just ios-ui-test             # Retained nightly CI-owned iOS XCTest lane
+just ios-ui-e2e-local        # Manual-only local iOS bot/media selector
 just android-ui-test         # Deterministic Android instrumentation suite; manual/dev smoke, not currently CI-owned
-just android-ui-e2e-local    # Heavy Android bot/media selector; nightly CI-owned
-just desktop-e2e-local       # Local desktop selector; current pre-merge-owned contract
+just android-ui-e2e-local    # Compatibility entrypoint to the nightly-owned Android selector
+just desktop-e2e-local       # Compatibility entrypoint to the pre-merge-owned desktop selector
 just desktop-ui-test         # Desktop package tests; advisory/developer smoke, not the selector-owned contract
 ```
 

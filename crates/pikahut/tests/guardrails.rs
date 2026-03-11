@@ -295,6 +295,18 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
             "ci-selectors.md must keep policy-truth heading: {heading}"
         );
     }
+    assert!(
+        selectors.contains(
+            "Most CI-owned lanes invoke `cargo test -p pikahut --test integration_* ...`, and intentionally retained non-selector lanes are called out explicitly below."
+        ),
+        "ci-selectors.md must document the retained non-selector exception to the selector-first rule"
+    );
+    assert!(
+        selectors.contains(
+            "## Direct Selector Recipes (Not Owners By Themselves)\n\n| Recipe | Canonical selectors | Current policy status |\n| --- | --- | --- |"
+        ),
+        "ci-selectors.md must keep the direct-selector table well-formed and three-column"
+    );
 
     let matrix = fs::read_to_string(root.join("docs/testing/integration-matrix.md"))?;
     for heading in [
@@ -307,6 +319,12 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
             "integration-matrix.md must keep policy-truth heading: {heading}"
         );
     }
+    assert!(
+        matrix.contains(
+            "Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`."
+        ),
+        "integration-matrix.md must keep the retained non-selector exception explicit"
+    );
 
     Ok(())
 }

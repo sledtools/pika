@@ -1,5 +1,5 @@
 ---
-summary: Migration scope matrix for the library-first pikahut::testing rollout
+summary: Canonical ownership matrix for selector-first integration coverage and retained non-selector lanes
 read_when:
   - reviewing integration test coverage
   - planning test migration work
@@ -9,8 +9,9 @@ read_when:
 
 This matrix is the canonical ownership map for integration coverage.
 
-- Canonical execution model: selectors under `crates/pikahut/tests/integration_*.rs` that call `pikahut::testing` APIs and scenario modules.
-- Compatibility rule: `just` and shell wrappers are retained only as thin selector dispatchers.
+- Canonical execution model: integration ownership is selector-first. Most coverage lives under `crates/pikahut/tests/integration_*.rs` selectors that call `pikahut::testing` APIs and scenario modules.
+- Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`.
+- Compatibility rule: `just` and shell wrappers are retained only as thin selector dispatchers unless this matrix explicitly calls out a retained non-selector lane.
 - Root aggregates and regression bundles are documented below only as non-owner entrypoints; they are not the canonical policy contract.
 - Shared-fixture pooling remains out of scope for this phase (strict fixture mode only).
 
@@ -91,22 +92,22 @@ Current policy note:
 
 ## Lane Contract Summary
 
-| Lane | Selector contract |
+| Lane | Canonical contract |
 | --- | --- |
 | `pre-merge-pikachat` | deterministic selectors (incl. `ui_e2e_local_desktop`) + deterministic OpenClaw scenario selectors |
 | `check-pikachat-openclaw-e2e` (path-scoped) | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-e2e` | call-path boundary selectors (`call_over_local_moq_relay_boundary`, `call_with_pikachat_daemon_boundary`, `cli_smoke_media_local`) |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-pika-ui-ios` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
-| `nightly-primal-ios-interop` | deterministic iOS XCTest suite via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local`, plus `integration_primal::primal_nostrconnect_smoke` |
+| `nightly-pika-ui-ios` | retained non-selector iOS XCTest lane via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
+| `nightly-primal-ios-interop` | retained non-selector iOS XCTest lane via `just ios-ui-test`, plus `integration_primal::primal_nostrconnect_smoke`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 ## Non-Owner Entry Points
 
 | Entrypoint | Policy class | Current role |
 | --- | --- | --- |
-| `just ios-ui-test` | nightly CI-owned (non-selector) | Full `Pika` XCTest suite on simulator. This is real nightly coverage, but it does not make `ios-ui-e2e-local` selector-owned or pre-merge-owned. |
+| `just ios-ui-test` | nightly CI-owned (retained non-selector lane) | Full `Pika` XCTest suite on simulator. This is real nightly coverage, but it does not make `ios-ui-e2e-local` selector-owned or pre-merge-owned. |
 | `just android-ui-test` | advisory/convenience | Native Android instrumentation suite for manual/dev use. Current pre-merge only compiles Android test code; it does not execute this suite. |
 | `just pre-merge` | advisory/convenience | Aggregate wrapper over the blocking repo lanes; not itself the canonical enforcement map. |
 | `just nightly` | advisory/convenience | Aggregate wrapper over the current nightly recipes; not a full mirror of the GitHub nightly workflow. |

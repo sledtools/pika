@@ -162,7 +162,9 @@ in
         vm_id="$(basename "$vm_dir")"
         metadata_dir="$vm_dir/metadata"
         status_file="$metadata_dir/${microvmBackupStatusFileName}"
-        mkdir -p "$metadata_dir"
+        if [ ! -d "$home" ] || [ ! -d "$vm_dir" ] || [ ! -d "$metadata_dir" ]; then
+          continue
+        fi
         tmp_file="$(mktemp "$metadata_dir/.backup-status.XXXXXX")"
         jq -n \
           --arg schema_version "vm.backup_status.v1" \

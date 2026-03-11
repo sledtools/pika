@@ -73,6 +73,8 @@ struct DashboardActivityItem {
 struct ResetConfirmationTicket {
     kind: String,
     npub: String,
+    agent_id: String,
+    vm_id: Option<String>,
     exp: i64,
 }
 
@@ -352,11 +354,15 @@ fn cookie_value_from_headers(headers: &HeaderMap, cookie_name: &str) -> Option<S
 fn issue_reset_confirmation_ticket(
     state: &State,
     npub: &str,
+    agent_id: &str,
+    vm_id: Option<&str>,
 ) -> Result<String, (StatusCode, String)> {
     browser_auth(state)
         .sign_payload(&ResetConfirmationTicket {
             kind: RESET_CONFIRMATION_KIND.to_string(),
             npub: npub.to_string(),
+            agent_id: agent_id.to_string(),
+            vm_id: vm_id.map(ToOwned::to_owned),
             exp: chrono::Utc::now().timestamp() + RESET_CONFIRMATION_TTL_SECS,
         })
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
@@ -365,6 +371,8 @@ fn issue_reset_confirmation_ticket(
 fn verify_reset_confirmation_ticket(
     state: &State,
     npub: &str,
+    agent_id: &str,
+    vm_id: Option<&str>,
     token: Option<&str>,
 ) -> Result<(), (StatusCode, String)> {
     let token = token.ok_or_else(|| {
@@ -397,6 +405,12 @@ fn verify_reset_confirmation_ticket(
         return Err((
             StatusCode::FORBIDDEN,
             "reset confirmation owner mismatch".to_string(),
+        ));
+    }
+    if ticket.agent_id != agent_id || ticket.vm_id.as_deref() != vm_id {
+        return Err((
+            StatusCode::CONFLICT,
+            "reset confirmation no longer matches the current managed environment".to_string(),
         ));
     }
     Ok(())
@@ -858,7 +872,12 @@ pub async fn reset_confirm_page(
     if !backup.reset_requires_confirmation {
         return Ok(Redirect::to("/dashboard").into_response());
     }
-    let confirmation_token = issue_reset_confirmation_ticket(&state, &authenticated.npub)?;
+    let confirmation_token = issue_reset_confirmation_ticket(
+        &state,
+        &authenticated.npub,
+        &row.agent_id,
+        row.vm_id.as_deref(),
+    )?;
     render_template(&reset_confirm_template(
         &authenticated,
         backup,
@@ -926,9 +945,18 @@ pub async fn reset(
             .map_err(map_agent_api_error)?;
     let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
     if backup.reset_requires_confirmation {
+        let Some(row) = status.row.as_ref() else {
+            return Err((
+                StatusCode::CONFLICT,
+                "destructive reset confirmation no longer matches a current managed environment"
+                    .to_string(),
+            ));
+        };
         verify_reset_confirmation_ticket(
             &state,
             &authenticated.npub,
+            &row.agent_id,
+            row.vm_id.as_deref(),
             form.confirmation_token.as_deref(),
         )?;
     }
@@ -2616,9 +2644,6 @@ mod tests {
         let state = test_state(db_pool.clone());
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
-        let headers = customer_cookie_header(&state, &npub);
-        let confirmation_token =
-            issue_reset_confirmation_ticket(&state, &npub).expect("issue confirmation ticket");
         let mut conn = db_pool.get().expect("get seed connection");
         AgentInstance::create(
             &mut conn,
@@ -2628,6 +2653,14 @@ mod tests {
             AGENT_PHASE_READY,
         )
         .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, &npub);
+        let confirmation_token = issue_reset_confirmation_ticket(
+            &state,
+            &npub,
+            "agent-reset-confirmed",
+            Some("vm-reset-confirmed"),
+        )
+        .expect("issue confirmation ticket");
         let form = ResetActionForm {
             csrf_token: customer_reset_form(&state, &headers).csrf_token,
             confirmation_token: Some(confirmation_token),
@@ -2667,6 +2700,80 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("captured create request");
         assert_eq!(create_request.path, "/vms");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_rejects_confirmation_ticket_for_changed_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        let original = AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-original",
+            Some("vm-reset-original"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed original ready agent");
+        let confirmation_token = issue_reset_confirmation_ticket(
+            &state,
+            &npub,
+            &original.agent_id,
+            original.vm_id.as_deref(),
+        )
+        .expect("issue original confirmation ticket");
+        AgentInstance::update_phase(&mut conn, &original.agent_id, AGENT_PHASE_ERROR, None)
+            .expect("retire original agent");
+        AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-replacement",
+            Some("vm-reset-replacement"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed replacement ready agent");
+        let headers = customer_cookie_header(&state, &npub);
+        let form = ResetActionForm {
+            csrf_token: customer_reset_form(&state, &headers).csrf_token,
+            confirmation_token: Some(confirmation_token),
+        };
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-reset-replacement","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-reset-replacement","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-replacement/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let err = reset(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("stale confirmation ticket should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("no longer matches"));
+
+        let status_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.path, "/vms/vm-reset-replacement");
+        let backup_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured backup request");
+        assert_eq!(
+            backup_request.path,
+            "/vms/vm-reset-replacement/backup-status"
+        );
 
         clear_test_database(&db_pool);
     }

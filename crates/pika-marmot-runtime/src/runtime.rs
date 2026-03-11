@@ -129,6 +129,7 @@ pub enum RuntimeOperationEvent {
     MembershipEvolution(MembershipEvolutionOperationEvent),
     OutboundConversationPublish(OutboundConversationPublishOperationEvent),
     CallSignalPublish(CallSignalPublishOperationEvent),
+    MediaUpload(MediaUploadOperationEvent),
 }
 
 impl RuntimeOperationEvent {
@@ -137,6 +138,7 @@ impl RuntimeOperationEvent {
             Self::MembershipEvolution(event) => event.operation_id(),
             Self::OutboundConversationPublish(event) => event.operation_id(),
             Self::CallSignalPublish(event) => event.operation_id(),
+            Self::MediaUpload(event) => event.operation_id(),
         }
     }
 
@@ -145,6 +147,7 @@ impl RuntimeOperationEvent {
             Self::MembershipEvolution(event) => event.nostr_group_id_hex(),
             Self::OutboundConversationPublish(event) => event.nostr_group_id_hex(),
             Self::CallSignalPublish(event) => event.nostr_group_id_hex(),
+            Self::MediaUpload(event) => event.nostr_group_id_hex(),
         }
     }
 
@@ -228,6 +231,20 @@ impl RuntimeOperationEvent {
                 error,
             }),
         }
+    }
+
+    pub fn media_upload_failed(
+        nostr_group_id_hex: String,
+        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        error: String,
+    ) -> Self {
+        Self::MediaUpload(MediaUploadOperationEvent::Failed {
+            operation_id: media_upload_operation_id(upload),
+            nostr_group_id_hex,
+            filename: upload.filename.clone(),
+            mime_type: upload.mime_type.clone(),
+            error,
+        })
     }
 }
 
@@ -355,6 +372,58 @@ impl CallSignalPublishOperationEvent {
             } => nostr_group_id_hex,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedMediaUpload {
+    pub nostr_group_id_hex: String,
+    pub result: RuntimeMediaUploadResult,
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaUploadStatus {
+    Uploaded(crate::media::UploadedBlob),
+    UploadFailed(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaUploadOperationEvent {
+    Completed {
+        operation_id: EventId,
+        result: Box<CompletedMediaUpload>,
+    },
+    Failed {
+        operation_id: EventId,
+        nostr_group_id_hex: String,
+        filename: String,
+        mime_type: String,
+        error: String,
+    },
+}
+
+impl MediaUploadOperationEvent {
+    pub fn operation_id(&self) -> EventId {
+        match self {
+            Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
+                *operation_id
+            }
+        }
+    }
+
+    pub fn nostr_group_id_hex(&self) -> &str {
+        match self {
+            Self::Completed { result, .. } => &result.nostr_group_id_hex,
+            Self::Failed {
+                nostr_group_id_hex, ..
+            } => nostr_group_id_hex,
+        }
+    }
+}
+
+fn media_upload_operation_id(
+    upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+) -> EventId {
+    EventId::from_byte_array(upload.encrypted_hash)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -887,6 +956,30 @@ impl<'a> RuntimeCommands<'a> {
         MediaRuntime::new(self.mdk).finish_upload(mls_group_id, upload, uploaded_blob)
     }
 
+    pub fn complete_media_upload_operation(
+        &self,
+        mls_group_id: &GroupId,
+        nostr_group_id_hex: String,
+        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        status: MediaUploadStatus,
+    ) -> RuntimeOperationEvent {
+        let operation_id = media_upload_operation_id(upload);
+        match status {
+            MediaUploadStatus::Uploaded(uploaded_blob) => {
+                RuntimeOperationEvent::MediaUpload(MediaUploadOperationEvent::Completed {
+                    operation_id,
+                    result: Box::new(CompletedMediaUpload {
+                        nostr_group_id_hex,
+                        result: self.finish_upload(mls_group_id, upload, uploaded_blob),
+                    }),
+                })
+            }
+            MediaUploadStatus::UploadFailed(error) => {
+                RuntimeOperationEvent::media_upload_failed(nostr_group_id_hex, upload, error)
+            }
+        }
+    }
+
     pub async fn publish_prepared_action(
         &self,
         relay_urls: &[RelayUrl],
@@ -1246,6 +1339,21 @@ impl<'a> MarmotRuntime<'a> {
     ) -> RuntimeMediaUploadResult {
         self.commands()
             .finish_upload(mls_group_id, upload, uploaded_blob)
+    }
+
+    pub fn complete_media_upload_operation(
+        &self,
+        mls_group_id: &GroupId,
+        nostr_group_id_hex: String,
+        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        status: MediaUploadStatus,
+    ) -> RuntimeOperationEvent {
+        self.commands().complete_media_upload_operation(
+            mls_group_id,
+            nostr_group_id_hex,
+            upload,
+            status,
+        )
     }
 
     pub fn parse_message_attachments(&self, message: &Message) -> Vec<ParsedMediaAttachment> {
@@ -2697,6 +2805,128 @@ mod tests {
             completed.attachment.encrypted_hash_hex.as_deref(),
             Some(expected_hash_hex.as_str())
         );
+    }
+
+    #[test]
+    fn runtime_commands_complete_media_upload_operation_returns_completed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime media upload op".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"runtime media upload op",
+                Some("text/plain"),
+                Some("runtime-op.txt"),
+            )
+            .expect("prepare upload");
+
+        let operation = commands.complete_media_upload_operation(
+            &created.group.mls_group_id,
+            hex::encode(created.group.nostr_group_id),
+            &prepared.upload,
+            MediaUploadStatus::Uploaded(crate::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
+                uploaded_url: "https://example.com/blob".to_string(),
+                descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+            }),
+        );
+
+        match operation {
+            RuntimeOperationEvent::MediaUpload(MediaUploadOperationEvent::Completed {
+                operation_id,
+                result,
+            }) => {
+                assert_eq!(
+                    operation_id,
+                    EventId::from_byte_array(prepared.upload.encrypted_hash)
+                );
+                assert_eq!(result.result.attachment.filename, "runtime-op.txt");
+                assert_eq!(result.result.attachment.mime_type, "text/plain");
+            }
+            other => panic!("expected completed media upload event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_commands_complete_media_upload_operation_returns_failed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime media upload op fail".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"runtime media upload op fail",
+                Some("text/plain"),
+                Some("runtime-op-fail.txt"),
+            )
+            .expect("prepare upload");
+
+        let operation = commands.complete_media_upload_operation(
+            &created.group.mls_group_id,
+            hex::encode(created.group.nostr_group_id),
+            &prepared.upload,
+            MediaUploadStatus::UploadFailed("offline".to_string()),
+        );
+
+        match operation {
+            RuntimeOperationEvent::MediaUpload(MediaUploadOperationEvent::Failed {
+                operation_id,
+                filename,
+                mime_type,
+                error,
+                ..
+            }) => {
+                assert_eq!(
+                    operation_id,
+                    EventId::from_byte_array(prepared.upload.encrypted_hash)
+                );
+                assert_eq!(filename, "runtime-op-fail.txt");
+                assert_eq!(mime_type, "text/plain");
+                assert_eq!(error, "offline");
+            }
+            other => panic!("expected failed media upload event, got {other:?}"),
+        }
     }
 
     #[test]

@@ -414,28 +414,14 @@ fn call_over_local_moq_relay_boundary() -> Result<()> {
 #[test]
 #[ignore = "nightly call-path regression selector"]
 fn call_with_pikachat_daemon_boundary() -> Result<()> {
+    let _env_lock = ENV_LOCK.blocking_lock();
+    // Keep auto-generated state paths short enough for the daemon unix socket
+    // while preserving TestContext cleanup / PreserveOnFailure behavior.
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
     let mut context = TestContext::builder("regression-call-with-pikachat-daemon")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
-    // The daemon seam still delegates into the legacy pika_core test target
-    // until its boundary is collapsed in a follow-up slice.
-    let runner = CommandRunner::new(&context);
-    runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "test",
-                "-p",
-                "pika_core",
-                "--test",
-                "e2e_calls",
-                "call_with_pikachat_daemon",
-                "--",
-                "--ignored",
-                "--nocapture",
-            ])
-            .capture_name("regression-call-with-pikachat-daemon"),
-    )?;
+    support::run_call_with_pikachat_daemon(&context)?;
     context.mark_success();
     Ok(())
 }

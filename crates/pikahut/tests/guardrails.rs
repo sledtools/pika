@@ -311,7 +311,7 @@ fn no_public_infra_selectors_in_ci_lanes() -> Result<()> {
 }
 
 #[test]
-fn local_moq_call_boundary_has_single_owner() -> Result<()> {
+fn call_boundaries_have_single_owner() -> Result<()> {
     let root = workspace_root();
     let pikahut =
         fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
@@ -319,11 +319,13 @@ fn local_moq_call_boundary_has_single_owner() -> Result<()> {
         !pikahut.contains("\"call_over_local_moq_relay\""),
         "call_over_local_moq_relay_boundary must not shell into rust/tests/e2e_calls.rs"
     );
-
-    let legacy = fs::read_to_string(root.join("rust/tests/e2e_calls.rs"))?;
     assert!(
-        !legacy.contains("fn call_over_local_moq_relay("),
-        "rust/tests/e2e_calls.rs must not retain a duplicate local-MoQ boundary owner"
+        !pikahut.contains("\"call_with_pikachat_daemon\"") && !pikahut.contains("\"e2e_calls\""),
+        "call_with_pikachat_daemon_boundary must not shell into rust/tests/e2e_calls.rs"
+    );
+    assert!(
+        !root.join("rust/tests/e2e_calls.rs").exists(),
+        "rust/tests/e2e_calls.rs must be deleted once the daemon boundary moves under pikahut"
     );
 
     Ok(())

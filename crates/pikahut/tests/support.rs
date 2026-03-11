@@ -1,5 +1,8 @@
 use std::fs;
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -14,19 +17,48 @@ struct CallStatsSnapshot {
     jitter_buffer_ms: u32,
 }
 
+struct ScopedEnvVar {
+    key: String,
+    previous: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: callers serialize env mutations before invoking helpers that
+        // rely on temporary process-wide environment overrides.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            // SAFETY: callers serialize env mutations before invoking helpers
+            // that rely on temporary process-wide environment overrides.
+            unsafe {
+                std::env::set_var(&self.key, previous);
+            }
+        } else {
+            // SAFETY: callers serialize env mutations before invoking helpers
+            // that rely on temporary process-wide environment overrides.
+            unsafe {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+}
+
 pub fn run_call_over_local_moq_relay(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let fixture_context = fixture_context(context)?;
-    let fixture = match start_relay_and_moq(&fixture_context) {
-        Ok(fixture) => fixture,
-        Err(err) => {
-            preserve_fixture_diagnostics(context, fixture_context.state_dir())
-                .context("preserve fixture startup diagnostics")?;
-            return Err(err);
-        }
-    };
-    let result = (|| -> Result<()> {
+    with_relay_and_moq_fixture(context, |fixture| {
         let relay_url = fixture
             .relay_url()
             .map(ToOwned::to_owned)
@@ -208,7 +240,368 @@ pub fn run_call_over_local_moq_relay(context: &TestContext) -> Result<()> {
         }
 
         Ok(())
-    })();
+    })
+}
+
+pub fn run_call_with_pikachat_daemon(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_relay_and_moq_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+        let moq_url = fixture
+            .manifest()
+            .moq_url
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing moq_url"))?;
+
+        let audio_fixture_path = context.state_dir().join("audio-fixtures/alternating.wav");
+        write_alternating_audio_fixture(&audio_fixture_path)?;
+        let audio_fixture_env = path_arg(&audio_fixture_path);
+        let _audio_fixture_env = ScopedEnvVar::set("PIKA_AUDIO_FIXTURE", &audio_fixture_env);
+
+        eprintln!("[test] audio fixture: {}", audio_fixture_path.display());
+        eprintln!("[test] using relay: {relay_url}");
+
+        let daemon_state_dir = context.state_dir().join("daemon");
+        fs::create_dir_all(&daemon_state_dir)
+            .with_context(|| format!("create daemon state dir {}", daemon_state_dir.display()))?;
+        let mut daemon = DaemonHandle::spawn(context, &relay_url, &daemon_state_dir)?;
+
+        daemon.wait_for_event("daemon ready", Duration::from_secs(15), |value| {
+            value.get("type").and_then(|kind| kind.as_str()) == Some("ready")
+        })?;
+        let daemon_npub = daemon.npub()?;
+        let daemon_pubkey = daemon.pubkey()?;
+        eprintln!("[test] daemon pubkey={daemon_pubkey} npub={daemon_npub}");
+
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "set_relays",
+            "request_id": "sr1",
+            "relays": [relay_url.clone()]
+        }))?;
+        daemon.wait_for_event("set_relays ok", Duration::from_secs(15), |value| {
+            value.get("type").and_then(|kind| kind.as_str()) == Some("ok")
+                && value.get("request_id").and_then(|id| id.as_str()) == Some("sr1")
+        })?;
+
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "publish_keypackage",
+            "request_id": "kp1",
+            "relays": [relay_url.clone()]
+        }))?;
+        daemon.wait_for_event("kp published", Duration::from_secs(15), |value| {
+            value.get("type").and_then(|kind| kind.as_str()) == Some("ok")
+                && value.get("request_id").and_then(|id| id.as_str()) == Some("kp1")
+        })?;
+
+        let caller_dir = context.state_dir().join("caller");
+        write_config_with_moq(&caller_dir, &relay_url, Some(&relay_url), &moq_url)?;
+        let caller = FfiApp::new(path_arg(&caller_dir), String::new(), String::new());
+
+        caller.dispatch(AppAction::CreateAccount);
+        wait_until("caller logged in", Duration::from_secs(10), || {
+            matches!(caller.state().auth, AuthState::LoggedIn { .. })
+        })?;
+
+        let chat_id = create_or_open_dm_chat(&caller, &daemon_npub, Duration::from_secs(90))?;
+        eprintln!("[test] chat created: {chat_id}");
+
+        let welcome = daemon.wait_for_event(
+            "daemon welcome_received",
+            Duration::from_secs(30),
+            |value| value.get("type").and_then(|kind| kind.as_str()) == Some("welcome_received"),
+        )?;
+        let wrapper_id = welcome
+            .get("wrapper_event_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("welcome_received missing wrapper_event_id"))?
+            .to_string();
+
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "accept_welcome",
+            "request_id": "acc1",
+            "wrapper_event_id": wrapper_id
+        }))?;
+        daemon.wait_for_event("daemon group_joined", Duration::from_secs(30), |value| {
+            value.get("type").and_then(|kind| kind.as_str()) == Some("group_joined")
+        })?;
+
+        let nonce = format!("{:016x}", rand::random::<u64>());
+        let ping_msg = format!("ping:{nonce}");
+        let pong_msg = format!("pong:{nonce}");
+
+        caller.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            content: ping_msg.clone(),
+            kind: None,
+            reply_to_message_id: None,
+        });
+
+        let message = daemon.wait_for_event(
+            "daemon message_received (ping)",
+            Duration::from_secs(30),
+            |value| {
+                value.get("type").and_then(|kind| kind.as_str()) == Some("message_received")
+                    && value
+                        .get("content")
+                        .and_then(|content| content.as_str())
+                        .map(|content| content == ping_msg)
+                        .unwrap_or(false)
+            },
+        )?;
+
+        let nostr_group_id = message
+            .get("nostr_group_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("message_received missing nostr_group_id"))?
+            .to_string();
+
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "send_message",
+            "request_id": "pong1",
+            "nostr_group_id": nostr_group_id,
+            "content": pong_msg.clone()
+        }))?;
+        daemon.wait_for_event("pong send ok", Duration::from_secs(15), |value| {
+            value.get("type").and_then(|kind| kind.as_str()) == Some("ok")
+                && value.get("request_id").and_then(|id| id.as_str()) == Some("pong1")
+        })?;
+
+        wait_until("caller received pong", Duration::from_secs(30), || {
+            caller
+                .state()
+                .current_chat
+                .as_ref()
+                .and_then(|chat| {
+                    chat.messages
+                        .iter()
+                        .find(|message| message.content == pong_msg)
+                })
+                .is_some()
+        })?;
+        eprintln!("[test] PASS: ping/pong works");
+
+        caller.dispatch(AppAction::StartCall {
+            chat_id: chat_id.clone(),
+        });
+        wait_until("caller offering", Duration::from_secs(10), || {
+            caller
+                .state()
+                .active_call
+                .as_ref()
+                .map(|call| matches!(call.status, CallStatus::Offering))
+                .unwrap_or(false)
+        })?;
+
+        let invite = daemon.wait_for_event(
+            "daemon call_invite_received",
+            Duration::from_secs(30),
+            |value| {
+                value.get("type").and_then(|kind| kind.as_str()) == Some("call_invite_received")
+            },
+        )?;
+        let call_id = invite
+            .get("call_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("call_invite_received missing call_id"))?
+            .to_string();
+
+        daemon.send_cmd(serde_json::json!({
+            "cmd": "accept_call",
+            "request_id": "accept1",
+            "call_id": call_id.clone()
+        }))?;
+        daemon.wait_for_event(
+            "daemon call_session_started",
+            Duration::from_secs(30),
+            |value| {
+                value.get("type").and_then(|kind| kind.as_str()) == Some("call_session_started")
+            },
+        )?;
+
+        wait_until(
+            "caller active with tx frames",
+            Duration::from_secs(30),
+            || {
+                caller
+                    .state()
+                    .active_call
+                    .as_ref()
+                    .map(|call| {
+                        matches!(call.status, CallStatus::Active)
+                            && call
+                                .debug
+                                .as_ref()
+                                .map(|debug| debug.tx_frames > 5)
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            },
+        )?;
+
+        let require_rx = std::env::var("PIKACHAT_ECHO_MODE")
+            .map(|value| !value.trim().is_empty() && value.trim() != "0")
+            .unwrap_or(false);
+        let use_real_ai = std::env::var("OPENAI_API_KEY").is_ok();
+
+        if require_rx {
+            wait_until(
+                "caller receiving echoed frames",
+                Duration::from_secs(15),
+                || {
+                    caller
+                        .state()
+                        .active_call
+                        .as_ref()
+                        .and_then(|call| call.debug.as_ref().map(|debug| debug.rx_frames > 0))
+                        .unwrap_or(false)
+                },
+            )?;
+        } else if use_real_ai {
+            daemon.wait_for_event(
+                "daemon accumulating audio",
+                Duration::from_secs(30),
+                |value| {
+                    value.get("type").and_then(|kind| kind.as_str()) == Some("call_debug")
+                        && value
+                            .get("call_id")
+                            .and_then(|id| id.as_str())
+                            .map(|id| id == call_id)
+                            .unwrap_or(false)
+                        && value
+                            .get("rx_frames")
+                            .and_then(|frames| frames.as_u64())
+                            .map(|frames| frames >= 200)
+                            .unwrap_or(false)
+                },
+            )?;
+        } else {
+            daemon.wait_for_event(
+                "daemon stt receiving frames",
+                Duration::from_secs(20),
+                |value| {
+                    value.get("type").and_then(|kind| kind.as_str()) == Some("call_debug")
+                        && value
+                            .get("call_id")
+                            .and_then(|id| id.as_str())
+                            .map(|id| id == call_id)
+                            .unwrap_or(false)
+                        && value
+                            .get("rx_frames")
+                            .and_then(|frames| frames.as_u64())
+                            .map(|frames| frames > 0)
+                            .unwrap_or(false)
+                },
+            )?;
+        }
+
+        if !require_rx {
+            let audio_chunk = daemon.wait_for_event(
+                "daemon call_audio_chunk",
+                Duration::from_secs(30),
+                |value| {
+                    value.get("type").and_then(|kind| kind.as_str()) == Some("call_audio_chunk")
+                        && value
+                            .get("call_id")
+                            .and_then(|id| id.as_str())
+                            .map(|id| id == call_id)
+                            .unwrap_or(false)
+                },
+            )?;
+            let audio_path = audio_chunk
+                .get("audio_path")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("call_audio_chunk missing audio_path"))?
+                .to_string();
+            let wav_data = fs::read(&audio_path)
+                .with_context(|| format!("read daemon audio chunk {}", audio_path))?;
+            anyhow::ensure!(wav_data.len() > 44, "WAV file too short at {}", audio_path);
+            anyhow::ensure!(&wav_data[0..4] == b"RIFF", "WAV missing RIFF header");
+            anyhow::ensure!(&wav_data[8..12] == b"WAVE", "WAV missing WAVE header");
+
+            let tts_text = "This is a test of the text to speech system.";
+            daemon.send_cmd(serde_json::json!({
+                "cmd": "send_audio_response",
+                "request_id": "tts1",
+                "call_id": call_id.clone(),
+                "tts_text": tts_text,
+            }))?;
+            let tts_timeout = if use_real_ai {
+                Duration::from_secs(45)
+            } else {
+                Duration::from_secs(30)
+            };
+            let tts_result =
+                daemon.wait_for_event("send_audio_response result", tts_timeout, |value| {
+                    value.get("request_id").and_then(|id| id.as_str()) == Some("tts1")
+                })?;
+            let tts_ok = tts_result
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .map(|kind| kind == "ok")
+                .unwrap_or(false);
+            anyhow::ensure!(tts_ok, "TTS publish failed: {tts_result}");
+
+            wait_until(
+                "caller receiving TTS frames",
+                Duration::from_secs(30),
+                || {
+                    caller
+                        .state()
+                        .active_call
+                        .as_ref()
+                        .and_then(|call| call.debug.as_ref().map(|debug| debug.rx_frames > 0))
+                        .unwrap_or(false)
+                },
+            )?;
+        }
+
+        caller.dispatch(AppAction::EndCall);
+        wait_until("caller call ended", Duration::from_secs(10), || {
+            caller
+                .state()
+                .active_call
+                .as_ref()
+                .map(|call| matches!(call.status, CallStatus::Ended { .. }))
+                .unwrap_or(true)
+        })?;
+
+        if let Some(debug) = caller
+            .state()
+            .active_call
+            .as_ref()
+            .and_then(|call| call.debug.as_ref())
+        {
+            eprintln!(
+                "[test] caller final: tx={} rx={} dropped={}",
+                debug.tx_frames, debug.rx_frames, debug.rx_dropped
+            );
+        }
+
+        eprintln!("[test] PASS: pikachat call test on {relay_url}");
+        Ok(())
+    })
+}
+
+fn with_relay_and_moq_fixture(
+    context: &TestContext,
+    run: impl FnOnce(&FixtureHandle) -> Result<()>,
+) -> Result<()> {
+    let fixture_context = fixture_context(context)?;
+    let fixture = match start_relay_and_moq(&fixture_context) {
+        Ok(fixture) => fixture,
+        Err(err) => {
+            preserve_fixture_diagnostics(context, fixture_context.state_dir())
+                .context("preserve fixture startup diagnostics")?;
+            return Err(err);
+        }
+    };
+    let result = run(&fixture);
 
     if let Err(err) = result {
         preserve_fixture_diagnostics(context, fixture.state_dir())
@@ -280,8 +673,229 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+struct DaemonHandle {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    stdout_lines: Arc<Mutex<Vec<serde_json::Value>>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DaemonHandle {
+    fn spawn(context: &TestContext, relay_url: &str, state_dir: &Path) -> Result<Self> {
+        let binary = pikachat_binary(context)?;
+        let use_real_ai = std::env::var("OPENAI_API_KEY").is_ok();
+        eprintln!(
+            "[daemon] spawning {} daemon --relay {} --state-dir {} real_ai={use_real_ai}",
+            binary.display(),
+            relay_url,
+            state_dir.display()
+        );
+
+        let mut command = Command::new(&binary);
+        command
+            .arg("daemon")
+            .arg("--relay")
+            .arg(relay_url)
+            .arg("--state-dir")
+            .arg(path_arg(state_dir));
+        if use_real_ai {
+            command.env("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").unwrap());
+        } else {
+            command.env("PIKACHAT_TTS_FIXTURE", "1");
+        }
+        let mut child = command
+            .env(
+                "PIKACHAT_ECHO_MODE",
+                std::env::var("PIKACHAT_ECHO_MODE").unwrap_or_default(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("spawn pikachat at {}", binary.display()))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("capture pikachat stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("capture pikachat stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("capture pikachat stderr"))?;
+
+        let stderr_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[pikachat stderr] {line}");
+            }
+        });
+
+        let stdout_lines = Arc::new(Mutex::new(Vec::new()));
+        let lines_for_thread = Arc::clone(&stdout_lines);
+        let stdout_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[pikachat stdout] {line}");
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+                    lines_for_thread.lock().unwrap().push(value);
+                }
+            }
+        });
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout_lines,
+            stderr_thread: Some(stderr_thread),
+            stdout_thread: Some(stdout_thread),
+        })
+    }
+
+    fn send_cmd(&mut self, value: serde_json::Value) -> Result<()> {
+        let encoded = serde_json::to_string(&value).context("encode daemon command")?;
+        writeln!(self.stdin, "{encoded}").context("write daemon command")?;
+        self.stdin.flush().context("flush daemon command")?;
+        Ok(())
+    }
+
+    fn wait_for_event(
+        &self,
+        what: &str,
+        timeout: Duration,
+        pred: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<serde_json::Value> {
+        let start = Instant::now();
+        let mut last_idx = 0;
+        while start.elapsed() < timeout {
+            let lines = self.stdout_lines.lock().unwrap();
+            for index in last_idx..lines.len() {
+                if pred(&lines[index]) {
+                    return Ok(lines[index].clone());
+                }
+            }
+            last_idx = lines.len();
+            drop(lines);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let lines = self.stdout_lines.lock().unwrap();
+        let dump = lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| format!("  [{index}] {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "{what}: daemon event not received within {timeout:?}. stdout events:\n{}",
+            if dump.is_empty() {
+                "(none)".to_string()
+            } else {
+                dump
+            }
+        );
+    }
+
+    fn npub(&self) -> Result<String> {
+        self.ready_field("npub")
+    }
+
+    fn pubkey(&self) -> Result<String> {
+        self.ready_field("pubkey")
+    }
+
+    fn ready_field(&self, field: &str) -> Result<String> {
+        let lines = self.stdout_lines.lock().unwrap();
+        lines
+            .iter()
+            .find(|line| line.get("type").and_then(|kind| kind.as_str()) == Some("ready"))
+            .and_then(|line| line.get(field).and_then(|value| value.as_str()))
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("daemon ready event missing {field}"))
+    }
+}
+
+impl Drop for DaemonHandle {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(thread) = self.stderr_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(thread) = self.stdout_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn pikachat_binary(context: &TestContext) -> Result<PathBuf> {
+    let binary = std::env::var("PIKACHAT_BIN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| context.workspace_root().join("target/debug/pikachat"));
+    if !binary.exists() {
+        bail!(
+            "pikachat binary not found at {}. Build it with `cargo build -p pikachat` or set PIKACHAT_BIN",
+            binary.display()
+        );
+    }
+    Ok(binary)
+}
+
+fn write_alternating_audio_fixture(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create audio fixture dir {}", parent.display()))?;
+    }
+
+    let sample_rate = 48_000u32;
+    let duration_secs = 10u32;
+    let total_samples = sample_rate * duration_secs;
+    let mut pcm = Vec::with_capacity(total_samples as usize);
+    let freq = 440.0f32;
+    let step = 2.0f32 * std::f32::consts::PI * freq / sample_rate as f32;
+    let samples_per_sec = sample_rate as usize;
+    for index in 0..total_samples as usize {
+        let second = index / samples_per_sec;
+        let sample = if second.is_multiple_of(2) {
+            (((index as f32) * step).sin() * (i16::MAX as f32 * 0.3)) as i16
+        } else {
+            0i16
+        };
+        pcm.push(sample);
+    }
+
+    let data_len = (pcm.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in &pcm {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+
+    fs::write(path, wav).with_context(|| format!("write audio fixture {}", path.display()))?;
+    Ok(())
 }
 
 fn write_config_with_moq(

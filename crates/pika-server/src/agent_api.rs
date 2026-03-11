@@ -140,6 +140,13 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub status_copy: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct ManagedEnvironmentHandle {
+    pub owner_npub: String,
+    pub agent_id: String,
+    pub vm_id: String,
+}
+
 fn record_managed_environment_event(
     conn: &mut PgConnection,
     owner_npub: &str,
@@ -706,63 +713,6 @@ pub(crate) async fn load_managed_environment_status(
         app_state,
         startup_phase: Some(refreshed.startup_phase),
     })
-}
-
-pub(crate) async fn load_managed_environment_backup_status(
-    status: &ManagedEnvironmentStatus,
-    request_id: &str,
-) -> ManagedEnvironmentBackupStatus {
-    let Some(row) = status.row.as_ref() else {
-        return ManagedEnvironmentBackupStatus {
-            freshness: ManagedEnvironmentBackupFreshness::NotProvisioned,
-            backup_host: None,
-            latest_successful_backup_at: None,
-            reset_requires_confirmation: false,
-            status_copy: "No managed environment exists yet, so backup protection is not tracked."
-                .to_string(),
-        };
-    };
-
-    let Some(vm_id) = row.vm_id.as_deref() else {
-        return unavailable_backup_status(
-            "No current VM assignment is available, so backup protection cannot be verified from the control plane.",
-        );
-    };
-
-    let resolved = match resolved_spawner_params(None) {
-        Ok(resolved) => resolved,
-        Err(err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                agent_id = %row.agent_id,
-                vm_id = %vm_id,
-                error = %err,
-                "failed to resolve spawner params while loading backup status"
-            );
-            return unavailable_backup_status(
-                "Backup protection could not be verified because the backup host control plane is unavailable.",
-            );
-        }
-    };
-    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
-    match spawner
-        .get_vm_backup_status_with_request_id(vm_id, Some(request_id))
-        .await
-    {
-        Ok(backup) => managed_environment_backup_status_from_spawner(backup),
-        Err(err) => {
-            tracing::warn!(
-                request_id = %request_id,
-                agent_id = %row.agent_id,
-                vm_id = %vm_id,
-                error = %err,
-                "failed to load backup status from spawner"
-            );
-            unavailable_backup_status(
-                "Backup protection could not be verified from the control plane right now.",
-            )
-        }
-    }
 }
 
 pub(crate) async fn load_launchable_managed_environment(

@@ -216,7 +216,6 @@ async fn get_vm_backup_status(
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(status))
 }
-
 async fn proxy_openclaw_root(
     State(manager): State<Arc<VmManager>>,
     Extension(request_context): Extension<RequestContext>,

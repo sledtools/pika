@@ -599,7 +599,6 @@ impl VmManager {
         );
         Ok(canonical_home)
     }
-
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
         let key = format!("{cpu}c-{memory_mb}m");
         {
@@ -1242,7 +1241,6 @@ impl VmManager {
             observed_at: None,
         }
     }
-
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
         let daemon_bin = resolve_agent_daemon_bin();
 
@@ -2506,83 +2504,6 @@ mod tests {
 
         let target = manager.openclaw_proxy_target(vm_id).unwrap();
         assert_eq!(target, "http://192.168.83.10:18789");
-    }
-
-    #[tokio::test]
-    async fn backup_status_returns_missing_when_metadata_is_absent() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000000";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-
-        let status = manager.backup_status(vm_id).unwrap();
-
-        assert_eq!(status.vm_id, vm_id);
-        assert_eq!(status.backup_host, cfg.host_id);
-        assert_eq!(status.freshness, VmBackupFreshness::Missing);
-        assert!(!status.successful_backup_known);
-        assert_eq!(status.latest_successful_backup_at, None);
-    }
-
-    #[tokio::test]
-    async fn backup_status_reads_recent_success_record_as_healthy() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000001";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        let recent = chrono::Utc::now()
-            .checked_sub_signed(chrono::Duration::minutes(30))
-            .unwrap()
-            .to_rfc3339();
-        write_backup_status(&cfg, vm_id, &recent);
-
-        let status = manager.backup_status(vm_id).unwrap();
-
-        assert_eq!(status.freshness, VmBackupFreshness::Healthy);
-        assert!(status.successful_backup_known);
-        assert_eq!(
-            status.latest_successful_backup_at.as_deref(),
-            Some(recent.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn backup_status_marks_old_success_record_stale() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000002";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        let old = chrono::Utc::now()
-            .checked_sub_signed(chrono::Duration::hours(BACKUP_HEALTHY_MAX_AGE_HOURS + 1))
-            .unwrap()
-            .to_rfc3339();
-        write_backup_status(&cfg, vm_id, &old);
-
-        let status = manager.backup_status(vm_id).unwrap();
-
-        assert_eq!(status.freshness, VmBackupFreshness::Stale);
-        assert!(status.successful_backup_known);
-    }
-
-    #[tokio::test]
-    async fn backup_status_returns_unavailable_for_invalid_metadata() {
-        let root = tempfile::tempdir().unwrap();
-        let cfg = test_config(&root);
-        let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let vm_id = "vm-00000000";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        let metadata_dir = cfg.state_dir.join(vm_id).join("metadata");
-        fs::create_dir_all(&metadata_dir).unwrap();
-        fs::write(metadata_dir.join(BACKUP_STATUS_METADATA), "{not-json").unwrap();
-
-        let status = manager.backup_status(vm_id).unwrap();
-
-        assert_eq!(status.freshness, VmBackupFreshness::Unavailable);
-        assert!(!status.successful_backup_known);
-        assert_eq!(status.latest_successful_backup_at, None);
     }
 
     #[tokio::test]

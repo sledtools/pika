@@ -4265,7 +4265,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        inviter_mdk
+        let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
@@ -4281,6 +4281,21 @@ mod tests {
 
         assert_eq!(snapshots.len(), 1);
         assert_eq!(groups.len(), 1);
+        assert_eq!(snapshots[0].member_snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].is_admin(&inviter_keys.public_key()),
+            created
+                .group
+                .admin_pubkeys
+                .contains(&inviter_keys.public_key())
+        );
+        assert_eq!(
+            snapshots[0].is_admin(&invitee_keys.public_key()),
+            created
+                .group
+                .admin_pubkeys
+                .contains(&invitee_keys.public_key())
+        );
         assert_eq!(
             groups[0].nostr_group_id_hex,
             snapshots[0].nostr_group_id_hex

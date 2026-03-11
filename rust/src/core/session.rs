@@ -1097,8 +1097,8 @@ mod tests {
                 mls_group_id: GroupId::from_slice(&[1, 2, 3]),
                 is_group: true,
                 group_name: Some("Stale Group".into()),
+                self_is_admin: false,
                 members: vec![],
-                admin_pubkeys: vec![],
             },
         );
         let session = Session {
@@ -1162,8 +1162,8 @@ mod tests {
                 mls_group_id: GroupId::from_slice(&[1, 2, 3]),
                 is_group: true,
                 group_name: Some("Stale Group".into()),
+                self_is_admin: false,
                 members: vec![],
-                admin_pubkeys: vec![],
             },
         );
         let session = Session {

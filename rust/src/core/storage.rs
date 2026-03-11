@@ -141,13 +141,7 @@ impl AppCore {
                 continue;
             }
 
-            // Get all members except self.
-            let all_members: BTreeSet<PublicKey> = snapshot.member_pubkeys.clone();
-            let other_members: Vec<PublicKey> = all_members
-                .iter()
-                .filter(|p| *p != &my_pubkey)
-                .cloned()
-                .collect();
+            let other_members = snapshot.other_member_snapshots(&my_pubkey);
 
             // A group chat is anything with >1 other member, or explicitly named (not "DM") with
             // at least one other member (so "Note to self" doesn't get treated as a group).
@@ -174,7 +168,8 @@ impl AppCore {
             let now = crate::state::now_seconds();
             let group_map = self.group_profiles.get(&chat_id);
             let mut member_infos: Vec<super::GroupMember> = Vec::new();
-            for pk in &other_members {
+            for member in &other_members {
+                let pk = member.pubkey;
                 let hex = pk.to_hex();
                 let (name, picture_url) = if let Some(gp) = group_map.and_then(|gm| gm.get(&hex)) {
                     (
@@ -189,7 +184,8 @@ impl AppCore {
                     )
                 };
                 member_infos.push(super::GroupMember {
-                    pubkey: *pk,
+                    pubkey: pk,
+                    is_admin: member.is_admin,
                     name,
                     picture_url,
                 });
@@ -200,16 +196,13 @@ impl AppCore {
                     Some(p) => (now - p.last_checked_at) > 3600,
                 };
                 if needs_fetch {
-                    missing_profile_pubkeys.insert(*pk);
+                    missing_profile_pubkeys.insert(pk);
                 }
             }
 
-            let admin_pubkeys: Vec<String> =
-                snapshot.admin_pubkeys.iter().map(|p| p.to_hex()).collect();
-
             let members_for_state: Vec<MemberInfo> = member_infos
                 .iter()
-                .map(|m| m.to_member_info(&admin_pubkeys))
+                .map(super::GroupMember::to_member_info)
                 .collect();
 
             // Do not rely on `last_message_id` being populated in all MDK flows.
@@ -264,7 +257,7 @@ impl AppCore {
                 }
             });
 
-            let member_count = members_for_state.len() + 1;
+            let member_count = snapshot.member_count();
             let (display_name, subtitle) = if is_group {
                 let display_name = explicit_name
                     .clone()
@@ -305,14 +298,15 @@ impl AppCore {
                 unread_count,
             });
 
+            let self_is_admin = snapshot.is_admin(&my_pubkey);
             index.insert(
                 chat_id,
                 GroupIndexEntry {
                     mls_group_id: snapshot.mls_group_id,
                     is_group,
                     group_name: explicit_name,
+                    self_is_admin,
                     members: member_infos,
-                    admin_pubkeys,
                 },
             );
         }
@@ -644,11 +638,11 @@ impl AppCore {
             None
         };
 
-        let is_admin = entry.admin_pubkeys.contains(&my_pubkey_hex);
+        let is_admin = entry.self_is_admin;
         let members_for_state: Vec<MemberInfo> = entry
             .members
             .iter()
-            .map(|m| m.to_member_info(&entry.admin_pubkeys))
+            .map(super::GroupMember::to_member_info)
             .collect();
 
         let typing = self.get_active_typers(chat_id);

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -48,20 +48,42 @@ pub enum ConversationEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeJoinedGroupMemberSnapshot {
+    pub pubkey: PublicKey,
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeJoinedGroupSnapshot {
     pub nostr_group_id_hex: String,
     pub mls_group_id: GroupId,
     pub mls_group_id_hex: String,
     pub name: String,
     pub description: String,
-    pub admin_pubkeys: BTreeSet<PublicKey>,
-    pub member_pubkeys: BTreeSet<PublicKey>,
+    pub member_snapshots: Vec<RuntimeJoinedGroupMemberSnapshot>,
     pub last_message_at: Option<Timestamp>,
 }
 
 impl RuntimeJoinedGroupSnapshot {
     pub fn member_count(&self) -> u32 {
-        self.member_pubkeys.len() as u32
+        self.member_snapshots.len() as u32
+    }
+
+    pub fn other_member_snapshots(
+        &self,
+        local_pubkey: &PublicKey,
+    ) -> Vec<RuntimeJoinedGroupMemberSnapshot> {
+        self.member_snapshots
+            .iter()
+            .filter(|member| member.pubkey != *local_pubkey)
+            .cloned()
+            .collect()
+    }
+
+    pub fn is_admin(&self, pubkey: &PublicKey) -> bool {
+        self.member_snapshots
+            .iter()
+            .any(|member| member.pubkey == *pubkey && member.is_admin)
     }
 }
 
@@ -183,18 +205,25 @@ impl<'a> ConversationRuntime<'a> {
         Ok(groups
             .into_iter()
             .map(|group| {
-                let member_pubkeys = self
+                let admin_pubkeys = group.admin_pubkeys;
+                let member_snapshots = self
                     .mdk
                     .get_members(&group.mls_group_id)
                     .unwrap_or_default();
+                let member_snapshots = member_snapshots
+                    .into_iter()
+                    .map(|pubkey| RuntimeJoinedGroupMemberSnapshot {
+                        is_admin: admin_pubkeys.contains(&pubkey),
+                        pubkey,
+                    })
+                    .collect();
                 let mls_group_id = group.mls_group_id.clone();
                 RuntimeJoinedGroupSnapshot {
                     nostr_group_id_hex: hex::encode(group.nostr_group_id),
                     mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
                     name: group.name,
                     description: group.description,
-                    admin_pubkeys: group.admin_pubkeys,
-                    member_pubkeys,
+                    member_snapshots,
                     last_message_at: group.last_message_at,
                     mls_group_id,
                 }
@@ -458,18 +487,41 @@ mod tests {
         assert_eq!(snapshots[0].name, "list groups test");
         assert!(
             snapshots[0]
-                .admin_pubkeys
-                .contains(&inviter_keys.public_key())
+                .member_snapshots
+                .iter()
+                .any(|member| member.pubkey == inviter_keys.public_key() && member.is_admin)
         );
         assert!(
             snapshots[0]
-                .member_pubkeys
-                .contains(&inviter_keys.public_key())
+                .member_snapshots
+                .iter()
+                .any(|member| member.pubkey == inviter_keys.public_key())
         );
+        let expected_inviter_admin = created
+            .group
+            .admin_pubkeys
+            .contains(&inviter_keys.public_key());
+        let expected_invitee_admin = created
+            .group
+            .admin_pubkeys
+            .contains(&invitee_keys.public_key());
         assert!(
             snapshots[0]
-                .member_pubkeys
-                .contains(&invitee_keys.public_key())
+                .member_snapshots
+                .iter()
+                .any(|member| member.pubkey == invitee_keys.public_key())
+        );
+        assert_eq!(
+            snapshots[0].is_admin(&inviter_keys.public_key()),
+            expected_inviter_admin
+        );
+        assert_eq!(
+            snapshots[0].is_admin(&invitee_keys.public_key()),
+            expected_invitee_admin
+        );
+        assert_eq!(
+            snapshots[0].other_member_snapshots(&inviter_keys.public_key())[0].pubkey,
+            invitee_keys.public_key()
         );
         assert_eq!(snapshots[0].member_count(), 2);
         assert_eq!(snapshots[0].last_message_at, None);

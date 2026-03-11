@@ -1,0 +1,250 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Managed OpenClaw Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #efe7d7;
+      --panel: rgba(255, 252, 246, 0.94);
+      --border: #cfbea0;
+      --ink: #1d211c;
+      --muted: #62685d;
+      --ok: #13624d;
+      --warm: #8d5c13;
+      --error: #9d2f24;
+      --idle: #6d6a63;
+      --action: #0a5b90;
+      --danger: #8a231a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0)),
+        radial-gradient(circle at top left, rgba(10, 91, 144, 0.16), transparent 30%),
+        linear-gradient(180deg, #f8f4eb 0%, var(--bg) 100%);
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 18px 48px;
+    }
+    .shell {
+      display: grid;
+      gap: 18px;
+    }
+    .hero, .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 18px 60px rgba(72, 58, 31, 0.08);
+    }
+    .hero {
+      padding: 28px;
+    }
+    .grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    }
+    .card {
+      padding: 22px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2.2rem, 6vw, 3.8rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.1rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    p {
+      margin: 0 0 14px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 0.92rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: white;
+    }
+    .tone-ok { background: var(--ok); }
+    .tone-warm { background: var(--warm); }
+    .tone-error { background: var(--error); }
+    .tone-idle { background: var(--idle); }
+    dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px 18px;
+    }
+    dt {
+      margin: 0 0 4px;
+      font-size: 0.85rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    dd {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    code {
+      font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+      font-size: 0.92em;
+    }
+    .actions {
+      display: grid;
+      gap: 12px;
+    }
+    form { margin: 0; }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 18px;
+      padding: 14px 18px;
+      font: inherit;
+      cursor: pointer;
+      color: white;
+      background: var(--action);
+    }
+    .danger {
+      background: var(--danger);
+    }
+    .ghost {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--border);
+    }
+    .callout {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(138, 35, 26, 0.08);
+      color: var(--ink);
+    }
+    .hero-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .hero-row form {
+      width: auto;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="shell">
+      <section class="hero">
+        <div class="hero-row">
+          <div>
+            <h1>Managed OpenClaw</h1>
+            <p>This dashboard controls your current managed environment. Today the built-in runtime template is <strong>{{ template_name }}</strong>, with OpenClaw as the only built-in UI surface.</p>
+          </div>
+          <form method="post" action="/logout">
+            <button class="ghost" type="submit">Logout</button>
+          </form>
+        </div>
+        <div class="pill tone-{{ state_tone }}">
+          <span>{{ app_state_label }}</span>
+          <span>/</span>
+          <span>{{ startup_phase_label }}</span>
+        </div>
+        <p style="margin-top:14px">{{ status_copy }}</p>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <h2>Ownership</h2>
+          <dl>
+            <div>
+              <dt>Owner npub</dt>
+              <dd><code>{{ owner_npub }}</code></dd>
+            </div>
+            <div>
+              <dt>Managed environment exists</dt>
+              <dd>{{ environment_exists_label }}</dd>
+            </div>
+            <div>
+              <dt>Template</dt>
+              <dd>{{ template_name }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="card">
+          <h2>Runtime State</h2>
+          <dl>
+            <div>
+              <dt>Agent identity</dt>
+              <dd><code>{{ agent_id }}</code></dd>
+            </div>
+            <div>
+              <dt>VM ID</dt>
+              <dd><code>{{ vm_id }}</code></dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{{ created_at }}</dd>
+            </div>
+            <div>
+              <dt>Last updated</dt>
+              <dd>{{ updated_at }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="card">
+          <h2>Control Loop</h2>
+          <div class="actions">
+            {% if can_provision %}
+            <form method="post" action="/dashboard/provision">
+              <button type="submit">Provision Managed OpenClaw</button>
+            </form>
+            {% endif %}
+
+            {% if can_recover %}
+            <form method="post" action="/dashboard/recover">
+              <button type="submit">Recover Preserving Durable Home</button>
+            </form>
+            {% endif %}
+
+            {% if can_reset %}
+            <form method="post" action="/dashboard/reset">
+              <button class="danger" type="submit">Destructive Reset</button>
+            </form>
+            {% endif %}
+          </div>
+        </section>
+      </section>
+
+      <section class="card">
+        <h2>Reset Semantics</h2>
+        <div class="callout">
+          <p><strong>Recover</strong> preserves the durable home and asks the control plane to bring the managed environment back.</p>
+          <p><strong>Destructive reset</strong> is allowed to delete the durable home and create a fresh managed OpenClaw environment from scratch.</p>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

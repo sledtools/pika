@@ -41,9 +41,9 @@ This ledger is about behavioral replacement, not CI-enforcement level. Use `docs
 | Login with nsec | `integration_deterministic::cli_smoke_local` | Covered (identity + login flow) |
 | Chat creation with bot | `integration_deterministic::openclaw_scenario_invite_and_chat` | Covered (bot invite + chat) |
 | Ping/pong message exchange | `integration_deterministic::openclaw_scenario_invite_and_chat` | Covered (message round-trip) |
-| Call initiation + status transitions | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (call state machine) |
-| TX/RX frame flow validation | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (frame count assertions) |
-| Call end + cleanup | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (call end flow) |
+| Call initiation + status transitions | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (pikahut-owned Rust call state machine) |
+| TX/RX frame flow validation | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (pikahut-owned frame count assertions) |
+| Call end + cleanup | `integration_deterministic::call_over_local_moq_relay_boundary` | Covered (pikahut-owned call end flow) |
 | Bot audio + daemon call flow | `integration_deterministic::call_with_pikachat_daemon_boundary` | Covered (daemon-based bot call) |
 
 ## Additional Checked-In Probe Removals

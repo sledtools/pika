@@ -33,3 +33,7 @@ nostr-sdk = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+pika_core = { path = "../../rust" }
+rustls = { workspace = true }

@@ -23,6 +23,8 @@ use pikahut::testing::{
     skip_if_missing_requirements, start_fixture,
 };
 
+mod support;
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -404,23 +406,7 @@ fn call_over_local_moq_relay_boundary() -> Result<()> {
     let mut context = TestContext::builder("regression-call-over-local-moq-relay")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
-    let runner = CommandRunner::new(&context);
-    runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "test",
-                "-p",
-                "pika_core",
-                "--test",
-                "e2e_calls",
-                "call_over_local_moq_relay",
-                "--",
-                "--ignored",
-                "--nocapture",
-            ])
-            .capture_name("regression-call-over-local-moq-relay"),
-    )?;
+    support::run_call_over_local_moq_relay(&context)?;
     context.mark_success();
     Ok(())
 }
@@ -431,6 +417,8 @@ fn call_with_pikachat_daemon_boundary() -> Result<()> {
     let mut context = TestContext::builder("regression-call-with-pikachat-daemon")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
+    // The daemon seam still delegates into the legacy pika_core test target
+    // until its boundary is collapsed in a follow-up slice.
     let runner = CommandRunner::new(&context);
     runner.run(
         &CommandSpec::cargo()

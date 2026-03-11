@@ -5,11 +5,9 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
 use crate::agent_api::{
-    list_recent_managed_environment_events, load_current_ready_managed_environment,
-    load_launchable_managed_environment, load_managed_environment_backup_status,
-    load_managed_environment_status, provision_managed_environment_if_missing,
-    recover_agent_for_owner, reset_agent_for_owner, spawner_base_url, AgentApiError,
-    ManagedEnvironmentBackupFreshness, ManagedEnvironmentBackupStatus, ManagedEnvironmentStatus,
+    list_recent_managed_environment_events, load_managed_environment_status,
+    provision_managed_environment_if_missing, recover_agent_for_owner, reset_agent_for_owner,
+    AgentApiError, ManagedEnvironmentStatus,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
@@ -22,17 +20,6 @@ const CUSTOMER_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const CUSTOMER_CHALLENGE_KIND: &str = "customer_dashboard_challenge";
 const CUSTOMER_SESSION_KIND: &str = "customer_dashboard_session";
 const RECENT_ACTIVITY_LIMIT: i64 = 20;
-const OPENCLAW_UI_HOST_PREFIX: &str = "openclaw.";
-const OPENCLAW_LAUNCH_TICKET_KIND: &str = "openclaw_ui_launch_ticket";
-const OPENCLAW_UI_SESSION_KIND: &str = "openclaw_ui_session";
-const OPENCLAW_UI_SESSION_COOKIE: &str = "pika_openclaw_ui_session";
-const OPENCLAW_LAUNCH_TTL_SECS: i64 = 60;
-const OPENCLAW_UI_SESSION_TTL_SECS: i64 = 15 * 60;
-const RESET_CONFIRMATION_KIND: &str = "customer_reset_confirmation";
-const RESET_CONFIRMATION_TTL_SECS: i64 = 15 * 60;
-pub(crate) const OPENCLAW_INTERNAL_LAUNCH_PATH: &str = "/_openclaw_launch";
-pub(crate) const OPENCLAW_INTERNAL_PROXY_PREFIX: &str = "/_openclaw_proxy";
-pub(crate) const OPENCLAW_INTERNAL_PROXY_PATH: &str = "/_openclaw_proxy/*path";
 
 #[derive(Debug, serde::Deserialize)]
 pub struct VerifyRequest {
@@ -48,6 +35,12 @@ pub struct ActionForm {
 struct AuthenticatedCustomer {
     npub: String,
     csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+struct DashboardActivityItem {
+    created_at: String,
+    message: String,
 }
 
 #[derive(Template)]
@@ -72,36 +65,8 @@ struct DashboardTemplate {
     can_provision: bool,
     can_recover: bool,
     can_reset: bool,
-    control_loop_notice: &'static str,
-    has_control_loop_notice: bool,
-    recover_action_label: &'static str,
-    recover_semantics_copy: &'static str,
-    backup_state_label: &'static str,
-    backup_state_tone: &'static str,
-    backup_status_copy: String,
-    backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
-    reset_requires_confirmation: bool,
-    reset_safety_copy: String,
-    can_launch_openclaw: bool,
-    launch_status_copy: &'static str,
     recent_activity: Vec<DashboardActivityItem>,
     has_recent_activity: bool,
-}
-
-#[derive(Template)]
-#[template(path = "customer/reset_confirm.html")]
-struct ResetConfirmTemplate {
-    owner_npub: String,
-    csrf_token: String,
-    confirmation_token: String,
-    backup_state_label: &'static str,
-    backup_state_tone: &'static str,
-    backup_status_copy: String,
-    backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
 }
 
 fn browser_auth(state: &State) -> &BrowserAuthConfig {
@@ -212,6 +177,7 @@ fn verify_action_csrf(
 fn dashboard_template(
     authenticated: AuthenticatedCustomer,
     status: ManagedEnvironmentStatus,
+    recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
     let app_state = status.app_state;
@@ -254,80 +220,10 @@ fn dashboard_template(
         created_at: format_timestamp(row.as_ref().map(|row| row.created_at)),
         updated_at: format_timestamp(row.as_ref().map(|row| row.updated_at)),
         can_provision: row.is_none(),
-        can_recover: row.is_some() && !inflight_without_vm,
-        can_reset: row.is_some() && !inflight_without_vm,
-        control_loop_notice: if inflight_without_vm {
-            "Provisioning is already in flight. Recovery and reset stay locked until the current VM assignment finishes."
-        } else {
-            ""
-        },
-        has_control_loop_notice: inflight_without_vm,
-        recover_action_label: if recoverable_vm_exists {
-            "Recover Managed Environment"
-        } else {
-            "Provision Fresh Managed Environment"
-        },
-        recover_semantics_copy: if inflight_without_vm {
-            "stays locked while the initial VM assignment is still in flight. Wait for the current create request to finish before retrying any destructive action."
-        } else if recoverable_vm_exists {
-            "asks the control plane to bring the managed environment back. If that VM is still recoverable, this path preserves the durable home. If the VM is already gone, Recover falls back to provisioning a fresh environment."
-        } else {
-            "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
-        },
-        backup_state_label: backup_state_label(backup.freshness),
-        backup_state_tone: backup_state_tone(backup.freshness),
-        backup_status_copy: backup.status_copy,
-        backup_last_successful_at: format_rfc3339_timestamp(
-            backup.latest_successful_backup_at.as_deref(),
-        ),
-        backup_host,
-        has_backup_host,
-        reset_requires_confirmation: backup.reset_requires_confirmation,
-        reset_safety_copy: if backup.reset_requires_confirmation {
-            "Because backup protection is stale, missing, or unavailable, destructive reset now requires an explicit confirmation step."
-                .to_string()
-        } else {
-            "Recent backup protection is healthy, so destructive reset remains available directly from the dashboard."
-                .to_string()
-        },
-        can_launch_openclaw,
-        launch_status_copy: if can_launch_openclaw {
-            "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
-        } else if row.is_none() {
-            "Provision Managed OpenClaw before launching the built-in UI."
-        } else if inflight_without_vm {
-            "OpenClaw launch unlocks after the current VM assignment finishes."
-        } else if app_state == Some(crate::agent_api_v1_contract::AgentAppState::Error) {
-            "Recover or reprovision the managed environment before opening OpenClaw."
-        } else {
-            "OpenClaw launch becomes available once the managed environment is fully ready."
-        },
+        can_recover: row.is_some(),
+        can_reset: row.is_some(),
         has_recent_activity: !recent_activity.is_empty(),
         recent_activity,
-    }
-}
-
-fn reset_confirm_template(
-    authenticated: &AuthenticatedCustomer,
-    backup: ManagedEnvironmentBackupStatus,
-    confirmation_token: String,
-) -> ResetConfirmTemplate {
-    let has_backup_host = backup.backup_host.is_some();
-    let backup_host = backup
-        .backup_host
-        .unwrap_or_else(|| "not_available".to_string());
-    ResetConfirmTemplate {
-        owner_npub: authenticated.npub.clone(),
-        csrf_token: authenticated.csrf_token.clone(),
-        confirmation_token,
-        backup_state_label: backup_state_label(backup.freshness),
-        backup_state_tone: backup_state_tone(backup.freshness),
-        backup_status_copy: backup.status_copy,
-        backup_last_successful_at: format_rfc3339_timestamp(
-            backup.latest_successful_backup_at.as_deref(),
-        ),
-        backup_host,
-        has_backup_host,
     }
 }
 
@@ -439,7 +335,18 @@ pub async fn dashboard(
         load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
             .await
             .map_err(map_agent_api_error)?;
-    render_template(&dashboard_template(authenticated, status))
+    let activity = list_recent_managed_environment_events(
+        &state,
+        &authenticated.npub,
+        RECENT_ACTIVITY_LIMIT,
+        &request_context.request_id,
+    )
+    .map_err(map_agent_api_error)?;
+    render_template(&dashboard_template(
+        authenticated,
+        status,
+        recent_activity_items(activity),
+    ))
 }
 
 pub async fn provision(
@@ -684,6 +591,15 @@ mod tests {
             .to_bech32()
             .expect("encode generated npub")
     }
+
+    fn recent_activity(
+        db_pool: &Pool<ConnectionManager<PgConnection>>,
+        npub: &str,
+    ) -> Vec<ManagedEnvironmentEvent> {
+        let mut conn = db_pool.get().expect("get activity connection");
+        ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, npub, 20)
+            .expect("query recent activity")
+    }
     fn request_context() -> Extension<RequestContext> {
         Extension(RequestContext {
             request_id: "req-customer-test".to_string(),
@@ -922,7 +838,6 @@ mod tests {
         assert!(body.contains("No managed OpenClaw environment has been provisioned yet."));
         assert!(body.contains("Recent Activity"));
         assert!(body.contains("No recent managed-environment activity yet."));
-        assert!(!body.contains("Open OpenClaw"));
         assert!(body.contains(npub));
 
         clear_test_database(&db_pool);
@@ -1489,6 +1404,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_renders_recent_activity_newest_first() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1recentactivitydashboard";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            npub,
+            Some("agent-1"),
+            None,
+            "provision_requested",
+            "Provision requested for a new Managed OpenClaw environment.",
+            Some("req-older"),
+        )
+        .expect("seed older event");
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            npub,
+            Some("agent-1"),
+            Some("vm-1"),
+            "provision_accepted",
+            "Provision accepted. Managed OpenClaw is starting on VM vm-1.",
+            Some("req-newer"),
+        )
+        .expect("seed newer event");
+        let headers = customer_cookie_header(&state, npub);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        let newer_index = body
+            .find("Provision accepted. Managed OpenClaw is starting on VM vm-1.")
+            .expect("newer activity");
+        let older_index = body
+            .find("Provision requested for a new Managed OpenClaw environment.")
+            .expect("older activity");
+        assert!(body.contains("Recent Activity"));
+        assert!(
+            newer_index < older_index,
+            "activity should render newest-first"
+        );
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn dashboard_marks_ready_row_failed_when_vm_is_missing() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -1518,6 +1485,9 @@ mod tests {
         assert!(body.contains("needs recovery"));
         assert!(body.contains("falls back to provisioning a fresh environment"));
         assert!(!body.contains("running and ready"));
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_kind, "readiness_refresh_missing_vm");
 
         clear_test_database(&db_pool);
     }
@@ -1544,6 +1514,7 @@ mod tests {
         assert!(body.contains("No recoverable VM is available"));
         assert!(body.contains("Recover provisions a fresh environment"));
         assert!(body.contains("Recover falls back to provisioning a fresh environment"));
+        assert!(body.contains("does not restore missing durable state"));
         assert!(body.contains("Recover Managed Environment"));
         assert!(!body.contains("Recover Preserving Durable Home"));
 
@@ -1582,7 +1553,7 @@ mod tests {
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
-        let events = recent_activity(&db_pool, &npub);
+        let events = recent_activity(&db_pool, npub);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");
@@ -1722,14 +1693,14 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let headers = customer_cookie_header(&state, &npub);
+        let npub = "npub1recovermissingvmactivity";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
         let form = customer_action_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         AgentInstance::create(
             &mut conn,
-            &npub,
+            npub,
             "agent-missing",
             Some("vm-missing"),
             AGENT_PHASE_ERROR,
@@ -1757,60 +1728,12 @@ mod tests {
         assert_eq!(create_request.method, "POST");
         assert_eq!(create_request.path, "/vms");
 
-        let events = recent_activity(&db_pool, &npub);
+        let events = recent_activity(&db_pool, npub);
         assert_eq!(events.len(), 4);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");
         assert_eq!(events[2].event_kind, "recover_fell_back_to_fresh");
         assert_eq!(events[3].event_kind, "recover_requested");
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn recover_action_calls_spawner_recover_for_error_row_with_vm_id() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = "npub1recovererrorcustomerflow";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
-        let form = customer_action_form(&state, &headers);
-        let mut conn = db_pool.get().expect("get seed connection");
-        AgentInstance::create(
-            &mut conn,
-            npub,
-            "agent-error",
-            Some("vm-error"),
-            crate::models::agent_instance::AGENT_PHASE_ERROR,
-        )
-        .expect("seed errored agent");
-        let (base_url, rx) = spawn_one_shot_server(
-            "200 OK",
-            r#"{"id":"vm-error","status":"running","guest_ready":true}"#,
-        );
-        let _env = MicrovmEnvGuard::set(&base_url);
-
-        let response = recover(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect("recover response");
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-        let captured = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured recover request");
-        assert_eq!(captured.method, "POST");
-        assert_eq!(captured.path, "/vms/vm-error/recover");
-
-        let mut conn = db_pool.get().expect("get verify connection");
-        let latest = AgentInstance::find_latest_by_owner(&mut conn, npub)
-            .expect("query latest row")
-            .expect("latest row");
-        assert_eq!(latest.agent_id, "agent-error");
-        assert_eq!(latest.phase, AGENT_PHASE_READY);
 
         clear_test_database(&db_pool);
     }
@@ -1889,302 +1812,12 @@ mod tests {
             retired.phase,
             crate::models::agent_instance::AGENT_PHASE_ERROR
         );
-        let events = recent_activity(&db_pool, &npub);
+        let events = recent_activity(&db_pool, npub);
         assert_eq!(events.len(), 4);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");
         assert_eq!(events[2].event_kind, "reset_destroyed_old_vm");
         assert_eq!(events[3].event_kind, "reset_requested");
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_requires_confirmation_when_backup_is_weak() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let headers = customer_cookie_header(&state, &npub);
-        let form = customer_reset_form(&state, &headers);
-        let mut conn = db_pool.get().expect("get seed connection");
-        AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-weak",
-            Some("vm-reset-weak"),
-            AGENT_PHASE_READY,
-        )
-        .expect("seed ready agent");
-        let (base_url, rx) = spawn_scripted_server(vec![
-            (
-                "200 OK",
-                r#"{"id":"vm-reset-weak","status":"running","guest_ready":true}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"vm_id":"vm-reset-weak","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-weak/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
-            ),
-        ]);
-        let _env = MicrovmEnvGuard::set(&base_url);
-
-        let err = reset(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect_err("reset without confirmation should fail");
-        assert_eq!(err.0, StatusCode::CONFLICT);
-
-        let status_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured status request");
-        assert_eq!(status_request.path, "/vms/vm-reset-weak");
-        let backup_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured backup request");
-        assert_eq!(backup_request.path, "/vms/vm-reset-weak/backup-status");
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_rejects_when_no_managed_environment_exists() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let headers = customer_cookie_header(&state, &npub);
-        let form = customer_reset_form(&state, &headers);
-
-        let err = reset(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect_err("reset without an environment should fail");
-        assert_eq!(err.0, StatusCode::CONFLICT);
-        assert!(err.1.contains("requires a current managed environment"));
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_rejects_while_initial_vm_assignment_is_inflight() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let mut conn = db_pool.get().expect("get seed connection");
-        AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-inflight",
-            None,
-            AGENT_PHASE_CREATING,
-        )
-        .expect("seed inflight creating agent");
-        let headers = customer_cookie_header(&state, &npub);
-        let form = customer_reset_form(&state, &headers);
-
-        let err = reset(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect_err("reset should stay locked during inflight VM assignment");
-        assert_eq!(err.0, StatusCode::CONFLICT);
-        assert!(err.1.contains("still in flight"));
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_confirm_page_renders_for_weak_backup() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let headers = customer_cookie_header(&state, &npub);
-        let mut conn = db_pool.get().expect("get seed connection");
-        AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-confirm",
-            Some("vm-reset-confirm"),
-            AGENT_PHASE_READY,
-        )
-        .expect("seed ready agent");
-        let (base_url, _rx) = spawn_scripted_server(vec![
-            (
-                "200 OK",
-                r#"{"id":"vm-reset-confirm","status":"running","guest_ready":true}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"vm_id":"vm-reset-confirm","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirm/home","successful_backup_known":false,"freshness":"missing","latest_successful_backup_at":null,"observed_at":null}"#,
-            ),
-        ]);
-        let _env = MicrovmEnvGuard::set(&base_url);
-
-        let response = reset_confirm_page(Extension(state), request_context(), headers)
-            .await
-            .expect("confirm page response");
-        let body = response_body_string(response).await;
-        assert!(body.contains("Confirm Destructive Reset"));
-        assert!(body.contains("Reset Without Recent Backup"));
-        assert!(body.contains("No successful durable-home backup is known yet"));
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_accepts_confirmation_ticket_when_backup_is_weak() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let mut conn = db_pool.get().expect("get seed connection");
-        AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-confirmed",
-            Some("vm-reset-confirmed"),
-            AGENT_PHASE_READY,
-        )
-        .expect("seed ready agent");
-        let headers = customer_cookie_header(&state, &npub);
-        let confirmation_token = issue_reset_confirmation_ticket(
-            &state,
-            &npub,
-            "agent-reset-confirmed",
-            Some("vm-reset-confirmed"),
-        )
-        .expect("issue confirmation ticket");
-        let form = ResetActionForm {
-            csrf_token: customer_reset_form(&state, &headers).csrf_token,
-            confirmation_token: Some(confirmation_token),
-        };
-        let (base_url, rx) = spawn_scripted_server(vec![
-            (
-                "200 OK",
-                r#"{"id":"vm-reset-confirmed","status":"running","guest_ready":true}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"vm_id":"vm-reset-confirmed","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirmed/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
-            ),
-            ("204 No Content", ""),
-            ("200 OK", r#"{"id":"vm-reset-fresh","status":"starting"}"#),
-        ]);
-        let _env = MicrovmEnvGuard::set(&base_url);
-
-        let response = reset(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect("confirmed reset response");
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-        let status_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured status request");
-        assert_eq!(status_request.path, "/vms/vm-reset-confirmed");
-        let backup_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured backup request");
-        assert_eq!(backup_request.path, "/vms/vm-reset-confirmed/backup-status");
-        let delete_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured delete request");
-        assert_eq!(delete_request.path, "/vms/vm-reset-confirmed");
-        let create_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured create request");
-        assert_eq!(create_request.path, "/vms");
-
-        clear_test_database(&db_pool);
-    }
-
-    #[tokio::test]
-    async fn reset_rejects_confirmation_ticket_for_changed_environment() {
-        let _guard = serial_test_guard();
-        let Some(db_pool) = init_test_db_pool() else {
-            return;
-        };
-        clear_test_database(&db_pool);
-        let state = test_state(db_pool.clone());
-        let npub = generate_npub();
-        upsert_allowlist(&db_pool, &npub, true);
-        let mut conn = db_pool.get().expect("get seed connection");
-        let original = AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-original",
-            Some("vm-reset-original"),
-            AGENT_PHASE_READY,
-        )
-        .expect("seed original ready agent");
-        let confirmation_token = issue_reset_confirmation_ticket(
-            &state,
-            &npub,
-            &original.agent_id,
-            original.vm_id.as_deref(),
-        )
-        .expect("issue original confirmation ticket");
-        AgentInstance::update_phase(&mut conn, &original.agent_id, AGENT_PHASE_ERROR, None)
-            .expect("retire original agent");
-        AgentInstance::create(
-            &mut conn,
-            &npub,
-            "agent-reset-replacement",
-            Some("vm-reset-replacement"),
-            AGENT_PHASE_READY,
-        )
-        .expect("seed replacement ready agent");
-        let headers = customer_cookie_header(&state, &npub);
-        let form = ResetActionForm {
-            csrf_token: customer_reset_form(&state, &headers).csrf_token,
-            confirmation_token: Some(confirmation_token),
-        };
-        let (base_url, rx) = spawn_scripted_server(vec![
-            (
-                "200 OK",
-                r#"{"id":"vm-reset-replacement","status":"running","guest_ready":true}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"vm_id":"vm-reset-replacement","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-replacement/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
-            ),
-        ]);
-        let _env = MicrovmEnvGuard::set(&base_url);
-
-        let err = reset(Extension(state), request_context(), headers, Form(form))
-            .await
-            .expect_err("stale confirmation ticket should fail");
-        assert_eq!(err.0, StatusCode::CONFLICT);
-        assert!(err.1.contains("no longer matches"));
-
-        let status_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured status request");
-        assert_eq!(status_request.path, "/vms/vm-reset-replacement");
-        let backup_request = rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("captured backup request");
-        assert_eq!(
-            backup_request.path,
-            "/vms/vm-reset-replacement/backup-status"
-        );
 
         clear_test_database(&db_pool);
     }

@@ -15,10 +15,10 @@ use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
     GuestServiceKind, GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupPlan,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
-    SpawnerVmResponse as VmResponse, VmBackupFreshness, VmBackupStatusRecord,
-    GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH,
-    VM_BACKUP_STATUS_SCHEMA_V1,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerOpenClawLaunchAuth,
+    SpawnerVmBackupStatus, SpawnerVmResponse as VmResponse, VmBackupFreshness,
+    VmBackupStatusRecord, GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH,
+    GUEST_READY_MARKER_PATH, VM_BACKUP_STATUS_SCHEMA_V1,
 };
 use serde::Deserialize;
 use tempfile::Builder as TempDirBuilder;
@@ -87,6 +87,21 @@ struct RestoreHelperResult {
     vm_id: String,
     snapshot: String,
     restored_home_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenClawConfigFile {
+    gateway: Option<OpenClawGatewayConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenClawGatewayConfig {
+    auth: Option<OpenClawGatewayAuthConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenClawGatewayAuthConfig {
+    token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -523,6 +538,42 @@ impl VmManager {
             anyhow::bail!("vm {id} startup plan is missing OpenClaw gateway details");
         };
         Ok(format!("http://{}:{gateway_port}", vm.ip))
+    }
+
+    pub fn openclaw_launch_auth(&self, id: &str) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        let vm = self.load_vm_disk_state(id)?;
+        let startup_plan = self.load_guest_startup_plan(&vm.microvm_state_dir, id)?;
+        anyhow::ensure!(
+            startup_plan.service_kind == GuestServiceKind::OpenclawGateway,
+            "vm {id} is not running the managed OpenClaw gateway"
+        );
+        let GuestServiceLaunch::OpenclawGateway { config_path, .. } = startup_plan.service else {
+            anyhow::bail!("vm {id} startup plan is missing OpenClaw gateway details");
+        };
+        let config_host_path = guest_workspace_path_on_host(&vm.microvm_state_dir, &config_path)
+            .with_context(|| format!("resolve OpenClaw config path for vm {id}"))?;
+        let text = fs::read_to_string(&config_host_path).with_context(|| {
+            format!(
+                "read OpenClaw config for vm {id} at {}",
+                config_host_path.display()
+            )
+        })?;
+        let config: OpenClawConfigFile = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "parse OpenClaw config for vm {id} at {}",
+                config_host_path.display()
+            )
+        })?;
+        let gateway_auth_token = config
+            .gateway
+            .and_then(|gateway| gateway.auth)
+            .and_then(|auth| auth.token)
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty());
+        Ok(SpawnerOpenClawLaunchAuth {
+            vm_id: id.to_string(),
+            gateway_auth_token,
+        })
     }
 
     pub fn backup_status(&self, id: &str) -> anyhow::Result<SpawnerVmBackupStatus> {
@@ -1312,6 +1363,32 @@ fn parse_vm_id_slot(id: &str) -> Option<u32> {
         return None;
     }
     u32::from_str_radix(raw, 16).ok()
+}
+
+fn guest_workspace_path_on_host(
+    microvm_state_dir: &Path,
+    guest_rel_path: &str,
+) -> anyhow::Result<PathBuf> {
+    let mut components = Path::new(guest_rel_path).components();
+    match components.next() {
+        Some(std::path::Component::Normal(first)) if first == "workspace" => {}
+        _ => anyhow::bail!(
+            "guest workspace path must start with workspace/, got {}",
+            guest_rel_path
+        ),
+    }
+    let mut host_path = microvm_state_dir.join("home");
+    for component in components {
+        match component {
+            std::path::Component::Normal(part) => host_path.push(part),
+            std::path::Component::CurDir => {}
+            _ => anyhow::bail!(
+                "guest workspace path must stay within workspace/, got {}",
+                guest_rel_path
+            ),
+        }
+    }
+    Ok(host_path)
 }
 
 fn parse_staging_vm_id(name: &str) -> Option<&str> {
@@ -2533,6 +2610,71 @@ mod tests {
 
         let target = manager.openclaw_proxy_target(vm_id).unwrap();
         assert_eq!(target, "http://192.168.83.10:18789");
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_auth_reads_gateway_token_from_guest_config() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000000";
+        let autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
+                service_kind: GuestServiceKind::OpenclawGateway,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: GuestServiceLaunch::OpenclawGateway {
+                    exec_command: "npx -y openclaw".to_string(),
+                    state_dir: "/root/pika-agent/openclaw".to_string(),
+                    config_path: pika_agent_control_plane::GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                    gateway_port: 18789,
+                    daemon_backend: pika_agent_control_plane::GuestOpenclawDaemonBackend::Native,
+                },
+                readiness_check: pika_agent_control_plane::GuestServiceReadinessCheck::HttpGetOk {
+                    url: "http://127.0.0.1:18789/health".to_string(),
+                    ready_probe: "openclaw_gateway_health".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+                },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "openclaw_gateway_exited".to_string(),
+            },
+        };
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_runtime_metadata(
+            &vm_state_dir,
+            vm_id,
+            &mac_for_guest_ip(Ipv4Addr::new(192, 168, 83, 10)),
+            Ipv4Addr::new(192, 168, 83, 10),
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&autostart),
+        )
+        .unwrap();
+        let config_path = vm_state_dir.join("home/pika-agent/openclaw/openclaw.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            r#"{"gateway":{"auth":{"token":"guest-launch-token"}}}"#,
+        )
+        .unwrap();
+
+        let launch_auth = manager.openclaw_launch_auth(vm_id).unwrap();
+        assert_eq!(launch_auth.vm_id, vm_id);
+        assert_eq!(
+            launch_auth.gateway_auth_token.as_deref(),
+            Some("guest-launch-token")
+        );
     }
 
     #[tokio::test]

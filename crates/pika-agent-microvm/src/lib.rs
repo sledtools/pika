@@ -8,8 +8,8 @@ use pika_agent_control_plane::{
     GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan,
     MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
-    SpawnerVmResponse as VmResponse,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerOpenClawLaunchAuth,
+    SpawnerVmBackupStatus, SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
 
@@ -39,6 +39,7 @@ const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
 const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const GET_OPENCLAW_LAUNCH_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -292,6 +293,49 @@ impl MicrovmSpawnerClient {
         resp.json()
             .await
             .context("decode get vm backup status response")
+    }
+
+    pub async fn get_openclaw_launch_auth(
+        &self,
+        vm_id: &str,
+    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        self.get_openclaw_launch_auth_with_request_id(vm_id, None)
+            .await
+    }
+
+    pub async fn get_openclaw_launch_auth_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        let url = format!("{}/vms/{vm_id}/openclaw/launch-auth", self.base_url);
+        let resp = with_request_id(
+            self.client
+                .get(&url)
+                .timeout(GET_OPENCLAW_LAUNCH_AUTH_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send get openclaw launch auth request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "get openclaw launch auth",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json()
+            .await
+            .context("decode get openclaw launch auth response")
     }
 }
 
@@ -2075,6 +2119,10 @@ done
 
     #[test]
     fn build_create_vm_request_includes_openclaw_native_payload() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("");
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -2145,6 +2193,10 @@ done
 
     #[test]
     fn build_create_vm_request_includes_openclaw_acp_payload() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("");
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -2453,6 +2505,33 @@ done
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
             Some("req-backup-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_openclaw_launch_auth_contract_request_shape() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"vm_id":"vm-123","gateway_auth_token":"launch-token-123"}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let auth = client
+            .get_openclaw_launch_auth_with_request_id("vm-123", Some("req-launch-auth-123"))
+            .await
+            .expect("get launch auth succeeds");
+        assert_eq!(auth.vm_id, "vm-123");
+        assert_eq!(auth.gateway_auth_token.as_deref(), Some("launch-token-123"));
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-123/openclaw/launch-auth");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-launch-auth-123")
         );
         assert!(captured.body.is_empty());
     }

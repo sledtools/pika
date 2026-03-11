@@ -13,6 +13,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungsteniteCloseFram
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tracing::warn;
 
+use pika_agent_microvm::MicrovmSpawnerClient;
+
 use crate::agent_api::{
     list_recent_managed_environment_events, load_launchable_managed_environment,
     load_managed_environment_backup_status, load_managed_environment_status,
@@ -1253,8 +1255,29 @@ pub async fn openclaw_launch_exchange(
         ));
     }
 
+    let spawner_url = spawner_base_url(&request_context.request_id).map_err(map_agent_api_error)?;
+    let spawner = MicrovmSpawnerClient::new(spawner_url);
+    let launch_auth = spawner
+        .get_openclaw_launch_auth_with_request_id(&ticket.vm_id, Some(&request_context.request_id))
+        .await
+        .map_err(|err| {
+            warn!(
+                request_id = %request_context.request_id,
+                vm_id = %ticket.vm_id,
+                error = %err,
+                "failed to load managed openclaw launch auth"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load managed openclaw launch auth".to_string(),
+            )
+        })?;
     let ui_session = issue_openclaw_ui_session(&state, &ticket)?;
-    let mut response = Redirect::to("/").into_response();
+    let redirect_target = launch_auth
+        .gateway_auth_token
+        .map(|token| format!("/#token={token}"))
+        .unwrap_or_else(|| "/".to_string());
+    let mut response = Redirect::to(&redirect_target).into_response();
     browser_auth(&state)
         .set_session_cookie_with_path(
             &mut response,
@@ -2444,10 +2467,16 @@ mod tests {
             "openclaw.agents.example.com",
             chrono::Utc::now().timestamp() + 60,
         );
-        let (base_url, _rx) = spawn_one_shot_server(
-            "200 OK",
-            r#"{"id":"vm-openclaw","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
-        );
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-openclaw","status":"running","agent_kind":"openclaw","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-openclaw","gateway_auth_token":"launch-token-123"}"#,
+            ),
+        ]);
         let _env = MicrovmEnvGuard::set(&base_url);
 
         let response = openclaw_launch_exchange(
@@ -2464,7 +2493,16 @@ mod tests {
                 .headers()
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok()),
-            Some("/")
+            Some("/#token=launch-token-123")
+        );
+        let status_request = rx.recv().expect("captured status request");
+        assert_eq!(status_request.method, "GET");
+        assert_eq!(status_request.path, "/vms/vm-openclaw");
+        let launch_auth_request = rx.recv().expect("captured launch auth request");
+        assert_eq!(launch_auth_request.method, "GET");
+        assert_eq!(
+            launch_auth_request.path,
+            "/vms/vm-openclaw/openclaw/launch-auth"
         );
         let set_cookie = response
             .headers()

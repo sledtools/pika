@@ -25,7 +25,7 @@ use uuid::Uuid;
 use config::Config;
 use manager::{VmManager, VmNotFound};
 use pika_agent_control_plane::{
-    SpawnerCreateVmRequest as CreateVmRequest, SpawnerVmBackupStatus,
+    SpawnerCreateVmRequest as CreateVmRequest, SpawnerOpenClawLaunchAuth, SpawnerVmBackupStatus,
     SpawnerVmResponse as VmResponse,
 };
 
@@ -114,6 +114,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/vms/:id/recover", post(recover_vm))
         .route("/vms/:id/restore", post(restore_vm))
         .route("/vms/:id/backup-status", get(get_vm_backup_status))
+        .route(
+            "/vms/:id/openclaw/launch-auth",
+            get(get_openclaw_launch_auth),
+        )
         .route("/vms/:id/openclaw", any(proxy_openclaw_root))
         .route("/vms/:id/openclaw/*path", any(proxy_openclaw_path))
         .layer(middleware::from_fn(trace_http_request))
@@ -222,6 +226,19 @@ async fn get_vm_backup_status(
         .map_err(map_manager_error_to_api)
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(status))
+}
+
+async fn get_openclaw_launch_auth(
+    State(manager): State<Arc<VmManager>>,
+    Extension(request_context): Extension<RequestContext>,
+    Path(id): Path<String>,
+) -> Result<Json<SpawnerOpenClawLaunchAuth>, ApiError> {
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let launch_auth = manager
+        .openclaw_launch_auth(&id)
+        .map_err(map_manager_error_to_api)
+        .map_err(|err| err.with_request_id(request_context.request_id))?;
+    Ok(Json(launch_auth))
 }
 
 async fn proxy_openclaw_root(

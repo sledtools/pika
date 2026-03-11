@@ -424,6 +424,13 @@ pub struct SpawnerVmBackupStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerOpenClawLaunchAuth {
+    pub vm_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_auth_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProvisionCommand {
     pub provider: ProviderKind,
     pub protocol: ProtocolKind,

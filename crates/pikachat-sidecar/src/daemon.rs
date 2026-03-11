@@ -269,6 +269,20 @@ fn expect_call_signal_publish_completed(
     }
 }
 
+fn expect_media_upload_completed(
+    operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
+) -> Result<pika_marmot_runtime::runtime::CompletedMediaUpload, String> {
+    match operation {
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+            pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed { result, .. },
+        ) => Ok(*result),
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+            pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed { error, .. },
+        ) => Err(error),
+        other => Err(format!("unexpected media upload result: {other:?}")),
+    }
+}
+
 fn chain_has_message(err: &anyhow::Error, needle: &str) -> bool {
     err.chain().any(|cause| cause.to_string().contains(needle))
 }
@@ -2677,8 +2691,21 @@ pub async fn daemon_main(
                             }
                         };
 
-                        let result =
-                            host.finish_upload(&mls_group_id, &prepared.upload, uploaded.clone());
+                        let operation = host.complete_media_upload_operation(
+                            &mls_group_id,
+                            nostr_group_id.clone(),
+                            &prepared.upload,
+                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                                uploaded.clone(),
+                            ),
+                        );
+                        let result = match expect_media_upload_completed(operation) {
+                            Ok(result) => result.result,
+                            Err(error) => {
+                                reply_tx.send(out_error(request_id, "upload_failed", error)).ok();
+                                continue;
+                            }
+                        };
 
                         // Build imeta tag and message
                         let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
@@ -5795,6 +5822,71 @@ mod tests {
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment.filename, "daemon.txt");
         assert_eq!(attachments[0].attachment.mime_type, "text/plain");
+    }
+
+    #[test]
+    fn daemon_media_upload_operation_result_uses_shared_runtime_event_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon media op".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let prepared = host
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"daemon media op",
+                Some("text/plain"),
+                Some("daemon-op.txt"),
+            )
+            .expect("prepare upload");
+
+        let operation = host.complete_media_upload_operation(
+            &created.group.mls_group_id,
+            hex::encode(created.group.nostr_group_id),
+            &prepared.upload,
+            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                pika_marmot_runtime::media::UploadedBlob {
+                    blossom_server: "https://example.com".to_string(),
+                    uploaded_url: "https://example.com/blob".to_string(),
+                    descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+                },
+            ),
+        );
+
+        match operation {
+            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
+                    operation_id,
+                    result,
+                },
+            ) => {
+                assert_eq!(
+                    operation_id,
+                    EventId::from_byte_array(prepared.upload.encrypted_hash)
+                );
+                assert_eq!(result.result.attachment.filename, "daemon-op.txt");
+                assert_eq!(result.result.attachment.mime_type, "text/plain");
+            }
+            other => panic!("expected completed media upload event, got {other:?}"),
+        }
     }
 
     #[test]

@@ -65,6 +65,8 @@ struct DashboardTemplate {
     can_provision: bool,
     can_recover: bool,
     can_reset: bool,
+    recover_action_label: &'static str,
+    recover_semantics_copy: &'static str,
     recent_activity: Vec<DashboardActivityItem>,
     has_recent_activity: bool,
 }
@@ -183,22 +185,7 @@ fn dashboard_template(
     recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
-    let app_state = status.app_state;
-    let startup_phase = status.startup_phase;
-    let inflight_without_vm = row
-        .as_ref()
-        .map(|row| {
-            row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none()
-        })
-        .unwrap_or(false);
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
-    let can_launch_openclaw = app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
-        && startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
-        && recoverable_vm_exists;
-    let has_backup_host = backup.backup_host.is_some();
-    let backup_host = backup
-        .backup_host
-        .unwrap_or_else(|| "not_available".to_string());
     DashboardTemplate {
         owner_npub: authenticated.npub,
         template_name: "OpenClaw",
@@ -225,6 +212,16 @@ fn dashboard_template(
         can_provision: row.is_none(),
         can_recover: row.is_some(),
         can_reset: row.is_some(),
+        recover_action_label: if recoverable_vm_exists {
+            "Recover Managed Environment"
+        } else {
+            "Provision Fresh Managed Environment"
+        },
+        recover_semantics_copy: if recoverable_vm_exists {
+            "asks the control plane to bring the managed environment back. If that VM is still recoverable, this path preserves the durable home. If the VM is already gone, Recover falls back to provisioning a fresh environment."
+        } else {
+            "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
+        },
         has_recent_activity: !recent_activity.is_empty(),
         recent_activity,
     }
@@ -1411,6 +1408,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_renders_inflight_creating_environment_without_marking_error() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1inflightdashboardstate";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(&mut conn, npub, "agent-inflight", None, "creating")
+            .expect("seed inflight agent");
+        let headers = customer_cookie_header(&state, npub);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Provisioning a managed OpenClaw environment."));
+        assert!(body.contains("agent-inflight"));
+        assert!(!body.contains("needs recovery"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn dashboard_renders_recent_activity_newest_first() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -1521,9 +1544,10 @@ mod tests {
         assert!(body.contains("No recoverable VM is available"));
         assert!(body.contains("Recover provisions a fresh environment"));
         assert!(body.contains("Recover falls back to provisioning a fresh environment"));
+        assert!(body.contains("Provision Fresh Managed Environment"));
+        assert!(body.contains("instead of restoring prior durable state"));
         assert!(body.contains("does not restore missing durable state"));
-        assert!(body.contains("Recover Managed Environment"));
-        assert!(!body.contains("Recover Preserving Durable Home"));
+        assert!(!body.contains("Recover Managed Environment"));
 
         clear_test_database(&db_pool);
     }

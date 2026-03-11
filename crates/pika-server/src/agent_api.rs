@@ -1686,7 +1686,10 @@ mod tests {
 
     fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
         dotenv::dotenv().ok();
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test pool");
+            return None;
+        };
         if let Err(err) = PgConnection::establish(&url) {
             eprintln!("SKIP: postgres unavailable for agent_api db test pool: {err}");
             return None;

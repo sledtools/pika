@@ -137,31 +137,6 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub status_copy: String,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum ManagedEnvironmentBackupFreshness {
-    NotProvisioned,
-    Healthy,
-    Stale,
-    Missing,
-    Unavailable,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ManagedEnvironmentBackupStatus {
-    pub freshness: ManagedEnvironmentBackupFreshness,
-    pub backup_host: Option<String>,
-    pub latest_successful_backup_at: Option<String>,
-    pub status_copy: String,
-    pub reset_requires_confirmation: bool,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct ManagedEnvironmentHandle {
-    pub owner_npub: String,
-    pub agent_id: String,
-    pub vm_id: String,
-}
-
 fn record_managed_environment_event(
     conn: &mut PgConnection,
     owner_npub: &str,
@@ -623,7 +598,7 @@ async fn refresh_agent_from_spawner(
             let errored = conn
                 .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
                     let errored =
-                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, Some(vm_id))?;
+                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, None)?;
                     let message = format!(
                         "A readiness check found that VM {vm_id} was missing. Managed OpenClaw was marked failed and now needs recovery."
                     );
@@ -1183,9 +1158,31 @@ pub(crate) async fn recover_agent_for_owner(
             AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
         );
     };
+    let recover_requested_message = match active.vm_id.as_deref() {
+        Some(vm_id) => format!("Recover requested for Managed OpenClaw on VM {vm_id}."),
+        None => "Recover requested for Managed OpenClaw without a recoverable VM.".to_string(),
+    };
+    record_managed_environment_event(
+        &mut conn,
+        owner_npub,
+        Some(&active.agent_id),
+        active.vm_id.as_deref(),
+        EVENT_RECOVER_REQUESTED,
+        &recover_requested_message,
+        request_id,
+    )?;
     if active.vm_id.is_none() {
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
+        record_managed_environment_event(
+            &mut conn,
+            owner_npub,
+            Some(&active.agent_id),
+            None,
+            EVENT_RECOVER_FELL_BACK_TO_FRESH,
+            "Recover could not preserve the previous environment because no recoverable VM was available. Provisioning a fresh Managed OpenClaw environment.",
+            request_id,
+        )?;
         drop(conn);
         return provision_or_existing_managed_environment(state, owner_npub, request_id, requested)
             .await;
@@ -1316,20 +1313,9 @@ pub(crate) async fn reset_agent_for_owner(
         })?;
         let existing = load_visible_agent_row(&mut conn, owner_npub)
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
-        if let Some(existing) = existing
-            .as_ref()
-            .filter(|row| is_inflight_provision_row(row))
-        {
-            return Ok(ManagedEnvironmentAction {
-                row: existing.clone(),
-                startup_phase: AgentStartupPhase::ProvisioningVm,
-            });
-        }
         let reset_requested_message = match existing.as_ref() {
-            Some(_) => {
-                "Destructive reset requested. The current managed environment will be replaced."
-                    .to_string()
-            }
+            Some(_) => "Destructive reset requested. The current managed environment will be replaced."
+                .to_string(),
             None => "Destructive reset requested without an existing managed environment. Provisioning a fresh Managed OpenClaw environment."
                 .to_string(),
         };

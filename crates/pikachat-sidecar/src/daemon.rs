@@ -269,20 +269,6 @@ fn expect_call_signal_publish_completed(
     }
 }
 
-fn expect_media_upload_completed(
-    operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
-) -> Result<pika_marmot_runtime::runtime::CompletedMediaUpload, String> {
-    match operation {
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-            pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed { result, .. },
-        ) => Ok(*result),
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-            pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed { error, .. },
-        ) => Err(error),
-        other => Err(format!("unexpected media upload result: {other:?}")),
-    }
-}
-
 fn chain_has_message(err: &anyhow::Error, needle: &str) -> bool {
     err.chain().any(|cause| cause.to_string().contains(needle))
 }
@@ -2695,12 +2681,10 @@ pub async fn daemon_main(
                             &mls_group_id,
                             nostr_group_id.clone(),
                             &prepared.upload,
-                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
-                                uploaded.clone(),
-                            ),
+                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded),
                         );
-                        let result = match expect_media_upload_completed(operation) {
-                            Ok(result) => result.result,
+                        let result = match operation.into_media_upload_result() {
+                            Ok(completed) => completed.result,
                             Err(error) => {
                                 reply_tx.send(out_error(request_id, "upload_failed", error)).ok();
                                 continue;
@@ -2715,7 +2699,7 @@ pub async fn daemon_main(
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
-                                    "uploaded_url": uploaded.uploaded_url,
+                                    "uploaded_url": result.uploaded_blob.uploaded_url,
                                     "original_hash_hex": result.attachment.original_hash_hex,
                                 }))));
                             }
@@ -5870,23 +5854,17 @@ mod tests {
                 },
             ),
         );
+        let operation_id = operation.operation_id();
+        let completed = operation
+            .into_media_upload_result()
+            .expect("completed media upload");
 
-        match operation {
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
-                    operation_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(
-                    operation_id,
-                    EventId::from_byte_array(prepared.upload.encrypted_hash)
-                );
-                assert_eq!(result.result.attachment.filename, "daemon-op.txt");
-                assert_eq!(result.result.attachment.mime_type, "text/plain");
-            }
-            other => panic!("expected completed media upload event, got {other:?}"),
-        }
+        assert_eq!(
+            operation_id,
+            EventId::from_byte_array(prepared.upload.encrypted_hash)
+        );
+        assert_eq!(completed.result.attachment.filename, "daemon-op.txt");
+        assert_eq!(completed.result.attachment.mime_type, "text/plain");
     }
 
     #[test]

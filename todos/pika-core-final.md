@@ -394,6 +394,10 @@ Daemon host target:
 - daemon becomes a protocol adapter over shared services
 - duplicate Marmot business logic is removed subsystem by subsystem
 
+Current thin-host slice:
+- single-item media send/upload completion in app and daemon now unwraps shared media upload operation results via runtime-owned helpers instead of host-local `match` trees
+- app also drops the dead inline `media_upload_failed(...)/match` ceremony for local validation failures; batch orchestration, upload execution, file staging, and protocol formatting stay host-local
+
 Only later:
 - formalize `pikad`
 - formalize `pika_app`

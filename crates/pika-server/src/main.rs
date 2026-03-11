@@ -23,7 +23,8 @@ use crate::agent_api_v1_contract::{
 use crate::customer::{
     challenge as customer_challenge, dashboard as customer_dashboard, home as customer_home,
     login_page as customer_login_page, logout as customer_logout, provision as customer_provision,
-    recover as customer_recover, reset as customer_reset, verify as customer_verify,
+    recover as customer_recover, reset as customer_reset,
+    reset_confirm_page as customer_reset_confirm_page, verify as customer_verify,
     OPENCLAW_INTERNAL_LAUNCH_PATH, OPENCLAW_INTERNAL_PROXY_PATH, OPENCLAW_INTERNAL_PROXY_PREFIX,
 };
 use crate::models::group_subscription::{GroupFilterInfo, GroupSubscription};

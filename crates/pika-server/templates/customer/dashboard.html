@@ -259,12 +259,38 @@
             {% endif %}
 
             {% if can_reset %}
-            <form method="post" action="/dashboard/reset">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button class="danger" type="submit">Destructive Reset</button>
-            </form>
+              {% if reset_requires_confirmation %}
+              <form method="get" action="/dashboard/reset/confirm">
+                <button class="danger" type="submit">Review Destructive Reset</button>
+              </form>
+              {% else %}
+              <form method="post" action="/dashboard/reset">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="danger" type="submit">Destructive Reset</button>
+              </form>
+              {% endif %}
             {% endif %}
           </div>
+        </section>
+
+        <section class="card">
+          <h2>Backup Protection</h2>
+          <div class="pill tone-{{ backup_state_tone }}" style="margin-bottom:14px">
+            <span>{{ backup_state_label }}</span>
+          </div>
+          <p>{{ backup_status_copy }}</p>
+          <dl>
+            <div>
+              <dt>Latest successful backup</dt>
+              <dd>{{ backup_last_successful_at }}</dd>
+            </div>
+            {% if has_backup_host %}
+            <div>
+              <dt>Backup host</dt>
+              <dd><code>{{ backup_host }}</code></dd>
+            </div>
+            {% endif %}
+          </dl>
         </section>
 
         <section class="card">
@@ -284,6 +310,7 @@
         <div class="callout">
           <p><strong>Recover</strong> {{ recover_semantics_copy }}</p>
           <p><strong>Destructive reset</strong> asks the control plane to delete the current VM if one still exists, then provisions a fresh managed OpenClaw environment. If the old VM is already gone, reset still continues fresh and does not restore missing durable state.</p>
+          <p><strong>Safety guardrail</strong> {{ reset_safety_copy }}</p>
         </div>
       </section>
 

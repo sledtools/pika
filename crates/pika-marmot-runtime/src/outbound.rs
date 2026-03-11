@@ -73,6 +73,12 @@ pub struct PublishedConversationAction {
     pub wrapper_event_id: EventId,
 }
 
+#[derive(Debug, Clone)]
+pub enum OutboundConversationPublishStatus {
+    Published { wrapper_event_id: EventId },
+    PublishFailed(String),
+}
+
 pub struct OutboundConversationRuntime<'a> {
     mdk: &'a PikaMdk,
 }

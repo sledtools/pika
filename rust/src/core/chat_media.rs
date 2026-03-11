@@ -1804,7 +1804,7 @@ impl AppCore {
             self.last_outgoing_ts
         };
 
-        let (client, wrapper, relays, rumor_id_hex) = {
+        let (client, prepared, relays) = {
             let Some(sess) = self.session.as_mut() else {
                 return;
             };
@@ -1873,10 +1873,14 @@ impl AppCore {
                     return;
                 }
             };
-            let wrapper = prepared.wrapper;
+            let rumor_id_hex = prepared.rumor_id.to_hex();
 
-            self.pending_sends
-                .insert(&chat_id, &rumor_id_hex, &wrapper, self.profile_db.as_ref());
+            self.pending_sends.insert(
+                &chat_id,
+                &rumor_id_hex,
+                &prepared.wrapper,
+                self.profile_db.as_ref(),
+            );
 
             let relays: Vec<RelayUrl> = if network_enabled {
                 sess.mdk
@@ -1889,7 +1893,7 @@ impl AppCore {
                 vec![]
             };
 
-            (sess.client.clone(), wrapper, relays, rumor_id_hex)
+            (sess.client.clone(), prepared, relays)
         };
 
         self.prune_local_outbox(&chat_id);
@@ -1897,30 +1901,33 @@ impl AppCore {
         self.refresh_current_chat_if_open(&chat_id);
 
         if !network_enabled {
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+                    prepared,
+                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                        "offline".into(),
+                    ),
+                );
             let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                InternalEvent::PublishMessageResult {
-                    chat_id,
-                    rumor_id: rumor_id_hex,
-                    ok: false,
-                    error: Some("offline".into()),
-                },
+                InternalEvent::OutboundPublishOperation { operation },
             )));
             return;
         }
 
         let tx = self.core_sender.clone();
         let diag = diag_nostr_publish_enabled();
-        let wrapper_id = wrapper.id.to_hex();
-        let wrapper_kind = wrapper.kind.as_u16();
+        let rumor_id = prepared.rumor_id.to_hex();
+        let wrapper_id = prepared.wrapper.id.to_hex();
+        let wrapper_kind = prepared.wrapper.kind.as_u16();
         let relay_list: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
         self.runtime.spawn(async move {
-            let (ok, error) = send_event_first_ack(&client, &relays, &wrapper).await;
+            let (ok, error) = send_event_first_ack(&client, &relays, &prepared.wrapper).await;
 
             if diag {
                 tracing::info!(
                     target: "pika_core::nostr_publish",
                     context = "group_message",
-                    rumor_id = %rumor_id_hex,
+                    rumor_id = %rumor_id,
                     event_id = %wrapper_id,
                     kind = wrapper_kind,
                     relays = ?relay_list,
@@ -1930,13 +1937,22 @@ impl AppCore {
             if !ok && !diag {
                 tracing::warn!(error = ?error, "message broadcast failed");
             }
+            let publish_status = if ok {
+                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                    wrapper_event_id: prepared.wrapper.id,
+                }
+            } else {
+                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                    error.unwrap_or_else(|| "publish failed".into()),
+                )
+            };
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+                    prepared,
+                    publish_status,
+                );
             let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::PublishMessageResult {
-                    chat_id,
-                    rumor_id: rumor_id_hex,
-                    ok,
-                    error,
-                },
+                InternalEvent::OutboundPublishOperation { operation },
             )));
         });
     }

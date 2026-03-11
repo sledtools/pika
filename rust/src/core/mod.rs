@@ -69,8 +69,8 @@ pub(crate) use pika_marmot_runtime::message::{
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
     temporary_client_from_session_signer, MembershipEvolutionOperationEvent,
-    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    RuntimeOperationEvent, RuntimeRelayRolePlan,
+    OutboundConversationPublishOperationEvent, RuntimeApplicationMessageInterpretation,
+    RuntimeConversationEventInterpretation, RuntimeOperationEvent, RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::accept_welcome_and_catch_up;
 
@@ -3333,6 +3333,9 @@ impl AppCore {
                 ok,
                 error,
             } => self.handle_publish_message_result(chat_id, rumor_id, ok, error),
+            InternalEvent::OutboundPublishOperation { operation } => {
+                self.handle_runtime_operation_event(operation)
+            }
             InternalEvent::ChatMediaUploadCompleted {
                 request_id,
                 uploaded_url,
@@ -4297,6 +4300,31 @@ impl AppCore {
                 }
 
                 self.refresh_all_from_storage();
+            }
+            RuntimeOperationEvent::OutboundConversationPublish(
+                OutboundConversationPublishOperationEvent::Completed { result, .. },
+            ) => {
+                self.handle_publish_message_result(
+                    result.target.nostr_group_id_hex,
+                    result.rumor_id.to_hex(),
+                    true,
+                    None,
+                );
+            }
+            RuntimeOperationEvent::OutboundConversationPublish(
+                OutboundConversationPublishOperationEvent::Failed {
+                    target,
+                    operation_id,
+                    error,
+                    ..
+                },
+            ) => {
+                self.handle_publish_message_result(
+                    target.nostr_group_id_hex,
+                    operation_id.to_hex(),
+                    false,
+                    Some(error),
+                );
             }
         }
     }
@@ -7004,6 +7032,107 @@ mod tests {
 
             assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
             assert_eq!(prepared.kind, TYPING_INDICATOR_KIND);
+        }
+
+        #[test]
+        fn app_outbound_publish_operation_result_marks_send_sent() {
+            let (mut core, chat_id, _keys, _group_id) = make_core_with_group();
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Message {
+                        kind: Kind::ChatMessage,
+                        content: "hello".to_string(),
+                        tags: vec![],
+                        created_at: Timestamp::from(123_u64),
+                    },
+                )
+                .expect("prepare outbound action");
+            let rumor_id_hex = prepared.rumor_id.to_hex();
+            core.pending_sends
+                .insert(&chat_id, &rumor_id_hex, &prepared.wrapper, None);
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    rumor_id_hex.clone(),
+                    crate::state::MessageDeliveryState::Pending,
+                );
+
+            let operation = core
+                .host_context()
+                .expect("host context")
+                .complete_outbound_publish_operation(
+                    prepared,
+                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                        wrapper_event_id: EventId::all_zeros(),
+                    },
+                );
+
+            core.handle_runtime_operation_event(operation);
+
+            assert!(core.pending_sends.get(&chat_id, &rumor_id_hex).is_none());
+            assert!(core.failed_sends.get(&rumor_id_hex).is_none());
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&rumor_id_hex)),
+                Some(crate::state::MessageDeliveryState::Sent)
+            ));
+        }
+
+        #[test]
+        fn app_outbound_publish_operation_result_marks_send_failed() {
+            let (mut core, chat_id, _keys, _group_id) = make_core_with_group();
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_outbound_action_for_chat(
+                    &chat_id,
+                    OutboundConversationAction::Message {
+                        kind: Kind::ChatMessage,
+                        content: "hello".to_string(),
+                        tags: vec![],
+                        created_at: Timestamp::from(456_u64),
+                    },
+                )
+                .expect("prepare outbound action");
+            let rumor_id_hex = prepared.rumor_id.to_hex();
+            core.pending_sends
+                .insert(&chat_id, &rumor_id_hex, &prepared.wrapper, None);
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    rumor_id_hex.clone(),
+                    crate::state::MessageDeliveryState::Pending,
+                );
+
+            let operation = core
+                .host_context()
+                .expect("host context")
+                .complete_outbound_publish_operation(
+                    prepared,
+                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                        "offline".to_string(),
+                    ),
+                );
+
+            core.handle_runtime_operation_event(operation);
+
+            assert!(core.pending_sends.get(&chat_id, &rumor_id_hex).is_some());
+            assert_eq!(
+                core.failed_sends.get(&rumor_id_hex).map(String::as_str),
+                Some("offline")
+            );
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&rumor_id_hex)),
+                Some(crate::state::MessageDeliveryState::Failed { reason }) if reason == "offline"
+            ));
         }
 
         #[test]

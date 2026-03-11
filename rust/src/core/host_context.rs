@@ -107,6 +107,16 @@ impl<'a> AppHostContext<'a> {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn complete_outbound_publish_operation(
+        &self,
+        prepared: PreparedConversationAction,
+        publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands()
+            .complete_outbound_publish_operation(prepared, publish_status)
+    }
+
     pub(super) fn prepare_membership_evolution_for_chat(
         &self,
         chat_id: &str,

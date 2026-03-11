@@ -142,6 +142,15 @@ impl<'a> DaemonHostContext<'a> {
         Ok(signed)
     }
 
+    pub(super) fn complete_outbound_publish_operation(
+        &self,
+        prepared: PreparedConversationAction,
+        publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands()
+            .complete_outbound_publish_operation(prepared, publish_status)
+    }
+
     pub(super) async fn sign_and_publish_rumor(
         &self,
         mls_group_id: &GroupId,

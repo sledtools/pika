@@ -403,7 +403,7 @@ mod tests {
     use pika_test_utils::{spawn_one_shot_server, CapturedRequest};
 
     use crate::admin::AdminConfig;
-    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_READY};
+    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_ERROR, AGENT_PHASE_READY};
     use crate::models::group_subscription::GroupFilterInfo;
     use crate::models::MIGRATIONS;
     use crate::test_support::serial_test_guard;
@@ -837,7 +837,36 @@ mod tests {
             .expect("dashboard response");
         let body = response_body_string(response).await;
         assert!(body.contains("needs recovery"));
+        assert!(body.contains("falls back to provisioning a fresh environment"));
         assert!(!body.contains("running and ready"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn dashboard_failed_without_vm_id_explains_recover_provisions_fresh_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1failednovmdashboardstate";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(&mut conn, npub, "agent-failed", None, AGENT_PHASE_ERROR)
+            .expect("seed failed agent without vm");
+        let headers = customer_cookie_header(&state, npub);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("No recoverable VM is available"));
+        assert!(body.contains("Recover provisions a fresh environment"));
+        assert!(body.contains("Recover falls back to provisioning a fresh environment"));
+        assert!(body.contains("Recover Managed Environment"));
+        assert!(!body.contains("Recover Preserving Durable Home"));
 
         clear_test_database(&db_pool);
     }

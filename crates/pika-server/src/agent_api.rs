@@ -320,8 +320,12 @@ fn managed_environment_status_copy(
         (Some(_), Some(AgentStartupPhase::Ready)) => {
             "Managed OpenClaw is running and ready.".to_string()
         }
+        (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
+            "Managed OpenClaw needs recovery. Recover first tries to bring the VM back and preserve the durable home; if that VM is gone, Recover provisions a fresh environment instead."
+                .to_string()
+        }
         (Some(_), Some(AgentStartupPhase::Failed)) => {
-            "Managed OpenClaw needs recovery. Recover preserves the durable home when the VM can still be recovered; destructive reset starts fresh."
+            "Managed OpenClaw needs recovery. No recoverable VM is available, so Recover provisions a fresh environment."
                 .to_string()
         }
         (Some(_), None) => "Managed OpenClaw status is unavailable.".to_string(),
@@ -412,8 +416,9 @@ async fn refresh_agent_from_spawner(
 ) -> Result<RefreshedAgentStatus, AgentApiError> {
     let Some(vm_id) = row.vm_id.as_deref() else {
         return Ok(RefreshedAgentStatus {
+            startup_phase: startup_phase_from_row_phase(&row.phase)
+                .unwrap_or(AgentStartupPhase::Requested),
             row,
-            startup_phase: AgentStartupPhase::Requested,
         });
     };
     let resolved = match resolved_spawner_params(None) {
@@ -1551,6 +1556,26 @@ mod tests {
             }),
             AgentStartupPhase::WaitingForServiceReady
         );
+    }
+
+    #[test]
+    fn managed_environment_status_copy_failed_with_vm_explains_fallback_to_fresh() {
+        let row = test_agent_instance("agent-1", AGENT_PHASE_ERROR, Some("vm-1"));
+
+        let copy = managed_environment_status_copy(Some(&row), Some(AgentStartupPhase::Failed));
+
+        assert!(copy.contains("preserve the durable home"));
+        assert!(copy.contains("provisions a fresh environment instead"));
+    }
+
+    #[test]
+    fn managed_environment_status_copy_failed_without_vm_explains_fresh_reprovision() {
+        let row = test_agent_instance("agent-1", AGENT_PHASE_ERROR, None);
+
+        let copy = managed_environment_status_copy(Some(&row), Some(AgentStartupPhase::Failed));
+
+        assert!(copy.contains("No recoverable VM is available"));
+        assert!(copy.contains("Recover provisions a fresh environment"));
     }
 
     #[test]

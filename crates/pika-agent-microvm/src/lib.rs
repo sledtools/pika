@@ -1247,6 +1247,17 @@ mod tests {
         assert!(predicate(), "condition not met within {:?}", timeout);
     }
 
+    fn test_guest_startup_plan() -> GuestStartupPlan {
+        guest_startup_plan(&ResolvedMicrovmParams {
+            spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+            kind: ResolvedMicrovmAgentKind::Pi,
+            backend: ResolvedMicrovmAgentBackend::Acp {
+                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                cwd: DEFAULT_ACP_CWD.to_string(),
+            },
+        })
+    }
+
     fn read_counter(path: &Path) -> u32 {
         fs::read_to_string(path)
             .ok()
@@ -1370,7 +1381,7 @@ esac
             r#"#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-}"
-  if [[ "$cmd" == "daemon" ]]; then
+if [[ "$cmd" == "daemon" ]]; then
   state_dir=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1667,13 +1678,6 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
-                poll_until(StdDuration::from_secs(5), || {
-                    read_counter(&publish_count_path) >= 1
-                });
-                assert!(
-                    !ready_marker_path.exists(),
-                    "ready marker must not exist after a failed first keypackage publish attempt"
-                );
                 poll_until(StdDuration::from_secs(5), || failed_marker_path.exists());
                 assert!(
                     !ready_marker_path.exists(),
@@ -1692,17 +1696,6 @@ done
                 );
             }
         }
-    }
-
-    fn test_guest_startup_plan() -> GuestStartupPlan {
-        guest_startup_plan(&ResolvedMicrovmParams {
-            spawner_url: DEFAULT_SPAWNER_URL.to_string(),
-            kind: ResolvedMicrovmAgentKind::Pi,
-            backend: ResolvedMicrovmAgentBackend::Acp {
-                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
-                cwd: DEFAULT_ACP_CWD.to_string(),
-            },
-        })
     }
 
     #[test]

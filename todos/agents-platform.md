@@ -416,6 +416,249 @@ At this moment, the main directional bets are:
 - Nostr login first
 - separate origins for dashboard vs built-in agent UIs
 
+## Current Ground Truth
+
+The currently implemented system is narrower than the long-term product described above.
+
+Today, the working shape is roughly:
+
+- one allowlisted owner requests one active managed agent through `pika-server`
+- `pika-server` is the lifecycle authority for that owner-facing agent record
+- `vm-spawner` is a private host adapter running on `pika-build`
+- the actual guest is a deterministic `microvm.nix` appliance with a host-backed persistent
+  `/root`
+- recovery is based on reboot-first, then recreate using the same durable home if needed
+
+The important consequences are:
+
+- the current control plane is already real, but it is still effectively single-host
+- the current data model is still closer to `one owner -> one active agent -> one VM` than to the
+  eventual `one customer VM -> many agent instances`
+- the current web surface is operator/admin-oriented, not yet a customer product
+- backup/restore plumbing exists in partial form, but it is not yet a finished user-facing recovery
+  product
+
+This is good news, not bad news. It means we should build on the existing control plane and host
+adapter instead of inventing a second platform in parallel.
+
+## Recommended Near-Term Direction
+
+The best next move is not “full multi-agent platform first.”
+
+The best next move is:
+
+- build a customer-facing web control plane on top of the existing `pika-server` + `vm-spawner`
+  architecture
+- keep the first shipped experience intentionally narrow
+- preserve naming and boundaries that can grow into the larger platform later
+
+In practice, that means the first web product should behave like a managed agent lab:
+
+- allowlisted users sign in at `agents.pikachat.org`
+- they get one managed VM
+- that VM starts with one primary agent/runtime template
+- they can provision, recover, reset, inspect status, view recent logs, and launch built-in UIs
+- the platform keeps ownership of networking, updates, observability, and recovery
+
+This should be framed as a deliberate MVP, not as the final tenancy model.
+
+We should not let “eventually multiple agents per VM” block the first useful product. We should
+carry the right vocabulary now, but keep the runtime surface narrow until the web control loop is
+proven with real users.
+
+## First Push Decisions
+
+The following decisions are now treated as settled for the first serious implementation push:
+
+- the customer web app should live inside `pika-server`
+- the web product should be server-rendered and monorepo-native for now
+- access is allowlist-only; there is no billing or checkout flow in this phase
+- browser-based NIP-07 login is sufficient for v1
+- the authenticated user identity is the user `npub`
+- OpenClaw is the only supported runtime template for the first push
+- OpenClaw is also the only built-in agent UI exposed in the first push
+- the platform remains single-host on `pika-build` for now
+- host assignment should still be modeled in a way that can grow to multiple hosts soon
+
+These are implementation-shaping decisions, not eternal product constraints. We should keep the
+code and naming future-friendly, but we should not dilute the first push by pretending every future
+template or tenancy shape needs first-class support immediately.
+
+## Product Shape For The First Web MVP
+
+The first web MVP should prioritize four things:
+
+1. Fast iteration on the managed-agent experience.
+2. Safety of user environments.
+3. Operational clarity for us.
+4. Clean extension path toward multi-agent customer VMs later.
+
+The recommended MVP shape is:
+
+- one managed VM per user
+- one primary agent per VM at first
+- OpenClaw as the first and only supported agent/runtime
+- one or two supported templates at most
+- no arbitrary root-level guest mutation
+- no billing dependency for initial rollout
+- no attempt to expose every future concept on day one
+
+The first customer dashboard should probably include:
+
+- sign-in and allowlist gating
+- current VM status
+- current agent/template status
+- provision / recover / restart / reset controls
+- recent lifecycle events and guest logs
+- launch button for the built-in agent UI
+- clear indication of whether the environment is healthy, degraded, or needs operator help
+
+That product is already meaningfully valuable even before multi-agent composition, billing, or
+customer self-service host selection exists.
+
+Although only one primary OpenClaw agent is user-visible in this phase, the implementation should
+still avoid hard-coding product language that makes future multi-agent-per-VM support awkward. The
+current product may expose one agent, while the internal model leaves room to evolve toward a
+customer VM containing multiple managed agent instances later.
+
+## Durability And User Environment Safety
+
+The platform should treat the guest home as the durable user environment and everything else as
+reconstructible platform state.
+
+Operationally, the near-term rule should be:
+
+- preserve the durable home
+- make destructive actions explicit
+- take backup/restore seriously before broadening access
+- prefer replace-and-recover workflows over in-place heroic repair
+
+For the near-term web product, that means:
+
+- resets and reprovisions should be explicit UI actions with clear consequences
+- recover should be boring and deterministic
+- backup freshness should become visible in the operator/customer surface once the plumbing is
+  reliable enough
+- user customization should live in constrained layers, not in platform-owned root state
+
+The goal is to let us iterate rapidly on the product without turning customer environments into
+fragile snowflakes we are afraid to touch.
+
+For clarity, the first-push semantics should be:
+
+- `recover` preserves the durable home and attempts to restore service using the existing managed
+  environment
+- `reset` is destructive and is allowed to replace the durable home and agent identity with a fresh
+  managed environment
+
+The exact UX wording can evolve, but the operator and customer mental model should keep those two
+actions clearly distinct.
+
+## Multi-Host And Migration Direction
+
+We do need more than one host, but we should resist building a “distributed scheduler” too early.
+
+The right direction is:
+
+- keep `pika-server` as the control plane
+- treat host selection as an explicit control-plane concern
+- model the assigned host from the beginning even if there is only one real host at first
+- treat user movement between hosts as cold migration, not live migration
+
+The migration story should bias toward:
+
+- quiesce or stop the source VM
+- restore durable state onto a target host
+- recreate the managed VM there
+- cut over control-plane ownership cleanly
+
+That is much more compatible with the current deterministic microVM and durable-home design than
+trying to invent a live-migration system.
+
+The immediate implementation target still assumes:
+
+- one active host, `pika-build`
+- no public host marketplace or scheduler
+- no live migration
+
+But the data model and control-plane vocabulary should avoid assuming there can never be another
+host.
+
+## Productivity Software Direction
+
+The “agent productivity software” idea is promising, but it should not be the main blocker for the
+hosting platform.
+
+The useful framing for now is:
+
+- customer VM is the home for agents and their local tools
+- local-first utilities with simple CLIs, APIs, and SQLite storage are a strong fit
+- those utilities should eventually be installable as managed services or sidecars inside the
+  customer VM
+
+But we do not need to decide the full application suite now.
+
+The hosting platform should first make it easy to run and preserve a durable agent environment.
+Once that exists, lightweight local-first tools can accumulate around it naturally.
+
+## Customization Boundary For v1
+
+The first push should not expose a customer customization surface beyond using the agent,
+monitoring its state, and launching its built-in UI.
+
+In particular, v1 should not include:
+
+- shell access as a product feature
+- arbitrary package installation as a customer-facing dashboard feature
+- arbitrary root-owned NixOS mutation
+
+Future direction still matters here. The likely long-term shape is:
+
+- platform-owned base system remains controlled by us
+- customer or agent customization happens in constrained layers such as Home Manager
+- a future `yolo` or `eject` mode may permit broader mutation with reduced guarantees
+
+But that should remain future-facing design guidance, not part of the first shipped product.
+
+## Provider Secret Direction
+
+For the first push, model/provider secrets remain platform-managed.
+
+This is acceptable for the initial trusted-user phase, but it should be treated as a temporary
+operational compromise rather than the desired final security posture.
+
+The intended future direction is to move away from long-lived raw provider keys being directly
+available inside guest environments, likely toward a proxy, scoped token, or secret-hydration
+design controlled by the platform.
+
+## Suggested Delivery Sequence
+
+The implementation work should likely proceed in this order:
+
+1. Customer web dashboard on top of the current single-host control plane.
+2. Operational hardening for backups, recovery drills, and destructive-action safety.
+3. Guest UI launch/auth model with separate origins.
+4. Host pool support and explicit host assignment in the control plane.
+5. Cold migration workflow between hosts.
+6. True `CustomerVm` plus multi-`AgentInstance` evolution inside a VM.
+
+This order keeps the product learnings close to real users while avoiding a big up-front platform
+rewrite.
+
+## Explicit Non-Goals For This Workstream
+
+For this planning/workstream, we should explicitly avoid coupling ourselves to:
+
+- core Marmot or MLS protocol changes
+- a full billing implementation
+- a full self-host/eject story
+- arbitrary customer-controlled NixOS mutation
+- a heavy SPA-first frontend
+- multi-agent-per-VM implementation before the first customer web loop is working
+
+Those may all matter later, but they should not be prerequisites for the first serious web-based
+pilot.
+
 ## Open Questions
 
 Important open questions include:

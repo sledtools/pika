@@ -4,14 +4,20 @@ mod manager;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Bytes;
-use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri};
+use axum::body::{Body, Bytes, HttpBody};
+use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, FromRequestParts, Path, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use futures::{SinkExt, StreamExt};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TungsteniteCloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungsteniteCloseFrame;
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -221,10 +227,7 @@ async fn proxy_openclaw_root(
     State(manager): State<Arc<VmManager>>,
     Extension(request_context): Extension<RequestContext>,
     Path(id): Path<String>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request<Body>,
 ) -> Result<Response, ApiError> {
     proxy_openclaw_request(
         manager,
@@ -232,10 +235,7 @@ async fn proxy_openclaw_root(
             request_context,
             id,
             upstream_path: "/".to_string(),
-            method,
-            uri,
-            headers,
-            body,
+            request,
         },
     )
     .await
@@ -245,10 +245,7 @@ async fn proxy_openclaw_path(
     State(manager): State<Arc<VmManager>>,
     Extension(request_context): Extension<RequestContext>,
     Path((id, path)): Path<(String, String)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request<Body>,
 ) -> Result<Response, ApiError> {
     proxy_openclaw_request(
         manager,
@@ -256,10 +253,7 @@ async fn proxy_openclaw_path(
             request_context,
             id,
             upstream_path: format!("/{}", path),
-            method,
-            uri,
-            headers,
-            body,
+            request,
         },
     )
     .await
@@ -269,10 +263,7 @@ struct OpenClawProxyRequest {
     request_context: RequestContext,
     id: String,
     upstream_path: String,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
+    request: Request<Body>,
 }
 
 async fn proxy_openclaw_request(
@@ -283,11 +274,11 @@ async fn proxy_openclaw_request(
         request_context,
         id,
         upstream_path,
-        method,
-        uri,
-        headers,
-        body,
+        request,
     } = request;
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let headers = request.headers().clone();
     validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     let base_url = manager
         .openclaw_proxy_target(&id)
@@ -299,6 +290,37 @@ async fn proxy_openclaw_request(
         format!("{base_url}{upstream_path}")
     };
 
+    if request_is_websocket_upgrade(&method, &headers) {
+        let upstream_ws_url = websocket_proxy_url(&upstream_url).map_err(|err| {
+            ApiError::internal(format!(
+                "proxy openclaw websocket request for vm {id} failed: {err}"
+            ))
+            .with_request_id(request_context.request_id.clone())
+        })?;
+        let (mut parts, _body) = request.into_parts();
+        let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &())
+            .await
+            .map_err(|err| {
+                ApiError::new(StatusCode::BAD_REQUEST, err.to_string())
+                    .with_request_id(request_context.request_id.clone())
+            })?;
+        let request_id = request_context.request_id.clone();
+        let vm_id = id.clone();
+        return Ok(websocket.on_upgrade(move |socket| async move {
+            if let Err(err) = proxy_openclaw_websocket(socket, upstream_ws_url).await {
+                warn!(
+                    request_id = %request_id,
+                    vm_id = %vm_id,
+                    error = %err,
+                    "openclaw websocket proxy ended with error"
+                );
+            }
+        }));
+    }
+
+    let body = read_request_body(request.into_body())
+        .await
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
     let client = reqwest::Client::new();
     let upstream_method =
         reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
@@ -466,6 +488,115 @@ fn forwardable_request_headers(headers: &HeaderMap) -> Vec<(&HeaderName, &Header
         .collect()
 }
 
+fn request_is_websocket_upgrade(method: &Method, headers: &HeaderMap) -> bool {
+    method == Method::GET
+        && headers
+            .get(axum::http::header::CONNECTION)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_ascii_lowercase().contains("upgrade"))
+            .unwrap_or(false)
+        && headers
+            .get(axum::http::header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false)
+}
+
+fn websocket_proxy_url(upstream_url: &str) -> anyhow::Result<String> {
+    let mut url = reqwest::Url::parse(upstream_url)?;
+    match url.scheme() {
+        "http" => url.set_scheme("ws").expect("replace http scheme with ws"),
+        "https" => url
+            .set_scheme("wss")
+            .expect("replace https scheme with wss"),
+        "ws" | "wss" => {}
+        other => anyhow::bail!("unsupported websocket upstream scheme: {other}"),
+    }
+    Ok(url.to_string())
+}
+
+async fn read_request_body(body: Body) -> Result<Bytes, ApiError> {
+    let mut body = body;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("failed to read proxied request body: {err}"),
+            )
+        })?;
+        bytes.extend_from_slice(chunk.as_ref());
+    }
+    Ok(Bytes::from(bytes))
+}
+
+fn axum_message_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
+    match message {
+        AxumWsMessage::Text(text) => Some(TungsteniteMessage::Text(text.into())),
+        AxumWsMessage::Binary(binary) => Some(TungsteniteMessage::Binary(binary.into())),
+        AxumWsMessage::Ping(ping) => Some(TungsteniteMessage::Ping(ping.into())),
+        AxumWsMessage::Pong(pong) => Some(TungsteniteMessage::Pong(pong.into())),
+        AxumWsMessage::Close(Some(close)) => {
+            Some(TungsteniteMessage::Close(Some(TungsteniteCloseFrame {
+                code: TungsteniteCloseCode::from(close.code),
+                reason: close.reason.into_owned().into(),
+            })))
+        }
+        AxumWsMessage::Close(None) => Some(TungsteniteMessage::Close(None)),
+    }
+}
+
+fn tungstenite_message_to_axum(message: TungsteniteMessage) -> Option<AxumWsMessage> {
+    match message {
+        TungsteniteMessage::Text(text) => Some(AxumWsMessage::Text(text.to_string())),
+        TungsteniteMessage::Binary(binary) => Some(AxumWsMessage::Binary(binary.to_vec())),
+        TungsteniteMessage::Ping(ping) => Some(AxumWsMessage::Ping(ping.to_vec())),
+        TungsteniteMessage::Pong(pong) => Some(AxumWsMessage::Pong(pong.to_vec())),
+        TungsteniteMessage::Close(Some(close)) => {
+            Some(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: close.code.into(),
+                reason: close.reason.to_string().into(),
+            })))
+        }
+        TungsteniteMessage::Close(None) => Some(AxumWsMessage::Close(None)),
+        TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+async fn proxy_openclaw_websocket(
+    downstream: WebSocket,
+    upstream_url: String,
+) -> anyhow::Result<()> {
+    let (upstream, _) = connect_async(&upstream_url).await?;
+    let (mut upstream_sink, mut upstream_stream) = upstream.split();
+    let (mut downstream_sink, mut downstream_stream) = downstream.split();
+
+    let downstream_to_upstream = async {
+        while let Some(message) = downstream_stream.next().await {
+            let message = message?;
+            let Some(message) = axum_message_to_tungstenite(message) else {
+                continue;
+            };
+            upstream_sink.send(message).await?;
+        }
+        anyhow::Ok(())
+    };
+
+    let upstream_to_downstream = async {
+        while let Some(message) = upstream_stream.next().await {
+            let message = message?;
+            let Some(message) = tungstenite_message_to_axum(message) else {
+                continue;
+            };
+            downstream_sink.send(message).await?;
+        }
+        anyhow::Ok(())
+    };
+
+    let _ = tokio::join!(downstream_to_upstream, upstream_to_downstream);
+    Ok(())
+}
+
 fn copy_response_headers(
     target: &mut HeaderMap,
     source: &reqwest::header::HeaderMap,
@@ -485,8 +616,19 @@ fn copy_response_headers(
         let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) else {
             continue;
         };
-        target.append(header_name, header_value);
+        if response_header_should_replace_existing(name_str) {
+            target.insert(header_name, header_value);
+        } else {
+            target.append(header_name, header_value);
+        }
     }
+}
+
+fn response_header_should_replace_existing(name: &str) -> bool {
+    matches!(
+        name,
+        "content-type" | "content-length" | "content-disposition" | "location"
+    )
 }
 
 #[cfg(test)]
@@ -520,6 +662,27 @@ mod tests {
         let err = map_manager_error_to_api(anyhow::anyhow!("restart microvm service failed"));
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "internal server error");
+    }
+
+    #[test]
+    fn copy_response_headers_replaces_content_type_instead_of_appending() {
+        let mut target = HeaderMap::new();
+        target.insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        let mut source = reqwest::header::HeaderMap::new();
+        source.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+
+        copy_response_headers(&mut target, &source, false);
+
+        let values = target.get_all(axum::http::header::CONTENT_TYPE);
+        let collected: Vec<_> = values.iter().collect();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0], "text/html; charset=utf-8");
     }
 
     #[tokio::test]

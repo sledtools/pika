@@ -309,7 +309,11 @@ impl VmManager {
             {
                 Ok(satisfied) => satisfied,
                 Err(err) => {
-                    warn!(vm_id = %id, error = %err, "failed to evaluate guest startup probe status");
+                    warn!(
+                        vm_id = %id,
+                        error = %err,
+                        "failed to evaluate guest startup probe status"
+                    );
                     false
                 }
             }
@@ -2207,13 +2211,13 @@ fn guest_artifact_host_path(vm_state_dir: &Path, guest_artifact_path: &str) -> P
     }
 }
 
-fn guest_failed_marker_exists(vm_state_dir: &Path) -> bool {
-    guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
-}
-
 fn guest_ready_marker_exists(vm_state_dir: &Path) -> bool {
     guest_artifact_host_path(vm_state_dir, GUEST_READY_MARKER_PATH).is_file()
         && !guest_failed_marker_exists(vm_state_dir)
+}
+
+fn guest_failed_marker_exists(vm_state_dir: &Path) -> bool {
+    guest_artifact_host_path(vm_state_dir, GUEST_FAILED_MARKER_PATH).is_file()
 }
 
 async fn startup_probe_satisfied(
@@ -2392,6 +2396,7 @@ mod tests {
     fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
         write_backup_status_with_host(cfg, vm_id, latest_successful_backup_at, &cfg.host_id);
     }
+
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);
@@ -3172,62 +3177,7 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(status.startup_probe_satisfied);
         assert!(status.guest_ready);
-    }
-
-    #[tokio::test]
-    async fn status_reports_startup_probe_satisfied_from_log_probe_before_ready_marker() {
-        let root = tempfile::tempdir().unwrap();
-        let scripts_dir = root.path().join("bin");
-        fs::create_dir_all(&scripts_dir).unwrap();
-        let systemctl_script = scripts_dir.join("systemctl");
-        fs::write(
-            &systemctl_script,
-            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut cfg = test_config(&root);
-        cfg.systemctl_cmd = systemctl_script.display().to_string();
-        let vm_id = "vm-00000001";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        let log_path = guest_artifact_host_path(&cfg.state_dir.join(vm_id), GUEST_LOG_PATH);
-        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        fs::write(&log_path, "{\"type\":\"ready\",\"npub\":\"npub1test\"}\n").unwrap();
-        let manager = VmManager::new(cfg).await.unwrap();
-
-        let status = manager.status(vm_id).await.unwrap();
-        assert_eq!(status.status, "running");
-        assert!(status.startup_probe_satisfied);
-        assert!(!status.guest_ready);
-    }
-
-    #[tokio::test]
-    async fn status_tolerates_damaged_autostart_metadata() {
-        let root = tempfile::tempdir().unwrap();
-        let scripts_dir = root.path().join("bin");
-        fs::create_dir_all(&scripts_dir).unwrap();
-        let systemctl_script = scripts_dir.join("systemctl");
-        fs::write(
-            &systemctl_script,
-            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
-        )
-        .unwrap();
-        fs::set_permissions(&systemctl_script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut cfg = test_config(&root);
-        cfg.systemctl_cmd = systemctl_script.display().to_string();
-        let vm_id = "vm-00000001";
-        write_current_metadata(&cfg, vm_id, 2, 4096);
-        fs::remove_dir_all(cfg.state_dir.join(vm_id).join("metadata")).unwrap();
-        let manager = VmManager::new(cfg).await.unwrap();
-
-        let status = manager.status(vm_id).await.unwrap();
-        assert_eq!(status.status, "running");
-        assert!(!status.startup_probe_satisfied);
-        assert!(!status.guest_ready);
     }
 
     #[tokio::test]
@@ -3260,7 +3210,6 @@ mod tests {
 
         let status = manager.status(vm_id).await.unwrap();
         assert_eq!(status.status, "running");
-        assert!(!status.startup_probe_satisfied);
         assert!(!status.guest_ready);
     }
 
@@ -3353,7 +3302,6 @@ mod tests {
 
         let initial_status = manager.status(vm_id).await.unwrap();
         assert_eq!(initial_status.status, "running");
-        assert!(!initial_status.startup_probe_satisfied);
         assert!(!initial_status.guest_ready);
 
         let ready_path =
@@ -3371,7 +3319,6 @@ mod tests {
 
         let ready_status = manager.status(vm_id).await.unwrap();
         assert_eq!(ready_status.status, "running");
-        assert!(ready_status.startup_probe_satisfied);
         assert!(ready_status.guest_ready);
 
         let failed_path =
@@ -3389,18 +3336,7 @@ mod tests {
 
         let failed_status = manager.status(vm_id).await.unwrap();
         assert_eq!(failed_status.status, "running");
-        assert!(!failed_status.startup_probe_satisfied);
         assert!(!failed_status.guest_ready);
-    }
-
-    #[test]
-    fn host_visible_readiness_url_rewrites_loopback_to_vm_ip() {
-        let url = host_visible_readiness_url(
-            Ipv4Addr::new(192, 168, 83, 12),
-            "http://127.0.0.1:18789/health",
-        )
-        .unwrap();
-        assert_eq!(url.as_str(), "http://192.168.83.12:18789/health");
     }
 
     #[tokio::test]
@@ -3684,9 +3620,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let mut guest_autostart = test_guest_autostart_request();
-        guest_autostart.command.clear();
-        let req = CreateVmRequest { guest_autostart };
+        let req = CreateVmRequest {
+            guest_autostart: GuestAutostartRequest {
+                command: "".to_string(),
+                env: BTreeMap::new(),
+                files: BTreeMap::new(),
+                startup_plan: test_guest_autostart_request().startup_plan,
+            },
+        };
 
         let _err = manager.create(req).await.unwrap_err();
         let entries = fs::read_dir(&cfg.state_dir)

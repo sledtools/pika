@@ -47,6 +47,7 @@ use rand::RngCore;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{watch, Mutex};
+use tower::{make::Shared, ServiceBuilder};
 use tracing::{error, info, warn};
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -136,10 +137,13 @@ async fn route_openclaw_ui_host<B>(mut request: Request<B>, next: Next<B>) -> Re
         return next.run(request).await;
     }
 
-    let rewritten_path = if request.uri().path() == "/launch" {
+    let request_path = request.uri().path();
+    let rewritten_path = if request_path == "/launch" {
         OPENCLAW_INTERNAL_LAUNCH_PATH.to_string()
+    } else if request_path == "/" {
+        OPENCLAW_INTERNAL_PROXY_PREFIX.to_string()
     } else {
-        format!("{OPENCLAW_INTERNAL_PROXY_PREFIX}{}", request.uri().path())
+        format!("{OPENCLAW_INTERNAL_PROXY_PREFIX}{request_path}")
     };
     let rewritten_uri = if let Some(query) = request.uri().query() {
         format!("{rewritten_path}?{query}")
@@ -346,10 +350,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/dev-login", post(admin_dev_login))
         .fallback(fallback)
         .layer(Extension(state))
-        .layer(middleware::from_fn(trace_http_request))
-        .layer(middleware::from_fn(route_openclaw_ui_host));
+        .layer(middleware::from_fn(trace_http_request));
 
-    let server = axum::Server::bind(&addr).serve(server_router.into_make_service());
+    let server_service = ServiceBuilder::new()
+        // Host-based OpenClaw routing must happen before Axum selects a route.
+        .layer(middleware::from_fn(route_openclaw_ui_host))
+        .service(server_router);
+
+    let server = axum::Server::bind(&addr).serve(Shared::new(server_service));
 
     info!("Webserver running on http://{addr}");
 
@@ -386,4 +394,122 @@ async fn main() -> anyhow::Result<()> {
 
 async fn fallback(uri: Uri) -> (StatusCode, String) {
     (StatusCode::NOT_FOUND, format!("No route for {uri}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::{Body, HttpBody};
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    async fn response_body_string(response: Response) -> String {
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            bytes.extend_from_slice(&chunk.expect("read response chunk"));
+        }
+        String::from_utf8(bytes).expect("utf8 response body")
+    }
+
+    fn rewrite_test_app(
+    ) -> impl tower::Service<Request<Body>, Response = Response, Error = std::convert::Infallible> + Clone
+    {
+        ServiceBuilder::new()
+            .layer(middleware::from_fn(route_openclaw_ui_host))
+            .service(
+                Router::new()
+                    .route(
+                        OPENCLAW_INTERNAL_LAUNCH_PATH,
+                        get(|uri: Uri| async move { uri.to_string() }),
+                    )
+                    .route(
+                        OPENCLAW_INTERNAL_PROXY_PREFIX,
+                        any(|uri: Uri| async move { uri.to_string() }),
+                    )
+                    .route(
+                        OPENCLAW_INTERNAL_PROXY_PATH,
+                        any(|uri: Uri| async move { uri.to_string() }),
+                    )
+                    .fallback(fallback),
+            )
+    }
+
+    #[tokio::test]
+    async fn openclaw_localhost_launch_request_reaches_internal_launch_route() {
+        let response = rewrite_test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/launch?ticket=test-ticket")
+                    .header(header::HOST, "openclaw.localhost:19401")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("launch response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_body_string(response).await,
+            "/_openclaw_launch?ticket=test-ticket"
+        );
+    }
+
+    #[tokio::test]
+    async fn openclaw_localhost_root_request_reaches_internal_proxy_route() {
+        let response = rewrite_test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "openclaw.localhost:19401")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("root proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body_string(response).await, "/_openclaw_proxy");
+    }
+
+    #[tokio::test]
+    async fn openclaw_localhost_subpath_request_reaches_internal_proxy_route() {
+        let response = rewrite_test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/me?view=full")
+                    .header(header::HOST, "openclaw.localhost:19401")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("subpath proxy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_body_string(response).await,
+            "/_openclaw_proxy/api/me?view=full"
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_host_launch_path_does_not_rewrite_to_openclaw_routes() {
+        let response = rewrite_test_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/launch?ticket=test-ticket")
+                    .header(header::HOST, "localhost:19401")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dashboard host response");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response_body_string(response).await,
+            "No route for /launch?ticket=test-ticket"
+        );
+    }
 }

@@ -471,7 +471,7 @@ pub fn build_create_vm_request(
             command: AUTOSTART_COMMAND.to_string(),
             env,
             files,
-            startup_plan: Some(startup_plan),
+            startup_plan,
         },
     }
 }
@@ -1222,6 +1222,17 @@ mod tests {
         assert!(predicate(), "condition not met within {:?}", timeout);
     }
 
+    fn test_guest_startup_plan() -> GuestStartupPlan {
+        guest_startup_plan(&ResolvedMicrovmParams {
+            spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+            kind: ResolvedMicrovmAgentKind::Pi,
+            backend: ResolvedMicrovmAgentBackend::Acp {
+                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                cwd: DEFAULT_ACP_CWD.to_string(),
+            },
+        })
+    }
+
     fn read_counter(path: &Path) -> u32 {
         fs::read_to_string(path)
             .ok()
@@ -1894,7 +1905,7 @@ done
                 },
             },
         );
-        let startup_plan = req.guest_autostart.startup_plan.expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan;
         assert_eq!(startup_plan.service_kind, GuestServiceKind::PikachatDaemon);
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
         assert_eq!(
@@ -1932,11 +1943,7 @@ done
                 backend: ResolvedMicrovmAgentBackend::Native,
             },
         );
-        let startup_plan = req
-            .guest_autostart
-            .startup_plan
-            .clone()
-            .expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan.clone();
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Native);
         assert_eq!(
             startup_plan.service,
@@ -2005,11 +2012,7 @@ done
                 },
             },
         );
-        let startup_plan = req
-            .guest_autostart
-            .startup_plan
-            .clone()
-            .expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan.clone();
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
         assert_eq!(
             startup_plan.service,
@@ -2108,7 +2111,7 @@ done
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "pubkey123".to_string())]),
                 files: BTreeMap::new(),
-                startup_plan: None,
+                startup_plan: test_guest_startup_plan(),
             },
         };
 
@@ -2277,7 +2280,7 @@ done
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::new(),
                 files: BTreeMap::new(),
-                startup_plan: None,
+                startup_plan: test_guest_startup_plan(),
             },
         };
 

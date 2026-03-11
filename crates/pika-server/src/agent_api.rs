@@ -422,6 +422,10 @@ fn managed_environment_status_copy(
             "The VM is up. Waiting for the managed OpenClaw service to report ready."
                 .to_string()
         }
+        (Some(_), Some(AgentStartupPhase::WaitingForKeypackagePublish)) => {
+            "The managed OpenClaw startup probe passed. Waiting for its key package to publish."
+                .to_string()
+        }
         (Some(_), Some(AgentStartupPhase::Ready)) => {
             "Managed OpenClaw is running and ready.".to_string()
         }
@@ -503,11 +507,16 @@ fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
 }
 
 fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
-    match (vm.status.as_str(), vm.guest_ready) {
-        ("failed", _) => AgentStartupPhase::Failed,
-        ("running", true) => AgentStartupPhase::Ready,
-        ("running", false) => AgentStartupPhase::WaitingForServiceReady,
-        ("starting", _) => AgentStartupPhase::BootingGuest,
+    match (
+        vm.status.as_str(),
+        vm.guest_ready,
+        vm.startup_probe_satisfied,
+    ) {
+        ("failed", _, _) => AgentStartupPhase::Failed,
+        ("running", true, _) => AgentStartupPhase::Ready,
+        ("running", false, true) => AgentStartupPhase::WaitingForKeypackagePublish,
+        ("running", false, false) => AgentStartupPhase::WaitingForServiceReady,
+        ("starting", _, _) => AgentStartupPhase::BootingGuest,
         _ => AgentStartupPhase::ProvisioningVm,
     }
 }
@@ -2088,11 +2097,7 @@ mod tests {
                 &resolved,
             );
 
-            let startup_plan = request
-                .guest_autostart
-                .startup_plan
-                .clone()
-                .expect("startup plan");
+            let startup_plan = request.guest_autostart.startup_plan.clone();
             assert_eq!(
                 startup_plan.agent_kind,
                 pika_agent_control_plane::MicrovmAgentKind::Openclaw
@@ -2228,6 +2233,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                startup_probe_satisfied: true,
                 guest_ready: true,
             }),
             AGENT_PHASE_READY
@@ -2236,6 +2242,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                startup_probe_satisfied: true,
                 guest_ready: false,
             }),
             AGENT_PHASE_CREATING
@@ -2244,6 +2251,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "failed".to_string(),
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AGENT_PHASE_ERROR
@@ -2256,6 +2264,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "starting".to_string(),
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AgentStartupPhase::BootingGuest
@@ -2264,9 +2273,19 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                startup_probe_satisfied: false,
                 guest_ready: false,
             }),
             AgentStartupPhase::WaitingForServiceReady
+        );
+        assert_eq!(
+            startup_phase_from_spawner_vm(&SpawnerVmResponse {
+                id: "vm-1".to_string(),
+                status: "running".to_string(),
+                startup_probe_satisfied: true,
+                guest_ready: false,
+            }),
+            AgentStartupPhase::WaitingForKeypackagePublish
         );
     }
 

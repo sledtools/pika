@@ -254,21 +254,15 @@
             {% if can_recover %}
             <form method="post" action="/dashboard/recover">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button type="submit">{{ recover_action_label }}</button>
+              <button type="submit">Recover Preserving Durable Home</button>
             </form>
             {% endif %}
 
             {% if can_reset %}
-              {% if reset_requires_confirmation %}
-              <form method="get" action="/dashboard/reset/confirm">
-                <button class="danger" type="submit">Review Destructive Reset</button>
-              </form>
-              {% else %}
-              <form method="post" action="/dashboard/reset">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-                <button class="danger" type="submit">Destructive Reset</button>
-              </form>
-              {% endif %}
+            <form method="post" action="/dashboard/reset">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button class="danger" type="submit">Destructive Reset</button>
+            </form>
             {% endif %}
           </div>
         </section>

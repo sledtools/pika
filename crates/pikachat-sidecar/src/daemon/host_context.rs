@@ -35,6 +35,10 @@ impl<'a> DaemonHostContext<'a> {
         MarmotRuntime::with_client(self.mdk, self.client)
     }
 
+    fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
+        pika_marmot_runtime::runtime::RuntimeQueries::new(self.mdk)
+    }
+
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id: &str,
@@ -72,14 +76,14 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn list_pending_welcome_snapshots(
         &self,
     ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
-        self.runtime().list_pending_welcome_snapshots()
+        self.queries().list_pending_welcome_snapshots()
     }
 
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
-        self.runtime().lookup_pending_welcome(target)
+        self.queries().lookup_pending_welcome(target)
     }
 
     pub(super) fn parse_message_media_attachments(
@@ -281,7 +285,7 @@ impl<'a> DaemonHostContext<'a> {
         subscribed_group_ids: Vec<String>,
         giftwrap_lookback_sec: u64,
     ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
-        self.runtime().refresh_session_open_state(
+        self.queries().refresh_session_open_state(
             self.keys.public_key(),
             super::daemon_open_request(
                 subscribed_group_ids,

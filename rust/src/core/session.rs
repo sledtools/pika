@@ -1173,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn app_runtime_refresh_uses_shared_session_state() {
+    fn app_runtime_refresh_uses_shared_query_boundary() {
         let (core, inviter_dir) = make_core_with_config(crate::core::config::AppConfig {
             relay_urls: Some(vec!["wss://message-1.example".to_string()]),
             key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),

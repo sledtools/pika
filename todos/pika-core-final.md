@@ -348,6 +348,10 @@ What should happen here:
 - introduce command/query surfaces based on already-shared workflows
 - let the app host and daemon host consume those types more formally
 
+Current status:
+- first Phase 4 slice landed: shared `RuntimeQueries` now exposes an explicit query-only boundary over session open state plus already-shared durable runtime reads
+- app runtime refresh/recompute and daemon pending-welcome query handling now consume that explicit read boundary while commands, events, and execution policy remain host-local
+
 Recommended event families:
 - `Session`
 - `Conversation`

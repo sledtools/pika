@@ -34,6 +34,10 @@ impl<'a> AppHostContext<'a> {
         self.session.runtime()
     }
 
+    fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
+        pika_marmot_runtime::runtime::RuntimeQueries::new(&self.session.mdk)
+    }
+
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         chat_id: &str,
@@ -170,7 +174,7 @@ impl<'a> AppHostContext<'a> {
         temporary_key_package_relays: Vec<RelayUrl>,
         welcome_inbox: pika_marmot_runtime::runtime::RuntimeWelcomeInboxSubscriptionIntent,
     ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
-        self.runtime().refresh_session_open_state(
+        self.queries().refresh_session_open_state(
             self.session.pubkey,
             pika_marmot_runtime::runtime::RuntimeSessionOpenRequest {
                 subscribed_group_ids,

@@ -286,12 +286,20 @@ pub struct BootstrappedRuntimeSession {
     pub open: RuntimeSessionOpenState,
 }
 
+pub struct RuntimeQueries<'a> {
+    mdk: &'a PikaMdk,
+}
+
 pub struct MarmotRuntime<'a> {
     mdk: &'a PikaMdk,
     client: Option<&'a Client>,
 }
 
 impl RuntimeSession {
+    pub fn queries(&self) -> RuntimeQueries<'_> {
+        RuntimeQueries::new(&self.mdk)
+    }
+
     pub fn runtime(&self) -> MarmotRuntime<'_> {
         MarmotRuntime::with_client(&self.mdk, &self.client)
     }
@@ -370,13 +378,58 @@ impl RuntimeSession {
         &self,
         open_request: RuntimeSessionOpenRequest,
     ) -> Result<RuntimeSessionOpenState> {
-        refresh_runtime_session_open_state(&self.mdk, self.pubkey, open_request)
+        self.queries()
+            .refresh_session_open_state(self.pubkey, open_request)
     }
 }
 
 impl BootstrappedRuntimeSession {
     pub fn runtime(&self) -> MarmotRuntime<'_> {
         self.session.runtime()
+    }
+}
+
+impl<'a> RuntimeQueries<'a> {
+    pub fn new(mdk: &'a PikaMdk) -> Self {
+        Self { mdk }
+    }
+
+    pub fn refresh_session_open_state(
+        &self,
+        pubkey: PublicKey,
+        open_request: RuntimeSessionOpenRequest,
+    ) -> Result<RuntimeSessionOpenState> {
+        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
+    }
+
+    pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
+        ConversationRuntime::new(self.mdk).list_joined_group_snapshots()
+    }
+
+    pub fn lookup_joined_group_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<RuntimeJoinedGroupSnapshot> {
+        ConversationRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)
+    }
+
+    pub fn load_message_page(
+        &self,
+        nostr_group_id_hex: &str,
+        query: RuntimeMessagePageQuery,
+    ) -> Result<RuntimeMessagePage> {
+        ConversationRuntime::new(self.mdk).load_message_page(nostr_group_id_hex, query)
+    }
+
+    pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
+        list_pending_welcome_snapshots(self.mdk)
+    }
+
+    pub fn lookup_pending_welcome(
+        &self,
+        target: &EventId,
+    ) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+        lookup_pending_welcome(self.mdk, target)
     }
 }
 
@@ -404,12 +457,17 @@ impl<'a> MarmotRuntime<'a> {
         self.client
     }
 
+    pub fn queries(&self) -> RuntimeQueries<'_> {
+        RuntimeQueries::new(self.mdk)
+    }
+
     pub fn refresh_session_open_state(
         &self,
         pubkey: PublicKey,
         open_request: RuntimeSessionOpenRequest,
     ) -> Result<RuntimeSessionOpenState> {
-        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
+        self.queries()
+            .refresh_session_open_state(pubkey, open_request)
     }
 
     pub fn conversation(&self) -> ConversationRuntime<'a> {
@@ -576,14 +634,14 @@ impl<'a> MarmotRuntime<'a> {
     }
 
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
-        self.conversation().list_joined_group_snapshots()
+        self.queries().list_joined_group_snapshots()
     }
 
     pub fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<RuntimeJoinedGroupSnapshot> {
-        self.conversation()
+        self.queries()
             .lookup_joined_group_snapshot(nostr_group_id_hex)
     }
 
@@ -592,19 +650,18 @@ impl<'a> MarmotRuntime<'a> {
         nostr_group_id_hex: &str,
         query: RuntimeMessagePageQuery,
     ) -> Result<RuntimeMessagePage> {
-        self.conversation()
-            .load_message_page(nostr_group_id_hex, query)
+        self.queries().load_message_page(nostr_group_id_hex, query)
     }
 
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
-        list_pending_welcome_snapshots(self.mdk)
+        self.queries().list_pending_welcome_snapshots()
     }
 
     pub fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
-        lookup_pending_welcome(self.mdk, target)
+        self.queries().lookup_pending_welcome(target)
     }
 
     pub fn get_messages(
@@ -1711,6 +1768,57 @@ mod tests {
             vec!["stale-group"]
         );
         assert!(refreshed.pending_welcome_snapshots.is_empty());
+    }
+
+    #[test]
+    fn runtime_queries_surface_explicit_read_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime queries test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        let queries = RuntimeQueries::new(&inviter_mdk);
+
+        let refreshed = queries
+            .refresh_session_open_state(inviter_keys.public_key(), default_open_request())
+            .expect("refresh session open state");
+        let snapshot = queries
+            .lookup_joined_group_snapshot(&nostr_group_id_hex)
+            .expect("lookup joined group snapshot");
+        let page = queries
+            .load_message_page(&nostr_group_id_hex, RuntimeMessagePageQuery::new(1, 0))
+            .expect("load message page");
+
+        assert_eq!(
+            refreshed.current_group_subscriptions().target_group_ids,
+            vec![nostr_group_id_hex.clone()]
+        );
+        assert_eq!(snapshot.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(page.fetched_count, 0);
+        assert!(
+            queries
+                .list_pending_welcome_snapshots()
+                .expect("list pending welcome snapshots")
+                .is_empty()
+        );
     }
 
     #[test]

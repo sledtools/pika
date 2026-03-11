@@ -77,6 +77,8 @@ pre-merge-notifications:
 # CI-safe pre-merge for the pikachat lane (deterministic only).
 [private]
 pre-merge-pikachat-apple-followup:
+    cargo clippy -p pikachat -- -D warnings
+    cargo clippy -p pikachat-sidecar -- -D warnings
     cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture
     npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
 
@@ -84,12 +86,12 @@ pre-merge-pikachat-apple-followup:
 pre-merge-pikachat:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo clippy -p pikachat -- -D warnings
-    cargo clippy -p pikachat-sidecar -- -D warnings
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
         nix run .#pikaci -- run pre-merge-pikachat-rust
         just --justfile just/checks.just pre-merge-pikachat-apple-followup
     else
+        cargo clippy -p pikachat -- -D warnings
+        cargo clippy -p pikachat-sidecar -- -D warnings
         cargo test -p pikachat
         cargo test -p pikachat-sidecar
         cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture

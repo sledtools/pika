@@ -104,7 +104,7 @@ Current policy note:
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 Apple Silicon contract note:
-`just pre-merge-pikachat` now explicitly composes staged Linux `pre-merge-pikachat-rust` with the private `pre-merge-pikachat-apple-followup` helper that keeps the desktop selector plus the TypeScript channel-behavior test on the Apple host without changing lane coverage.
+`just pre-merge-pikachat` now explicitly composes staged Linux `pre-merge-pikachat-rust` with the private `pre-merge-pikachat-apple-followup` helper that owns the remaining Apple-host `pikachat`/`pikachat-sidecar` clippy plus the desktop selector and TypeScript channel-behavior test without changing lane coverage.
 
 ## Non-Owner Entry Points
 
@@ -127,7 +127,7 @@ Apple Silicon contract note:
 
 ## Deferred Root CI / `pikaci` Asks
 
-- On Apple Silicon, `just pre-merge-pikachat` now explicitly composes staged Linux `pre-merge-pikachat-rust` with the private `pre-merge-pikachat-apple-followup` helper that owns the desktop selector plus the TypeScript channel-behavior follow-up. The next ask is whether that host follow-up stays on the Apple runner long-term or moves under a more owned Apple target.
+- On Apple Silicon, `just pre-merge-pikachat` now explicitly composes staged Linux `pre-merge-pikachat-rust` with the private `pre-merge-pikachat-apple-followup` helper that owns the remaining Apple-host clippy plus the desktop selector and TypeScript channel-behavior follow-up. The next ask is whether that host follow-up stays on the Apple runner long-term or moves under a more owned Apple target.
 - `nightly-pika-ui-ios` is intentionally CI-owned only through `just ios-ui-test`; promoting `ios-ui-e2e-local` into CI would be a separate policy change, not a wording cleanup.
 
 ## Shared Runtime Regression Set

@@ -26,7 +26,7 @@ This document defines the selector-first contract and current policy ownership f
 
 | Lane / recipe | Canonical contract |
 | --- | --- |
-| `pre-merge-pikachat` | `integration_deterministic::cli_smoke_local`, `integration_deterministic::ui_e2e_local_desktop`, `integration_deterministic::post_rebase_invalid_event_rejection_boundary`, `integration_deterministic::post_rebase_logout_session_convergence_boundary`, and all `openclaw-pikachat-deterministic` selectors. On Apple Silicon, the checked-in lane now composes staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` host helper. |
+| `pre-merge-pikachat` | `integration_deterministic::cli_smoke_local`, `integration_deterministic::ui_e2e_local_desktop`, `integration_deterministic::post_rebase_invalid_event_rejection_boundary`, `integration_deterministic::post_rebase_logout_session_convergence_boundary`, and all `openclaw-pikachat-deterministic` selectors. On Apple Silicon, the checked-in lane now composes staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` host helper, which owns the remaining Apple-host `pikachat`/`pikachat-sidecar` clippy plus desktop/TypeScript follow-up work. |
 | Path-scoped heavy OpenClaw lane (`check-pikachat-openclaw-e2e`) | `integration_openclaw::openclaw_gateway_e2e` |
 
 ## CI-Owned Nightly Lanes
@@ -71,7 +71,7 @@ This document defines the selector-first contract and current policy ownership f
 
 ## Deferred Root CI / `pikaci` Mismatches
 
-- On Apple Silicon, `just pre-merge-pikachat` is now explicitly composed from staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` host helper. The next follow-up there is Apple-host execution ownership/provisioning, not clarifying the split shape again.
+- On Apple Silicon, `just pre-merge-pikachat` is now explicitly composed from staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` host helper, which owns the remaining Apple-host clippy + desktop/TypeScript work. The next follow-up there is Apple-host execution ownership/provisioning, not clarifying the split shape again.
 - `nightly-pika-ui-ios` is CI-owned only through `just ios-ui-test`; the local-fixture selector `ios-ui-e2e-local` remains manual-only and should not be described as nightly-owned.
 
 ## Policy Notes

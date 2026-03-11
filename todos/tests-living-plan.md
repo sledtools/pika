@@ -75,7 +75,7 @@ Working assumptions:
 
 6. Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit:
    - the Apple Silicon branch of `just pre-merge-pikachat` now composes staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` helper
-   - the checked-in host follow-up keeps the desktop selector and TypeScript channel-behavior test in the lane without changing coverage
+   - the checked-in host follow-up owns the remaining Apple-host `pikachat`/`pikachat-sidecar` clippy plus the desktop selector and TypeScript channel-behavior test without changing coverage
    - the next concrete ask there is Apple-host execution ownership/provisioning, not more split clarification
 ## Progress Update
 

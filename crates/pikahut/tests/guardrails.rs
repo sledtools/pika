@@ -140,6 +140,28 @@ fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Vec<String> {
     body
 }
 
+fn extract_shell_if_then_branch(recipe_body: &[String], condition_fragment: &str) -> Vec<String> {
+    let mut in_branch = false;
+    let mut branch = Vec::new();
+
+    for line in recipe_body {
+        if !in_branch {
+            if line.contains(condition_fragment) && line.contains("then") {
+                in_branch = true;
+            }
+            continue;
+        }
+
+        if line == "else" || line == "fi" {
+            break;
+        }
+
+        branch.push(line.clone());
+    }
+
+    branch
+}
+
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
     let mut selectors = HashSet::new();
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -502,6 +524,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
     let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
 
     let justfile = fs::read_to_string(root.join("justfile"))?;
     let alias_target = extract_just_alias_target(&justfile, "pre-merge-pikachat");
@@ -532,6 +555,21 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         missing_from_workflow
     );
 
+    let apple_followup = extract_just_recipe_body(&checks, "pre-merge-pikachat-apple-followup");
+    assert!(
+        !apple_followup.is_empty(),
+        "checks.just must keep a checked-in Apple host follow-up recipe for the pikachat workflow guardrail"
+    );
+    if apple_followup
+        .iter()
+        .any(|line| line.contains("channel-behavior.test.ts"))
+    {
+        assert!(
+            pikachat_filter.contains("pikachat-openclaw/**"),
+            "pikachat workflow filter must include pikachat-openclaw/** while the Apple host follow-up runs the channel behavior test"
+        );
+    }
+
     Ok(())
 }
 
@@ -545,23 +583,61 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
         !pre_merge_recipe.is_empty(),
         "checks.just must keep a concrete pre-merge-pikachat recipe body"
     );
-    assert!(
-        pre_merge_recipe
-            .iter()
-            .any(|line| line.contains("pre-merge-pikachat-rust")),
-        "pre-merge-pikachat must keep the staged Linux Rust segment explicit"
+    let apple_branch = extract_shell_if_then_branch(
+        &pre_merge_recipe,
+        r#"if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ];"#,
     );
     assert!(
-        pre_merge_recipe
+        !apple_branch.is_empty(),
+        "pre-merge-pikachat must keep an explicit Apple Silicon branch"
+    );
+    assert!(
+        apple_branch
+            .iter()
+            .any(|line| line.contains("pre-merge-pikachat-rust")),
+        "Apple Silicon branch must keep the staged Linux Rust segment explicit"
+    );
+    assert!(
+        apple_branch
             .iter()
             .any(|line| line.contains("pre-merge-pikachat-apple-followup")),
-        "pre-merge-pikachat must keep the Apple host follow-up explicit"
+        "Apple Silicon branch must keep the Apple host follow-up explicit"
+    );
+    assert!(
+        !apple_branch
+            .iter()
+            .any(|line| line.contains("cargo clippy -p pikachat -- -D warnings")),
+        "Apple Silicon branch must not keep inline pikachat clippy outside the follow-up helper"
+    );
+    assert!(
+        !apple_branch
+            .iter()
+            .any(|line| line.contains("cargo clippy -p pikachat-sidecar -- -D warnings")),
+        "Apple Silicon branch must not keep inline sidecar clippy outside the follow-up helper"
+    );
+    assert!(
+        !apple_branch
+            .iter()
+            .any(|line| line.contains("channel-behavior.test.ts")),
+        "Apple Silicon branch must not keep inline TypeScript follow-up outside the helper"
     );
 
     let apple_followup = extract_just_recipe_body(&checks, "pre-merge-pikachat-apple-followup");
     assert!(
         !apple_followup.is_empty(),
         "checks.just must keep a checked-in Apple host follow-up recipe"
+    );
+    assert!(
+        apple_followup
+            .iter()
+            .any(|line| line.contains("cargo clippy -p pikachat -- -D warnings")),
+        "Apple host follow-up must keep pikachat clippy"
+    );
+    assert!(
+        apple_followup
+            .iter()
+            .any(|line| line.contains("cargo clippy -p pikachat-sidecar -- -D warnings")),
+        "Apple host follow-up must keep pikachat-sidecar clippy"
     );
     assert!(
         apple_followup

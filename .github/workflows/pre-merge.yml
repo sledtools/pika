@@ -569,6 +569,82 @@ jobs:
             cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  summarize-pikaci-shadow-lanes:
+    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
+    needs:
+      - shadow-pikaci-pre-merge-pika-rust
+      - shadow-pikaci-pre-merge-notifications
+      - shadow-pikaci-pre-merge-agent-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize advisory staged Linux shadow lanes
+        run: |
+          lane_row() {
+            local label="$1"
+            local job_state="$2"
+            local advisory_result="$3"
+            local run_status="$4"
+            local duration="$5"
+            local run_id="$6"
+
+            if [[ "$job_state" == "skipped" ]]; then
+              advisory_result="not_triggered"
+            elif [[ -z "$advisory_result" ]]; then
+              advisory_result="unavailable"
+            fi
+
+            if [[ -z "$run_status" ]]; then
+              run_status="none"
+            fi
+
+            if [[ -z "$duration" ]]; then
+              duration="unknown"
+            else
+              duration="${duration}s"
+            fi
+
+            if [[ -z "$run_id" ]]; then
+              run_id="none"
+            fi
+
+            printf "| \`%s\` | \`%s\` | \`%s\` | \`%s\` | \`%s\` | \`%s\` |\n" \
+              "$label" "$job_state" "$advisory_result" "$run_status" "$duration" "$run_id"
+          }
+
+          {
+            echo "## Advisory staged Linux shadow lanes"
+            echo
+            echo "| lane | workflow job | advisory result | pikaci run status | duration | run id |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            lane_row \
+              "pre-merge-pika-rust" \
+              "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_status }}" \
+              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_duration_seconds }}" \
+              "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.run_id }}"
+            lane_row \
+              "pre-merge-notifications" \
+              "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_status }}" \
+              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_duration_seconds }}" \
+              "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.run_id }}"
+            lane_row \
+              "pre-merge-agent-contracts" \
+              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_status }}" \
+              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_duration_seconds }}" \
+              "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_id }}"
+            echo
+            echo "### Promotion Readiness"
+            echo
+            echo "- Keep these lanes advisory until we have at least 10 real PR shadow runs for the candidate lane."
+            echo "- Promotion requires zero pass/fail parity mismatches against the legacy lane across that sample."
+            echo "- Promotion also requires no shadow-only infra flakes needing manual intervention and runtime staying at or below the current legacy lane envelope."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   check-pikachat:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat == 'true'

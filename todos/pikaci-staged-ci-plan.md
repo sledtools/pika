@@ -1061,3 +1061,18 @@ We have at least one important Linux Rust lane where:
       - collect a few real PR shadow runs,
       - compare parity/runtime/flake rate against the legacy lanes,
       - then decide whether `pre-merge-pika-rust` is ready to move from shadow toward authoritative.
+  - the next shadow-evaluation slice improved the human comparison surface instead of adding a fourth lane:
+    - `.github/workflows/pre-merge.yml` now includes a separate non-gating `summarize-pikaci-shadow-lanes` job that always runs for pre-merge events,
+    - it groups all three staged Linux shadow lanes in one table with:
+      - workflow job state,
+      - advisory result,
+      - `pikaci` run status,
+      - duration,
+      - and run id,
+    - so a PR reviewer can immediately see which staged Linux shadows were skipped, passed, failed, or produced no new `pikaci` run without drilling into three separate job summaries,
+    - that same summary now records an explicit promotion-readiness bar for the first cutover:
+      - at least 10 real PR shadow runs for the candidate lane,
+      - zero pass/fail parity mismatches against the legacy lane across that sample,
+      - zero shadow-only infra flakes requiring manual intervention,
+      - and runtime at or below the current legacy lane envelope,
+    - so the remaining work before promoting `pre-merge-pika-rust` is evidence gathering and comparison against the legacy lane, not more basic staged-Linux plumbing.

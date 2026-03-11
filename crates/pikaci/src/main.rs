@@ -2,9 +2,10 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
     GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunRecord, RunStatus,
-    StagedLinuxRustLane, StagedLinuxRustTarget, fulfill_prepared_output_request, gc_runs,
-    git_changed_files, list_runs, load_logs, load_run_record, record_skipped_run,
-    rerun_jobs_with_metadata, run_jobs_with_metadata,
+    StagedLinuxRemoteDefaults, StagedLinuxRustLane, StagedLinuxRustTarget,
+    fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
+    load_run_record, record_skipped_run, rerun_jobs_with_metadata, run_jobs_with_metadata,
+    staged_linux_remote_defaults,
 };
 
 struct TargetSpec {
@@ -46,6 +47,7 @@ enum Command {
     FulfillPreparedOutputRequest {
         request_path: String,
     },
+    StagedLinuxRemoteDefaults,
     StagedLinuxTargetInfo {
         target: String,
     },
@@ -139,6 +141,9 @@ fn main() -> anyhow::Result<()> {
             println!("output={}", request.output_name);
             println!("requested_exposures={}", request.requested_exposures.len());
         }
+        Command::StagedLinuxRemoteDefaults => {
+            print_staged_linux_remote_defaults(staged_linux_remote_defaults());
+        }
         Command::StagedLinuxTargetInfo { target } => {
             let target = staged_linux_target(&target)?;
             let config = target.config();
@@ -186,6 +191,31 @@ fn main() -> anyhow::Result<()> {
 fn shell_escape(value: &str) -> String {
     let escaped = value.replace('\'', "'\"'\"'");
     format!("'{escaped}'")
+}
+
+fn print_staged_linux_remote_defaults(defaults: StagedLinuxRemoteDefaults) {
+    println!("default_ssh_binary={}", shell_escape(defaults.ssh_binary));
+    println!(
+        "default_ssh_nix_binary={}",
+        shell_escape(defaults.ssh_nix_binary)
+    );
+    println!("default_ssh_host={}", shell_escape(defaults.ssh_host));
+    println!(
+        "default_remote_work_dir={}",
+        shell_escape(defaults.remote_work_dir)
+    );
+    println!(
+        "default_remote_launcher_binary={}",
+        shell_escape(defaults.remote_launcher_binary)
+    );
+    println!(
+        "default_remote_helper_binary={}",
+        shell_escape(defaults.remote_helper_binary)
+    );
+    println!(
+        "default_store_uri={}",
+        shell_escape(&format!("ssh://{}", defaults.ssh_host))
+    );
 }
 
 fn staged_linux_target(target_id: &str) -> anyhow::Result<StagedLinuxRustTarget> {

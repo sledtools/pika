@@ -89,6 +89,15 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_DEFAULT: &str =
+    "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_DEFAULT: &str =
+    "/run/current-system/sw/bin/pikaci-fulfill-prepared-output";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_DEFAULT: &str = "/usr/bin/ssh";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_DEFAULT: &str = "nix";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_DEFAULT: &str = "pika-build";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT: &str =
+    "/var/tmp/pikaci-prepared-output";
 const REMOTE_MICROVM_HOST_UID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_UID";
 const REMOTE_MICROVM_HOST_GID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_GID";
 const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
@@ -105,6 +114,27 @@ struct TartRunProcess {
     child: std::process::Child,
     stdout_handle: thread::JoinHandle<()>,
     stderr_handle: thread::JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedLinuxRemoteDefaults {
+    pub ssh_binary: &'static str,
+    pub ssh_nix_binary: &'static str,
+    pub ssh_host: &'static str,
+    pub remote_work_dir: &'static str,
+    pub remote_launcher_binary: &'static str,
+    pub remote_helper_binary: &'static str,
+}
+
+pub fn staged_linux_remote_defaults() -> StagedLinuxRemoteDefaults {
+    StagedLinuxRemoteDefaults {
+        ssh_binary: PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_DEFAULT,
+        ssh_nix_binary: PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_DEFAULT,
+        ssh_host: PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_DEFAULT,
+        remote_work_dir: PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT,
+        remote_launcher_binary: PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_DEFAULT,
+        remote_helper_binary: PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_DEFAULT,
+    }
 }
 
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -1197,12 +1227,8 @@ fn remote_microvm_context(
     job: &JobSpec,
     ctx: &HostContext,
 ) -> anyhow::Result<RemoteMicrovmContext> {
-    let remote_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV)
-        .unwrap_or_else(|_| "pika-build".to_string());
-    let remote_work_dir = PathBuf::from(
-        std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV)
-            .unwrap_or_else(|_| "/var/tmp/pikaci-prepared-output".to_string()),
-    );
+    let remote_host = prepared_output_ssh_host();
+    let remote_work_dir = prepared_output_remote_work_dir();
     let run_dir = ctx
         .job_dir
         .ancestors()
@@ -1255,12 +1281,42 @@ pub(crate) fn staged_linux_remote_snapshot_dir(
 
 fn ssh_binary() -> String {
     std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
-        .unwrap_or_else(|_| "/usr/bin/ssh".to_string())
+        .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_binary.to_string())
 }
 
 pub(crate) fn ssh_nix_binary() -> String {
     std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV)
-        .unwrap_or_else(|_| "nix".to_string())
+        .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_nix_binary.to_string())
+}
+
+pub(crate) fn prepared_output_ssh_host() -> String {
+    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV)
+        .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_host.to_string())
+}
+
+pub(crate) fn prepared_output_remote_work_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV)
+            .unwrap_or_else(|_| staged_linux_remote_defaults().remote_work_dir.to_string()),
+    )
+}
+
+pub(crate) fn prepared_output_remote_launcher_binary() -> String {
+    std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY").unwrap_or_else(
+        |_| {
+            staged_linux_remote_defaults()
+                .remote_launcher_binary
+                .to_string()
+        },
+    )
+}
+
+pub(crate) fn prepared_output_remote_helper_binary() -> String {
+    std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY").unwrap_or_else(|_| {
+        staged_linux_remote_defaults()
+            .remote_helper_binary
+            .to_string()
+    })
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -2102,8 +2158,8 @@ mod tests {
         GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
         build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        render_guest_flake, render_local_guest_flake, staged_linux_remote_snapshot_dir,
-        vfkit_socket_path,
+        render_guest_flake, render_local_guest_flake, staged_linux_remote_defaults,
+        staged_linux_remote_snapshot_dir, vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec, RunnerKind};
 
@@ -2305,6 +2361,23 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_linux_remote_defaults_match_expected_paths() {
+        let defaults = staged_linux_remote_defaults();
+        assert_eq!(defaults.ssh_binary, "/usr/bin/ssh");
+        assert_eq!(defaults.ssh_nix_binary, "nix");
+        assert_eq!(defaults.ssh_host, "pika-build");
+        assert_eq!(defaults.remote_work_dir, "/var/tmp/pikaci-prepared-output");
+        assert_eq!(
+            defaults.remote_launcher_binary,
+            "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output"
+        );
+        assert_eq!(
+            defaults.remote_helper_binary,
+            "/run/current-system/sw/bin/pikaci-fulfill-prepared-output"
+        );
     }
 
     #[test]

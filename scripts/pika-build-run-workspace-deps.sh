@@ -3,6 +3,13 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+pikaci_bin="$repo_root/target/debug/pikaci"
+
+load_remote_defaults() {
+  cd "$repo_root"
+  cargo build -p pikaci --bin pikaci >/dev/null
+  eval "$("$pikaci_bin" staged-linux-remote-defaults)"
+}
 
 usage() {
   cat <<'EOF'
@@ -26,11 +33,13 @@ Options:
 EOF
 }
 
+load_remote_defaults
+
 installable="${PIKACI_X86_64_REMOTE_INSTALLABLE:-.#ci.x86_64-linux.workspaceDeps}"
-remote_host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}"
-remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/pikaci-prepared-output}"
-ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}"
-remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}"
+remote_host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-$default_ssh_host}"
+remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-$default_remote_work_dir}"
+ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-$default_ssh_binary}"
+remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-$default_ssh_nix_binary}"
 snapshot_id="helper-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 keep_remote_snapshot=0
 reuse_existing_snapshot=0

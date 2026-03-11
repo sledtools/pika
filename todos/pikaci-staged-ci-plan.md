@@ -1025,3 +1025,22 @@ We have at least one important Linux Rust lane where:
     - and the next structural cleanup target is now narrower:
       - centralize the remaining lane-specific execute-wrapper / helper-command metadata,
       - then unify remote path defaults so scripts, executor, and transport stop carrying duplicate `/var/tmp/pikaci-prepared-output` assumptions.
+  - note that the next cleanup slice removed the duplicated staged-Linux remote path/default table instead of adding another lane:
+    - `pikaci` now has an explicit `StagedLinuxRemoteDefaults` source of truth for:
+      - ssh binary,
+      - ssh nix binary,
+      - ssh host,
+      - remote work dir root,
+      - remote launcher binary,
+      - and remote helper binary,
+    - that replaces the previous mixture of:
+      - `run.rs` fallback defaults,
+      - `executor.rs` fallback defaults,
+      - and shell-script copies inside `pikaci-staged-linux-remote.sh`, `pika-build-run-workspace-deps.sh`, and `pika-build-prewarm-workspace-deps.sh`,
+    - the canonical scripts now query `pikaci staged-linux-remote-defaults` instead of hard-coding `/var/tmp/pikaci-prepared-output` and related remote binary paths themselves,
+    - `run.rs` and `executor.rs` now consume the same Rust-side defaults directly, which also removed the lingering `/tmp/pikaci-prepared-output` vs `/var/tmp/pikaci-prepared-output` split in ssh launcher transport fallback,
+    - fresh sequential reruns on the centralized default path all still passed:
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` -> `20260311T062137Z-8354c91d`
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260311T062506Z-9385511c`
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications` -> `20260311T062836Z-e3a7a4bf`,
+    - and the next structural cleanup target is now the remaining lane-specific execute-wrapper/helper-command metadata rather than remote target config or remote path defaults.

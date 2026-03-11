@@ -3,6 +3,13 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+pikaci_bin="$repo_root/target/debug/pikaci"
+
+load_remote_defaults() {
+  cd "$repo_root"
+  cargo build -p pikaci --bin pikaci >/dev/null
+  eval "$("$pikaci_bin" staged-linux-remote-defaults)"
+}
 
 usage() {
   cat <<'EOF'
@@ -19,7 +26,9 @@ Options:
 EOF
 }
 
-store_uri="ssh://pika-build"
+load_remote_defaults
+
+store_uri="${default_store_uri}"
 installable=".#ci.x86_64-linux.workspaceDeps"
 
 while [[ $# -gt 0 ]]; do

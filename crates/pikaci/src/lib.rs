@@ -3,6 +3,7 @@ mod model;
 mod run;
 mod snapshot;
 
+pub use executor::{StagedLinuxRemoteDefaults, staged_linux_remote_defaults};
 pub use model::{
     ExecuteNode, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
     PreparedOutputConsumerKind, PreparedOutputFulfillmentLaunchRequest,

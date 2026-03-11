@@ -4343,6 +4343,7 @@ impl AppCore {
                     call_signal_publish_failure_context(kind)
                 ));
             }
+            RuntimeOperationEvent::MediaUpload(_) => {}
         }
     }
 
@@ -7220,6 +7221,58 @@ mod tests {
             assert_eq!(completed.attachment.filename, "app-boundary.txt");
             assert_eq!(completed.attachment.mime_type, "text/plain");
             assert_eq!(completed.reference.url.as_str(), "https://example.com/blob");
+        }
+
+        #[test]
+        fn app_media_upload_failure_uses_shared_runtime_event_boundary() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let request_id = "media-upload-request".to_string();
+            let temp_rumor_id = "temp-rumor".to_string();
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"hello from app media failure",
+                    Some("text/plain"),
+                    Some("app-failure.txt"),
+                )
+                .expect("prepare upload");
+
+            core.pending_media_sends.insert(
+                request_id.clone(),
+                crate::core::PendingMediaSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    upload: prepared.upload,
+                    account_pubkey: keys.public_key().to_hex(),
+                    temp_rumor_id: temp_rumor_id.clone(),
+                    encrypted_data: prepared.encrypted_data,
+                },
+            );
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    crate::state::MessageDeliveryState::Pending,
+                );
+
+            core.handle_chat_media_upload_completed(
+                request_id.clone(),
+                None,
+                None,
+                Some("offline".to_string()),
+            );
+
+            assert!(core.pending_media_sends.contains_key(&request_id));
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&temp_rumor_id)),
+                Some(crate::state::MessageDeliveryState::Failed { reason })
+                    if reason == "Upload failed: offline"
+            ));
         }
 
         #[test]

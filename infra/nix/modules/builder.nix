@@ -133,6 +133,14 @@ in
 
       homes=()
       while IFS= read -r home; do
+        vm_dir="$(dirname "$home")"
+        vm_id="$(basename "$vm_dir")"
+        case "$vm_id" in
+          vm-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+          *)
+            continue
+            ;;
+        esac
         homes+=("$home")
       done < <(find /var/lib/microvms -mindepth 2 -maxdepth 2 -type d -name home | sort)
 
@@ -154,7 +162,9 @@ in
         vm_id="$(basename "$vm_dir")"
         metadata_dir="$vm_dir/metadata"
         status_file="$metadata_dir/${microvmBackupStatusFileName}"
-        mkdir -p "$metadata_dir"
+        if [ ! -d "$home" ] || [ ! -d "$vm_dir" ] || [ ! -d "$metadata_dir" ]; then
+          continue
+        fi
         tmp_file="$(mktemp "$metadata_dir/.backup-status.XXXXXX")"
         jq -n \
           --arg schema_version "vm.backup_status.v1" \

@@ -686,6 +686,27 @@ impl<'a> RuntimeCommands<'a> {
         MembershipRuntime::new(self.mdk).finalize_published_evolution(prepared)
     }
 
+    pub fn prepare_outgoing_call_invite(
+        &self,
+        target_id: &str,
+        peer_pubkey_hex: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+    ) -> Result<
+        (
+            crate::call_runtime::PendingOutgoingCall,
+            crate::call_runtime::PreparedCallSignal,
+        ),
+        String,
+    > {
+        CallWorkflowRuntime::new(self.mdk).prepare_outgoing_invite(
+            target_id,
+            peer_pubkey_hex,
+            call_id,
+            session,
+        )
+    }
+
     pub fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,
@@ -1148,8 +1169,8 @@ impl<'a> MarmotRuntime<'a> {
         ),
         String,
     > {
-        self.calls()
-            .prepare_outgoing_invite(target_id, peer_pubkey_hex, call_id, session)
+        self.commands()
+            .prepare_outgoing_call_invite(target_id, peer_pubkey_hex, call_id, session)
     }
 
     pub fn prepare_accept_incoming_call(
@@ -2276,6 +2297,34 @@ mod tests {
             }
             other => panic!("expected failed outbound publish event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_commands_prepare_outgoing_call_invite_through_explicit_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+        let peer = Keys::generate();
+        let commands = RuntimeCommands::new(&mdk);
+        let session = CallSessionParams {
+            moq_url: "https://moq.local/anon".to_string(),
+            broadcast_base: "pika/calls/550e8400-e29b-41d4-a716-446655440010".to_string(),
+            relay_auth: "capv1_test_token".to_string(),
+            tracks: vec![crate::call::CallTrackSpec::audio0_opus_default()],
+        };
+
+        let (pending, prepared) = commands
+            .prepare_outgoing_call_invite(
+                "deadbeef",
+                &peer.public_key().to_hex(),
+                "550e8400-e29b-41d4-a716-446655440010",
+                &session,
+            )
+            .expect("prepare outgoing call invite");
+
+        assert_eq!(pending.target_id, "deadbeef");
+        assert_eq!(pending.peer_pubkey_hex, peer.public_key().to_hex());
+        assert_eq!(pending.call_id, "550e8400-e29b-41d4-a716-446655440010");
+        assert!(prepared.payload_json.contains("call.invite"));
     }
 
     #[test]

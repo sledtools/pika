@@ -256,7 +256,7 @@ impl<'a> AppHostContext<'a> {
         ),
         String,
     > {
-        self.runtime()
+        self.commands()
             .prepare_outgoing_call_invite(target_id, peer_pubkey_hex, call_id, session)
     }
 

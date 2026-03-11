@@ -270,7 +270,7 @@ impl<'a> DaemonHostContext<'a> {
         PendingOutgoingCall,
         pika_marmot_runtime::call_runtime::PreparedCallSignal,
     )> {
-        self.runtime()
+        self.commands()
             .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
             .map_err(anyhow::Error::msg)
     }

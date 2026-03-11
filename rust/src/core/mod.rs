@@ -3842,7 +3842,6 @@ impl AppCore {
             Err(error) => self.handle_publish_message_result(chat_id, rumor_id, false, Some(error)),
         }
     }
-
     fn handle_call_signal_publish_operation(&mut self, operation: CallSignalPublishOperationEvent) {
         let kind = operation.kind();
         if let Err(error) = operation.into_result() {
@@ -3852,7 +3851,6 @@ impl AppCore {
             ));
         }
     }
-
     fn handle_peer_key_package_fetched(
         &mut self,
         token: u64,

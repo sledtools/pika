@@ -2,8 +2,9 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
     GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunRecord, RunStatus,
-    fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
-    load_run_record, record_skipped_run, rerun_jobs_with_metadata, run_jobs_with_metadata,
+    StagedLinuxRustLane, fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs,
+    load_logs, load_run_record, record_skipped_run, rerun_jobs_with_metadata,
+    run_jobs_with_metadata,
 };
 
 struct TargetSpec {
@@ -176,6 +177,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                     package: "pika-agent-control-plane",
                     test_name: "tests::command_envelope_round_trips",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "tart-beachhead" => Ok(TargetSpec {
@@ -199,6 +201,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::PackageUnitTests {
                     package: "pika-agent-control-plane",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "agent-microvm-tests" => Ok(TargetSpec {
@@ -213,6 +216,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::PackageTests {
                     package: "pika-agent-microvm",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "agent-http-ensure-local" => Ok(TargetSpec {
@@ -227,6 +231,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "server-agent-api-tests" => Ok(TargetSpec {
@@ -242,6 +247,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                     package: "pika-server",
                     filter: "agent_api::tests",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "core-agent-nip98-test" => Ok(TargetSpec {
@@ -257,6 +263,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                     package: "pika_core",
                     test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "agent-contracts-smoke" => Ok(TargetSpec {
@@ -367,6 +374,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "pika-desktop-e2e-compile" => Ok(TargetSpec {
@@ -381,6 +389,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika-desktop desktop_e2e_local_ping_pong_with_bot --no-run",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "pika-desktop-package-tests" => Ok(TargetSpec {
@@ -395,6 +404,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 guest_command: GuestCommand::PackageTests {
                     package: "pika-desktop",
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "pre-merge-fixture-rust" => Ok(TargetSpec {
@@ -449,6 +459,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "emulator -list-avds",
                     ),
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "android-nostr-connect-intent-test" => Ok(TargetSpec {
@@ -479,6 +490,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/android-ui-test-ci",
                     ),
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "tart-env-probe" => Ok(TargetSpec {
@@ -501,6 +513,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/ios-sim-ensure",
                     ),
                 },
+                staged_linux_rust_lane: None,
             }],
         }),
         "tart-ios-agent-button-state-test" => Ok(TargetSpec {
@@ -743,6 +756,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         },
         JobSpec {
             id: "agent-microvm-tests",
@@ -752,6 +766,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-agent-microvm",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
         },
         JobSpec {
             id: "server-agent-api-tests",
@@ -762,6 +777,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika-server",
                 filter: "agent_api::tests",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsServerAgentApi),
         },
         JobSpec {
             id: "core-agent-nip98-test",
@@ -772,6 +788,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika_core",
                 test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsCoreNip98),
         },
     ]
 }
@@ -786,6 +803,7 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         },
         JobSpec {
             id: "pika-core-messaging-e2e-tests",
@@ -795,6 +813,7 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
         },
     ]
 }
@@ -816,6 +835,7 @@ fn notification_jobs() -> Vec<JobSpec> {
                 "cargo test -p pika-server -- --test-threads=1 --nocapture"
             ),
         },
+        staged_linux_rust_lane: None,
     }]
 }
 
@@ -829,6 +849,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pikachat",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pikachat-sidecar-package-tests",
@@ -838,6 +859,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar -- --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pika-desktop-package-tests",
@@ -847,6 +869,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-desktop",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pikachat-cli-smoke-local",
@@ -856,6 +879,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pikachat-post-rebase-invalid-event",
@@ -865,6 +889,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "pikachat-post-rebase-logout-session",
@@ -874,6 +899,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "openclaw-invite-and-chat",
@@ -883,6 +909,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "openclaw-invite-and-chat-rust-bot",
@@ -892,6 +919,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "openclaw-invite-and-chat-daemon",
@@ -901,6 +929,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
         JobSpec {
             id: "openclaw-audio-echo",
@@ -910,6 +939,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture",
             },
+            staged_linux_rust_lane: None,
         },
     ]
 }
@@ -921,6 +951,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::PackageTests { package: "pikahut" },
+        staged_linux_rust_lane: None,
     }]
 }
 
@@ -951,6 +982,7 @@ fn rmp_jobs() -> Vec<JobSpec> {
                 "echo 'ok: rmp init ci smoke passed'"
             ),
         },
+        staged_linux_rust_lane: None,
     }]
 }
 
@@ -988,6 +1020,7 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
                 "-skip-testing:PikaUITests",
             ),
         },
+        staged_linux_rust_lane: None,
     }
 }
 
@@ -1062,6 +1095,7 @@ fn tart_ios_unit_suite_job(
         guest_command: GuestCommand::ShellCommand {
             command: Box::leak(command.into_boxed_str()),
         },
+        staged_linux_rust_lane: None,
     }
 }
 
@@ -1100,6 +1134,7 @@ fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid",
             ),
         },
+        staged_linux_rust_lane: None,
     }
 }
 
@@ -1137,6 +1172,7 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
             ),
         },
+        staged_linux_rust_lane: None,
     }
 }
 
@@ -1157,6 +1193,7 @@ fn tart_desktop_package_tests_job(id: &'static str, description: &'static str) -
                 "./tools/cargo-with-xcode test -p pika-desktop -- --nocapture",
             ),
         },
+        staged_linux_rust_lane: None,
     }
 }
 
@@ -1301,10 +1338,13 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
+        format_status_lines, matches_any_filter, matches_filter, rerun_metadata, target_spec,
         target_spec_for_rerun,
     };
-    use pikaci::{JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus};
+    use pikaci::{
+        JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus, RunnerKind,
+        StagedLinuxRustLane,
+    };
 
     #[test]
     fn path_filters_match_exact_and_prefix_patterns() {
@@ -1316,6 +1356,22 @@ mod tests {
             ".github/**"
         ));
         assert!(!matches_filter("docs/agent-ci.md", "rust/**"));
+    }
+
+    #[test]
+    fn standalone_agent_contract_target_stays_vfkit_while_pre_merge_lane_is_staged() {
+        let standalone = target_spec("agent-control-plane-unit").expect("standalone target");
+        let pre_merge = target_spec("pre-merge-agent-contracts").expect("pre-merge target");
+
+        assert_eq!(standalone.jobs.len(), 1);
+        assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::VfkitLocal);
+        assert_eq!(standalone.jobs[0].staged_linux_rust_lane(), None);
+
+        assert_eq!(
+            pre_merge.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+        );
+        assert_eq!(pre_merge.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
     }
 
     #[test]

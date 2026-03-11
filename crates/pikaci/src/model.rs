@@ -31,6 +31,7 @@ pub struct JobSpec {
     pub timeout_secs: u64,
     pub writable_workspace: bool,
     pub guest_command: GuestCommand,
+    pub staged_linux_rust_lane: Option<StagedLinuxRustLane>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -93,15 +94,7 @@ impl JobSpec {
     }
 
     pub fn staged_linux_rust_lane(&self) -> Option<StagedLinuxRustLane> {
-        match self.id {
-            "pika-core-lib-app-flows-tests" => Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
-            "pika-core-messaging-e2e-tests" => Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
-            "agent-control-plane-unit" => Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
-            "agent-microvm-tests" => Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
-            "server-agent-api-tests" => Some(StagedLinuxRustLane::AgentContractsServerAgentApi),
-            "core-agent-nip98-test" => Some(StagedLinuxRustLane::AgentContractsCoreNip98),
-            _ => None,
-        }
+        self.staged_linux_rust_lane
     }
 
     pub fn supports_parallel_execute(&self) -> bool {
@@ -264,6 +257,7 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         };
 
         assert_eq!(
@@ -271,6 +265,23 @@ mod tests {
             Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
         );
         assert_eq!(spec.runner_kind(), super::RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn standalone_agent_contract_jobs_can_stay_on_vfkit() {
+        let spec = JobSpec {
+            id: "agent-control-plane-unit",
+            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::PackageUnitTests {
+                package: "pika-agent-control-plane",
+            },
+            staged_linux_rust_lane: None,
+        };
+
+        assert_eq!(spec.staged_linux_rust_lane(), None);
+        assert_eq!(spec.runner_kind(), super::RunnerKind::VfkitLocal);
     }
 
     #[test]

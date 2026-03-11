@@ -2118,6 +2118,7 @@ mod tests {
                 package: "pika-agent-control-plane",
                 test_name: "tests::command_envelope_round_trips",
             },
+            staged_linux_rust_lane: None,
         };
         let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2155,6 +2156,7 @@ mod tests {
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
+            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
         };
         let flake = render_guest_flake(
             guest_runner_config_for(RunnerKind::MicrovmRemote),
@@ -2207,6 +2209,7 @@ mod tests {
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
+            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
         };
 
         let error = ensure_staged_linux_rust_lane_matches_vfkit_guest(&spec)
@@ -2230,6 +2233,7 @@ mod tests {
                 package: "pika-agent-control-plane",
                 test_name: "tests::command_envelope_round_trips",
             },
+            staged_linux_rust_lane: None,
         };
 
         let path = vfkit_socket_path(
@@ -2313,6 +2317,7 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
+            staged_linux_rust_lane: None,
         };
         let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2345,6 +2350,7 @@ mod tests {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-agent-microvm",
             },
+            staged_linux_rust_lane: None,
         };
         let package_flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2375,6 +2381,7 @@ mod tests {
                 package: "pika-server",
                 filter: "agent_api::tests",
             },
+            staged_linux_rust_lane: None,
         };
         let filtered_flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2406,6 +2413,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "set -euo pipefail; cargo build -p rmp-cli; echo ok",
             },
+            staged_linux_rust_lane: None,
         };
         let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2439,6 +2447,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommandAsRoot {
                 command: "nix develop .#default -c bash -lc 'command -v adb'",
             },
+            staged_linux_rust_lane: None,
         };
         let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),
@@ -2472,6 +2481,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
         };
         let flake = render_local_guest_flake(
             guest_runner_config_for(RunnerKind::VfkitLocal),

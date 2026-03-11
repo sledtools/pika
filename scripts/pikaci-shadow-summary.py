@@ -90,6 +90,8 @@ def find_latest_run(
     min_created_at_exclusive: str | None,
 ) -> Path | None:
     runs_root = state_root / "runs"
+    if not runs_root.is_dir():
+        return None
     candidates: list[tuple[str, Path]] = []
     for run_dir in runs_root.iterdir():
         run_json = run_dir / "run.json"

@@ -241,6 +241,9 @@
         <section class="card">
           <h2>Control Loop</h2>
           <div class="actions">
+            {% if has_control_loop_notice %}
+            <p>{{ control_loop_notice }}</p>
+            {% endif %}
             {% if can_provision %}
             <form method="post" action="/dashboard/provision">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />

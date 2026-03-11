@@ -428,6 +428,10 @@ fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
     }
 }
 
+fn is_inflight_provision_row(row: &AgentInstance) -> bool {
+    row.phase == AGENT_PHASE_CREATING && row.vm_id.is_none()
+}
+
 fn select_visible_agent_row(
     active: Option<AgentInstance>,
     latest: Option<AgentInstance>,
@@ -980,6 +984,12 @@ pub(crate) async fn recover_agent_for_owner(
         Some(vm_id) => format!("Recover requested for Managed OpenClaw on VM {vm_id}."),
         None => "Recover requested for Managed OpenClaw without a recoverable VM.".to_string(),
     };
+    if is_inflight_provision_row(&active) {
+        return Ok(ManagedEnvironmentAction {
+            row: active,
+            startup_phase: AgentStartupPhase::ProvisioningVm,
+        });
+    }
     record_managed_environment_event(
         &mut conn,
         owner_npub,
@@ -1106,9 +1116,20 @@ pub(crate) async fn reset_agent_for_owner(
         })?;
         let existing = load_visible_agent_row(&mut conn, owner_npub)
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
+        if let Some(existing) = existing
+            .as_ref()
+            .filter(|row| is_inflight_provision_row(row))
+        {
+            return Ok(ManagedEnvironmentAction {
+                row: existing.clone(),
+                startup_phase: AgentStartupPhase::ProvisioningVm,
+            });
+        }
         let reset_requested_message = match existing.as_ref() {
-            Some(_) => "Destructive reset requested. The current managed environment will be replaced."
-                .to_string(),
+            Some(_) => {
+                "Destructive reset requested. The current managed environment will be replaced."
+                    .to_string()
+            }
             None => "Destructive reset requested without an existing managed environment. Provisioning a fresh Managed OpenClaw environment."
                 .to_string(),
         };
@@ -1967,6 +1988,84 @@ mod tests {
             provision_or_existing_managed_environment(&state, owner_npub, "req-inflight", None)
                 .await
                 .expect("should converge on existing inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn recover_agent_for_owner_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1recoverinflightguard";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight-recover",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action = recover_agent_for_owner(&state, owner_npub, "req-inflight-recover", None)
+            .await
+            .expect("recover should converge on inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn reset_agent_for_owner_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1resetinflightguard";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight-reset",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action = reset_agent_for_owner(&state, owner_npub, "req-inflight-reset", None)
+            .await
+            .expect("reset should converge on inflight row");
         assert_eq!(action.row.agent_id, existing.agent_id);
         assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
         assert_eq!(action.row.vm_id, None);

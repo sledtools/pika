@@ -16,6 +16,7 @@ pub struct Config {
     pub bridge_name: String,
     pub state_dir: PathBuf,
     pub run_dir: PathBuf,
+    pub gcroots_dir: PathBuf,
     pub runner_cache_dir: PathBuf,
     pub runner_flake_dir: PathBuf,
     pub runtime_artifacts_host_dir: PathBuf,
@@ -35,6 +36,7 @@ pub struct Config {
     pub nix_cmd: String,
     pub chown_cmd: String,
     pub chmod_cmd: String,
+    pub restore_cmd: String,
 }
 
 impl Config {
@@ -61,6 +63,10 @@ impl Config {
         );
         let run_dir = PathBuf::from(
             std::env::var("VM_RUN_DIR").unwrap_or_else(|_| "/run/microvm-agent".into()),
+        );
+        let gcroots_dir = PathBuf::from(
+            std::env::var("VM_GCROOTS_DIR")
+                .unwrap_or_else(|_| "/nix/var/nix/gcroots/microvm".into()),
         );
         let runner_cache_dir = PathBuf::from(
             std::env::var("VM_RUNNER_CACHE_DIR")
@@ -101,6 +107,8 @@ impl Config {
             .unwrap_or_else(|_| "/run/current-system/sw/bin/chown".into());
         let chmod_cmd = std::env::var("VM_CHMOD_CMD")
             .unwrap_or_else(|_| "/run/current-system/sw/bin/chmod".into());
+        let restore_cmd = std::env::var("VM_RESTORE_CMD")
+            .unwrap_or_else(|_| "/run/current-system/sw/bin/microvm-home-restore".into());
 
         if to_u32(ip_start) > to_u32(ip_end) {
             return Err(anyhow!("VM_IP_POOL_START must be <= VM_IP_POOL_END"));
@@ -112,6 +120,7 @@ impl Config {
             bridge_name,
             state_dir,
             run_dir,
+            gcroots_dir,
             runner_cache_dir,
             runner_flake_dir,
             runtime_artifacts_host_dir,
@@ -131,6 +140,7 @@ impl Config {
             nix_cmd,
             chown_cmd,
             chmod_cmd,
+            restore_cmd,
         })
     }
 }

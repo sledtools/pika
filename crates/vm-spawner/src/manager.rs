@@ -20,6 +20,8 @@ use pika_agent_control_plane::{
     GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH,
     VM_BACKUP_STATUS_SCHEMA_V1,
 };
+use serde::Deserialize;
+use tempfile::Builder as TempDirBuilder;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -70,12 +72,21 @@ const CREATE_STAGING_PREFIX: &str = ".creating__";
 const AUTOSTART_STARTUP_PLAN_METADATA: &str = "autostart.startup-plan.json";
 const BACKUP_STATUS_METADATA: &str = "backup-status.v1.json";
 const BACKUP_HEALTHY_MAX_AGE_HOURS: i64 = 6;
+const RESTORE_HELPER_RESULT_SCHEMA_V1: &str = "vm.home_restore_result.v1";
 
 #[derive(Debug, Clone)]
 struct CurrentVmMetadata {
     cpu: u32,
     memory_mb: u32,
     guest_autostart: GuestAutostartRequest,
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreHelperResult {
+    schema_version: String,
+    vm_id: String,
+    snapshot: String,
+    restored_home_path: String,
 }
 
 #[derive(Debug)]
@@ -341,6 +352,119 @@ impl VmManager {
         })
     }
 
+    pub async fn restore(&self, id: &str) -> anyhow::Result<VmResponse> {
+        let vm = self.load_vm_disk_state(id)?;
+        let total_started = Instant::now();
+        let home_dir = vm.microvm_state_dir.join("home");
+        if home_dir.exists() {
+            anyhow::ensure!(
+                home_dir.is_dir(),
+                "durable home path is not a directory for vm {id} at {}",
+                home_dir.display()
+            );
+        }
+        let had_existing_home = home_dir.is_dir();
+        let backup_host = self
+            .backup_status(&vm.id)
+            .ok()
+            .map(|status| status.backup_host)
+            .filter(|host| !host.trim().is_empty())
+            .unwrap_or_else(|| self.cfg.host_id.clone());
+
+        self.stop_vm_runtime(&vm.id, &vm.tap_name).await?;
+
+        let restore_staging = TempDirBuilder::new()
+            .prefix(&format!("vm-restore-{}-", vm.id))
+            .tempdir_in(&vm.microvm_state_dir)
+            .context("create restore staging dir")?;
+        let restored_home = match self
+            .run_restore_helper(&vm.id, &backup_host, restore_staging.path())
+            .await
+        {
+            Ok(restored_home) => restored_home,
+            Err(err) => {
+                warn!(
+                    vm_id = %id,
+                    error = %err,
+                    "restore helper failed; attempting to restart previous environment if possible"
+                );
+                if had_existing_home {
+                    let _ = self.recreate_prebuilt_vm_with_existing_home(&vm).await;
+                }
+                return Err(err);
+            }
+        };
+
+        let previous_home_backup = had_existing_home.then(|| {
+            vm.microvm_state_dir.join(format!(
+                ".restore-previous-home-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ))
+        });
+        if let Some(previous_home_backup) = previous_home_backup.as_ref() {
+            fs::rename(&home_dir, previous_home_backup)
+                .with_context(|| format!("move current durable home aside for vm {id}"))?;
+        }
+        if let Err(err) = fs::rename(&restored_home, &home_dir) {
+            if let Some(previous_home_backup) = previous_home_backup.as_ref() {
+                let _ = fs::rename(previous_home_backup, &home_dir);
+                let _ = self.recreate_prebuilt_vm_with_existing_home(&vm).await;
+            }
+            return Err(err).with_context(|| {
+                format!(
+                    "install restored durable home for vm {id} from {}",
+                    restored_home.display()
+                )
+            });
+        }
+
+        if let Err(err) = self.recreate_prebuilt_vm_with_existing_home(&vm).await {
+            warn!(
+                vm_id = %id,
+                error = %err,
+                "restore recreate failed; attempting rollback to previous durable home"
+            );
+            let _ = self.stop_vm_runtime(&vm.id, &vm.tap_name).await;
+            if let Some(previous_home_backup) = previous_home_backup.as_ref() {
+                let _ = remove_path_if_exists(&home_dir);
+                let _ = fs::rename(previous_home_backup, &home_dir);
+                let _ = self.recreate_prebuilt_vm_with_existing_home(&vm).await;
+            }
+            return Err(err).context("restart managed environment after durable-home restore");
+        }
+
+        if let Some(previous_home_backup) = previous_home_backup.as_ref() {
+            remove_path_if_exists(previous_home_backup)?;
+        }
+        let unit_name = self.microvm_unit_name(&vm.id);
+        let status = if wait_for_unit_active_or_fail_fast(
+            &self.cfg.systemctl_cmd,
+            &unit_name,
+            Duration::from_secs(2),
+        )
+        .await?
+        {
+            "running"
+        } else {
+            "starting"
+        };
+
+        info!(
+            vm_id = %id,
+            status,
+            restore_total_ms = to_ms(total_started.elapsed()),
+            "vm restore complete"
+        );
+        Ok(VmResponse {
+            id: id.to_string(),
+            status: status.to_string(),
+            guest_ready: false,
+        })
+    }
+
     pub fn openclaw_proxy_target(&self, id: &str) -> anyhow::Result<String> {
         let vm = self.load_vm_disk_state(id)?;
         let startup_plan = self.load_guest_startup_plan(&vm.microvm_state_dir, id)?;
@@ -387,6 +511,72 @@ impl VmManager {
                 );
             })
             .or_else(|_| Ok(self.unavailable_backup_status(id, &durable_home_path)))
+    }
+
+    async fn run_restore_helper(
+        &self,
+        id: &str,
+        backup_host: &str,
+        target_root: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        anyhow::ensure!(
+            !backup_host.trim().is_empty(),
+            "restore backup host cannot be empty for vm {id}"
+        );
+        let stdout = run_command_capture_stdout(
+            Command::new(&self.cfg.restore_cmd)
+                .arg("--json")
+                .arg("--target-root")
+                .arg(target_root)
+                .arg("--host")
+                .arg(backup_host)
+                .arg(id),
+            "restore durable home from backup",
+        )
+        .await?;
+        let result: RestoreHelperResult =
+            serde_json::from_str(stdout.trim()).with_context(|| {
+                format!(
+                    "parse restore helper response for vm {id} from `{}`",
+                    stdout.trim()
+                )
+            })?;
+        anyhow::ensure!(
+            result.schema_version == RESTORE_HELPER_RESULT_SCHEMA_V1,
+            "restore helper schema mismatch for vm {id}: expected {}, found {}",
+            RESTORE_HELPER_RESULT_SCHEMA_V1,
+            result.schema_version
+        );
+        anyhow::ensure!(
+            result.vm_id == id,
+            "restore helper vm_id mismatch: expected {id}, found {}",
+            result.vm_id
+        );
+        anyhow::ensure!(
+            !result.snapshot.trim().is_empty(),
+            "restore helper returned empty snapshot for vm {id}"
+        );
+        let restored_home = PathBuf::from(&result.restored_home_path);
+        let canonical_target = fs::canonicalize(target_root).with_context(|| {
+            format!("canonicalize restore target root {}", target_root.display())
+        })?;
+        let canonical_home = fs::canonicalize(&restored_home).with_context(|| {
+            format!(
+                "canonicalize restored durable home for vm {id} at {}",
+                restored_home.display()
+            )
+        })?;
+        anyhow::ensure!(
+            canonical_home.starts_with(&canonical_target),
+            "restore helper returned path outside staging root for vm {id}: {}",
+            canonical_home.display()
+        );
+        anyhow::ensure!(
+            canonical_home.is_dir(),
+            "restored durable home is not a directory for vm {id}: {}",
+            canonical_home.display()
+        );
+        Ok(canonical_home)
     }
 
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
@@ -555,8 +745,8 @@ impl VmManager {
     }
 
     fn sync_vm_gcroots(&self, id: &str, vm_state_dir: &Path) -> anyhow::Result<()> {
-        fs::create_dir_all("/nix/var/nix/gcroots/microvm")
-            .context("create /nix/var/nix/gcroots/microvm")?;
+        fs::create_dir_all(&self.cfg.gcroots_dir)
+            .with_context(|| format!("create {}", self.cfg.gcroots_dir.display()))?;
         symlink_force(&vm_state_dir.join("current"), &self.gcroot_current_path(id))?;
         symlink_force(&vm_state_dir.join("booted"), &self.gcroot_booted_path(id))?;
         Ok(())
@@ -590,14 +780,7 @@ impl VmManager {
         vm: &VmDiskState,
     ) -> anyhow::Result<()> {
         let unit_name = self.microvm_unit_name(&vm.id);
-        run_command(
-            Command::new(&self.cfg.systemctl_cmd)
-                .arg("stop")
-                .arg(&unit_name),
-            "stop microvm service before recreate",
-        )
-        .await?;
-        delete_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
+        self.stop_vm_runtime(&vm.id, &vm.tap_name).await?;
 
         self.ensure_runtime_artifacts().await?;
         self.rewrite_runtime_metadata_for_recreate(vm)?;
@@ -608,6 +791,18 @@ impl VmManager {
         create_tap_interface(&self.cfg.ip_cmd, &vm.tap_name).await?;
         ensure_tap_bridged(&self.cfg.ip_cmd, &vm.tap_name, &self.cfg.bridge_name).await?;
         start_unit_nonblocking(&self.cfg.systemctl_cmd, &unit_name).await?;
+        Ok(())
+    }
+
+    async fn stop_vm_runtime(&self, id: &str, tap_name: &str) -> anyhow::Result<()> {
+        run_command(
+            Command::new(&self.cfg.systemctl_cmd)
+                .arg("stop")
+                .arg(self.microvm_unit_name(id)),
+            "stop microvm service before recreate",
+        )
+        .await?;
+        delete_tap_interface(&self.cfg.ip_cmd, tap_name).await?;
         Ok(())
     }
 
@@ -794,11 +989,11 @@ impl VmManager {
     }
 
     fn gcroot_current_path(&self, id: &str) -> PathBuf {
-        PathBuf::from(format!("/nix/var/nix/gcroots/microvm/{id}"))
+        self.cfg.gcroots_dir.join(id)
     }
 
     fn gcroot_booted_path(&self, id: &str) -> PathBuf {
-        PathBuf::from(format!("/nix/var/nix/gcroots/microvm/booted-{id}"))
+        self.cfg.gcroots_dir.join(format!("booted-{id}"))
     }
 
     fn occupied_slots_from_disk(&self) -> anyhow::Result<HashSet<u32>> {
@@ -1214,30 +1409,33 @@ fn load_guest_autostart_metadata(metadata_dir: &Path) -> anyhow::Result<GuestAut
         .to_string();
 
     let startup_plan_path = metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA);
-    let startup_plan = if startup_plan_path.exists() {
-        let plan_text = fs::read_to_string(&startup_plan_path)
-            .with_context(|| format!("read {}", startup_plan_path.display()))?;
-        let plan: pika_agent_control_plane::GuestStartupPlan = serde_json::from_str(&plan_text)
-            .with_context(|| format!("parse {}", startup_plan_path.display()))?;
-        plan.validate()
-            .map_err(|err| anyhow!("validate {}: {err}", startup_plan_path.display()))?;
-        Some(plan)
-    } else {
-        None
-    };
+    require_non_empty_file(&startup_plan_path)?;
+    let plan_text = fs::read_to_string(&startup_plan_path)
+        .with_context(|| format!("read {}", startup_plan_path.display()))?;
+    let startup_plan: pika_agent_control_plane::GuestStartupPlan = serde_json::from_str(&plan_text)
+        .with_context(|| format!("parse {}", startup_plan_path.display()))?;
+    startup_plan
+        .validate()
+        .map_err(|err| anyhow!("validate {}: {err}", startup_plan_path.display()))?;
 
     Ok(GuestAutostartRequest {
         command,
         env: read_env_assignments(&metadata_dir.join("autostart.env"))?,
         files: read_autostart_files(&metadata_dir.join("autostart.files"))?,
-        startup_plan,
+        startup_plan: Some(startup_plan),
     })
 }
 
 fn read_env_assignments(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
     if !path.exists() {
-        return Ok(env);
+        anyhow::bail!("current-format metadata missing {}", path.display());
+    }
+    if !path.is_file() {
+        anyhow::bail!(
+            "current-format metadata expected file at {}",
+            path.display()
+        );
     }
 
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1269,7 +1467,13 @@ fn read_env_assignments(path: &Path) -> anyhow::Result<BTreeMap<String, String>>
 fn read_autostart_files(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut files = BTreeMap::new();
     if !path.exists() {
-        return Ok(files);
+        anyhow::bail!("current-format metadata missing {}", path.display());
+    }
+    if !path.is_dir() {
+        anyhow::bail!(
+            "current-format metadata expected directory at {}",
+            path.display()
+        );
     }
     read_autostart_files_recursive(path, path, &mut files)?;
     Ok(files)
@@ -1370,14 +1574,6 @@ fn write_runtime_metadata(
     ));
     let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
     env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
-    let default_openclaw_cmd = format!(
-        "{}/openclaw/bin/openclaw",
-        runtime_artifacts_guest_mount.display()
-    );
-    env_file.push_str(&format!(
-        "PIKA_OPENCLAW_CMD={}\n",
-        shell_quote(&default_openclaw_cmd),
-    ));
     if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
             "PIKA_PIKACHAT_BIN={}\n",
@@ -1431,60 +1627,56 @@ fn write_guest_autostart_metadata(
     )
     .with_context(|| format!("write {}", metadata_dir.join("autostart.command").display()))?;
 
-    if let Some(startup_plan) = &autostart.startup_plan {
-        startup_plan
-            .validate()
-            .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
-        let plan_text =
-            serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
-        fs::write(
-            metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
-            format!("{plan_text}\n"),
+    let startup_plan = autostart.startup_plan.as_ref().ok_or_else(|| {
+        anyhow!("guest_autostart.startup_plan must be present for current-format metadata")
+    })?;
+    startup_plan
+        .validate()
+        .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
+    let plan_text =
+        serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
+    fs::write(
+        metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
+        format!("{plan_text}\n"),
+    )
+    .with_context(|| {
+        format!(
+            "write {}",
+            metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA).display()
         )
-        .with_context(|| {
-            format!(
-                "write {}",
-                metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA).display()
-            )
-        })?;
-    }
+    })?;
 
-    if !autostart.env.is_empty() {
-        let mut env_text = String::new();
-        for (key, value) in &autostart.env {
-            if !is_valid_env_key(key) {
-                anyhow::bail!("guest_autostart.env has invalid key `{key}`");
-            }
-            env_text.push_str(&format!("{}={}\n", key, shell_quote(value)));
+    let mut env_text = String::new();
+    for (key, value) in &autostart.env {
+        if !is_valid_env_key(key) {
+            anyhow::bail!("guest_autostart.env has invalid key `{key}`");
         }
-        fs::write(metadata_dir.join("autostart.env"), env_text)
-            .with_context(|| format!("write {}", metadata_dir.join("autostart.env").display()))?;
+        env_text.push_str(&format!("{}={}\n", key, shell_quote(value)));
     }
+    fs::write(metadata_dir.join("autostart.env"), env_text)
+        .with_context(|| format!("write {}", metadata_dir.join("autostart.env").display()))?;
 
-    if !autostart.files.is_empty() {
-        if autostart.files.len() > 32 {
-            anyhow::bail!("guest_autostart.files has too many entries (max 32)");
+    if autostart.files.len() > 32 {
+        anyhow::bail!("guest_autostart.files has too many entries (max 32)");
+    }
+    let files_dir = metadata_dir.join("autostart.files");
+    fs::create_dir_all(&files_dir).with_context(|| format!("create {}", files_dir.display()))?;
+
+    for (rel_path, content) in &autostart.files {
+        let safe_rel = sanitize_autostart_rel_path(rel_path)?;
+        let dst = files_dir.join(&safe_rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent {}", parent.display()))?;
         }
-        let files_dir = metadata_dir.join("autostart.files");
-        fs::create_dir_all(&files_dir)
-            .with_context(|| format!("create {}", files_dir.display()))?;
-
-        for (rel_path, content) in &autostart.files {
-            let safe_rel = sanitize_autostart_rel_path(rel_path)?;
-            let dst = files_dir.join(&safe_rel);
-            if let Some(parent) = dst.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("create parent {}", parent.display()))?;
-            }
-            fs::write(&dst, content).with_context(|| format!("write {}", dst.display()))?;
-            if rel_path.ends_with(".sh") || rel_path.ends_with(".py") {
-                let mut perms = fs::metadata(&dst)
-                    .with_context(|| format!("stat {}", dst.display()))?
-                    .permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&dst, perms)
-                    .with_context(|| format!("chmod 755 {}", dst.display()))?;
-            }
+        fs::write(&dst, content).with_context(|| format!("write {}", dst.display()))?;
+        if rel_path.ends_with(".sh") || rel_path.ends_with(".py") {
+            let mut perms = fs::metadata(&dst)
+                .with_context(|| format!("stat {}", dst.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dst, perms)
+                .with_context(|| format!("chmod 755 {}", dst.display()))?;
         }
     }
 
@@ -2050,6 +2242,7 @@ mod tests {
             bridge_name: "microbr".to_string(),
             state_dir: root.join("state"),
             run_dir: root.join("run"),
+            gcroots_dir: root.join("gcroots"),
             runner_cache_dir: root.join("run/runner-cache"),
             runner_flake_dir: root.join("run/runner-flakes"),
             runtime_artifacts_host_dir: root.join("artifacts"),
@@ -2069,16 +2262,22 @@ mod tests {
             nix_cmd: "/bin/true".to_string(),
             chown_cmd: "/bin/true".to_string(),
             chmod_cmd: "/bin/true".to_string(),
+            restore_cmd: "/bin/true".to_string(),
         }
     }
 
-    fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
+    fn write_backup_status_with_host(
+        cfg: &Config,
+        vm_id: &str,
+        latest_successful_backup_at: &str,
+        backup_host: &str,
+    ) {
         let metadata_dir = cfg.state_dir.join(vm_id).join("metadata");
         fs::create_dir_all(&metadata_dir).unwrap();
         let record = VmBackupStatusRecord {
             schema_version: VM_BACKUP_STATUS_SCHEMA_V1.to_string(),
             vm_id: vm_id.to_string(),
-            backup_host: cfg.host_id.clone(),
+            backup_host: backup_host.to_string(),
             latest_successful_backup_at: latest_successful_backup_at.to_string(),
             observed_at: latest_successful_backup_at.to_string(),
         };
@@ -2089,19 +2288,35 @@ mod tests {
         .unwrap();
     }
 
+    fn test_guest_autostart_request() -> GuestAutostartRequest {
+        let resolved =
+            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                ..pika_agent_control_plane::MicrovmProvisionParams::default()
+            });
+        pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
+
+        let owner_keys = nostr_sdk::prelude::Keys::generate();
+        let bot_keys = nostr_sdk::prelude::Keys::generate();
+        pika_agent_microvm::build_create_vm_request(
+            &owner_keys.public_key(),
+            &["wss://relay.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &resolved,
+        )
+        .guest_autostart
+    }
+
+    fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
+        write_backup_status_with_host(cfg, vm_id, latest_successful_backup_at, &cfg.host_id);
+    }
+
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);
         let vm_state_dir = cfg.state_dir.join(vm_id);
-        let autostart = GuestAutostartRequest {
-            command: "bash /workspace/start.sh".to_string(),
-            env: BTreeMap::new(),
-            files: BTreeMap::from([(
-                "workspace/start.sh".to_string(),
-                "#!/usr/bin/env bash\nexit 0\n".to_string(),
-            )]),
-            startup_plan: None,
-        };
+        let autostart = test_guest_autostart_request();
         write_runtime_metadata(
             &vm_state_dir,
             vm_id,
@@ -2116,6 +2331,30 @@ mod tests {
             Some(&autostart),
         )
         .unwrap();
+    }
+
+    fn write_executable_script(root: &TempDir, name: &str, body: &str) -> PathBuf {
+        let scripts_dir = root.path().join("bin");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join(name);
+        fs::write(&script, body).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn write_restore_helper_script(root: &TempDir, body: &str) -> PathBuf {
+        write_executable_script(root, "microvm-home-restore", body)
+    }
+
+    fn write_nix_build_script(root: &TempDir, runner_target: &Path) -> PathBuf {
+        write_executable_script(
+            root,
+            "nix",
+            &format!(
+                "#!/bin/sh\nset -eu\nOUT_LINK=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -o)\n      OUT_LINK=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nif [ -z \"$OUT_LINK\" ]; then\n  echo 'missing -o output link' >&2\n  exit 1\nfi\nmkdir -p \"$(dirname \"$OUT_LINK\")\"\nln -sfn \"{}\" \"$OUT_LINK\"\n",
+                runner_target.display()
+            ),
+        )
     }
 
     #[tokio::test]
@@ -2380,6 +2619,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_startup_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_file(
+            vm_state_dir
+                .join("metadata")
+                .join(AUTOSTART_STARTUP_PLAN_METADATA),
+        )
+        .unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("required current-format boot input"));
+        assert!(message.contains(AUTOSTART_STARTUP_PLAN_METADATA));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_env_file() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_file(vm_state_dir.join("metadata/autostart.env")).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata missing"));
+        assert!(message.contains("autostart.env"));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_files_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_dir_all(vm_state_dir.join("metadata/autostart.files")).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata missing"));
+        assert!(message.contains("autostart.files"));
+    }
+
+    #[tokio::test]
     async fn rewrite_runtime_metadata_for_recreate_rewrites_current_format_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
@@ -2403,7 +2695,7 @@ mod tests {
         assert!(env.contains("PIKA_GATEWAY_IP='192.168.83.1'"));
         assert!(env.contains("PIKA_DNS_IP='192.168.83.1'"));
         assert!(env.contains("PIKA_PI_CMD='/opt/runtime-artifacts/pi/bin/pi -p'"));
-        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
+        assert!(!env.contains("PIKA_OPENCLAW_CMD="));
     }
 
     #[tokio::test]
@@ -2529,7 +2821,253 @@ mod tests {
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
         assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
-        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
+        assert!(!env.contains("PIKA_OPENCLAW_CMD="));
+    }
+
+    #[tokio::test]
+    async fn restore_quiesces_runtime_before_replacing_durable_home() {
+        let root = tempfile::tempdir().unwrap();
+        let order_log = root.path().join("restore-order.log");
+        let runner_target = root.path().join("runner-output");
+        fs::create_dir_all(&runner_target).unwrap();
+
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            &format!(
+                "#!/bin/sh\nset -eu\nprintf 'systemctl %s %s\\n' \"$1\" \"${{2:-}}\" >> \"{}\"\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+                order_log.display()
+            ),
+        );
+
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let nix_script = write_nix_build_script(&root, &runner_target);
+        let chown_script = write_executable_script(&root, "chown", "#!/bin/sh\nexit 0\n");
+        let chmod_script = write_executable_script(&root, "chmod", "#!/bin/sh\nexit 0\n");
+
+        let restore_script = write_restore_helper_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nprintf 'restore %s %s %s\\n' \"$VM_ID\" \"$BACKUP_HOST\" \"$TARGET_ROOT\" >> \"{}\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                order_log.display(),
+                RESTORE_HELPER_RESULT_SCHEMA_V1,
+            ),
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.nix_cmd = nix_script.display().to_string();
+        cfg.chown_cmd = chown_script.display().to_string();
+        cfg.chmod_cmd = chmod_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 3, 8192);
+        fs::create_dir_all(cfg.state_dir.join(vm_id).join("home")).unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join("home/state.txt"),
+            "old-home\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let restored = manager.restore(vm_id).await.unwrap();
+        assert_eq!(restored.id, vm_id);
+        assert_eq!(restored.status, "running");
+
+        let restored_home =
+            fs::read_to_string(cfg.state_dir.join(vm_id).join("home/state.txt")).unwrap();
+        assert_eq!(restored_home, "restored-home\n");
+        let order = fs::read_to_string(&order_log).unwrap();
+        let stop_entry = format!("systemctl stop microvm@{vm_id}.service");
+        let restore_entry = format!("restore {vm_id} {} ", cfg.host_id);
+        let stop_index = order.find(&stop_entry).unwrap();
+        let restore_index = order.find(&restore_entry).unwrap();
+        assert!(stop_index < restore_index);
+        assert!(order.contains(&cfg.state_dir.join(vm_id).display().to_string()));
+        assert!(order.contains("vm-restore-"));
+    }
+
+    #[tokio::test]
+    async fn restore_prefers_recorded_backup_host_for_latest_snapshot_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let order_log = root.path().join("restore-order.log");
+        let runner_target = root.path().join("runner-output");
+        fs::create_dir_all(&runner_target).unwrap();
+
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        );
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let nix_script = write_nix_build_script(&root, &runner_target);
+        let chown_script = write_executable_script(&root, "chown", "#!/bin/sh\nexit 0\n");
+        let chmod_script = write_executable_script(&root, "chmod", "#!/bin/sh\nexit 0\n");
+        let restore_script = write_restore_helper_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nprintf 'restore %s %s\\n' \"$VM_ID\" \"$BACKUP_HOST\" >> \"{}\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                order_log.display(),
+                RESTORE_HELPER_RESULT_SCHEMA_V1,
+            ),
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.nix_cmd = nix_script.display().to_string();
+        cfg.chown_cmd = chown_script.display().to_string();
+        cfg.chmod_cmd = chmod_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000001";
+        let recorded_backup_host = "pika-build-secondary";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        write_backup_status_with_host(
+            &cfg,
+            vm_id,
+            &chrono::Utc::now().to_rfc3339(),
+            recorded_backup_host,
+        );
+        fs::create_dir_all(cfg.state_dir.join(vm_id).join("home")).unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join("home/state.txt"),
+            "old-home\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let restored = manager.restore(vm_id).await.unwrap();
+        assert_eq!(restored.id, vm_id);
+        assert_eq!(restored.status, "running");
+        let order = fs::read_to_string(&order_log).unwrap();
+        assert!(order.contains(&format!("restore {vm_id} {recorded_backup_host}")));
+    }
+
+    #[tokio::test]
+    async fn restore_recreates_missing_durable_home_from_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let runner_target = root.path().join("runner-output");
+        fs::create_dir_all(&runner_target).unwrap();
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        );
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let nix_script = write_nix_build_script(&root, &runner_target);
+        let chown_script = write_executable_script(&root, "chown", "#!/bin/sh\nexit 0\n");
+        let chmod_script = write_executable_script(&root, "chmod", "#!/bin/sh\nexit 0\n");
+        let restore_script = write_restore_helper_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                RESTORE_HELPER_RESULT_SCHEMA_V1,
+            ),
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.nix_cmd = nix_script.display().to_string();
+        cfg.chown_cmd = chown_script.display().to_string();
+        cfg.chmod_cmd = chmod_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000000";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        remove_path_if_exists(&cfg.state_dir.join(vm_id).join("home")).unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let restored = manager.restore(vm_id).await.unwrap();
+        assert_eq!(restored.id, vm_id);
+        assert_eq!(restored.status, "running");
+        let restored_home =
+            fs::read_to_string(cfg.state_dir.join(vm_id).join("home/state.txt")).unwrap();
+        assert_eq!(restored_home, "restored-home\n");
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_previous_home_when_helper_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let runner_target = root.path().join("runner-output");
+        fs::create_dir_all(&runner_target).unwrap();
+
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        );
+
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let nix_script = write_nix_build_script(&root, &runner_target);
+        let chown_script = write_executable_script(&root, "chown", "#!/bin/sh\nexit 0\n");
+        let chmod_script = write_executable_script(&root, "chmod", "#!/bin/sh\nexit 0\n");
+
+        let restore_script = write_restore_helper_script(
+            &root,
+            "#!/bin/sh\nset -eu\necho 'restore failed' >&2\nexit 1\n",
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.nix_cmd = nix_script.display().to_string();
+        cfg.chown_cmd = chown_script.display().to_string();
+        cfg.chmod_cmd = chmod_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000002";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::create_dir_all(cfg.state_dir.join(vm_id).join("home")).unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join("home/state.txt"),
+            "old-home\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let err = manager
+            .restore(vm_id)
+            .await
+            .expect_err("restore should fail");
+        assert!(err
+            .to_string()
+            .contains("restore durable home from backup failed"));
+        let preserved_home =
+            fs::read_to_string(cfg.state_dir.join(vm_id).join("home/state.txt")).unwrap();
+        assert_eq!(preserved_home, "old-home\n");
+    }
+
+    #[tokio::test]
+    async fn restore_failure_with_missing_home_does_not_create_empty_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        );
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let restore_script = write_restore_helper_script(
+            &root,
+            "#!/bin/sh\nset -eu\necho 'restore failed' >&2\nexit 1\n",
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        remove_path_if_exists(&cfg.state_dir.join(vm_id).join("home")).unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let err = manager
+            .restore(vm_id)
+            .await
+            .expect_err("restore should fail");
+        assert!(err
+            .to_string()
+            .contains("restore durable home from backup failed"));
+        assert!(!cfg.state_dir.join(vm_id).join("home").exists());
     }
 
     #[tokio::test]
@@ -3074,11 +3612,11 @@ mod tests {
         assert_eq!(paths.microvm_state_dir, cfg.state_dir.join(vm_id));
         assert_eq!(
             manager.gcroot_current_path(vm_id),
-            PathBuf::from("/nix/var/nix/gcroots/microvm/vm-00000002")
+            cfg.gcroots_dir.join("vm-00000002")
         );
         assert_eq!(
             manager.gcroot_booted_path(vm_id),
-            PathBuf::from("/nix/var/nix/gcroots/microvm/booted-vm-00000002")
+            cfg.gcroots_dir.join("booted-vm-00000002")
         );
         assert_eq!(
             manager.production_ip_for_vm_id(vm_id),
@@ -3112,7 +3650,27 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: None,
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
+                service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: pika_agent_control_plane::GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(pika_agent_control_plane::GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    }),
+                },
+                readiness_check:
+                    pika_agent_control_plane::GuestServiceReadinessCheck::LogContains {
+                        path: GUEST_LOG_PATH.to_string(),
+                        pattern: "\"type\":\"ready\"".to_string(),
+                        ready_probe: "daemon_ready_event".to_string(),
+                        timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+                    },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "pi_agent_exited".to_string(),
+            }),
         };
 
         write_runtime_metadata(
@@ -3151,6 +3709,7 @@ mod tests {
                 "autostart.command",
                 "autostart.env",
                 "autostart.files",
+                AUTOSTART_STARTUP_PLAN_METADATA,
                 "env",
                 "runtime.env",
             ]

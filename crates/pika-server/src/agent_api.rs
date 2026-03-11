@@ -44,6 +44,9 @@ const EVENT_RECOVER_FELL_BACK_TO_FRESH: &str = "recover_fell_back_to_fresh";
 const EVENT_RESET_REQUESTED: &str = "reset_requested";
 const EVENT_RESET_DESTROYED_OLD_VM: &str = "reset_destroyed_old_vm";
 const EVENT_RESET_CONTINUED_MISSING_VM: &str = "reset_continued_missing_vm";
+const EVENT_RESTORE_REQUESTED: &str = "restore_requested";
+const EVENT_RESTORE_SUCCEEDED: &str = "restore_succeeded";
+const EVENT_RESTORE_FAILED: &str = "restore_failed";
 const EVENT_READINESS_REFRESH_MISSING_VM: &str = "readiness_refresh_missing_vm";
 
 #[derive(Debug)]
@@ -623,7 +626,7 @@ async fn refresh_agent_from_spawner(
             let errored = conn
                 .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
                     let errored =
-                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, Some(vm_id))?;
+                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, None)?;
                     let message = format!(
                         "A readiness check found that VM {vm_id} was missing. Managed OpenClaw was marked failed and now needs recovery."
                     );
@@ -883,6 +886,19 @@ fn mark_agent_errored(
 ) -> Result<AgentInstance, AgentApiError> {
     AgentInstance::update_phase(conn, agent_id, AGENT_PHASE_ERROR, None)
         .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))
+}
+
+fn mark_agent_errored_preserving_vm(
+    conn: &mut PgConnection,
+    active: &AgentInstance,
+) -> Result<AgentInstance, AgentApiError> {
+    AgentInstance::update_phase(
+        conn,
+        &active.agent_id,
+        AGENT_PHASE_ERROR,
+        active.vm_id.as_deref(),
+    )
+    .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))
 }
 
 fn prepare_agent_for_reprovision(
@@ -1450,6 +1466,138 @@ pub(crate) async fn reset_agent_for_owner(
     provision_or_existing_managed_environment(state, owner_npub, request_id, requested).await
 }
 
+pub(crate) async fn restore_managed_environment_from_backup(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let Some(active) = load_visible_agent_row(&mut conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?
+    else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
+        );
+    };
+    if is_inflight_provision_row(&active) {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    }
+    let Some(vm_id) = active.vm_id.clone() else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    };
+
+    let restore_requested_message = format!(
+        "Restore from backup requested for Managed OpenClaw on VM {vm_id}. The durable home will be replaced from the latest backup before the environment is recreated."
+    );
+    record_managed_environment_event(
+        &mut conn,
+        owner_npub,
+        Some(&active.agent_id),
+        Some(&vm_id),
+        EVENT_RESTORE_REQUESTED,
+        &restore_requested_message,
+        request_id,
+    )?;
+    drop(conn);
+
+    let resolved = resolved_spawner_params(requested).map_err(|err| {
+        tracing::error!(
+            request_id = %request_id,
+            owner_npub = %owner_npub,
+            vm_id = %vm_id,
+            error = %err,
+            "failed to resolve restore spawner params"
+        );
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    let restored = match spawner
+        .restore_vm_with_request_id(&vm_id, Some(request_id))
+        .await
+    {
+        Ok(restored) => restored,
+        Err(err) => {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to restore managed environment from backup"
+            );
+            if let Ok(mut conn) = state.db_pool.get() {
+                let _ = conn.transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+                    let _ = mark_agent_errored_preserving_vm(conn, &active)
+                        .map_err(|inner| anyhow::anyhow!(inner.error_code()))?;
+                    insert_managed_environment_event(
+                        conn,
+                        owner_npub,
+                        Some(&active.agent_id),
+                        Some(&vm_id),
+                        EVENT_RESTORE_FAILED,
+                        "Restore from backup failed. The managed environment was left in error for operator review.",
+                        Some(request_id),
+                    )?;
+                    Ok(active.clone())
+                });
+            }
+            return Err(
+                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+            );
+        }
+    };
+
+    let startup_phase = startup_phase_from_spawner_vm(&restored);
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let updated = conn
+        .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+            let updated = AgentInstance::update_phase(
+                conn,
+                &active.agent_id,
+                phase_from_spawner_vm(&restored),
+                Some(&restored.id),
+            )?;
+            let message = format!(
+                "Restore from backup succeeded. Managed OpenClaw is starting again on VM {} with restored durable-home contents.",
+                restored.id
+            );
+            insert_managed_environment_event(
+                conn,
+                owner_npub,
+                Some(&updated.agent_id),
+                Some(&restored.id),
+                EVENT_RESTORE_SUCCEEDED,
+                &message,
+                Some(request_id),
+            )?;
+            Ok(updated)
+        })
+        .map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                agent_id = %active.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to persist restore-from-backup result"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+    Ok(ManagedEnvironmentAction {
+        row: updated,
+        startup_phase,
+    })
+}
+
 pub async fn recover_my_agent(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
@@ -1505,7 +1653,9 @@ mod tests {
     use diesel::r2d2::{ConnectionManager, Pool};
     use diesel_migrations::MigrationHarness;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
+    use pika_test_utils::spawn_one_shot_server;
     use std::collections::HashSet;
+    use std::future::Future;
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -1618,39 +1768,69 @@ mod tests {
         f: impl FnOnce() -> T,
     ) -> T {
         let _guard = serial_test_guard();
-        let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
-        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
-        unsafe {
-            std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
-        }
-        match kind {
-            Some(kind) => unsafe {
-                std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
-            },
-            None => unsafe {
-                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
-            },
-        }
+        let _env = ServerMicrovmEnvGuard::set(spawner_url, kind);
+        f()
+    }
 
-        let result = f();
+    async fn with_server_microvm_env_async<T, F, Fut>(
+        spawner_url: &str,
+        kind: Option<&str>,
+        f: F,
+    ) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _env = ServerMicrovmEnvGuard::set(spawner_url, kind);
+        f().await
+    }
 
-        match prior_spawner {
-            Some(prior) => unsafe {
-                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
-            },
-            None => unsafe {
-                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
-            },
+    struct ServerMicrovmEnvGuard {
+        prior_spawner: Option<String>,
+        prior_kind: Option<String>,
+    }
+
+    impl ServerMicrovmEnvGuard {
+        fn set(spawner_url: &str, kind: Option<&str>) -> Self {
+            let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+            let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+            unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
+            }
+            match kind {
+                Some(kind) => unsafe {
+                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
+                },
+                None => unsafe {
+                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                },
+            }
+            Self {
+                prior_spawner,
+                prior_kind,
+            }
         }
-        match prior_kind {
-            Some(prior) => unsafe {
-                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
-            },
-            None => unsafe {
-                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
-            },
+    }
+
+    impl Drop for ServerMicrovmEnvGuard {
+        fn drop(&mut self) {
+            match self.prior_spawner.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+                },
+            }
+            match self.prior_kind.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+                },
+                None => unsafe {
+                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                },
+            }
         }
-        result
     }
 
     #[test]
@@ -1935,6 +2115,56 @@ mod tests {
                 serde_json::from_str(startup_plan_file).expect("parse startup plan file");
             assert_eq!(serialized_plan, startup_plan);
         });
+    }
+
+    #[tokio::test]
+    async fn with_server_microvm_env_async_keeps_env_set_until_future_completes() {
+        let _guard = serial_test_guard();
+        let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+        unsafe {
+            std::env::set_var(MICROVM_SPAWNER_URL_ENV, "http://prior-spawner:1234");
+            std::env::set_var("PIKA_AGENT_MICROVM_KIND", "pi");
+        }
+
+        with_server_microvm_env_async("http://test-spawner:8080", Some("openclaw"), || async {
+            tokio::task::yield_now().await;
+            assert_eq!(
+                std::env::var(MICROVM_SPAWNER_URL_ENV).ok().as_deref(),
+                Some("http://test-spawner:8080")
+            );
+            assert_eq!(
+                std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
+                Some("openclaw")
+            );
+        })
+        .await;
+
+        assert_eq!(
+            std::env::var(MICROVM_SPAWNER_URL_ENV).ok().as_deref(),
+            Some("http://prior-spawner:1234")
+        );
+        assert_eq!(
+            std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
+            Some("pi")
+        );
+
+        match prior_spawner {
+            Some(prior) => unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+            },
+            None => unsafe {
+                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+            },
+        }
+        match prior_kind {
+            Some(prior) => unsafe {
+                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+            },
+            None => unsafe {
+                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+            },
+        }
     }
 
     #[test]
@@ -2281,6 +2511,117 @@ mod tests {
         assert_eq!(latest.agent_id, existing.agent_id);
         assert_eq!(latest.phase, AGENT_PHASE_CREATING);
         assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn restore_managed_environment_from_backup_records_success_events() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1restoreeventssuccess";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-restore-success",
+            Some("vm-restore-success"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready row");
+        drop(conn);
+
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-restore-success","status":"starting"}"#,
+        );
+        with_server_microvm_env_async(&base_url, Some("openclaw"), || async {
+            let action = restore_managed_environment_from_backup(
+                &state,
+                owner_npub,
+                "req-restore-success",
+                None,
+            )
+            .await
+            .expect("restore should succeed");
+            assert_eq!(action.row.agent_id, "agent-restore-success");
+            assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+            assert_eq!(action.row.vm_id.as_deref(), Some("vm-restore-success"));
+            assert_eq!(action.startup_phase, AgentStartupPhase::BootingGuest);
+        })
+        .await;
+
+        let request = rx.recv().expect("captured restore request");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/vms/vm-restore-success/restore");
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let events = ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, 10)
+            .expect("list restore events");
+        assert_eq!(events[0].event_kind, EVENT_RESTORE_SUCCEEDED);
+        assert_eq!(events[1].event_kind, EVENT_RESTORE_REQUESTED);
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id.as_deref(), Some("vm-restore-success"));
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn restore_managed_environment_from_backup_records_failed_event_and_marks_row_error() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1restoreeventsfail";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-restore-failed",
+            Some("vm-restore-failed"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready row");
+        drop(conn);
+
+        let (base_url, rx) =
+            spawn_one_shot_server("500 Internal Server Error", r#"{"error":"restore failed"}"#);
+        with_server_microvm_env_async(&base_url, Some("openclaw"), || async {
+            let err = restore_managed_environment_from_backup(
+                &state,
+                owner_npub,
+                "req-restore-failed",
+                None,
+            )
+            .await
+            .expect_err("restore should fail");
+            assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        })
+        .await;
+
+        let request = rx.recv().expect("captured restore request");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/vms/vm-restore-failed/restore");
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let events = ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, 10)
+            .expect("list restore events");
+        assert_eq!(events[0].event_kind, EVENT_RESTORE_FAILED);
+        assert_eq!(events[1].event_kind, EVENT_RESTORE_REQUESTED);
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+        assert_eq!(latest.vm_id.as_deref(), Some("vm-restore-failed"));
 
         clear_test_database(&mut conn);
     }

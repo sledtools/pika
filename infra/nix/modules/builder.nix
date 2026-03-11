@@ -153,10 +153,10 @@ in
         restic init
       fi
 
-      restic backup "''${homes[@]}" --tag microvm-home --host "$(hostname)"
+      backup_host="${config.networking.hostName}"
+      restic backup "''${homes[@]}" --tag microvm-home --host "$backup_host"
 
       now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      backup_host="$(hostname)"
       for home in "''${homes[@]}"; do
         vm_dir="$(dirname "$home")"
         vm_id="$(basename "$vm_dir")"
@@ -255,6 +255,7 @@ in
 
   environment.systemPackages = with pkgs; [
     restic
+    jq
     pikaciServerPkg
     (writeShellScriptBin "pika-build-status" ''
       host-version
@@ -271,8 +272,52 @@ in
     (writeShellScriptBin "microvm-home-restore" ''
       set -euo pipefail
 
-      if [ "$#" -lt 1 ]; then
-        echo "usage: microvm-home-restore <vm-id> [snapshot]" >&2
+      usage() {
+        echo "usage: microvm-home-restore [--json] [--target-root <dir>] [--host <backup-host>] <vm-id> [snapshot]" >&2
+      }
+
+      OUTPUT_JSON=0
+      TARGET_ROOT=""
+      BACKUP_HOST="${config.networking.hostName}"
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --json)
+            OUTPUT_JSON=1
+            shift
+            ;;
+          --target-root)
+            if [ "$#" -lt 2 ]; then
+              usage
+              exit 2
+            fi
+            TARGET_ROOT="$2"
+            shift 2
+            ;;
+          --host)
+            if [ "$#" -lt 2 ]; then
+              usage
+              exit 2
+            fi
+            BACKUP_HOST="$2"
+            shift 2
+            ;;
+          --help)
+            usage
+            exit 0
+            ;;
+          --*)
+            echo "unknown flag: $1" >&2
+            usage
+            exit 2
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+
+      if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+        usage
         exit 2
       fi
 
@@ -282,6 +327,10 @@ in
 
       if [ -z "$VM_ID" ] || [[ "$VM_ID" =~ [^A-Za-z0-9._-] ]]; then
         echo "invalid vm-id: $VM_ID" >&2
+        exit 2
+      fi
+      if [ -z "$BACKUP_HOST" ]; then
+        echo "missing backup host" >&2
         exit 2
       fi
 
@@ -303,11 +352,40 @@ in
       export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY RESTIC_PASSWORD
       export RESTIC_REPOSITORY="s3:https://''${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/''${R2_BUCKET}"
 
-      TARGET="/tmp/microvm-restore-$VM_ID-$(date +%Y%m%d%H%M%S)"
       INCLUDE_PATH="/var/lib/microvms/$VM_ID/home"
-      mkdir -p "$TARGET"
-      restic restore "$SNAPSHOT" --target "$TARGET" --include "$INCLUDE_PATH"
-      echo "restored $INCLUDE_PATH to $TARGET"
+      if [ -z "$TARGET_ROOT" ]; then
+        TARGET_ROOT="$(mktemp -d "/tmp/microvm-restore-$VM_ID-XXXXXX")"
+      fi
+      mkdir -p "$TARGET_ROOT"
+      TARGET_ROOT="$(cd "$TARGET_ROOT" && pwd)"
+
+      restore_args=(restore "$SNAPSHOT" --target "$TARGET_ROOT" --include "$INCLUDE_PATH")
+      if [ "$SNAPSHOT" = "latest" ]; then
+        restore_args+=(--host "$BACKUP_HOST" --tag microvm-home --path "$INCLUDE_PATH")
+      fi
+      restic "''${restore_args[@]}"
+
+      RESTORED_HOME="$TARGET_ROOT$INCLUDE_PATH"
+      if [ ! -d "$RESTORED_HOME" ]; then
+        echo "restore did not produce expected durable-home path: $RESTORED_HOME" >&2
+        exit 1
+      fi
+
+      if [ "$OUTPUT_JSON" -eq 1 ]; then
+        jq -n \
+          --arg schema_version "vm.home_restore_result.v1" \
+          --arg vm_id "$VM_ID" \
+          --arg snapshot "$SNAPSHOT" \
+          --arg restored_home_path "$RESTORED_HOME" \
+          '{
+            schema_version: $schema_version,
+            vm_id: $vm_id,
+            snapshot: $snapshot,
+            restored_home_path: $restored_home_path
+          }'
+      else
+        echo "restored $INCLUDE_PATH to $RESTORED_HOME"
+      fi
     '')
   ];
 

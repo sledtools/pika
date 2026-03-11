@@ -33,13 +33,11 @@ Options:
 EOF
 }
 
-load_remote_defaults
-
 installable="${PIKACI_X86_64_REMOTE_INSTALLABLE:-.#ci.x86_64-linux.workspaceDeps}"
-remote_host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-$default_ssh_host}"
-remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-$default_remote_work_dir}"
-ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-$default_ssh_binary}"
-remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-$default_ssh_nix_binary}"
+remote_host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}"
+remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-}"
+ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-}"
+remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-}"
 snapshot_id="helper-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 keep_remote_snapshot=0
 reuse_existing_snapshot=0
@@ -89,6 +87,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$remote_host" || -z "$remote_work_dir" || -z "$ssh_binary" || -z "$remote_nix_binary" ]]; then
+  load_remote_defaults
+  remote_host="${remote_host:-$default_ssh_host}"
+  remote_work_dir="${remote_work_dir:-$default_remote_work_dir}"
+  ssh_binary="${ssh_binary:-$default_ssh_binary}"
+  remote_nix_binary="${remote_nix_binary:-$default_ssh_nix_binary}"
+fi
 
 cd "$repo_root"
 

@@ -26,9 +26,7 @@ Options:
 EOF
 }
 
-load_remote_defaults
-
-store_uri="${default_store_uri}"
+store_uri="${PIKACI_X86_64_REMOTE_STORE_URI:-}"
 installable=".#ci.x86_64-linux.workspaceDeps"
 
 while [[ $# -gt 0 ]]; do
@@ -52,6 +50,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$store_uri" ]]; then
+  load_remote_defaults
+  store_uri="${default_store_uri}"
+fi
 
 cd "$repo_root"
 

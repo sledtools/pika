@@ -26,8 +26,8 @@ use crate::membership::{
     EvolutionPublishStatus, MembershipRuntime, MembershipUpdateResult, PreparedMembershipEvolution,
 };
 use crate::outbound::{
-    OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
-    PublishedConversationAction, ResolvedConversationTarget,
+    OutboundConversationAction, OutboundConversationPublishStatus, OutboundConversationRuntime,
+    PreparedConversationAction, PublishedConversationAction, ResolvedConversationTarget,
 };
 use crate::relay::subscribe_group_msgs;
 use crate::welcome::{
@@ -127,18 +127,21 @@ pub enum RuntimeConversationEventInterpretation {
 #[derive(Debug, Clone)]
 pub enum RuntimeOperationEvent {
     MembershipEvolution(MembershipEvolutionOperationEvent),
+    OutboundConversationPublish(OutboundConversationPublishOperationEvent),
 }
 
 impl RuntimeOperationEvent {
     pub fn operation_id(&self) -> EventId {
         match self {
             Self::MembershipEvolution(event) => event.operation_id(),
+            Self::OutboundConversationPublish(event) => event.operation_id(),
         }
     }
 
     pub fn nostr_group_id_hex(&self) -> &str {
         match self {
             Self::MembershipEvolution(event) => event.nostr_group_id_hex(),
+            Self::OutboundConversationPublish(event) => event.nostr_group_id_hex(),
         }
     }
 
@@ -158,6 +161,39 @@ impl RuntimeOperationEvent {
             nostr_group_id_hex,
             error,
         })
+    }
+
+    pub fn complete_outbound_conversation_publish(
+        prepared: PreparedConversationAction,
+        publish_status: OutboundConversationPublishStatus,
+    ) -> Self {
+        let operation_id = prepared.rumor_id;
+        match publish_status {
+            OutboundConversationPublishStatus::Published { wrapper_event_id } => {
+                Self::OutboundConversationPublish(
+                    OutboundConversationPublishOperationEvent::Completed {
+                        operation_id,
+                        result: PublishedConversationAction {
+                            target: prepared.target,
+                            kind: prepared.kind,
+                            rumor_id: prepared.rumor_id,
+                            wrapper_event_id,
+                        },
+                    },
+                )
+            }
+            OutboundConversationPublishStatus::PublishFailed(error) => {
+                Self::OutboundConversationPublish(
+                    OutboundConversationPublishOperationEvent::Failed {
+                        operation_id,
+                        target: prepared.target,
+                        kind: prepared.kind,
+                        wrapper_event_id: prepared.wrapper.id,
+                        error,
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -190,6 +226,38 @@ impl MembershipEvolutionOperationEvent {
             Self::Failed {
                 nostr_group_id_hex, ..
             } => nostr_group_id_hex,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum OutboundConversationPublishOperationEvent {
+    Completed {
+        operation_id: EventId,
+        result: PublishedConversationAction,
+    },
+    Failed {
+        operation_id: EventId,
+        target: ResolvedConversationTarget,
+        kind: Kind,
+        wrapper_event_id: EventId,
+        error: String,
+    },
+}
+
+impl OutboundConversationPublishOperationEvent {
+    pub fn operation_id(&self) -> EventId {
+        match self {
+            Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
+                *operation_id
+            }
+        }
+    }
+
+    pub fn nostr_group_id_hex(&self) -> &str {
+        match self {
+            Self::Completed { result, .. } => &result.target.nostr_group_id_hex,
+            Self::Failed { target, .. } => &target.nostr_group_id_hex,
         }
     }
 }
@@ -635,6 +703,14 @@ impl<'a> RuntimeCommands<'a> {
                 RuntimeOperationEvent::membership_evolution_failed(prepared, error)
             }
         }
+    }
+
+    pub fn complete_outbound_publish_operation(
+        &self,
+        prepared: PreparedConversationAction,
+        publish_status: OutboundConversationPublishStatus,
+    ) -> RuntimeOperationEvent {
+        RuntimeOperationEvent::complete_outbound_conversation_publish(prepared, publish_status)
     }
 
     pub async fn publish_prepared_action(
@@ -2084,6 +2160,122 @@ mod tests {
         assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
         assert_eq!(prepared.kind, crate::message::TYPING_INDICATOR_KIND);
         assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
+    }
+
+    #[test]
+    fn runtime_commands_complete_outbound_publish_operation_returns_completed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime outbound op test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let chat_id = hex::encode(created.group.nostr_group_id);
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_outbound_action(
+                inviter_keys.public_key(),
+                &chat_id,
+                OutboundConversationAction::Typing {
+                    created_at: Timestamp::from(123_u64),
+                    expires_at: Timestamp::from(133_u64),
+                },
+            )
+            .expect("prepare outbound action");
+
+        let operation = commands.complete_outbound_publish_operation(
+            prepared,
+            OutboundConversationPublishStatus::Published {
+                wrapper_event_id: EventId::all_zeros(),
+            },
+        );
+
+        match operation {
+            RuntimeOperationEvent::OutboundConversationPublish(
+                OutboundConversationPublishOperationEvent::Completed { result, .. },
+            ) => {
+                assert_eq!(result.target.nostr_group_id_hex, chat_id);
+                assert_eq!(result.kind, crate::message::TYPING_INDICATOR_KIND);
+                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
+            }
+            other => panic!("expected completed outbound publish event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_commands_complete_outbound_publish_operation_returns_failed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime outbound op fail test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let chat_id = hex::encode(created.group.nostr_group_id);
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_outbound_action(
+                inviter_keys.public_key(),
+                &chat_id,
+                OutboundConversationAction::Typing {
+                    created_at: Timestamp::from(321_u64),
+                    expires_at: Timestamp::from(331_u64),
+                },
+            )
+            .expect("prepare outbound action");
+        let expected_wrapper_id = prepared.wrapper.id;
+
+        let operation = commands.complete_outbound_publish_operation(
+            prepared,
+            OutboundConversationPublishStatus::PublishFailed("relay down".to_string()),
+        );
+
+        match operation {
+            RuntimeOperationEvent::OutboundConversationPublish(
+                OutboundConversationPublishOperationEvent::Failed {
+                    target,
+                    wrapper_event_id,
+                    error,
+                    ..
+                },
+            ) => {
+                assert_eq!(target.nostr_group_id_hex, chat_id);
+                assert_eq!(wrapper_event_id, expected_wrapper_id);
+                assert_eq!(error, "relay down");
+            }
+            other => panic!("expected failed outbound publish event, got {other:?}"),
+        }
     }
 
     #[test]

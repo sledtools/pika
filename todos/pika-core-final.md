@@ -357,6 +357,8 @@ Current status:
 - app add-members plus publish-finalization paths now consume that command boundary directly, and the daemon now exercises the same boundary at its host-context test seam for membership prep/finalize because daemon protocol wiring still does not expose a broader add-members command yet
 - fourth Phase 4 slice landed: shared runtime now exposes a first explicit operation event/result boundary for membership evolution publish/finalize, keyed by the evolution event ID and scoped to completed/failed operation outcomes instead of a general event bus
 - app membership publish/finalize success/failure handling now consumes that explicit operation result shape, and the daemon exercises the same event boundary at its membership host-context test seam while publish/retry policy and protocol mapping remain host-local
+- fifth Phase 4 slice landed: shared runtime now exposes an explicit outbound conversation publish operation result, keyed by the outbound rumor ID and scoped to completed/failed publish outcomes instead of a broader dispatcher
+- app fresh outbound message publish and daemon `SendMessage` now consume that outbound operation result shape directly, while app retry persistence, daemon protocol formatting, and host retry/publish policy remain local
 
 Recommended event families:
 - `Session`

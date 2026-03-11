@@ -68,9 +68,10 @@ pub(crate) use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    temporary_client_from_session_signer, MembershipEvolutionOperationEvent,
-    OutboundConversationPublishOperationEvent, RuntimeApplicationMessageInterpretation,
-    RuntimeConversationEventInterpretation, RuntimeOperationEvent, RuntimeRelayRolePlan,
+    temporary_client_from_session_signer, CallSignalPublishKind, CallSignalPublishOperationEvent,
+    MembershipEvolutionOperationEvent, OutboundConversationPublishOperationEvent,
+    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
+    RuntimeOperationEvent, RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::accept_welcome_and_catch_up;
 
@@ -3336,6 +3337,9 @@ impl AppCore {
             InternalEvent::OutboundPublishOperation { operation } => {
                 self.handle_runtime_operation_event(operation)
             }
+            InternalEvent::CallSignalPublishOperation { operation } => {
+                self.handle_runtime_operation_event(operation)
+            }
             InternalEvent::ChatMediaUploadCompleted {
                 request_id,
                 uploaded_url,
@@ -4325,6 +4329,19 @@ impl AppCore {
                     false,
                     Some(error),
                 );
+            }
+            RuntimeOperationEvent::CallSignalPublish(
+                CallSignalPublishOperationEvent::Completed { .. },
+            ) => {}
+            RuntimeOperationEvent::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
+                kind,
+                error,
+                ..
+            }) => {
+                self.toast(format!(
+                    "{}: {error}",
+                    call_signal_publish_failure_context(kind)
+                ));
             }
         }
     }
@@ -6149,6 +6166,15 @@ impl AppCore {
     }
 }
 
+fn call_signal_publish_failure_context(kind: CallSignalPublishKind) -> &'static str {
+    match kind {
+        CallSignalPublishKind::Invite => "Call invite publish failed",
+        CallSignalPublishKind::Accept => "Call accept publish failed",
+        CallSignalPublishKind::Reject => "Call reject publish failed",
+        CallSignalPublishKind::End => "Call end publish failed",
+    }
+}
+
 fn call_timeline_ended_text(
     reason: &str,
     previous_status: Option<&CallStatus>,
@@ -7133,6 +7159,37 @@ mod tests {
                     .and_then(|m| m.get(&rumor_id_hex)),
                 Some(crate::state::MessageDeliveryState::Failed { reason }) if reason == "offline"
             ));
+        }
+
+        #[test]
+        fn app_call_signal_publish_operation_result_uses_shared_runtime_event_boundary() {
+            let (mut core, chat_id, _keys, _group_id) = make_core_with_group();
+            let wrapper_event_id = EventId::from_hex(
+                "2222222222222222222222222222222222222222222222222222222222222222",
+            )
+            .expect("event id");
+            let operation = core
+                .host_context()
+                .expect("host context")
+                .complete_call_signal_publish_operation(
+                    pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
+                    chat_id.clone(),
+                    pika_marmot_runtime::call_runtime::PreparedCallSignal {
+                        call_id: "550e8400-e29b-41d4-a716-446655440016".to_string(),
+                        payload_json: "{\"type\":\"call.invite\"}".to_string(),
+                    },
+                    pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                        wrapper_event_id,
+                        error: "offline".to_string(),
+                    },
+                );
+
+            core.handle_runtime_operation_event(operation);
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some("Call invite publish failed: offline")
+            );
         }
 
         #[test]

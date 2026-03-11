@@ -253,6 +253,22 @@ fn expect_outbound_publish_completed(
     }
 }
 
+fn expect_call_signal_publish_completed(
+    operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
+) -> Result<pika_marmot_runtime::runtime::PublishedCallSignal, String> {
+    match operation {
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
+            pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Completed {
+                result, ..
+            },
+        ) => Ok(result),
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
+            pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Failed { error, .. },
+        ) => Err(error),
+        other => Err(format!("unexpected call signal publish result: {other:?}")),
+    }
+}
+
 fn chain_has_message(err: &anyhow::Error, needle: &str) -> bool {
     err.chain().any(|cause| cause.to_string().contains(needle))
 }
@@ -646,15 +662,14 @@ fn call_primary_track_name(session: &CallSessionParams) -> anyhow::Result<&str> 
 
 async fn send_call_invite_with_retry(
     host: &DaemonHostContext<'_>,
-    nostr_group_id: &str,
-    payload_json: &str,
+    signed: &Event,
     call_id: &str,
     max_attempts: usize,
 ) -> anyhow::Result<()> {
     let attempts = max_attempts.max(1);
     for attempt in 1..=attempts {
         match host
-            .publish_call_payload(nostr_group_id, payload_json.to_string(), "call_invite")
+            .publish_signed_call_payload(signed, "call_invite")
             .await
         {
             Ok(()) => return Ok(()),
@@ -2951,28 +2966,65 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match send_call_invite_with_retry(
+                        let signed_invite =
+                            match host.sign_call_payload(&nostr_group_id, prepared_invite.payload_json.clone())
+                            {
+                                Ok(signed) => signed,
+                                Err(e) => {
+                                    let _ = reply_tx.send(out_error(
+                                        request_id,
+                                        "runtime_error",
+                                        format!("sign call invite failed: {e:#}"),
+                                    ));
+                                    continue;
+                                }
+                            };
+
+                        let publish_status = match send_call_invite_with_retry(
                             &host,
-                            &nostr_group_id,
-                            &prepared_invite.payload_json,
+                            &signed_invite,
                             &call_id,
                             3,
                         )
-                        .await {
+                        .await
+                        {
                             Ok(()) => {
+                                pika_marmot_runtime::runtime::CallSignalPublishStatus::Published {
+                                    wrapper_event_id: signed_invite.id,
+                                }
+                            }
+                            Err(e) => {
+                                pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                                    wrapper_event_id: signed_invite.id,
+                                    error: format!("{e:#}"),
+                                }
+                            }
+                        };
+                        let operation = host.complete_call_signal_publish_operation(
+                            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
+                            nostr_group_id.clone(),
+                            prepared_invite,
+                            publish_status,
+                        );
+
+                        match expect_call_signal_publish_completed(operation) {
+                            Ok(result) => {
                                 pending_outgoing_call_invites.insert(call_id.clone(), pending);
                                 let _ = reply_tx.send(out_ok(
                                     request_id,
                                     Some(json!({
-                                        "call_id": call_id,
-                                        "nostr_group_id": nostr_group_id,
+                                        "call_id": result.call_id,
+                                        "nostr_group_id": result.nostr_group_id_hex,
                                         "session": session,
                                     })),
                                 ));
                             }
-                            Err(e) => {
-                                let _ =
-                                    reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                            Err(error) => {
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "publish_failed",
+                                    error,
+                                ));
                             }
                         }
                     }
@@ -4574,6 +4626,49 @@ mod tests {
                 assert_eq!(result.wrapper_event_id, EventId::all_zeros());
             }
             other => panic!("expected completed outbound publish event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn daemon_call_signal_publish_operation_result_uses_shared_runtime_event_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let wrapper_event_id =
+            EventId::from_hex("3333333333333333333333333333333333333333333333333333333333333333")
+                .expect("event id");
+
+        let operation = host.complete_call_signal_publish_operation(
+            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
+            "deadbeef".to_string(),
+            pika_marmot_runtime::call_runtime::PreparedCallSignal {
+                call_id: "550e8400-e29b-41d4-a716-446655440017".to_string(),
+                payload_json: "{\"type\":\"call.invite\"}".to_string(),
+            },
+            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { wrapper_event_id },
+        );
+
+        match operation {
+            pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
+                pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Completed {
+                    operation_id,
+                    result,
+                },
+            ) => {
+                assert_eq!(operation_id, wrapper_event_id);
+                assert_eq!(
+                    result.kind,
+                    pika_marmot_runtime::runtime::CallSignalPublishKind::Invite
+                );
+                assert_eq!(result.nostr_group_id_hex, "deadbeef");
+                assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440017");
+                assert_eq!(result.wrapper_event_id, wrapper_event_id);
+            }
+            other => panic!("expected completed call signal publish event, got {other:?}"),
         }
     }
 

@@ -117,6 +117,22 @@ impl<'a> AppHostContext<'a> {
             .complete_outbound_publish_operation(prepared, publish_status)
     }
 
+    #[cfg(test)]
+    pub(super) fn complete_call_signal_publish_operation(
+        &self,
+        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+        publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands().complete_call_signal_publish_operation(
+            kind,
+            nostr_group_id_hex,
+            prepared,
+            publish_status,
+        )
+    }
+
     pub(super) fn prepare_membership_evolution_for_chat(
         &self,
         chat_id: &str,

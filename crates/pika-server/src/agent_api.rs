@@ -5,6 +5,7 @@ use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::{response::IntoResponse, Json};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
+use diesel::Connection;
 use diesel::PgConnection;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
@@ -18,13 +19,14 @@ use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::agent_instance::{
     AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
 };
+use crate::models::managed_environment_event::ManagedEnvironmentEvent;
 use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::{RequestContext, State};
 use pika_agent_control_plane::{
     AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
-    SpawnerVmResponse,
+    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness,
 };
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, spawner_create_error, validate_resolved_params,
@@ -34,6 +36,15 @@ use pika_relay_profiles::default_message_relays;
 
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
+const EVENT_PROVISION_REQUESTED: &str = "provision_requested";
+const EVENT_PROVISION_ACCEPTED: &str = "provision_accepted";
+const EVENT_RECOVER_REQUESTED: &str = "recover_requested";
+const EVENT_RECOVER_SUCCEEDED: &str = "recover_succeeded";
+const EVENT_RECOVER_FELL_BACK_TO_FRESH: &str = "recover_fell_back_to_fresh";
+const EVENT_RESET_REQUESTED: &str = "reset_requested";
+const EVENT_RESET_DESTROYED_OLD_VM: &str = "reset_destroyed_old_vm";
+const EVENT_RESET_CONTINUED_MISSING_VM: &str = "reset_continued_missing_vm";
+const EVENT_READINESS_REFRESH_MISSING_VM: &str = "readiness_refresh_missing_vm";
 
 #[derive(Debug)]
 pub struct AgentApiError {
@@ -124,6 +135,97 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub startup_phase: Option<AgentStartupPhase>,
     pub environment_exists: bool,
     pub status_copy: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ManagedEnvironmentBackupFreshness {
+    NotProvisioned,
+    Healthy,
+    Stale,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedEnvironmentBackupStatus {
+    pub freshness: ManagedEnvironmentBackupFreshness,
+    pub backup_host: Option<String>,
+    pub latest_successful_backup_at: Option<String>,
+    pub status_copy: String,
+    pub reset_requires_confirmation: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct ManagedEnvironmentHandle {
+    pub owner_npub: String,
+    pub agent_id: String,
+    pub vm_id: String,
+}
+
+fn record_managed_environment_event(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+    agent_id: Option<&str>,
+    vm_id: Option<&str>,
+    event_kind: &str,
+    message: &str,
+    request_id: &str,
+) -> Result<ManagedEnvironmentEvent, AgentApiError> {
+    insert_managed_environment_event(
+        conn,
+        owner_npub,
+        agent_id,
+        vm_id,
+        event_kind,
+        message,
+        Some(request_id),
+    )
+    .map_err(|err| {
+        tracing::error!(
+            request_id = %request_id,
+            owner_npub = %owner_npub,
+            agent_id,
+            vm_id,
+            event_kind = %event_kind,
+            error = %err,
+            "failed to record managed environment event"
+        );
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })
+}
+
+fn insert_managed_environment_event(
+    conn: &mut PgConnection,
+    owner_npub: &str,
+    agent_id: Option<&str>,
+    vm_id: Option<&str>,
+    event_kind: &str,
+    message: &str,
+    request_id: Option<&str>,
+) -> anyhow::Result<ManagedEnvironmentEvent> {
+    ManagedEnvironmentEvent::record(
+        conn, owner_npub, agent_id, vm_id, event_kind, message, request_id,
+    )
+}
+
+pub(crate) fn list_recent_managed_environment_events(
+    state: &State,
+    owner_npub: &str,
+    limit: i64,
+    request_id: &str,
+) -> Result<Vec<ManagedEnvironmentEvent>, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, limit).map_err(|err| {
+        tracing::error!(
+            request_id = %request_id,
+            owner_npub = %owner_npub,
+            error = %err,
+            "failed to load recent managed environment events"
+        );
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })
 }
 
 fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
@@ -321,15 +423,71 @@ fn managed_environment_status_copy(
             "Managed OpenClaw is running and ready.".to_string()
         }
         (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
-            "Managed OpenClaw needs recovery. Recover preserves the durable home; destructive reset deletes it and starts fresh."
+            "Managed OpenClaw needs recovery. Recover first tries to bring the VM back and preserve the durable home; if that VM is gone, Recover provisions a fresh environment instead."
                 .to_string()
         }
         (Some(_), Some(AgentStartupPhase::Failed)) => {
-            "The last managed OpenClaw environment failed before a durable VM was available."
+            "Managed OpenClaw needs recovery. No recoverable VM is available, so Recover provisions a fresh environment."
                 .to_string()
         }
         (Some(_), None) => "Managed OpenClaw status is unavailable.".to_string(),
         (None, Some(_)) => "Managed OpenClaw status is unavailable.".to_string(),
+    }
+}
+
+fn managed_environment_backup_status_from_spawner(
+    backup: SpawnerVmBackupStatus,
+) -> ManagedEnvironmentBackupStatus {
+    let freshness = match backup.freshness {
+        VmBackupFreshness::Healthy => ManagedEnvironmentBackupFreshness::Healthy,
+        VmBackupFreshness::Stale => ManagedEnvironmentBackupFreshness::Stale,
+        VmBackupFreshness::Missing => ManagedEnvironmentBackupFreshness::Missing,
+        VmBackupFreshness::Unavailable => ManagedEnvironmentBackupFreshness::Unavailable,
+    };
+    let backup_host = (!backup.backup_host.trim().is_empty()).then_some(backup.backup_host);
+    let latest_successful_backup_at = backup
+        .latest_successful_backup_at
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let status_copy = match freshness {
+        ManagedEnvironmentBackupFreshness::Healthy => {
+            "Recent durable-home backup protection is in place for this managed environment."
+                .to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Stale => {
+            "Backup protection is stale. The latest successful durable-home backup is older than the healthy window, so destructive reset now requires explicit confirmation.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Missing => {
+            "No successful durable-home backup is known yet. Treat destructive reset as unsafe until the first backup completes.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::Unavailable => {
+            "Backup protection could not be verified from the control plane right now. Destructive reset now requires explicit confirmation.".to_string()
+        }
+        ManagedEnvironmentBackupFreshness::NotProvisioned => {
+            "No managed environment exists yet, so backup protection is not tracked.".to_string()
+        }
+    };
+
+    ManagedEnvironmentBackupStatus {
+        freshness,
+        backup_host,
+        latest_successful_backup_at,
+        reset_requires_confirmation: !matches!(
+            freshness,
+            ManagedEnvironmentBackupFreshness::Healthy
+                | ManagedEnvironmentBackupFreshness::NotProvisioned
+        ),
+        status_copy,
+    }
+}
+
+fn unavailable_backup_status(status_copy: impl Into<String>) -> ManagedEnvironmentBackupStatus {
+    ManagedEnvironmentBackupStatus {
+        freshness: ManagedEnvironmentBackupFreshness::Unavailable,
+        backup_host: None,
+        latest_successful_backup_at: None,
+        reset_requires_confirmation: true,
+        status_copy: status_copy.into(),
     }
 }
 
@@ -349,6 +507,10 @@ fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
         ("starting", _) => AgentStartupPhase::BootingGuest,
         _ => AgentStartupPhase::ProvisioningVm,
     }
+}
+
+fn is_inflight_provision_row(row: &AgentInstance) -> bool {
+    row.phase == AGENT_PHASE_CREATING && row.vm_id.is_none()
 }
 
 fn select_visible_agent_row(
@@ -398,7 +560,7 @@ fn normalize_loaded_agent_row(
 ) -> Result<AgentInstance, AgentApiError> {
     match row.vm_id.as_deref() {
         Some(_) => Ok(row),
-        None if row.phase != AGENT_PHASE_ERROR => mark_agent_errored(conn, &row.agent_id)
+        None if row.phase == AGENT_PHASE_READY => mark_agent_errored(conn, &row.agent_id)
             .map_err(|err| err.with_request_id(request_id.to_string())),
         None => Ok(row),
     }
@@ -414,16 +576,11 @@ async fn refresh_agent_from_spawner(
     row: AgentInstance,
     request_id: &str,
 ) -> Result<RefreshedAgentStatus, AgentApiError> {
-    if row.phase == AGENT_PHASE_READY {
-        return Ok(RefreshedAgentStatus {
-            row,
-            startup_phase: AgentStartupPhase::Ready,
-        });
-    }
     let Some(vm_id) = row.vm_id.as_deref() else {
         return Ok(RefreshedAgentStatus {
+            startup_phase: startup_phase_from_row_phase(&row.phase)
+                .unwrap_or(AgentStartupPhase::Requested),
             row,
-            startup_phase: AgentStartupPhase::Requested,
         });
     };
     let resolved = match resolved_spawner_params(None) {
@@ -457,8 +614,41 @@ async fn refresh_agent_from_spawner(
                 error = %err,
                 "agent vm missing during readiness refresh; marking row errored"
             );
-            let errored = mark_agent_errored(conn, &row.agent_id)
-                .map_err(|err| err.with_request_id(request_id.to_string()))?;
+            if row.phase == AGENT_PHASE_ERROR {
+                return Ok(RefreshedAgentStatus {
+                    row,
+                    startup_phase: AgentStartupPhase::Failed,
+                });
+            }
+            let errored = conn
+                .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+                    let errored =
+                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, Some(vm_id))?;
+                    let message = format!(
+                        "A readiness check found that VM {vm_id} was missing. Managed OpenClaw was marked failed and now needs recovery."
+                    );
+                    insert_managed_environment_event(
+                        conn,
+                        &row.owner_npub,
+                        Some(&row.agent_id),
+                        Some(vm_id),
+                        EVENT_READINESS_REFRESH_MISSING_VM,
+                        &message,
+                        Some(request_id),
+                    )?;
+                    Ok(errored)
+                })
+                .map_err(|err| {
+                    tracing::error!(
+                        request_id,
+                        agent_id = %row.agent_id,
+                        vm_id,
+                        error = %err,
+                        "failed to mark missing vm row errored"
+                    );
+                    AgentApiError::from_code(AgentApiErrorCode::Internal)
+                        .with_request_id(request_id.to_string())
+                })?;
             return Ok(RefreshedAgentStatus {
                 row: errored,
                 startup_phase: AgentStartupPhase::Failed,
@@ -529,6 +719,128 @@ pub(crate) async fn load_managed_environment_status(
         app_state,
         startup_phase: Some(refreshed.startup_phase),
     })
+}
+
+pub(crate) async fn load_managed_environment_backup_status(
+    status: &ManagedEnvironmentStatus,
+    request_id: &str,
+) -> ManagedEnvironmentBackupStatus {
+    let Some(row) = status.row.as_ref() else {
+        return ManagedEnvironmentBackupStatus {
+            freshness: ManagedEnvironmentBackupFreshness::NotProvisioned,
+            backup_host: None,
+            latest_successful_backup_at: None,
+            reset_requires_confirmation: false,
+            status_copy: "No managed environment exists yet, so backup protection is not tracked."
+                .to_string(),
+        };
+    };
+
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return unavailable_backup_status(
+            "No current VM assignment is available, so backup protection cannot be verified from the control plane.",
+        );
+    };
+
+    let resolved = match resolved_spawner_params(None) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                agent_id = %row.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to resolve spawner params while loading backup status"
+            );
+            return unavailable_backup_status(
+                "Backup protection could not be verified because the backup host control plane is unavailable.",
+            );
+        }
+    };
+    let spawner = MicrovmSpawnerClient::new(resolved.spawner_url);
+    match spawner
+        .get_vm_backup_status_with_request_id(vm_id, Some(request_id))
+        .await
+    {
+        Ok(backup) => managed_environment_backup_status_from_spawner(backup),
+        Err(err) => {
+            tracing::warn!(
+                request_id = %request_id,
+                agent_id = %row.agent_id,
+                vm_id = %vm_id,
+                error = %err,
+                "failed to load backup status from spawner"
+            );
+            unavailable_backup_status(
+                "Backup protection could not be verified from the control plane right now.",
+            )
+        }
+    }
+}
+
+pub(crate) async fn load_launchable_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<ManagedEnvironmentHandle, AgentApiError> {
+    let status = load_managed_environment_status(state, owner_npub, request_id).await?;
+    let Some(row) = status.row else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
+        );
+    };
+    let Some(vm_id) = row.vm_id.clone() else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    };
+    if status.app_state != Some(AgentAppState::Ready)
+        || status.startup_phase != Some(AgentStartupPhase::Ready)
+    {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    }
+    Ok(ManagedEnvironmentHandle {
+        owner_npub: row.owner_npub,
+        agent_id: row.agent_id,
+        vm_id,
+    })
+}
+
+pub(crate) fn load_current_ready_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<Option<ManagedEnvironmentHandle>, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let row = load_visible_agent_row(&mut conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?;
+    Ok(row.and_then(|row| {
+        (row.phase == AGENT_PHASE_READY)
+            .then_some(row)
+            .and_then(|row| row.vm_id.clone().map(|vm_id| (row, vm_id)))
+            .map(|(row, vm_id)| ManagedEnvironmentHandle {
+                owner_npub: row.owner_npub,
+                agent_id: row.agent_id,
+                vm_id,
+            })
+    }))
+}
+
+pub(crate) fn spawner_base_url(request_id: &str) -> Result<String, AgentApiError> {
+    resolved_spawner_params(None)
+        .map(|resolved| resolved.spawner_url)
+        .map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                error = %err,
+                "failed to resolve spawner url for managed environment ui access"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })
 }
 
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {
@@ -647,13 +959,25 @@ async fn provision_agent_for_owner(
         let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
         })?;
-        AgentInstance::create(
-            &mut conn,
-            owner_npub,
-            &bot_identity.pubkey_npub,
-            None,
-            AGENT_PHASE_CREATING,
-        )
+        conn.transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+            let created = AgentInstance::create(
+                conn,
+                owner_npub,
+                &bot_identity.pubkey_npub,
+                None,
+                AGENT_PHASE_CREATING,
+            )?;
+            insert_managed_environment_event(
+                conn,
+                owner_npub,
+                Some(&created.agent_id),
+                None,
+                EVENT_PROVISION_REQUESTED,
+                "Provision requested for a new Managed OpenClaw environment.",
+                Some(request_id),
+            )?;
+            Ok(created)
+        })
         .map_err(|err| {
             if is_owner_active_unique_violation(&err) {
                 AgentApiError::from_code(AgentApiErrorCode::AgentExists).with_request_id(request_id)
@@ -690,21 +1014,38 @@ async fn provision_agent_for_owner(
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &created.agent_id,
-        phase_from_spawner_vm(&vm),
-        Some(&vm.id),
-    )
-    .map_err(|err| {
-        tracing::error!(
-            request_id,
-            agent_id = %created.agent_id,
-            error = %err,
-            "failed to update agent phase after provision"
-        );
-        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-    })?;
+    let updated = conn
+        .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+            let updated = AgentInstance::update_phase(
+                conn,
+                &created.agent_id,
+                phase_from_spawner_vm(&vm),
+                Some(&vm.id),
+            )?;
+            let message = format!(
+                "Provision accepted. Managed OpenClaw is starting on VM {}.",
+                vm.id
+            );
+            insert_managed_environment_event(
+                conn,
+                owner_npub,
+                Some(&updated.agent_id),
+                Some(&vm.id),
+                EVENT_PROVISION_ACCEPTED,
+                &message,
+                Some(request_id),
+            )?;
+            Ok(updated)
+        })
+        .map_err(|err| {
+            tracing::error!(
+                request_id,
+                agent_id = %created.agent_id,
+                error = %err,
+                "failed to update agent phase after provision"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
     tracing::info!(
         request_id,
         agent_id = %updated.agent_id,
@@ -714,6 +1055,30 @@ async fn provision_agent_for_owner(
         "provisioned agent microvm"
     );
     Ok(updated)
+}
+
+async fn provision_or_existing_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
+        Ok(row) => Ok(ManagedEnvironmentAction {
+            row,
+            startup_phase: AgentStartupPhase::ProvisioningVm,
+        }),
+        Err(err) if err.code == AgentApiErrorCode::AgentExists => {
+            let status = load_managed_environment_status(state, owner_npub, request_id).await?;
+            match (status.row, status.startup_phase) {
+                (Some(row), Some(startup_phase)) => {
+                    Ok(ManagedEnvironmentAction { row, startup_phase })
+                }
+                _ => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) async fn provision_managed_environment_if_missing(
@@ -727,11 +1092,7 @@ pub(crate) async fn provision_managed_environment_if_missing(
         return Ok(ManagedEnvironmentAction { row, startup_phase });
     }
 
-    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-    Ok(ManagedEnvironmentAction {
-        row,
-        startup_phase: AgentStartupPhase::ProvisioningVm,
-    })
+    provision_or_existing_managed_environment(state, owner_npub, request_id, requested).await
 }
 
 pub async fn ensure_agent(
@@ -822,15 +1183,40 @@ pub(crate) async fn recover_agent_for_owner(
             AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
         );
     };
-    if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
-        prepare_agent_for_reprovision(&mut conn, &active)
-            .map_err(|err| err.with_request_id(request_id.to_string()))?;
-        drop(conn);
-        let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
+    let recover_requested_message = match active.vm_id.as_deref() {
+        Some(vm_id) => format!("Recover requested for Managed OpenClaw on VM {vm_id}."),
+        None => "Recover requested for Managed OpenClaw without a recoverable VM.".to_string(),
+    };
+    if is_inflight_provision_row(&active) {
         return Ok(ManagedEnvironmentAction {
-            row,
+            row: active,
             startup_phase: AgentStartupPhase::ProvisioningVm,
         });
+    }
+    record_managed_environment_event(
+        &mut conn,
+        owner_npub,
+        Some(&active.agent_id),
+        active.vm_id.as_deref(),
+        EVENT_RECOVER_REQUESTED,
+        &recover_requested_message,
+        request_id,
+    )?;
+    if active.vm_id.is_none() {
+        prepare_agent_for_reprovision(&mut conn, &active)
+            .map_err(|err| err.with_request_id(request_id.to_string()))?;
+        record_managed_environment_event(
+            &mut conn,
+            owner_npub,
+            Some(&active.agent_id),
+            None,
+            EVENT_RECOVER_FELL_BACK_TO_FRESH,
+            "Recover could not preserve the previous environment because no recoverable VM was available. Provisioning a fresh Managed OpenClaw environment.",
+            request_id,
+        )?;
+        drop(conn);
+        return provision_or_existing_managed_environment(state, owner_npub, request_id, requested)
+            .await;
     }
     let vm_id = active.vm_id.clone().ok_or_else(|| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
@@ -856,12 +1242,23 @@ pub(crate) async fn recover_agent_for_owner(
             );
             prepare_agent_for_reprovision(&mut conn, &active)
                 .map_err(|err| err.with_request_id(request_id.to_string()))?;
+            let message = format!(
+                "Recover could not preserve the previous environment because VM {vm_id} was missing. Provisioning a fresh Managed OpenClaw environment."
+            );
+            record_managed_environment_event(
+                &mut conn,
+                owner_npub,
+                Some(&active.agent_id),
+                Some(&vm_id),
+                EVENT_RECOVER_FELL_BACK_TO_FRESH,
+                &message,
+                request_id,
+            )?;
             drop(conn);
-            let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-            return Ok(ManagedEnvironmentAction {
-                row,
-                startup_phase: AgentStartupPhase::ProvisioningVm,
-            });
+            return provision_or_existing_managed_environment(
+                state, owner_npub, request_id, requested,
+            )
+            .await;
         }
         Err(err) => {
             tracing::error!(
@@ -877,18 +1274,36 @@ pub(crate) async fn recover_agent_for_owner(
         }
     };
 
-    let updated = AgentInstance::update_phase(
-        &mut conn,
-        &active.agent_id,
-        phase_from_spawner_vm(&recovered),
-        Some(&recovered.id),
-    )
-    .map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-    })?;
+    let startup_phase = startup_phase_from_spawner_vm(&recovered);
+    let updated = conn
+        .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
+            let updated = AgentInstance::update_phase(
+                conn,
+                &active.agent_id,
+                phase_from_spawner_vm(&recovered),
+                Some(&recovered.id),
+            )?;
+            let message = format!(
+                "Recover succeeded. Managed OpenClaw is starting again on VM {}.",
+                recovered.id
+            );
+            insert_managed_environment_event(
+                conn,
+                owner_npub,
+                Some(&updated.agent_id),
+                Some(&recovered.id),
+                EVENT_RECOVER_SUCCEEDED,
+                &message,
+                Some(request_id),
+            )?;
+            Ok(updated)
+        })
+        .map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
     Ok(ManagedEnvironmentAction {
         row: updated,
-        startup_phase: startup_phase_from_spawner_vm(&recovered),
+        startup_phase,
     })
 }
 
@@ -902,8 +1317,35 @@ pub(crate) async fn reset_agent_for_owner(
         let mut conn = state.db_pool.get().map_err(|_| {
             AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
         })?;
-        load_visible_agent_row(&mut conn, owner_npub)
-            .map_err(|err| err.with_request_id(request_id.to_string()))?
+        let existing = load_visible_agent_row(&mut conn, owner_npub)
+            .map_err(|err| err.with_request_id(request_id.to_string()))?;
+        if let Some(existing) = existing
+            .as_ref()
+            .filter(|row| is_inflight_provision_row(row))
+        {
+            return Ok(ManagedEnvironmentAction {
+                row: existing.clone(),
+                startup_phase: AgentStartupPhase::ProvisioningVm,
+            });
+        }
+        let reset_requested_message = match existing.as_ref() {
+            Some(_) => {
+                "Destructive reset requested. The current managed environment will be replaced."
+                    .to_string()
+            }
+            None => "Destructive reset requested without an existing managed environment. Provisioning a fresh Managed OpenClaw environment."
+                .to_string(),
+        };
+        record_managed_environment_event(
+            &mut conn,
+            owner_npub,
+            existing.as_ref().map(|row| row.agent_id.as_str()),
+            existing.as_ref().and_then(|row| row.vm_id.as_deref()),
+            EVENT_RESET_REQUESTED,
+            &reset_requested_message,
+            request_id,
+        )?;
+        existing
     };
 
     if let Some(vm_id) = existing.as_ref().and_then(|row| row.vm_id.as_deref()) {
@@ -928,6 +1370,22 @@ pub(crate) async fn reset_agent_for_owner(
                     vm_id = %vm_id,
                     "destroyed managed environment during reset"
                 );
+                let mut conn = state.db_pool.get().map_err(|_| {
+                    AgentApiError::from_code(AgentApiErrorCode::Internal)
+                        .with_request_id(request_id)
+                })?;
+                let message = format!(
+                    "Destructive reset removed VM {vm_id}. Provisioning a fresh Managed OpenClaw environment."
+                );
+                record_managed_environment_event(
+                    &mut conn,
+                    owner_npub,
+                    existing.as_ref().map(|row| row.agent_id.as_str()),
+                    Some(vm_id),
+                    EVENT_RESET_DESTROYED_OLD_VM,
+                    &message,
+                    request_id,
+                )?;
             }
             Err(err) if is_vm_not_found_error(&err) => {
                 tracing::warn!(
@@ -937,6 +1395,22 @@ pub(crate) async fn reset_agent_for_owner(
                     error = %err,
                     "reset requested for missing vm; continuing with fresh provision"
                 );
+                let mut conn = state.db_pool.get().map_err(|_| {
+                    AgentApiError::from_code(AgentApiErrorCode::Internal)
+                        .with_request_id(request_id)
+                })?;
+                let message = format!(
+                    "Destructive reset continued with a fresh environment because VM {vm_id} was already missing."
+                );
+                record_managed_environment_event(
+                    &mut conn,
+                    owner_npub,
+                    existing.as_ref().map(|row| row.agent_id.as_str()),
+                    Some(vm_id),
+                    EVENT_RESET_CONTINUED_MISSING_VM,
+                    &message,
+                    request_id,
+                )?;
             }
             Err(err) => {
                 tracing::error!(
@@ -950,6 +1424,19 @@ pub(crate) async fn reset_agent_for_owner(
                     .with_request_id(request_id));
             }
         }
+    } else if existing.is_some() {
+        let mut conn = state.db_pool.get().map_err(|_| {
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+        record_managed_environment_event(
+            &mut conn,
+            owner_npub,
+            existing.as_ref().map(|row| row.agent_id.as_str()),
+            None,
+            EVENT_RESET_CONTINUED_MISSING_VM,
+            "Destructive reset continued with a fresh environment because no recoverable VM was available.",
+            request_id,
+        )?;
     }
 
     if let Some(existing) = existing {
@@ -960,11 +1447,7 @@ pub(crate) async fn reset_agent_for_owner(
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
     }
 
-    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-    Ok(ManagedEnvironmentAction {
-        row,
-        startup_phase: AgentStartupPhase::ProvisioningVm,
-    })
+    provision_or_existing_managed_environment(state, owner_npub, request_id, requested).await
 }
 
 pub async fn recover_my_agent(
@@ -1007,16 +1490,22 @@ pub fn agent_api_healthcheck() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use crate::admin::AdminConfig;
+    use crate::browser_auth::BrowserAuthConfig;
+    use crate::models::group_subscription::GroupFilterInfo;
     use crate::test_support::serial_test_guard;
     use axum::body::HttpBody;
     use axum::http::header;
     use base64::Engine;
     use chrono::NaiveDate;
     use diesel::prelude::*;
+    use diesel::r2d2::{ConnectionManager, Pool};
     use diesel_migrations::MigrationHarness;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
+    use std::collections::HashSet;
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -1037,7 +1526,10 @@ mod tests {
 
     fn init_test_db_connection() -> Option<PgConnection> {
         dotenv::dotenv().ok();
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test");
+            return None;
+        };
         let mut conn = match PgConnection::establish(&url) {
             Ok(conn) => conn,
             Err(err) => {
@@ -1050,12 +1542,56 @@ mod tests {
         Some(conn)
     }
 
+    fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
+        dotenv::dotenv().ok();
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test pool");
+            return None;
+        };
+        if let Err(err) = PgConnection::establish(&url) {
+            eprintln!("SKIP: postgres unavailable for agent_api db test pool: {err}");
+            return None;
+        }
+        let manager = ConnectionManager::<PgConnection>::new(url);
+        let db_pool = Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .expect("build test db pool");
+        let mut conn = db_pool.get().expect("get migration connection");
+        conn.run_pending_migrations(crate::models::MIGRATIONS)
+            .expect("run migrations");
+        Some(db_pool)
+    }
+
     fn clear_test_database(conn: &mut PgConnection) {
         diesel::sql_query(
-            "TRUNCATE TABLE agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
+            "TRUNCATE TABLE managed_environment_events, agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
         )
         .execute(conn)
         .expect("truncate test tables");
+    }
+
+    fn test_state(db_pool: Pool<ConnectionManager<PgConnection>>) -> State {
+        let (sender, _receiver) = tokio::sync::watch::channel(GroupFilterInfo::default());
+        State {
+            db_pool,
+            apns_client: None,
+            fcm_client: None,
+            apns_topic: String::new(),
+            channel: std::sync::Arc::new(tokio::sync::Mutex::new(sender)),
+            admin_config: std::sync::Arc::new(AdminConfig {
+                bootstrap_admins: HashSet::new(),
+                browser_auth: BrowserAuthConfig::new(
+                    b"0123456789abcdef0123456789abcdef".to_vec(),
+                    true,
+                    false,
+                    None,
+                )
+                .expect("browser auth config"),
+            }),
+            min_app_version: "0.0.0".to_string(),
+            trust_forwarded_host: false,
+        }
     }
 
     fn with_spawner_env<T>(value: &str, f: impl FnOnce() -> T) -> T {
@@ -1505,6 +2041,26 @@ mod tests {
     }
 
     #[test]
+    fn managed_environment_status_copy_failed_with_vm_explains_fallback_to_fresh() {
+        let row = test_agent_instance("agent-1", AGENT_PHASE_ERROR, Some("vm-1"));
+
+        let copy = managed_environment_status_copy(Some(&row), Some(AgentStartupPhase::Failed));
+
+        assert!(copy.contains("preserve the durable home"));
+        assert!(copy.contains("provisions a fresh environment instead"));
+    }
+
+    #[test]
+    fn managed_environment_status_copy_failed_without_vm_explains_fresh_reprovision() {
+        let row = test_agent_instance("agent-1", AGENT_PHASE_ERROR, None);
+
+        let copy = managed_environment_status_copy(Some(&row), Some(AgentStartupPhase::Failed));
+
+        assert!(copy.contains("No recoverable VM is available"));
+        assert!(copy.contains("Recover provisions a fresh environment"));
+    }
+
+    #[test]
     fn prepare_agent_for_reprovision_clears_active_constraint_for_missing_vm_id_row() {
         let _guard = serial_test_guard();
         let Some(mut conn) = init_test_db_connection() else {
@@ -1575,6 +2131,156 @@ mod tests {
         assert_eq!(response.0.vm_id.as_deref(), Some("vm-ready"));
         assert_eq!(response.0.state, AgentAppState::Ready);
         assert_eq!(response.0.startup_phase, AgentStartupPhase::Ready);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn provision_or_existing_managed_environment_returns_active_row_after_agent_exists() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1raceconvergencetest";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-existing",
+            Some("vm-existing"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed active row");
+        drop(conn);
+
+        let action =
+            provision_or_existing_managed_environment(&state, owner_npub, "req-race", None)
+                .await
+                .expect("should converge on existing active row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.vm_id.as_deref(), Some("vm-existing"));
+        assert_eq!(action.startup_phase, AgentStartupPhase::Ready);
+
+        let mut conn = db_pool.get().expect("get clear connection");
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn provision_or_existing_managed_environment_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1inflightconvergencetest";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action =
+            provision_or_existing_managed_environment(&state, owner_npub, "req-inflight", None)
+                .await
+                .expect("should converge on existing inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn recover_agent_for_owner_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1recoverinflightguard";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight-recover",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action = recover_agent_for_owner(&state, owner_npub, "req-inflight-recover", None)
+            .await
+            .expect("recover should converge on inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
+
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn reset_agent_for_owner_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1resetinflightguard";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight-reset",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action = reset_agent_for_owner(&state, owner_npub, "req-inflight-reset", None)
+            .await
+            .expect("reset should converge on inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
 
         clear_test_database(&mut conn);
     }

@@ -13,9 +13,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
 use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
+    GuestServiceKind, GuestServiceLaunch, GuestStartupPlan,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
+    SpawnerVmResponse as VmResponse, VmBackupFreshness, VmBackupStatusRecord,
     GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH,
+    VM_BACKUP_STATUS_SCHEMA_V1,
 };
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -64,6 +67,8 @@ struct VmCleanupState {
 
 const CREATE_STAGING_PREFIX: &str = ".creating__";
 const AUTOSTART_STARTUP_PLAN_METADATA: &str = "autostart.startup-plan.json";
+const BACKUP_STATUS_METADATA: &str = "backup-status.v1.json";
+const BACKUP_HEALTHY_MAX_AGE_HOURS: i64 = 6;
 
 #[derive(Debug, Clone, Copy)]
 struct CurrentVmMetadata {
@@ -339,6 +344,54 @@ impl VmManager {
             status: status.to_string(),
             guest_ready: false,
         })
+    }
+
+    pub fn openclaw_proxy_target(&self, id: &str) -> anyhow::Result<String> {
+        let vm = self.load_vm_disk_state(id)?;
+        let startup_plan = self.load_guest_startup_plan(&vm.microvm_state_dir, id)?;
+        anyhow::ensure!(
+            startup_plan.service_kind == GuestServiceKind::OpenclawGateway,
+            "vm {id} is not running the managed OpenClaw gateway"
+        );
+        let GuestServiceLaunch::OpenclawGateway { gateway_port, .. } = startup_plan.service else {
+            anyhow::bail!("vm {id} startup plan is missing OpenClaw gateway details");
+        };
+        Ok(format!("http://{}:{gateway_port}", vm.ip))
+    }
+
+    pub fn backup_status(&self, id: &str) -> anyhow::Result<SpawnerVmBackupStatus> {
+        let vm = self.load_vm_disk_state(id)?;
+        let durable_home_path = vm.microvm_state_dir.join("home").display().to_string();
+        let metadata_path = vm
+            .microvm_state_dir
+            .join("metadata")
+            .join(BACKUP_STATUS_METADATA);
+        let text = match fs::read_to_string(&metadata_path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(self.missing_backup_status(id, &durable_home_path));
+            }
+            Err(err) => {
+                warn!(
+                    vm_id = %id,
+                    path = %metadata_path.display(),
+                    error = %err,
+                    "failed to read backup status metadata"
+                );
+                return Ok(self.unavailable_backup_status(id, &durable_home_path));
+            }
+        };
+
+        self.parse_backup_status(id, &durable_home_path, &metadata_path, &text)
+            .inspect_err(|err| {
+                warn!(
+                    vm_id = %id,
+                    path = %metadata_path.display(),
+                    error = %err,
+                    "failed to parse backup status metadata"
+                );
+            })
+            .or_else(|_| Ok(self.unavailable_backup_status(id, &durable_home_path)))
     }
 
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
@@ -865,6 +918,107 @@ impl VmManager {
         require_non_empty_file(&paths.microvm_state_dir.join("metadata/autostart.command"))?;
 
         Ok(CurrentVmMetadata { cpu, memory_mb })
+    }
+
+    fn load_guest_startup_plan(
+        &self,
+        microvm_state_dir: &Path,
+        id: &str,
+    ) -> anyhow::Result<GuestStartupPlan> {
+        let metadata_path = microvm_state_dir
+            .join("metadata")
+            .join(AUTOSTART_STARTUP_PLAN_METADATA);
+        let text = fs::read_to_string(&metadata_path).with_context(|| {
+            format!(
+                "read guest startup plan metadata for vm {id} at {}",
+                metadata_path.display()
+            )
+        })?;
+        serde_json::from_str(&text).with_context(|| {
+            format!(
+                "parse guest startup plan metadata for vm {id} at {}",
+                metadata_path.display()
+            )
+        })
+    }
+
+    fn parse_backup_status(
+        &self,
+        id: &str,
+        durable_home_path: &str,
+        metadata_path: &Path,
+        text: &str,
+    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+        let record: VmBackupStatusRecord = serde_json::from_str(text).with_context(|| {
+            format!(
+                "parse backup status metadata for vm {id} at {}",
+                metadata_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            record.schema_version == VM_BACKUP_STATUS_SCHEMA_V1,
+            "backup status metadata schema mismatch for vm {id}: expected {}, found {}",
+            VM_BACKUP_STATUS_SCHEMA_V1,
+            record.schema_version
+        );
+        anyhow::ensure!(
+            record.vm_id == id,
+            "backup status metadata vm_id mismatch: expected {id}, found {}",
+            record.vm_id
+        );
+        let latest_successful =
+            chrono::DateTime::parse_from_rfc3339(&record.latest_successful_backup_at)
+                .with_context(|| format!("parse latest_successful_backup_at for vm {id}"))?
+                .with_timezone(&chrono::Utc);
+        let freshness = if chrono::Utc::now().signed_duration_since(latest_successful)
+            <= chrono::Duration::hours(BACKUP_HEALTHY_MAX_AGE_HOURS)
+        {
+            VmBackupFreshness::Healthy
+        } else {
+            VmBackupFreshness::Stale
+        };
+
+        Ok(SpawnerVmBackupStatus {
+            vm_id: id.to_string(),
+            backup_host: if record.backup_host.trim().is_empty() {
+                self.cfg.host_id.clone()
+            } else {
+                record.backup_host
+            },
+            durable_home_path: durable_home_path.to_string(),
+            successful_backup_known: true,
+            freshness,
+            latest_successful_backup_at: Some(record.latest_successful_backup_at),
+            observed_at: Some(record.observed_at),
+        })
+    }
+
+    fn missing_backup_status(&self, id: &str, durable_home_path: &str) -> SpawnerVmBackupStatus {
+        SpawnerVmBackupStatus {
+            vm_id: id.to_string(),
+            backup_host: self.cfg.host_id.clone(),
+            durable_home_path: durable_home_path.to_string(),
+            successful_backup_known: false,
+            freshness: VmBackupFreshness::Missing,
+            latest_successful_backup_at: None,
+            observed_at: None,
+        }
+    }
+
+    fn unavailable_backup_status(
+        &self,
+        id: &str,
+        durable_home_path: &str,
+    ) -> SpawnerVmBackupStatus {
+        SpawnerVmBackupStatus {
+            vm_id: id.to_string(),
+            backup_host: self.cfg.host_id.clone(),
+            durable_home_path: durable_home_path.to_string(),
+            successful_backup_known: false,
+            freshness: VmBackupFreshness::Unavailable,
+            latest_successful_backup_at: None,
+            observed_at: None,
+        }
     }
 
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
@@ -1735,6 +1889,7 @@ mod tests {
         let root = root.path();
         Config {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            host_id: "pika-build".to_string(),
             bridge_name: "microbr".to_string(),
             state_dir: root.join("state"),
             run_dir: root.join("run"),
@@ -1758,6 +1913,23 @@ mod tests {
             chown_cmd: "/bin/true".to_string(),
             chmod_cmd: "/bin/true".to_string(),
         }
+    }
+
+    fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
+        let metadata_dir = cfg.state_dir.join(vm_id).join("metadata");
+        fs::create_dir_all(&metadata_dir).unwrap();
+        let record = VmBackupStatusRecord {
+            schema_version: VM_BACKUP_STATUS_SCHEMA_V1.to_string(),
+            vm_id: vm_id.to_string(),
+            backup_host: cfg.host_id.clone(),
+            latest_successful_backup_at: latest_successful_backup_at.to_string(),
+            observed_at: latest_successful_backup_at.to_string(),
+        };
+        fs::write(
+            metadata_dir.join(BACKUP_STATUS_METADATA),
+            serde_json::to_string_pretty(&record).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
@@ -1805,6 +1977,136 @@ mod tests {
         assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 12));
         assert_eq!(vm.cpu, 3);
         assert_eq!(vm.memory_mb, 8192);
+    }
+
+    #[tokio::test]
+    async fn openclaw_proxy_target_uses_vm_ip_and_gateway_port_from_startup_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000000";
+        let autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: Some(GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
+                service_kind: GuestServiceKind::OpenclawGateway,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: GuestServiceLaunch::OpenclawGateway {
+                    exec_command: "npx -y openclaw".to_string(),
+                    state_dir: "/root/pika-agent/openclaw".to_string(),
+                    config_path: pika_agent_control_plane::GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                    gateway_port: 18789,
+                    daemon_backend: pika_agent_control_plane::GuestOpenclawDaemonBackend::Native,
+                },
+                readiness_check: pika_agent_control_plane::GuestServiceReadinessCheck::HttpGetOk {
+                    url: "http://127.0.0.1:18789/health".to_string(),
+                    ready_probe: "openclaw_gateway_health".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+                },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "openclaw_gateway_exited".to_string(),
+            }),
+        };
+        write_runtime_metadata(
+            &cfg.state_dir.join(vm_id),
+            vm_id,
+            &mac_for_guest_ip(Ipv4Addr::new(192, 168, 83, 10)),
+            Ipv4Addr::new(192, 168, 83, 10),
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&autostart),
+        )
+        .unwrap();
+
+        let target = manager.openclaw_proxy_target(vm_id).unwrap();
+        assert_eq!(target, "http://192.168.83.10:18789");
+    }
+
+    #[tokio::test]
+    async fn backup_status_returns_missing_when_metadata_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000000";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+
+        let status = manager.backup_status(vm_id).unwrap();
+
+        assert_eq!(status.vm_id, vm_id);
+        assert_eq!(status.backup_host, cfg.host_id);
+        assert_eq!(status.freshness, VmBackupFreshness::Missing);
+        assert!(!status.successful_backup_known);
+        assert_eq!(status.latest_successful_backup_at, None);
+    }
+
+    #[tokio::test]
+    async fn backup_status_reads_recent_success_record_as_healthy() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000001";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        let recent = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::minutes(30))
+            .unwrap()
+            .to_rfc3339();
+        write_backup_status(&cfg, vm_id, &recent);
+
+        let status = manager.backup_status(vm_id).unwrap();
+
+        assert_eq!(status.freshness, VmBackupFreshness::Healthy);
+        assert!(status.successful_backup_known);
+        assert_eq!(
+            status.latest_successful_backup_at.as_deref(),
+            Some(recent.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_status_marks_old_success_record_stale() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000002";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        let old = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::hours(BACKUP_HEALTHY_MAX_AGE_HOURS + 1))
+            .unwrap()
+            .to_rfc3339();
+        write_backup_status(&cfg, vm_id, &old);
+
+        let status = manager.backup_status(vm_id).unwrap();
+
+        assert_eq!(status.freshness, VmBackupFreshness::Stale);
+        assert!(status.successful_backup_known);
+    }
+
+    #[tokio::test]
+    async fn backup_status_returns_unavailable_for_invalid_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000000";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        let metadata_dir = cfg.state_dir.join(vm_id).join("metadata");
+        fs::create_dir_all(&metadata_dir).unwrap();
+        fs::write(metadata_dir.join(BACKUP_STATUS_METADATA), "{not-json").unwrap();
+
+        let status = manager.backup_status(vm_id).unwrap();
+
+        assert_eq!(status.freshness, VmBackupFreshness::Unavailable);
+        assert!(!status.successful_backup_known);
+        assert_eq!(status.latest_successful_backup_at, None);
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ let
   cachePort = 5000;
   newsPort = 8788;
   microvmBackupEnvFile = "/etc/microvm-backup.env";
+  microvmBackupStatusFileName = "backup-status.v1.json";
 in
 {
   imports = [
@@ -116,7 +117,7 @@ in
       EnvironmentFile = [ "-${microvmBackupEnvFile}" ];
     };
 
-    path = with pkgs; [ bash coreutils findutils hostname restic ];
+    path = with pkgs; [ bash coreutils findutils hostname jq restic ];
     script = ''
       set -euo pipefail
 
@@ -132,6 +133,14 @@ in
 
       homes=()
       while IFS= read -r home; do
+        vm_dir="$(dirname "$home")"
+        vm_id="$(basename "$vm_dir")"
+        case "$vm_id" in
+          vm-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+          *)
+            continue
+            ;;
+        esac
         homes+=("$home")
       done < <(find /var/lib/microvms -mindepth 2 -maxdepth 2 -type d -name home | sort)
 
@@ -145,6 +154,33 @@ in
       fi
 
       restic backup "''${homes[@]}" --tag microvm-home --host "$(hostname)"
+
+      now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      backup_host="$(hostname)"
+      for home in "''${homes[@]}"; do
+        vm_dir="$(dirname "$home")"
+        vm_id="$(basename "$vm_dir")"
+        metadata_dir="$vm_dir/metadata"
+        status_file="$metadata_dir/${microvmBackupStatusFileName}"
+        if [ ! -d "$home" ] || [ ! -d "$vm_dir" ] || [ ! -d "$metadata_dir" ]; then
+          continue
+        fi
+        tmp_file="$(mktemp "$metadata_dir/.backup-status.XXXXXX")"
+        jq -n \
+          --arg schema_version "vm.backup_status.v1" \
+          --arg vm_id "$vm_id" \
+          --arg backup_host "$backup_host" \
+          --arg latest_successful_backup_at "$now_utc" \
+          --arg observed_at "$now_utc" \
+          '{
+            schema_version: $schema_version,
+            vm_id: $vm_id,
+            backup_host: $backup_host,
+            latest_successful_backup_at: $latest_successful_backup_at,
+            observed_at: $observed_at
+          }' > "$tmp_file"
+        mv "$tmp_file" "$status_file"
+      done
     '';
   };
 

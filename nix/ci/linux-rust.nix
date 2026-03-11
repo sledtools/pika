@@ -11,6 +11,8 @@ let
       "pika-linux-rust-workspace"
     else if lane == "agent-contracts" then
       "pika-linux-rust-agent-contracts-workspace"
+    else if lane == "notifications" then
+      "pika-linux-rust-notifications-workspace"
     else
       throw "unsupported staged Linux Rust lane `${lane}`";
 
@@ -202,6 +204,104 @@ let
         fi
       ''
     else
+      if lane == "notifications" then
+        ''
+          export PIKACI_NOTIFICATIONS_TEST_EXECUTABLES="$TMPDIR/notifications-test-executables.tsv"
+          export PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST="$TMPDIR/pika-server-package-tests.manifest"
+          export PIKACI_PIKAHUT_EXECUTABLE="$TMPDIR/pikahut-executable"
+          export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
+          cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+          case "$cargoJobs" in
+            ""|0)
+              cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+              ;;
+          esac
+          echo "[pikaci] building notifications lane with cargo jobs=$cargoJobs" >&2
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+          : >"$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES"
+
+          capture_artifacts() {
+            local cargo_build_log="$1"
+            ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+              select(.reason == "compiler-artifact" and .executable != null)
+              | [
+                  .target.name,
+                  (.target.kind | join(",")),
+                  (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+                ]
+              | @tsv
+            ' <"$cargo_build_log" >>"$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES"
+          }
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pika-server \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_artifacts "$cargoBuildLog"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p pikahut \
+            --bin pikahut \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          ${pkgs.jq}/bin/jq -r '
+            select(.reason == "compiler-artifact" and .target.name == "pikahut" and .executable != null)
+            | .executable
+          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKAHUT_EXECUTABLE"
+          if [ ! -s "$PIKACI_PIKAHUT_EXECUTABLE" ]; then
+            echo "missing staged pikahut executable" >&2
+            cat "$cargoBuildLog" >&2
+            exit 1
+          fi
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p pika-server \
+            --bin pika-server \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          ${pkgs.jq}/bin/jq -r '
+            select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
+            | .executable
+          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
+          if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
+            echo "missing staged pika-server executable" >&2
+            cat "$cargoBuildLog" >&2
+            exit 1
+          fi
+
+          sort -u -o "$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES" "$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES"
+
+          manifest_from_targets() {
+            local manifest_path="$1"
+            shift
+            : >"$manifest_path"
+            for target_name in "$@"; do
+              local executable_path
+              executable_path="$(${pkgs.gawk}/bin/awk -F '\t' -v target="$target_name" '
+                $1 == target && $3 != "" {
+                  path = $3
+                }
+                END {
+                  if (path != "") {
+                    print path
+                  }
+                }
+              ' "$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES")"
+              if [ -z "$executable_path" ]; then
+                echo "missing staged notifications test executable for target $target_name" >&2
+                echo "captured compiler-artifact rows:" >&2
+                cat "$PIKACI_NOTIFICATIONS_TEST_EXECUTABLES" >&2
+                echo "debug/deps candidates:" >&2
+                find "$target_root/debug/deps" -maxdepth 1 -type f | sort >&2 || true
+                exit 1
+              fi
+              printf '%s\n' "$executable_path" >>"$manifest_path"
+            done
+            sort -u -o "$manifest_path" "$manifest_path"
+          }
+
+          manifest_from_targets "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" pika-server
+        ''
+      else
       ''
         export PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES="$TMPDIR/agent-contracts-test-executables.tsv"
         export PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST="$TMPDIR/agent-control-plane-unit.manifest"
@@ -410,6 +510,97 @@ let
           "$out/bin/run-pika-core-messaging-e2e-tests"
       ''
     else
+      if lane == "notifications" then
+        ''
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          cp "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" \
+            "$out/share/pikaci/pika-server-package-tests.manifest"
+
+          copy_target_relative() {
+            local relative="$1"
+            if [ ! -e "$target_root/$relative" ]; then
+              echo "missing staged notifications runtime artifact at $target_root/$relative" >&2
+              exit 1
+            fi
+            (
+              cd "$target_root"
+              cp --parents -P "$relative" "$out/target"
+            )
+          }
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            copy_target_relative "$relative"
+          done <"$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST"
+
+          install_staged_binary() {
+            local manifest_path="$1"
+            local output_name="$2"
+            local executable_path
+            executable_path="$(cat "$manifest_path")"
+            local relative
+            case "$executable_path" in
+              "$target_root_abs"*)
+                relative="''${executable_path#$target_root_abs}"
+                ;;
+              "$target_root"*)
+                relative="''${executable_path#$target_root/}"
+                ;;
+              *)
+                echo "unexpected staged executable path: $executable_path" >&2
+                exit 1
+                ;;
+            esac
+            copy_target_relative "$relative"
+            ln -s "../target/$relative" "$out/bin/$output_name"
+          }
+
+          install_staged_binary "$PIKACI_PIKAHUT_EXECUTABLE" "pikahut"
+          install_staged_binary "$PIKACI_PIKA_SERVER_EXECUTABLE" "pika-server"
+
+          if [ -d "$target_root/debug/deps" ]; then
+            while IFS= read -r shared_object; do
+              copy_target_relative "''${shared_object#$target_root/}"
+            done < <(
+              find "$target_root/debug/deps" -maxdepth 1 -type f \
+                \( -name '*.so' -o -name '*.so.*' \) \
+                | sort
+            )
+          fi
+
+          cat >"$out/bin/run-pika-server-package-tests" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          manifest="$root/share/pikaci/pika-server-package-tests.manifest"
+          if [ ! -s "$manifest" ]; then
+            echo "missing staged pika-server package test manifest at $manifest" >&2
+            exit 1
+          fi
+
+          export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
+          state_dir="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
+          cleanup() {
+            "$root/bin/pikahut" down --state-dir "$state_dir" >/dev/null 2>&1 || true
+            rm -rf "$state_dir"
+          }
+          trap cleanup EXIT
+
+          "$root/bin/pikahut" up --profile postgres --background --state-dir "$state_dir" >/dev/null
+          eval "$("$root/bin/pikahut" env --state-dir "$state_dir")"
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            echo "[pikaci] running staged pika-server test binary $relative"
+            "$root/target/$relative" --test-threads=1 --nocapture
+          done <"$manifest"
+          EOF
+          chmod +x "$out/bin/run-pika-server-package-tests"
+        ''
+      else
       ''
         target_root="''${CARGO_TARGET_DIR:-target}"
         mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"

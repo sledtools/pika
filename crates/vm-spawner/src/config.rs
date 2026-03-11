@@ -12,6 +12,7 @@ pub struct RuntimeArtifactSpec {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
+    pub host_id: String,
     pub bridge_name: String,
     pub state_dir: PathBuf,
     pub run_dir: PathBuf,
@@ -44,6 +45,17 @@ impl Config {
             .context("invalid VM_SPAWNER_BIND")?;
 
         let bridge_name = std::env::var("VM_BRIDGE").unwrap_or_else(|_| "microbr".into());
+        let host_id = std::env::var("VM_HOST_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                std::env::var("HOSTNAME")
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or_else(|| "unknown-host".to_string());
         let state_dir = PathBuf::from(
             std::env::var("VM_STATE_DIR").unwrap_or_else(|_| "/var/lib/microvms".into()),
         );
@@ -96,6 +108,7 @@ impl Config {
 
         Ok(Self {
             bind,
+            host_id,
             bridge_name,
             state_dir,
             run_dir,

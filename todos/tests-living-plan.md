@@ -58,6 +58,16 @@ Working assumptions:
    - both nightly local call-path selectors are now directly owned by `pikahut`
    - the next obvious ownership seam is desktop UI E2E still wrapping the ignored desktop bot boundary
 
+3. Slice 4 collapsed the desktop local UI seam:
+   - `integration_deterministic::ui_e2e_local_desktop` now owns the local desktop ping/pong boundary directly
+   - `pikahut` calls a small `pika-desktop` helper in-process with selector-owned state under the outer artifact dir
+   - the ignored desktop owner in `crates/pika-desktop/src/app_manager.rs` is removed
+
+4. Slice 5 clarified policy tiers without root workflow churn:
+   - checked-in docs now explicitly separate pre-merge CI-owned, nightly CI-owned, manual-only, compatibility-only, and advisory/convenience surfaces
+   - platform-hosted selectors are described honestly instead of being inflated into generic “core coverage”
+   - current root CI / `pikaci` mismatches are recorded as deferred asks instead of being fixed in hot conflict surfaces
+
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -111,7 +121,7 @@ Verified in the repo today:
    - iOS unit tests: `29` tests across `ios/Tests/*.swift`
    - iOS UI tests: `5` tests in `ios/UITests/PikaUITests.swift` after deleting the public-network/device call probe
    - Android instrumentation tests: `16` tests across `android/app/src/androidTest/java/com/pika/app/*.kt`
-   - desktop: inline Rust tests plus one ignored local relay+bot E2E in `crates/pika-desktop/src/app_manager.rs`
+   - desktop: inline Rust tests plus selector-owned local ping/pong coverage under `integration_deterministic::ui_e2e_local_desktop`
 
 8. Public-network/prod-like call coverage has already been pruned from the checked-in suite:
    - `rust/tests/e2e_calls.rs::call_deployed_bot` removed
@@ -145,7 +155,7 @@ Verified in the repo today:
 
 1. Ownership is blurred at the important boundaries.
    - `pikahut` now defines the CI-facing selector contract, but some selectors still shell out to older ignored tests in other crates.
-   - The clearest remaining example is desktop UI E2E wrapping the ignored desktop bot test in `crates/pika-desktop/src/app_manager.rs`.
+   - The largest remaining examples are platform-hosted selectors that still rely on native/test-runner entrypoints for iOS and Android, not hidden desktop Rust test owners.
 
 2. `pikahut` is acting as a thick orchestration layer over other test/tool entrypoints.
    - The current selector/scenario stack shells into nested `cargo test`, `cargo run`, `gradlew`, `xcodebuild`, and JavaScript tooling.
@@ -155,10 +165,11 @@ Verified in the repo today:
    - path filters, approval environments, runner-specific job carving, and release-nightly issue management are current operational facts, but they should not automatically define future `pikaci` lane boundaries
 
 4. The current labels are not fully truthful.
+   - the checked-in docs now describe enforcement tiers more truthfully, but the root CI surfaces still have real mismatches
    - root `just pre-merge` does not match the full blocking GitHub pre-merge workflow
    - root `just nightly` does not match the full nightly workflow
-   - `nightly-pika-ui-ios` is described like a Swift-unit lane, but `just ios-ui-test` runs the full `Pika` test scheme
-   - Android and iOS local UI selector lanes are hand-picked subsets rather than obviously intentional “full suite” contracts
+   - `nightly-pika-ui-ios` still runs the full `Pika` XCTest scheme via `just ios-ui-test`, while `ios-ui-e2e-local` remains manual-only
+   - Android and iOS local UI selector lanes are still intentionally hand-picked subsets rather than obviously intentional “full suite” contracts
 
 5. Workflow change-detection and recipe ownership do not line up cleanly.
    - The clearest example is `check-pikachat`: it runs deterministic `pikahut` selectors, but its path filter largely omits `crates/pikahut/**`.
@@ -181,7 +192,7 @@ Verified in the repo today:
 9. Native test volume does not currently look like the best cleanup target.
    - iOS unit tests are mostly session restore, reconciler/deep-link handling, keychain policy, and layout math.
    - Android instrumentation is mostly offline UI smoke, deep-link handling, and the retained local-fixture selector class.
-   - We should keep watching for native logic drift, but the highest-value remaining seam is still duplicated call-path ownership in Rust-side integration.
+   - We should keep watching for native logic drift, but the highest-value remaining cleanup is now policy/alignment work rather than another Rust-side ownership seam.
 
 ## Tradeoffs
 
@@ -254,6 +265,16 @@ Updated recommendation after Slice 3:
 2. `rust/tests/e2e_calls.rs` is gone, so future cleanup should target a different ownership seam rather than extending the deleted legacy layer.
 3. The next slice should stay low-conflict and focus either on desktop UI E2E ownership or on explicit CI tiering.
 
+Updated recommendation after Slice 4:
+1. Desktop local UI E2E ownership cleanup is complete for the Rust-side desktop seam.
+2. Future cleanup should avoid reopening deleted ignored-test owners in `pika-desktop`.
+3. The next slice should shift to explicit CI tiering or another non-root ownership seam rather than more root plumbing churn.
+
+Updated recommendation after Slice 5:
+1. The checked-in policy docs now say which surfaces are pre-merge, nightly, manual-only, compatibility-only, or advisory.
+2. Future slices should consume those documented deferred asks instead of reopening another docs-only truth pass.
+3. The next best move is a small root CI / `pikaci` alignment slice once the active conflict surface cools.
+
 Acceptance criteria:
 1. One important behavior family has a single obvious owner.
 2. CI selectors still exist, but they no longer hide a confusing wrapper-over-wrapper structure.
@@ -265,8 +286,8 @@ Default bias:
 
 Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
-2. The next best ownership target is desktop UI E2E, which still wraps the ignored desktop bot boundary under `crates/pika-desktop/src/app_manager.rs`.
-3. If that seam is not ready, the fallback next slice is Phase 3 CI tier clarification without root workflow churn.
+2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
+3. Explicit CI tier clarification is now done in checked-in docs; the next best target is one documented root CI / `pikaci` alignment mismatch after the active conflict surface cools.
 4. Keep avoiding root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
@@ -340,18 +361,18 @@ This is intentionally not a “coverage improvement” slice.
 
 ## Recommended Next Slice
 
-The next implementation slice should target desktop UI E2E ownership cleanup.
+The next implementation slice should target one documented root CI / `pikaci` alignment mismatch rather than another ownership or docs-only pass.
 
 Shape:
-1. Keep the `pikahut` selector contract and nightly lane shape stable.
-2. Remove one layer of wrapper indirection around the existing desktop bot/UI boundary without broad platform churn.
-3. Prefer moving reusable setup/assertion logic under `pikahut` or a small shared Rust helper rather than preserving another hidden legacy owner.
-4. Keep scope tight: do not combine this with native iOS/Android cleanup or broad CI recipe changes.
+1. Pick exactly one documented mismatch and align it with the now-explicit policy truth.
+2. Stay conflict-aware around `.github/workflows`, `just`, `nix/ci`, and `crates/pikaci`.
+3. Good candidates are the `check-pikachat` path-filter gap or the Apple Silicon `pre-merge-pikachat` host-side split.
+4. Keep scope tight: do not combine this with iOS/Android ownership rewrites or another broad docs sweep.
 
 Why this is next:
-1. The nightly call-path selectors now have a single obvious owner, so desktop is the clearest remaining ownership duplication.
-2. It improves future shardability and eventual `pikaci` portability without fighting the current shadow-lane work.
-3. It is still aligned with the Rust-first architecture while avoiding native iOS/Android churn.
+1. The policy/tiering truth is now explicit, so the next slice can act on one mismatch instead of arguing about labels.
+2. It improves future shardability and eventual `pikaci` portability without reopening settled ownership seams.
+3. It stays aligned with the Rust-first architecture while avoiding native iOS/Android churn.
 
 Non-goals for the next slice:
 1. Do not add new public-network tests.

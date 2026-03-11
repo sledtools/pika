@@ -11,6 +11,7 @@ pika-build.
 Targets:
   pre-merge-pika-rust
   pre-merge-agent-contracts
+  pre-merge-notifications
 
 Commands:
   prepare      Prewarm workspaceDeps, then realize workspaceDeps and workspaceBuild on pika-build
@@ -22,6 +23,7 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 prepare_snapshot_root=""
+pikaci_bin="$repo_root/target/debug/pikaci"
 
 export_remote_defaults() {
   export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}"
@@ -31,23 +33,10 @@ export_remote_defaults() {
 }
 
 resolve_target() {
-  case "$1" in
-    pre-merge-pika-rust)
-      target_id="pre-merge-pika-rust"
-      deps_installable=".#ci.x86_64-linux.workspaceDeps"
-      build_installable=".#ci.x86_64-linux.workspaceBuild"
-      ;;
-    pre-merge-agent-contracts)
-      target_id="pre-merge-agent-contracts"
-      deps_installable=".#ci.x86_64-linux.agentContractsWorkspaceDeps"
-      build_installable=".#ci.x86_64-linux.agentContractsWorkspaceBuild"
-      ;;
-    *)
-      echo "error: unsupported staged Linux Rust target: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
+  local target_name="$1"
+  cd "$repo_root"
+  cargo build -p pikaci --bin pikaci >/dev/null
+  eval "$("$pikaci_bin" staged-linux-target-info "$target_name")"
 }
 
 prepare_lane() {
@@ -90,10 +79,10 @@ run_lane() {
   export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
 
   cd "$repo_root"
-  cargo build -p pikaci --bins
+  cargo build -p pikaci --bins >/dev/null
   export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$repo_root/target/debug/pikaci-fulfill-prepared-output"
   export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$repo_root/target/debug/pikaci-launch-fulfill-prepared-output"
-  exec "$repo_root/target/debug/pikaci" run "$target_id"
+  exec "$pikaci_bin" run "$target_id"
 }
 
 case "${1:-}" in

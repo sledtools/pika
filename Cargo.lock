@@ -6065,6 +6065,7 @@ dependencies = [
 name = "pika-desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "flume",
  "iced",
@@ -6368,6 +6369,7 @@ dependencies = [
  "nix",
  "nostr-blossom",
  "nostr-sdk",
+ "pika-desktop",
  "pika-marmot-runtime",
  "pika-relay-profiles",
  "pika_core",
@@ -9198,6 +9200,7 @@ dependencies = [
  "nostr-sdk",
  "pika-agent-control-plane",
  "pika-agent-microvm",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

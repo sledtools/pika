@@ -789,11 +789,16 @@ EOF
           agentContractsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
             lane = "agent-contracts";
           });
+          notificationsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+            lane = "notifications";
+          });
         in
         pikaCoreLane
         // {
           agentContractsWorkspaceDeps = agentContractsLane.workspaceDeps;
           agentContractsWorkspaceBuild = agentContractsLane.workspaceBuild;
+          notificationsWorkspaceDeps = notificationsLane.workspaceDeps;
+          notificationsWorkspaceBuild = notificationsLane.workspaceBuild;
         };
 
       ci.aarch64-linux = import ./nix/ci/linux-rust.nix {

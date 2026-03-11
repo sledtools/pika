@@ -8,7 +8,8 @@ use pika_agent_control_plane::{
     GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan,
     MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
+    SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
 
@@ -36,6 +37,7 @@ const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
+const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -219,6 +221,43 @@ impl MicrovmSpawnerClient {
             );
         }
         resp.json().await.context("decode get vm response")
+    }
+
+    pub async fn get_vm_backup_status(&self, vm_id: &str) -> anyhow::Result<SpawnerVmBackupStatus> {
+        self.get_vm_backup_status_with_request_id(vm_id, None).await
+    }
+
+    pub async fn get_vm_backup_status_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+        let url = format!("{}/vms/{vm_id}/backup-status", self.base_url);
+        let resp = with_request_id(
+            self.client.get(&url).timeout(GET_VM_BACKUP_STATUS_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send get vm backup status request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "get vm backup status",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json()
+            .await
+            .context("decode get vm backup status response")
     }
 }
 
@@ -538,8 +577,13 @@ set -euo pipefail
 
 STARTUP_PLAN_PATH="/{startup_plan_path}"
 agent_pid=""
+gateway_proxy_pid=""
 
 cleanup_agent() {{
+  if [[ -n "${{gateway_proxy_pid:-}}" ]]; then
+    kill "$gateway_proxy_pid" 2>/dev/null || true
+    wait "$gateway_proxy_pid" 2>/dev/null || true
+  fi
   if [[ -n "${{agent_pid:-}}" ]]; then
     kill "$agent_pid" 2>/dev/null || true
     wait "$agent_pid" 2>/dev/null || true
@@ -552,6 +596,65 @@ plan_value() {{
 
 workspace_path() {{
   printf '/%s' "$1"
+}}
+
+start_openclaw_private_proxy() {{
+  local listen_host="$1"
+  local listen_port="$2"
+  python3 - "$listen_host" "$listen_port" <<'PY' &
+import asyncio
+import sys
+
+listen_host = sys.argv[1]
+listen_port = int(sys.argv[2])
+target_host = "127.0.0.1"
+target_port = listen_port
+
+async def pump(reader, writer):
+    try:
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            target_host, target_port
+        )
+    except Exception:
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    async def forward(src, dst):
+        try:
+            while True:
+                chunk = await src.read(65536)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                await dst.drain()
+        except Exception:
+            pass
+        finally:
+            dst.close()
+            try:
+                await dst.wait_closed()
+            except Exception:
+                pass
+
+    await asyncio.gather(
+        forward(reader, upstream_writer),
+        forward(upstream_reader, writer),
+    )
+
+async def main():
+    server = await asyncio.start_server(pump, listen_host, listen_port)
+    async with server:
+        await server.serve_forever()
+
+asyncio.run(main())
+PY
+  gateway_proxy_pid=$!
+  sleep 1
+  if ! kill -0 "$gateway_proxy_pid" 2>/dev/null; then
+    echo "[microvm-agent] failed to start OpenClaw private gateway proxy on $listen_host:$listen_port" >&2
+    exit 1
+  fi
 }}
 
 trap cleanup_agent EXIT TERM INT
@@ -766,9 +869,11 @@ start_service() {{
       export OPENCLAW_SKIP_CANVAS_HOST=1
       export OPENCLAW_SKIP_CRON=1
       export PIKA_OPENCLAW_GATEWAY_PORT="$gateway_port"
+      : "${{PIKA_VM_IP:?missing PIKA_VM_IP}}"
       echo "[microvm-agent] starting OpenClaw gateway via $openclaw_exec" >&2
       bash -lc "$openclaw_exec gateway --allow-unconfigured" &
       agent_pid=$!
+      start_openclaw_private_proxy "$PIKA_VM_IP" "$gateway_port"
       ;;
     *)
       echo "[microvm-agent] unsupported startup service kind: $service_kind" >&2
@@ -1090,6 +1195,8 @@ mod tests {
             script.contains("invalid startup plan: backend_mode=acp but ACP payload is missing")
         );
         assert!(script.contains("plan_value '.service.exec_command'"));
+        assert!(script.contains("start_openclaw_private_proxy"));
+        assert!(script.contains(": \"${PIKA_VM_IP:?missing PIKA_VM_IP}\""));
         assert!(
             !script.contains("marmotd"),
             "autostart script must only resolve pikachat daemon binary"
@@ -1452,6 +1559,33 @@ mod tests {
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
             Some("req-get-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_vm_backup_status_contract_request_shape() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"vm_id":"vm-123","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-123/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let status = client
+            .get_vm_backup_status_with_request_id("vm-123", Some("req-backup-123"))
+            .await
+            .expect("get backup status succeeds");
+        assert_eq!(status.vm_id, "vm-123");
+        assert!(status.successful_backup_known);
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-123/backup-status");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-backup-123")
         );
         assert!(captured.body.is_empty());
     }

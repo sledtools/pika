@@ -92,6 +92,7 @@ pub const GUEST_PID_PATH: &str = "workspace/pika-agent/agent.pid";
 pub const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
 pub const GUEST_OPENCLAW_EXTENSION_ROOT: &str =
     "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
+pub const VM_BACKUP_STATUS_SCHEMA_V1: &str = "vm.backup_status.v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -384,6 +385,37 @@ pub struct SpawnerVmResponse {
 
 fn default_spawner_vm_status() -> String {
     "running".to_string()
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmBackupFreshness {
+    Healthy,
+    Stale,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VmBackupStatusRecord {
+    pub schema_version: String,
+    pub vm_id: String,
+    pub backup_host: String,
+    pub latest_successful_backup_at: String,
+    pub observed_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerVmBackupStatus {
+    pub vm_id: String,
+    pub backup_host: String,
+    pub durable_home_path: String,
+    pub successful_backup_known: bool,
+    pub freshness: VmBackupFreshness,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_successful_backup_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -785,6 +817,21 @@ mod tests {
     fn spawner_create_vm_request_requires_guest_autostart() {
         let json = json!({});
         assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
+    }
+
+    #[test]
+    fn vm_backup_status_record_round_trips() {
+        let record = VmBackupStatusRecord {
+            schema_version: VM_BACKUP_STATUS_SCHEMA_V1.to_string(),
+            vm_id: "vm-00000000".to_string(),
+            backup_host: "pika-build".to_string(),
+            latest_successful_backup_at: "2026-03-11T00:00:00Z".to_string(),
+            observed_at: "2026-03-11T00:00:00Z".to_string(),
+        };
+        let encoded = serde_json::to_string(&record).expect("encode backup record");
+        let decoded: VmBackupStatusRecord =
+            serde_json::from_str(&encoded).expect("decode backup record");
+        assert_eq!(decoded, record);
     }
 
     #[test]

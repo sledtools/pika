@@ -4,11 +4,12 @@ mod manager;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::Response;
-use axum::routing::{get, post};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use tracing::{error, info, warn};
@@ -17,7 +18,8 @@ use uuid::Uuid;
 use config::Config;
 use manager::{VmManager, VmNotFound};
 use pika_agent_control_plane::{
-    SpawnerCreateVmRequest as CreateVmRequest, SpawnerVmResponse as VmResponse,
+    SpawnerCreateVmRequest as CreateVmRequest, SpawnerVmBackupStatus,
+    SpawnerVmResponse as VmResponse,
 };
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -103,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/vms", post(create_vm))
         .route("/vms/:id", get(get_vm).delete(delete_vm))
         .route("/vms/:id/recover", post(recover_vm))
+        .route("/vms/:id/backup-status", get(get_vm_backup_status))
+        .route("/vms/:id/openclaw", any(proxy_openclaw_root))
+        .route("/vms/:id/openclaw/*path", any(proxy_openclaw_path))
         .layer(middleware::from_fn(trace_http_request))
         .with_state(manager.clone());
 
@@ -182,6 +187,153 @@ async fn recover_vm(
         .map_err(map_manager_error_to_api)
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(vm))
+}
+
+async fn get_vm_backup_status(
+    State(manager): State<Arc<VmManager>>,
+    Extension(request_context): Extension<RequestContext>,
+    Path(id): Path<String>,
+) -> Result<Json<SpawnerVmBackupStatus>, ApiError> {
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let status = manager
+        .backup_status(&id)
+        .map_err(map_manager_error_to_api)
+        .map_err(|err| err.with_request_id(request_context.request_id))?;
+    Ok(Json(status))
+}
+
+async fn proxy_openclaw_root(
+    State(manager): State<Arc<VmManager>>,
+    Extension(request_context): Extension<RequestContext>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    proxy_openclaw_request(
+        manager,
+        OpenClawProxyRequest {
+            request_context,
+            id,
+            upstream_path: "/".to_string(),
+            method,
+            uri,
+            headers,
+            body,
+        },
+    )
+    .await
+}
+
+async fn proxy_openclaw_path(
+    State(manager): State<Arc<VmManager>>,
+    Extension(request_context): Extension<RequestContext>,
+    Path((id, path)): Path<(String, String)>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    proxy_openclaw_request(
+        manager,
+        OpenClawProxyRequest {
+            request_context,
+            id,
+            upstream_path: format!("/{}", path),
+            method,
+            uri,
+            headers,
+            body,
+        },
+    )
+    .await
+}
+
+struct OpenClawProxyRequest {
+    request_context: RequestContext,
+    id: String,
+    upstream_path: String,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+async fn proxy_openclaw_request(
+    manager: Arc<VmManager>,
+    request: OpenClawProxyRequest,
+) -> Result<Response, ApiError> {
+    let OpenClawProxyRequest {
+        request_context,
+        id,
+        upstream_path,
+        method,
+        uri,
+        headers,
+        body,
+    } = request;
+    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let base_url = manager
+        .openclaw_proxy_target(&id)
+        .map_err(ApiError::from)
+        .map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
+    let upstream_url = if let Some(query) = uri.query() {
+        format!("{base_url}{upstream_path}?{query}")
+    } else {
+        format!("{base_url}{upstream_path}")
+    };
+
+    let client = reqwest::Client::new();
+    let upstream_method =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("invalid proxied method: {err}"),
+            )
+            .with_request_id(request_context.request_id.clone())
+        })?;
+    let mut upstream = client.request(upstream_method, &upstream_url);
+    for (name, value) in forwardable_request_headers(&headers) {
+        let reqwest_name = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid proxied header name: {err}"),
+                )
+                .with_request_id(request_context.request_id.clone())
+            })?;
+        let reqwest_value =
+            reqwest::header::HeaderValue::from_bytes(value.as_bytes()).map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid proxied header value: {err}"),
+                )
+                .with_request_id(request_context.request_id.clone())
+            })?;
+        upstream = upstream.header(reqwest_name, reqwest_value);
+    }
+    if !body.is_empty() {
+        upstream = upstream.body(body.to_vec());
+    }
+    let upstream = upstream.send().await.map_err(|err| {
+        ApiError::internal(format!("proxy openclaw request for vm {id} failed: {err}"))
+            .with_request_id(request_context.request_id.clone())
+    })?;
+
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let response_headers = upstream.headers().clone();
+    let response_body = upstream.bytes().await.map_err(|err| {
+        ApiError::internal(format!(
+            "read proxied openclaw response for vm {id} failed: {err}"
+        ))
+        .with_request_id(request_context.request_id.clone())
+    })?;
+
+    let mut response = (status, response_body).into_response();
+    copy_response_headers(response.headers_mut(), &response_headers, false);
+    Ok(response)
 }
 
 #[derive(Debug)]
@@ -273,6 +425,53 @@ fn map_manager_error_to_api(err: anyhow::Error) -> ApiError {
         return ApiError::new(StatusCode::NOT_FOUND, not_found.to_string());
     }
     ApiError::internal(err.to_string())
+}
+
+fn header_is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn forwardable_request_headers(headers: &HeaderMap) -> Vec<(&HeaderName, &HeaderValue)> {
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            !header_is_hop_by_hop(name) && name != "host" && name != "content-length"
+        })
+        .collect()
+}
+
+fn copy_response_headers(
+    target: &mut HeaderMap,
+    source: &reqwest::header::HeaderMap,
+    allow_set_cookie: bool,
+) {
+    for (name, value) in source {
+        let name_str = name.as_str();
+        if header_is_hop_by_hop(name_str) {
+            continue;
+        }
+        if !allow_set_cookie && name_str == "set-cookie" {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) else {
+            continue;
+        };
+        target.append(header_name, header_value);
+    }
 }
 
 #[cfg(test)]

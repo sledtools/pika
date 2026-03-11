@@ -144,7 +144,8 @@ just clippy       # Lint
 just test         # Run pika_core tests
 just qa           # Full QA: fmt + clippy + test + platform builds
 just pre-merge-pika  # CI-safe app lane (Rust + Android + desktop)
-just pre-merge       # CI entrypoint for the whole repo
+just pre-merge       # Human aggregate, not a full mirror of the blocking GitHub workflow
+just nightly         # Human aggregate, not a full mirror of the scheduled nightly workflow
 ```
 
 Use `just --list` for the curated root recipes. For the expanded module tree, use `JUST_UNSTABLE=1 just --list --list-submodules`.
@@ -153,16 +154,19 @@ Use `just --list` for the curated root recipes. For the expanded module tree, us
 
 ```sh
 just test                    # Unit tests
-just cli-smoke               # CLI smoke test (requires local Nostr relay)
-just e2e-local-relay         # Deterministic E2E with local relay + local bot
-just ios-ui-test             # Deterministic iOS XCTest suite on simulator
-just ios-ui-e2e-local        # Heavy iOS bot/media flows against local fixtures
-just android-ui-test         # Deterministic Android instrumentation suite
-just android-ui-e2e-local    # Heavy Android bot/media flows against local fixtures
-just desktop-ui-test         # Desktop UI/manager tests
+just cli-smoke               # Compatibility entrypoint to the pre-merge-owned local relay selector
+just cli-smoke-media         # Compatibility entrypoint to the nightly-owned media selector; requires internet for default Blossom server
+just e2e-local-relay         # Convenience aggregate for iOS + Android local UI E2E; not a policy owner
+just ios-ui-test             # Retained nightly CI-owned iOS XCTest lane
+just ios-ui-e2e-local        # Manual-only local iOS bot/media selector
+just android-ui-test         # Deterministic Android instrumentation suite; manual/dev smoke, not currently CI-owned
+just android-ui-e2e-local    # Compatibility entrypoint to the nightly-owned Android selector
+just desktop-e2e-local       # Compatibility entrypoint to the pre-merge-owned desktop selector
+just desktop-ui-test         # Desktop package tests; advisory/developer smoke, not the selector-owned contract
 ```
 
 Public-network and deployed-bot probes are intentionally out of scope for the checked-in core app CI policy. Prefer the Rust-first and local-fixture-backed paths above.
+These commands mix blocking selectors, nightly-only selectors, manual-only selectors, and convenience recipes. For the current policy truth, see [`docs/testing/ci-selectors.md`](docs/testing/ci-selectors.md) and [`docs/testing/integration-matrix.md`](docs/testing/integration-matrix.md).
 
 ## Architecture
 

@@ -42,6 +42,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    managed_environment_events (id) {
+        id -> Int8,
+        owner_npub -> Text,
+        agent_id -> Nullable<Text>,
+        vm_id -> Nullable<Text>,
+        event_kind -> Text,
+        message -> Text,
+        request_id -> Nullable<Text>,
+        created_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     subscription_info (id) {
         id -> Text,
         device_token -> Text,
@@ -57,5 +70,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     agent_allowlist_audit,
     agent_instances,
     group_subscriptions,
+    managed_environment_events,
     subscription_info,
 );

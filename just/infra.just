@@ -48,6 +48,11 @@ pikaci-pre-merge-pika-rust-prepares-remote-build:
 pikaci-remote-fulfill-pre-merge-agent-contracts:
     ./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts
 
+# Run the staged `pre-merge-notifications` lane with strict remote-authoritative fulfillment on pika-build.
+[private]
+pikaci-remote-fulfill-pre-merge-notifications:
+    ./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications
+
 # Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
 [private]
 linux-builder-repair:

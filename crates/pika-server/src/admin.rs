@@ -11,10 +11,14 @@ use nostr_sdk::prelude::PublicKey;
 use nostr_sdk::ToBech32;
 use serde::Deserialize;
 
+use crate::agent_api::{
+    load_managed_environment_backup_status, load_managed_environment_status,
+    ManagedEnvironmentBackupFreshness,
+};
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
-use crate::State;
+use crate::{RequestContext, State};
 
 const ADMIN_BOOTSTRAP_ENV: &str = "PIKA_ADMIN_BOOTSTRAP_NPUBS";
 const ADMIN_SESSION_SECRET_ENV: &str = "PIKA_ADMIN_SESSION_SECRET";
@@ -63,6 +67,20 @@ struct AdminAllowlistRow {
     action_label: String,
 }
 
+#[derive(Clone, Debug)]
+struct AdminManagedEnvironmentRow {
+    owner_npub: String,
+    agent_id: String,
+    vm_id: String,
+    app_state: String,
+    startup_phase: String,
+    backup_freshness: String,
+    backup_last_successful_at: String,
+    backup_host: String,
+    has_backup_host: bool,
+    backup_status_copy: String,
+}
+
 #[derive(Template)]
 #[template(path = "admin/login.html")]
 struct LoginTemplate {
@@ -74,6 +92,8 @@ struct LoginTemplate {
 struct DashboardTemplate<'a> {
     current_admin_npub: &'a str,
     rows: &'a [AdminAllowlistRow],
+    environment_rows: &'a [AdminManagedEnvironmentRow],
+    has_environment_rows: bool,
 }
 
 impl AdminConfig {
@@ -194,6 +214,51 @@ fn render_template(template: &impl Template) -> Result<Response, (StatusCode, St
     Ok(axum::response::Html(html).into_response())
 }
 
+fn format_rfc3339_timestamp(value: Option<&str>) -> String {
+    value
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .map(|value| format!("{}", value.format("%Y-%m-%d %H:%M:%S UTC")))
+        .unwrap_or_else(|| "not_available".to_string())
+}
+
+fn admin_app_state_label(
+    state: Option<crate::agent_api_v1_contract::AgentAppState>,
+) -> &'static str {
+    match state {
+        None => "not_provisioned",
+        Some(crate::agent_api_v1_contract::AgentAppState::Creating) => "creating",
+        Some(crate::agent_api_v1_contract::AgentAppState::Ready) => "ready",
+        Some(crate::agent_api_v1_contract::AgentAppState::Error) => "error",
+    }
+}
+
+fn admin_startup_phase_label(
+    phase: Option<pika_agent_control_plane::AgentStartupPhase>,
+) -> &'static str {
+    match phase {
+        None => "not_started",
+        Some(pika_agent_control_plane::AgentStartupPhase::Requested) => "requested",
+        Some(pika_agent_control_plane::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
+        Some(pika_agent_control_plane::AgentStartupPhase::BootingGuest) => "booting_guest",
+        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForServiceReady) => {
+            "waiting_for_service_ready"
+        }
+        Some(pika_agent_control_plane::AgentStartupPhase::Ready) => "ready",
+        Some(pika_agent_control_plane::AgentStartupPhase::Failed) => "failed",
+    }
+}
+
+fn admin_backup_freshness_label(freshness: ManagedEnvironmentBackupFreshness) -> &'static str {
+    match freshness {
+        ManagedEnvironmentBackupFreshness::NotProvisioned => "not_provisioned",
+        ManagedEnvironmentBackupFreshness::Healthy => "healthy",
+        ManagedEnvironmentBackupFreshness::Stale => "stale",
+        ManagedEnvironmentBackupFreshness::Missing => "missing",
+        ManagedEnvironmentBackupFreshness::Unavailable => "unavailable",
+    }
+}
+
 pub async fn login_page(
     Extension(state): Extension<State>,
     headers: HeaderMap,
@@ -271,6 +336,7 @@ pub async fn verify(
 
 pub async fn dashboard(
     Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, String)> {
     let Some(admin_npub) = admin_config(&state).session_npub_from_headers(&headers) else {
@@ -283,6 +349,11 @@ pub async fn dashboard(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let rows = AgentAllowlistEntry::list(&mut conn)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    let environment_rows = rows
+        .iter()
+        .filter_map(|row| row.active.then_some(row.npub.clone()))
+        .collect::<Vec<_>>();
 
     let rows = rows
         .into_iter()
@@ -305,9 +376,44 @@ pub async fn dashboard(
         })
         .collect::<Vec<_>>();
 
+    let mut managed_environment_rows = Vec::new();
+    for owner_npub in environment_rows {
+        let status =
+            load_managed_environment_status(&state, &owner_npub, &request_context.request_id)
+                .await
+                .map_err(|err| (err.status_code(), err.error_code().to_string()))?;
+        let Some(row) = status.row.as_ref() else {
+            continue;
+        };
+        let backup =
+            load_managed_environment_backup_status(&status, &request_context.request_id).await;
+        managed_environment_rows.push(AdminManagedEnvironmentRow {
+            owner_npub: owner_npub.clone(),
+            agent_id: row.agent_id.clone(),
+            vm_id: row
+                .vm_id
+                .clone()
+                .unwrap_or_else(|| "not_assigned".to_string()),
+            app_state: admin_app_state_label(status.app_state).to_string(),
+            startup_phase: admin_startup_phase_label(status.startup_phase).to_string(),
+            backup_freshness: admin_backup_freshness_label(backup.freshness).to_string(),
+            backup_last_successful_at: format_rfc3339_timestamp(
+                backup.latest_successful_backup_at.as_deref(),
+            ),
+            backup_host: backup
+                .backup_host
+                .clone()
+                .unwrap_or_else(|| "not_available".to_string()),
+            has_backup_host: backup.backup_host.is_some(),
+            backup_status_copy: backup.status_copy,
+        });
+    }
+
     render_template(&DashboardTemplate {
         current_admin_npub: &admin_npub,
         rows: &rows,
+        environment_rows: &managed_environment_rows,
+        has_environment_rows: !managed_environment_rows.is_empty(),
     })
 }
 
@@ -455,9 +561,28 @@ pub async fn dev_login(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+
+    use axum::body::HttpBody;
     use axum::http::header;
+    use diesel::prelude::*;
+    use diesel::r2d2::{ConnectionManager, Pool};
+    use diesel::PgConnection;
+    use diesel_migrations::MigrationHarness;
+    use nostr_sdk::prelude::Keys;
+    use nostr_sdk::ToBech32;
+    use pika_test_utils::CapturedRequest;
+
+    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_READY};
+    use crate::models::group_subscription::GroupFilterInfo;
+    use crate::models::MIGRATIONS;
+    use crate::test_support::serial_test_guard;
 
     fn test_admin_config(npub: &str) -> AdminConfig {
         let mut bootstrap_admins = HashSet::new();
@@ -471,6 +596,212 @@ mod tests {
                 None,
             )
             .expect("browser auth config"),
+        }
+    }
+
+    fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
+        dotenv::dotenv().ok();
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for admin tests");
+            return None;
+        };
+        if let Err(err) = PgConnection::establish(&url) {
+            eprintln!("SKIP: postgres unavailable for admin tests: {err}");
+            return None;
+        }
+        let manager = ConnectionManager::<PgConnection>::new(url);
+        let db_pool = Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .expect("build test db pool");
+        let mut connection = db_pool.get().expect("get migration connection");
+        connection
+            .run_pending_migrations(MIGRATIONS)
+            .expect("run migrations");
+        Some(db_pool)
+    }
+
+    fn clear_test_database(db_pool: &Pool<ConnectionManager<PgConnection>>) {
+        let conn = &mut db_pool.get().expect("get clear db connection");
+        diesel::sql_query(
+            "TRUNCATE TABLE managed_environment_events, agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
+        )
+        .execute(conn)
+        .expect("truncate test tables");
+    }
+
+    fn test_state(db_pool: Pool<ConnectionManager<PgConnection>>, admin_npub: &str) -> State {
+        let (sender, _receiver) = tokio::sync::watch::channel(GroupFilterInfo::default());
+        State {
+            db_pool,
+            apns_client: None,
+            fcm_client: None,
+            apns_topic: String::new(),
+            channel: std::sync::Arc::new(tokio::sync::Mutex::new(sender)),
+            admin_config: std::sync::Arc::new(test_admin_config(admin_npub)),
+            min_app_version: "0.0.0".to_string(),
+            trust_forwarded_host: false,
+        }
+    }
+
+    fn admin_cookie_header(state: &State, npub: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let token = state
+            .admin_config
+            .issue_session_token(npub)
+            .expect("issue admin session");
+        headers.insert(
+            header::COOKIE,
+            format!("{ADMIN_SESSION_COOKIE}={token}")
+                .parse()
+                .expect("cookie header"),
+        );
+        headers
+    }
+
+    fn generate_npub() -> String {
+        Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("encode generated npub")
+            .to_lowercase()
+    }
+
+    async fn response_body_string(response: Response) -> String {
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            bytes.extend_from_slice(&chunk.expect("read response chunk"));
+        }
+        String::from_utf8(bytes).expect("utf8 response body")
+    }
+
+    fn request_context() -> Extension<RequestContext> {
+        Extension(RequestContext {
+            request_id: "req-admin-test".to_string(),
+        })
+    }
+
+    struct MicrovmEnvGuard {
+        prior_spawner: Option<String>,
+        prior_kind: Option<String>,
+    }
+
+    impl MicrovmEnvGuard {
+        fn set(spawner_url: &str) -> Self {
+            let prior_spawner = std::env::var("PIKA_AGENT_MICROVM_SPAWNER_URL").ok();
+            let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+            unsafe {
+                std::env::set_var("PIKA_AGENT_MICROVM_SPAWNER_URL", spawner_url);
+                std::env::set_var("PIKA_AGENT_MICROVM_KIND", "openclaw");
+            }
+            Self {
+                prior_spawner,
+                prior_kind,
+            }
+        }
+    }
+
+    impl Drop for MicrovmEnvGuard {
+        fn drop(&mut self) {
+            match self.prior_spawner.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var("PIKA_AGENT_MICROVM_SPAWNER_URL", prior)
+                },
+                None => unsafe { std::env::remove_var("PIKA_AGENT_MICROVM_SPAWNER_URL") },
+            }
+            match self.prior_kind.as_deref() {
+                Some(prior) => unsafe { std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior) },
+                None => unsafe { std::env::remove_var("PIKA_AGENT_MICROVM_KIND") },
+            }
+        }
+    }
+
+    fn spawn_scripted_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, mpsc::Receiver<CapturedRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let addr = listener.local_addr().expect("read mock server addr");
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            for (status_line, response_body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept mock request");
+                let req = read_http_request(&mut stream);
+                tx.send(req).expect("send captured request");
+
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write mock response");
+            }
+        });
+
+        (format!("http://{addr}"), rx)
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+        let mut buf = Vec::new();
+        let mut header_end = None;
+        let mut content_length = 0usize;
+
+        loop {
+            let mut chunk = [0u8; 4096];
+            let n = stream.read(&mut chunk).expect("read request bytes");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if header_end.is_none() {
+                header_end = buf
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|idx| idx + 4);
+                if let Some(end) = header_end {
+                    let head = String::from_utf8_lossy(&buf[..end]);
+                    for line in head.lines().skip(1) {
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(end) = header_end {
+                if buf.len() >= end + content_length {
+                    break;
+                }
+            }
+        }
+
+        let end = header_end.expect("request headers must be present");
+        let headers_raw = String::from_utf8_lossy(&buf[..end]);
+        let mut lines = headers_raw.lines();
+        let request_line = lines.next().expect("request line");
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().expect("method").to_string();
+        let path = parts.next().expect("path").to_string();
+        let mut headers = std::collections::HashMap::new();
+        for line in lines {
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+        let body = String::from_utf8(buf[end..end + content_length].to_vec()).expect("utf8 body");
+
+        CapturedRequest {
+            method,
+            path,
+            headers,
+            body,
         }
     }
 
@@ -505,5 +836,61 @@ mod tests {
         );
 
         assert_eq!(config.session_npub_from_headers(&headers), Some(npub));
+    }
+
+    #[tokio::test]
+    async fn dashboard_renders_backup_freshness_for_current_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let admin_npub = generate_npub();
+        let owner_npub = generate_npub();
+        let state = test_state(db_pool.clone(), &admin_npub);
+        let headers = admin_cookie_header(&state, &admin_npub);
+
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentAllowlistEntry::upsert(
+            &mut conn,
+            &owner_npub,
+            true,
+            Some("test"),
+            &admin_npub,
+            Some(1),
+        )
+        .expect("seed allowlist");
+        AgentInstance::create(
+            &mut conn,
+            &owner_npub,
+            "agent-admin-backup",
+            Some("vm-admin-backup"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+
+        let (base_url, _rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-admin-backup","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-admin-backup","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-admin-backup/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Managed Environment Backups"));
+        assert!(body.contains("agent-admin-backup"));
+        assert!(body.contains("vm-admin-backup"));
+        assert!(body.contains("healthy"));
+        assert!(body.contains("pika-build"));
+
+        clear_test_database(&db_pool);
     }
 }

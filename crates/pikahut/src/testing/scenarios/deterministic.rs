@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use pika_desktop::app_manager;
 use serde_json::Value;
 
 use crate::config::{self, BotOverlay, OverlayConfig, ProfileName};
@@ -1000,37 +1001,20 @@ pub async fn run_ui_e2e_local(args: UiE2eLocalRequest) -> Result<ScenarioRunOutp
             ));
         }
         UiPlatform::Desktop => {
-            let mut desktop_spec = if cfg!(target_os = "macos") {
-                CommandSpec::new(
-                    root.join("tools/cargo-with-xcode")
-                        .to_string_lossy()
-                        .to_string(),
+            let desktop_data_dir = context.state_dir().join("desktop-client");
+            let relay_url = relay_url.clone();
+            let bot_npub = bot_npub.clone();
+            let client_nsec = client_nsec.clone();
+            tokio::task::spawn_blocking(move || {
+                app_manager::run_local_ping_pong_with_bot(
+                    &relay_url,
+                    &bot_npub,
+                    &client_nsec,
+                    &desktop_data_dir,
                 )
-            } else {
-                CommandSpec::cargo()
-            };
-            desktop_spec = desktop_spec
-                .cwd(&root)
-                .env("PIKA_UI_E2E", "1")
-                .env("PIKA_UI_E2E_BOT_NPUB", &bot_npub)
-                .env("PIKA_UI_E2E_RELAYS", &relay_url)
-                .env("PIKA_UI_E2E_KP_RELAYS", &relay_url)
-                .env("PIKA_UI_E2E_NSEC", &client_nsec)
-                .args([
-                    "test",
-                    "-p",
-                    "pika-desktop",
-                    "desktop_e2e_local_ping_pong_with_bot",
-                    "--",
-                    "--ignored",
-                    "--nocapture",
-                ])
-                .capture_name("desktop-ui-e2e-local");
-            let desktop_ui = runner.run(&desktop_spec)?;
-            command_outcomes.push(CommandOutcomeRecord::from_output(
-                "desktop-ui-e2e-local",
-                &desktop_ui,
-            ));
+            })
+            .await
+            .context("join desktop local ui e2e task")??;
         }
     }
 

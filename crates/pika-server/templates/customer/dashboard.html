@@ -149,6 +149,30 @@
     .hero-row form {
       width: auto;
     }
+    .activity-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .activity-item {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .activity-time {
+      margin: 0 0 6px;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .activity-message {
+      margin: 0;
+      color: var(--ink);
+    }
   </style>
 </head>
 <body>
@@ -161,6 +185,7 @@
             <p>This dashboard controls your current managed environment. Today the built-in runtime template is <strong>{{ template_name }}</strong>, with OpenClaw as the only built-in UI surface.</p>
           </div>
           <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             <button class="ghost" type="submit">Logout</button>
           </form>
         </div>
@@ -216,33 +241,93 @@
         <section class="card">
           <h2>Control Loop</h2>
           <div class="actions">
+            {% if has_control_loop_notice %}
+            <p>{{ control_loop_notice }}</p>
+            {% endif %}
             {% if can_provision %}
             <form method="post" action="/dashboard/provision">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button type="submit">Provision Managed OpenClaw</button>
             </form>
             {% endif %}
 
             {% if can_recover %}
             <form method="post" action="/dashboard/recover">
-              <button type="submit">Recover Preserving Durable Home</button>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <button type="submit">{{ recover_action_label }}</button>
             </form>
             {% endif %}
 
             {% if can_reset %}
-            <form method="post" action="/dashboard/reset">
-              <button class="danger" type="submit">Destructive Reset</button>
-            </form>
+              {% if reset_requires_confirmation %}
+              <form method="get" action="/dashboard/reset/confirm">
+                <button class="danger" type="submit">Review Destructive Reset</button>
+              </form>
+              {% else %}
+              <form method="post" action="/dashboard/reset">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="danger" type="submit">Destructive Reset</button>
+              </form>
+              {% endif %}
             {% endif %}
           </div>
+        </section>
+
+        <section class="card">
+          <h2>Backup Protection</h2>
+          <div class="pill tone-{{ backup_state_tone }}" style="margin-bottom:14px">
+            <span>{{ backup_state_label }}</span>
+          </div>
+          <p>{{ backup_status_copy }}</p>
+          <dl>
+            <div>
+              <dt>Latest successful backup</dt>
+              <dd>{{ backup_last_successful_at }}</dd>
+            </div>
+            {% if has_backup_host %}
+            <div>
+              <dt>Backup host</dt>
+              <dd><code>{{ backup_host }}</code></dd>
+            </div>
+            {% endif %}
+          </dl>
+        </section>
+
+        <section class="card">
+          <h2>Built-In UI</h2>
+          <p>{{ launch_status_copy }}</p>
+          {% if can_launch_openclaw %}
+          <form method="post" action="/dashboard/openclaw/launch">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" formtarget="_blank">Open OpenClaw</button>
+          </form>
+          {% endif %}
         </section>
       </section>
 
       <section class="card">
         <h2>Reset Semantics</h2>
         <div class="callout">
-          <p><strong>Recover</strong> preserves the durable home and asks the control plane to bring the managed environment back.</p>
-          <p><strong>Destructive reset</strong> is allowed to delete the durable home and create a fresh managed OpenClaw environment from scratch.</p>
+          <p><strong>Recover</strong> {{ recover_semantics_copy }}</p>
+          <p><strong>Destructive reset</strong> asks the control plane to delete the current VM if one still exists, then provisions a fresh managed OpenClaw environment. If the old VM is already gone, reset still continues fresh and does not restore missing durable state.</p>
+          <p><strong>Safety guardrail</strong> {{ reset_safety_copy }}</p>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent Activity</h2>
+        {% if has_recent_activity %}
+        <ol class="activity-list">
+          {% for event in recent_activity %}
+          <li class="activity-item">
+            <p class="activity-time">{{ event.created_at }}</p>
+            <p class="activity-message">{{ event.message }}</p>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p>No recent managed-environment activity yet.</p>
+        {% endif %}
       </section>
     </section>
   </main>

@@ -9,7 +9,7 @@ pub use model::{
     PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
     PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
     PreparedOutputInvocationMode, PreparedOutputLauncherTransportMode,
-    PreparedOutputRemoteExposureRequest, RunPlanRecord, StagedLinuxRustLane,
+    PreparedOutputRemoteExposureRequest, RunPlanRecord, StagedLinuxRustLane, StagedLinuxRustTarget,
 };
 pub use model::{GuestCommand, JobOutcome, JobRecord, JobSpec, RunRecord, RunStatus, RunnerKind};
 pub use run::{

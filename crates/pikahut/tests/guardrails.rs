@@ -280,6 +280,56 @@ fn migration_docs_do_not_reference_legacy_cli_harness_paths() -> Result<()> {
 }
 
 #[test]
+fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<()> {
+    let root = workspace_root();
+
+    let selectors = fs::read_to_string(root.join("docs/testing/ci-selectors.md"))?;
+    for heading in [
+        "## Policy Classes",
+        "## Compatibility-Only Wrappers",
+        "## Convenience / Advisory Surfaces",
+        "## Deferred Root CI / `pikaci` Mismatches",
+    ] {
+        assert!(
+            selectors.contains(heading),
+            "ci-selectors.md must keep policy-truth heading: {heading}"
+        );
+    }
+    assert!(
+        selectors.contains(
+            "Most CI-owned lanes invoke `cargo test -p pikahut --test integration_* ...`, and intentionally retained non-selector lanes are called out explicitly below."
+        ),
+        "ci-selectors.md must document the retained non-selector exception to the selector-first rule"
+    );
+    assert!(
+        selectors.contains(
+            "## Direct Selector Recipes (Not Owners By Themselves)\n\n| Recipe | Canonical selectors | Current policy status |\n| --- | --- | --- |"
+        ),
+        "ci-selectors.md must keep the direct-selector table well-formed and three-column"
+    );
+
+    let matrix = fs::read_to_string(root.join("docs/testing/integration-matrix.md"))?;
+    for heading in [
+        "## Policy Classes",
+        "## Non-Owner Entry Points",
+        "## Deferred Root CI / `pikaci` Asks",
+    ] {
+        assert!(
+            matrix.contains(heading),
+            "integration-matrix.md must keep policy-truth heading: {heading}"
+        );
+    }
+    assert!(
+        matrix.contains(
+            "Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`."
+        ),
+        "integration-matrix.md must keep the retained non-selector exception explicit"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn no_public_infra_selectors_in_ci_lanes() -> Result<()> {
     let root = workspace_root();
 
@@ -326,6 +376,33 @@ fn call_boundaries_have_single_owner() -> Result<()> {
     assert!(
         !root.join("rust/tests/e2e_calls.rs").exists(),
         "rust/tests/e2e_calls.rs must be deleted once the daemon boundary moves under pikahut"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn desktop_ui_e2e_has_single_owner() -> Result<()> {
+    let root = workspace_root();
+    let scenario =
+        fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
+    assert!(
+        scenario.contains("run_local_ping_pong_with_bot("),
+        "desktop UI E2E selector must call the desktop helper directly"
+    );
+    assert!(
+        !scenario.contains("desktop_e2e_local_ping_pong_with_bot"),
+        "desktop UI E2E selector must not shell into the legacy ignored desktop test"
+    );
+
+    let desktop = fs::read_to_string(root.join("crates/pika-desktop/src/app_manager.rs"))?;
+    assert!(
+        desktop.contains("pub fn run_local_ping_pong_with_bot("),
+        "desktop helper must be exposed for direct selector ownership"
+    );
+    assert!(
+        !desktop.contains("fn desktop_e2e_local_ping_pong_with_bot("),
+        "legacy ignored desktop owner must be removed once pikahut owns the seam"
     );
 
     Ok(())

@@ -23,7 +23,9 @@ use crate::agent_api_v1_contract::{
 use crate::customer::{
     challenge as customer_challenge, dashboard as customer_dashboard, home as customer_home,
     login_page as customer_login_page, logout as customer_logout, provision as customer_provision,
-    recover as customer_recover, reset as customer_reset, verify as customer_verify,
+    recover as customer_recover, reset as customer_reset,
+    reset_confirm_page as customer_reset_confirm_page, verify as customer_verify,
+    OPENCLAW_INTERNAL_LAUNCH_PATH, OPENCLAW_INTERNAL_PROXY_PATH, OPENCLAW_INTERNAL_PROXY_PREFIX,
 };
 use crate::models::group_subscription::{GroupFilterInfo, GroupSubscription};
 use crate::models::MIGRATIONS;
@@ -34,7 +36,7 @@ use a2::Client as ApnsClient;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Extension, Router};
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::PgConnection;
@@ -118,6 +120,35 @@ async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Respon
         "http request"
     );
     response
+}
+
+async fn route_openclaw_ui_host<B>(mut request: Request<B>, next: Next<B>) -> Response {
+    let Some(host) = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+    else {
+        return next.run(request).await;
+    };
+    if !host.starts_with("openclaw.") {
+        return next.run(request).await;
+    }
+
+    let rewritten_path = if request.uri().path() == "/launch" {
+        OPENCLAW_INTERNAL_LAUNCH_PATH.to_string()
+    } else {
+        format!("{OPENCLAW_INTERNAL_PROXY_PREFIX}{}", request.uri().path())
+    };
+    let rewritten_uri = if let Some(query) = request.uri().query() {
+        format!("{rewritten_path}?{query}")
+    } else {
+        rewritten_path
+    };
+    if let Ok(uri) = rewritten_uri.parse::<Uri>() {
+        *request.uri_mut() = uri;
+    }
+    next.run(request).await
 }
 
 #[tokio::main]
@@ -268,8 +299,22 @@ async fn main() -> anyhow::Result<()> {
         .route("/dashboard", get(customer_dashboard))
         .route("/dashboard/provision", post(customer_provision))
         .route("/dashboard/recover", post(customer_recover))
+        .route("/dashboard/reset/confirm", get(customer_reset_confirm_page))
         .route("/dashboard/reset", post(customer_reset))
+        .route(
+            "/dashboard/openclaw/launch",
+            post(customer::openclaw_launch),
+        )
         .route("/logout", post(customer_logout))
+        .route(
+            OPENCLAW_INTERNAL_LAUNCH_PATH,
+            get(customer::openclaw_launch_exchange),
+        )
+        .route(
+            OPENCLAW_INTERNAL_PROXY_PREFIX,
+            any(customer::openclaw_proxy),
+        )
+        .route(OPENCLAW_INTERNAL_PROXY_PATH, any(customer::openclaw_proxy))
         .route("/health-check", get(health_check))
         .route("/min-version", get(min_version))
         .route("/register", post(register))
@@ -291,8 +336,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/logout", post(admin_logout))
         .route("/admin/dev-login", post(admin_dev_login))
         .fallback(fallback)
+        .layer(Extension(state))
         .layer(middleware::from_fn(trace_http_request))
-        .layer(Extension(state));
+        .layer(middleware::from_fn(route_openclaw_ui_host));
 
     let server = axum::Server::bind(&addr).serve(server_router.into_make_service());
 

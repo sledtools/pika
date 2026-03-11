@@ -23,10 +23,17 @@ pub struct BrowserAuthConfig {
     cookie_secure: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionInfo {
+    pub npub: String,
+    pub csrf_token: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionPayload {
     kind: String,
     npub: String,
+    csrf_token: String,
     exp: i64,
 }
 
@@ -98,7 +105,7 @@ impl BrowserAuthConfig {
             nonce: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
             exp: now_unix() + CHALLENGE_TTL_SECS,
         };
-        sign_token(&self.session_secret, &payload)
+        self.sign_payload(&payload)
     }
 
     pub fn verify_challenge(&self, token: &str, expected_kind: &str) -> anyhow::Result<()> {
@@ -120,19 +127,27 @@ impl BrowserAuthConfig {
         let payload = SessionPayload {
             kind: session_kind.to_string(),
             npub: npub.to_string(),
+            csrf_token: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
             exp: now_unix() + ttl_secs,
         };
-        sign_token(&self.session_secret, &payload)
+        self.sign_payload(&payload)
     }
 
-    pub fn verify_session_token(&self, token: &str, expected_kind: &str) -> anyhow::Result<String> {
+    pub fn verify_session_token(
+        &self,
+        token: &str,
+        expected_kind: &str,
+    ) -> anyhow::Result<SessionInfo> {
         let payload: SessionPayload = verify_token(&self.session_secret, token)?;
         anyhow::ensure!(
             payload.kind == expected_kind,
             "invalid session payload kind"
         );
         anyhow::ensure!(payload.exp >= now_unix(), "session expired");
-        Ok(payload.npub)
+        Ok(SessionInfo {
+            npub: payload.npub,
+            csrf_token: payload.csrf_token,
+        })
     }
 
     pub fn set_session_cookie(
@@ -142,9 +157,20 @@ impl BrowserAuthConfig {
         token: &str,
         ttl_secs: i64,
     ) -> anyhow::Result<()> {
+        self.set_session_cookie_with_path(response, cookie_name, token, ttl_secs, "/")
+    }
+
+    pub fn set_session_cookie_with_path(
+        &self,
+        response: &mut Response,
+        cookie_name: &str,
+        token: &str,
+        ttl_secs: i64,
+        path: &str,
+    ) -> anyhow::Result<()> {
         let secure = if self.cookie_secure { "; Secure" } else { "" };
         let value = format!(
-            "{cookie_name}={token}; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age={ttl_secs}"
+            "{cookie_name}={token}; Path={path}; HttpOnly; SameSite=Lax{secure}; Max-Age={ttl_secs}"
         );
         response.headers_mut().append(
             header::SET_COOKIE,
@@ -158,13 +184,31 @@ impl BrowserAuthConfig {
         response: &mut Response,
         cookie_name: &str,
     ) -> anyhow::Result<()> {
+        self.clear_session_cookie_with_path(response, cookie_name, "/")
+    }
+
+    pub fn clear_session_cookie_with_path(
+        &self,
+        response: &mut Response,
+        cookie_name: &str,
+        path: &str,
+    ) -> anyhow::Result<()> {
         let secure = if self.cookie_secure { "; Secure" } else { "" };
-        let value = format!("{cookie_name}=; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age=0");
+        let value =
+            format!("{cookie_name}=; Path={path}; HttpOnly; SameSite=Lax{secure}; Max-Age=0");
         response.headers_mut().append(
             header::SET_COOKIE,
             HeaderValue::from_str(&value).context("build clear Set-Cookie header")?,
         );
         Ok(())
+    }
+
+    pub fn sign_payload<T: Serialize>(&self, payload: &T) -> anyhow::Result<String> {
+        sign_token(&self.session_secret, payload)
+    }
+
+    pub fn verify_payload<T: DeserializeOwned>(&self, token: &str) -> anyhow::Result<T> {
+        verify_token(&self.session_secret, token)
     }
 
     pub fn session_npub_from_headers(
@@ -173,14 +217,24 @@ impl BrowserAuthConfig {
         cookie_name: &str,
         session_kind: &str,
     ) -> Option<String> {
+        self.session_from_headers(headers, cookie_name, session_kind)
+            .map(|session| session.npub)
+    }
+
+    pub fn session_from_headers(
+        &self,
+        headers: &HeaderMap,
+        cookie_name: &str,
+        session_kind: &str,
+    ) -> Option<SessionInfo> {
         let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
         for pair in cookie.split(';') {
             let Some((name, value)) = pair.trim().split_once('=') else {
                 continue;
             };
             if name == cookie_name {
-                if let Ok(npub) = self.verify_session_token(value, session_kind) {
-                    return Some(npub);
+                if let Ok(session) = self.verify_session_token(value, session_kind) {
+                    return Some(session);
                 }
             }
         }
@@ -232,6 +286,7 @@ fn verify_token<T: DeserializeOwned>(secret: &[u8], token: &str) -> anyhow::Resu
 mod tests {
     use super::*;
     use axum::http::header;
+    use axum::response::IntoResponse;
 
     fn test_browser_auth_config() -> BrowserAuthConfig {
         BrowserAuthConfig::new(
@@ -262,6 +317,11 @@ mod tests {
             config.session_npub_from_headers(&headers, "pika_customer_session", "customer_session"),
             Some(npub.to_string())
         );
+        let session = config
+            .session_from_headers(&headers, "pika_customer_session", "customer_session")
+            .expect("session info");
+        assert_eq!(session.npub, npub);
+        assert!(!session.csrf_token.is_empty());
     }
 
     #[test]
@@ -285,5 +345,55 @@ mod tests {
         )
         .expect_err("tampered signature must fail");
         assert!(err.to_string().contains("invalid token signature"));
+    }
+
+    #[test]
+    fn set_session_cookie_with_path_scopes_cookie() {
+        let config = test_browser_auth_config();
+        let mut response = ().into_response();
+        config
+            .set_session_cookie_with_path(
+                &mut response,
+                "pika_openclaw_ui_session",
+                "ticket-value",
+                600,
+                "/",
+            )
+            .expect("set scoped cookie");
+        let set_cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("set-cookie");
+        assert!(set_cookie.contains("Path=/"));
+        assert!(set_cookie.contains("HttpOnly"));
+    }
+
+    #[test]
+    fn sign_payload_round_trips_custom_claims() {
+        #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+        struct CustomClaims {
+            kind: String,
+            vm_id: String,
+            exp: i64,
+        }
+
+        let config = test_browser_auth_config();
+        let token = config
+            .sign_payload(&CustomClaims {
+                kind: "openclaw_launch".to_string(),
+                vm_id: "vm-123".to_string(),
+                exp: now_unix() + 60,
+            })
+            .expect("sign payload");
+        let claims: CustomClaims = config.verify_payload(&token).expect("verify payload");
+        assert_eq!(
+            claims,
+            CustomClaims {
+                kind: "openclaw_launch".to_string(),
+                vm_id: "vm-123".to_string(),
+                exp: claims.exp,
+            }
+        );
     }
 }

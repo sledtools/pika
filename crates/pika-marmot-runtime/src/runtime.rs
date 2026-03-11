@@ -516,6 +516,36 @@ impl<'a> RuntimeCommands<'a> {
         OutboundConversationRuntime::new(self.mdk).prepare_action_for_target(sender, target, action)
     }
 
+    pub fn prepare_add_members(
+        &self,
+        mls_group_id: &GroupId,
+        key_package_events: &[Event],
+    ) -> Result<PreparedMembershipEvolution> {
+        MembershipRuntime::new(self.mdk).prepare_add_members(mls_group_id, key_package_events)
+    }
+
+    pub fn prepare_evolution(
+        &self,
+        mls_group_id: GroupId,
+        evolution_event: Event,
+        welcome_rumors: Option<Vec<UnsignedEvent>>,
+        added_pubkeys: Vec<PublicKey>,
+    ) -> Result<PreparedMembershipEvolution> {
+        MembershipRuntime::new(self.mdk).prepare_evolution(
+            mls_group_id,
+            evolution_event,
+            welcome_rumors,
+            added_pubkeys,
+        )
+    }
+
+    pub fn finalize_published_evolution(
+        &self,
+        prepared: PreparedMembershipEvolution,
+    ) -> MembershipUpdateResult {
+        MembershipRuntime::new(self.mdk).finalize_published_evolution(prepared)
+    }
+
     pub async fn publish_prepared_action(
         &self,
         relay_urls: &[RelayUrl],
@@ -912,7 +942,7 @@ impl<'a> MarmotRuntime<'a> {
         mls_group_id: &GroupId,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        self.membership()
+        self.commands()
             .prepare_add_members(mls_group_id, key_package_events)
     }
 
@@ -923,7 +953,7 @@ impl<'a> MarmotRuntime<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> Result<PreparedMembershipEvolution> {
-        self.membership().prepare_evolution(
+        self.commands().prepare_evolution(
             mls_group_id,
             evolution_event,
             welcome_rumors,
@@ -935,7 +965,7 @@ impl<'a> MarmotRuntime<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
-        self.membership().finalize_published_evolution(prepared)
+        self.commands().finalize_published_evolution(prepared)
     }
 
     pub fn prepare_outgoing_call_invite(
@@ -1963,6 +1993,65 @@ mod tests {
         assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
         assert_eq!(prepared.kind, crate::message::TYPING_INDICATOR_KIND);
         assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
+    }
+
+    #[test]
+    fn runtime_commands_finalize_membership_evolution_through_explicit_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let peer_mdk = open_test_mdk(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime membership commands test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+
+        let prepared = commands
+            .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
+            .expect("prepare add members");
+        let before_merge = inviter_mdk
+            .get_members(&created.group.mls_group_id)
+            .expect("members before merge")
+            .len();
+
+        let finalized = commands.finalize_published_evolution(prepared);
+
+        let after_merge = inviter_mdk
+            .get_members(&created.group.mls_group_id)
+            .expect("members after merge")
+            .len();
+        assert_eq!(before_merge + 1, after_merge);
+        assert!(finalized.merge_error.is_none());
+        assert_eq!(
+            finalized
+                .welcome_delivery
+                .as_ref()
+                .expect("welcome delivery")
+                .recipients,
+            vec![peer_keys.public_key()]
+        );
     }
 
     #[test]

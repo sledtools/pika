@@ -113,7 +113,7 @@ impl<'a> AppHostContext<'a> {
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         let group = self.lookup_joined_group_snapshot(chat_id)?;
-        self.runtime()
+        self.commands()
             .prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
@@ -124,7 +124,7 @@ impl<'a> AppHostContext<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        self.runtime().prepare_evolution(
+        self.commands().prepare_evolution(
             mls_group_id,
             evolution_event,
             welcome_rumors,
@@ -136,7 +136,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
-        self.runtime().finalize_published_evolution(prepared)
+        self.commands().finalize_published_evolution(prepared)
     }
 
     pub(super) fn process_group_message_event(

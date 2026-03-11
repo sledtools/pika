@@ -7616,7 +7616,7 @@ mod tests {
         }
 
         #[test]
-        fn app_add_members_preparation_uses_shared_membership_runtime() {
+        fn app_add_members_preparation_uses_shared_command_boundary() {
             let (mut core, chat_id, _keys, _gid) = make_core_with_group();
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);

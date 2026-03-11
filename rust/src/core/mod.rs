@@ -3853,7 +3853,6 @@ impl AppCore {
             ));
         }
     }
-
     fn handle_peer_key_package_fetched(
         &mut self,
         token: u64,

@@ -183,6 +183,8 @@ Verified in the repo today:
 5. Workflow change-detection and recipe ownership still do not line up cleanly everywhere.
    - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
    - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, so the next ask there is Apple-host execution ownership/provisioning rather than another shape clarification.
+   - Recent staged-Linux rollout work is also creating the same mixed-mode shape in other Apple Silicon lanes such as `pre-merge-pika`, `pre-merge-agent-contracts`, and `pre-merge-fixture`, where remote/staged Rust execution is followed by host-side checks in `just/checks.just`.
+   - After `pre-merge-pikachat`, we should decide whether those lane splits also need explicit checked-in contracts instead of accumulating more inline branch logic.
 
 6. “E2E” means too many different things.
    - deterministic local fixture-backed behavior
@@ -202,6 +204,10 @@ Verified in the repo today:
    - iOS unit tests are mostly session restore, reconciler/deep-link handling, keychain policy, and layout math.
    - Android instrumentation is mostly offline UI smoke, deep-link handling, and the retained local-fixture selector class.
    - We should keep watching for native logic drift, but the highest-value remaining cleanup is now policy/alignment work rather than another Rust-side ownership seam.
+
+10. We should keep a short explicit list of recurring flakes even when another branch temporarily disables them.
+   - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been flaking across unrelated PRs.
+   - If another branch disables it, we should still come back and either stabilize it or replace it with a more deterministic boundary around the same paging behavior.
 
 ## Tradeoffs
 

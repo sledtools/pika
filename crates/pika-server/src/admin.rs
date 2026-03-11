@@ -3,57 +3,34 @@ use std::collections::HashSet;
 use anyhow::Context;
 use askama::Template;
 use axum::extract::{Form, Path};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
-use base64::Engine;
 use diesel::Connection;
-use hmac::{Hmac, Mac};
-use nostr_sdk::prelude::{Keys, PublicKey};
+use nostr_sdk::prelude::PublicKey;
 use nostr_sdk::ToBech32;
-use rand::Rng;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use serde::Deserialize;
 
+use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
 use crate::State;
-
-type HmacSha256 = Hmac<Sha256>;
 
 const ADMIN_BOOTSTRAP_ENV: &str = "PIKA_ADMIN_BOOTSTRAP_NPUBS";
 const ADMIN_SESSION_SECRET_ENV: &str = "PIKA_ADMIN_SESSION_SECRET";
 const ADMIN_DEV_MODE_ENV: &str = "PIKA_ADMIN_DEV_MODE";
 const ADMIN_COOKIE_SECURE_ENV: &str = "PIKA_ADMIN_COOKIE_SECURE";
-const TEST_NSEC_ENV: &str = "PIKA_TEST_NSEC";
 
 const ADMIN_SESSION_COOKIE: &str = "pika_admin_session";
 const ADMIN_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
-const ADMIN_CHALLENGE_TTL_SECS: i64 = 120;
+const ADMIN_CHALLENGE_KIND: &str = "admin_challenge";
+const ADMIN_SESSION_KIND: &str = "admin_session";
 const MAX_SUPPORTED_AGENTS: i32 = 1;
 
 #[derive(Clone, Debug)]
 pub struct AdminConfig {
     pub bootstrap_admins: HashSet<String>,
-    session_secret: Vec<u8>,
-    pub dev_mode: bool,
-    dev_npub: Option<String>,
-    cookie_secure: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SessionPayload {
-    kind: String,
-    npub: String,
-    exp: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ChallengePayload {
-    kind: String,
-    nonce: String,
-    exp: i64,
+    pub browser_auth: BrowserAuthConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,50 +81,19 @@ impl AdminConfig {
         let raw = std::env::var(ADMIN_BOOTSTRAP_ENV)
             .context("missing PIKA_ADMIN_BOOTSTRAP_NPUBS (comma-separated npubs)")?;
         let mut admins = parse_npub_csv(&raw)?;
+        let browser_auth = BrowserAuthConfig::from_env(
+            ADMIN_SESSION_SECRET_ENV,
+            ADMIN_DEV_MODE_ENV,
+            ADMIN_COOKIE_SECURE_ENV,
+        )?;
 
-        let dev_mode = env_truthy(ADMIN_DEV_MODE_ENV);
-        let dev_npub = if dev_mode {
-            std::env::var(TEST_NSEC_ENV)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .map(|nsec| {
-                    Keys::parse(&nsec)
-                        .context("parse PIKA_TEST_NSEC")
-                        .and_then(|keys| {
-                            keys.public_key()
-                                .to_bech32()
-                                .context("derive npub from PIKA_TEST_NSEC")
-                        })
-                })
-                .transpose()?
-        } else {
-            None
-        };
-
-        if let Some(ref npub) = dev_npub {
+        if let Some(ref npub) = browser_auth.dev_npub {
             admins.insert(npub.to_lowercase());
         }
 
-        let session_secret = std::env::var(ADMIN_SESSION_SECRET_ENV)
-            .context("missing PIKA_ADMIN_SESSION_SECRET")?
-            .into_bytes();
-        anyhow::ensure!(
-            session_secret.len() >= 16,
-            "PIKA_ADMIN_SESSION_SECRET must be at least 16 bytes"
-        );
-
-        let cookie_secure = std::env::var(ADMIN_COOKIE_SECURE_ENV)
-            .ok()
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(!dev_mode);
-
         Ok(Self {
             bootstrap_admins: admins,
-            session_secret,
-            dev_mode,
-            dev_npub,
-            cookie_secure,
+            browser_auth,
         })
     }
 
@@ -156,83 +102,40 @@ impl AdminConfig {
     }
 
     fn issue_challenge(&self) -> anyhow::Result<String> {
-        let payload = ChallengePayload {
-            kind: "admin_challenge".to_string(),
-            nonce: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
-            exp: now_unix() + ADMIN_CHALLENGE_TTL_SECS,
-        };
-        sign_token(&self.session_secret, &payload)
+        self.browser_auth.issue_challenge(ADMIN_CHALLENGE_KIND)
     }
 
     fn verify_challenge(&self, token: &str) -> anyhow::Result<()> {
-        let payload: ChallengePayload = verify_token(&self.session_secret, token)?;
-        anyhow::ensure!(
-            payload.kind == "admin_challenge",
-            "invalid challenge payload kind"
-        );
-        anyhow::ensure!(payload.exp >= now_unix(), "challenge expired");
-        Ok(())
+        self.browser_auth
+            .verify_challenge(token, ADMIN_CHALLENGE_KIND)
     }
 
     fn issue_session_token(&self, npub: &str) -> anyhow::Result<String> {
-        let payload = SessionPayload {
-            kind: "admin_session".to_string(),
-            npub: npub.to_string(),
-            exp: now_unix() + ADMIN_SESSION_TTL_SECS,
-        };
-        sign_token(&self.session_secret, &payload)
-    }
-
-    fn verify_session_token(&self, token: &str) -> anyhow::Result<String> {
-        let payload: SessionPayload = verify_token(&self.session_secret, token)?;
-        anyhow::ensure!(
-            payload.kind == "admin_session",
-            "invalid session payload kind"
-        );
-        anyhow::ensure!(payload.exp >= now_unix(), "session expired");
-        anyhow::ensure!(
-            self.is_bootstrap_admin(&payload.npub),
-            "session admin is not bootstrap-authorized"
-        );
-        Ok(payload.npub)
+        self.browser_auth
+            .issue_session_token(ADMIN_SESSION_KIND, npub, ADMIN_SESSION_TTL_SECS)
     }
 
     fn set_session_cookie(&self, response: &mut Response, token: &str) -> anyhow::Result<()> {
-        let secure = if self.cookie_secure { "; Secure" } else { "" };
-        let value = format!(
-            "{ADMIN_SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age={ADMIN_SESSION_TTL_SECS}"
-        );
-        response.headers_mut().append(
-            header::SET_COOKIE,
-            HeaderValue::from_str(&value).context("build Set-Cookie header")?,
-        );
-        Ok(())
+        self.browser_auth.set_session_cookie(
+            response,
+            ADMIN_SESSION_COOKIE,
+            token,
+            ADMIN_SESSION_TTL_SECS,
+        )
     }
 
     fn clear_session_cookie(&self, response: &mut Response) -> anyhow::Result<()> {
-        let secure = if self.cookie_secure { "; Secure" } else { "" };
-        let value =
-            format!("{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax{secure}; Max-Age=0");
-        response.headers_mut().append(
-            header::SET_COOKIE,
-            HeaderValue::from_str(&value).context("build clear Set-Cookie header")?,
-        );
-        Ok(())
+        self.browser_auth
+            .clear_session_cookie(response, ADMIN_SESSION_COOKIE)
     }
 
     fn session_npub_from_headers(&self, headers: &HeaderMap) -> Option<String> {
-        let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-        for pair in cookie.split(';') {
-            let Some((name, value)) = pair.trim().split_once('=') else {
-                continue;
-            };
-            if name == ADMIN_SESSION_COOKIE {
-                if let Ok(npub) = self.verify_session_token(value) {
-                    return Some(npub);
-                }
-            }
-        }
-        None
+        let npub = self.browser_auth.session_npub_from_headers(
+            headers,
+            ADMIN_SESSION_COOKIE,
+            ADMIN_SESSION_KIND,
+        )?;
+        self.is_bootstrap_admin(&npub).then_some(npub)
     }
 }
 
@@ -261,46 +164,6 @@ pub fn parse_npub_csv(raw: &str) -> anyhow::Result<HashSet<String>> {
     }
     anyhow::ensure!(!out.is_empty(), "bootstrap admin npub set is empty");
     Ok(out)
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn now_unix() -> i64 {
-    chrono::Utc::now().timestamp()
-}
-
-fn sign_token<T: Serialize>(secret: &[u8], payload: &T) -> anyhow::Result<String> {
-    let body = serde_json::to_vec(payload)?;
-    let body_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(body);
-    let mut mac = HmacSha256::new_from_slice(secret).context("init hmac")?;
-    mac.update(body_b64.as_bytes());
-    let sig_b64 =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    Ok(format!("{body_b64}.{sig_b64}"))
-}
-
-fn verify_token<T: DeserializeOwned>(secret: &[u8], token: &str) -> anyhow::Result<T> {
-    let (body_b64, sig_b64) = token
-        .split_once('.')
-        .ok_or_else(|| anyhow::anyhow!("invalid token format"))?;
-    let mut mac = HmacSha256::new_from_slice(secret).context("init hmac")?;
-    mac.update(body_b64.as_bytes());
-    let actual = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(sig_b64)
-        .context("decode token signature")?;
-    mac.verify_slice(&actual)
-        .map_err(|_| anyhow::anyhow!("invalid token signature"))?;
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(body_b64)
-        .context("decode token payload")?;
-    let parsed = serde_json::from_slice(&payload).context("decode token JSON payload")?;
-    Ok(parsed)
 }
 
 fn normalize_npub(input: &str) -> anyhow::Result<String> {
@@ -342,7 +205,7 @@ pub async fn login_page(
         return Ok(Redirect::to("/admin").into_response());
     }
     render_template(&LoginTemplate {
-        dev_mode: admin_config(&state).dev_mode,
+        dev_mode: admin_config(&state).browser_auth.dev_mode,
     })
 }
 
@@ -566,15 +429,19 @@ pub async fn logout(Extension(state): Extension<State>) -> Result<Response, (Sta
 pub async fn dev_login(
     Extension(state): Extension<State>,
 ) -> Result<Response, (StatusCode, String)> {
-    if !admin_config(&state).dev_mode {
+    if !admin_config(&state).browser_auth.dev_mode {
         return Err((StatusCode::NOT_FOUND, "dev mode disabled".to_string()));
     }
-    let npub = admin_config(&state).dev_npub.clone().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "PIKA_TEST_NSEC is missing".to_string(),
-        )
-    })?;
+    let npub = admin_config(&state)
+        .browser_auth
+        .dev_npub
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "PIKA_TEST_NSEC is missing".to_string(),
+            )
+        })?;
 
     let token = admin_config(&state)
         .issue_session_token(&npub)
@@ -597,10 +464,13 @@ mod tests {
         bootstrap_admins.insert(npub.to_string());
         AdminConfig {
             bootstrap_admins,
-            session_secret: b"0123456789abcdef0123456789abcdef".to_vec(),
-            dev_mode: false,
-            dev_npub: None,
-            cookie_secure: true,
+            browser_auth: BrowserAuthConfig::new(
+                b"0123456789abcdef0123456789abcdef".to_vec(),
+                true,
+                false,
+                None,
+            )
+            .expect("browser auth config"),
         }
     }
 
@@ -635,25 +505,5 @@ mod tests {
         );
 
         assert_eq!(config.session_npub_from_headers(&headers), Some(npub));
-    }
-
-    #[test]
-    fn verify_token_rejects_tampered_signature() {
-        let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y".to_string();
-        let config = test_admin_config(&npub);
-        let token = config
-            .issue_session_token(&npub)
-            .expect("issue session token");
-        let (body, sig) = token.split_once('.').expect("token parts");
-        let mut tampered = sig.as_bytes().to_vec();
-        tampered[0] = if tampered[0] == b'a' { b'b' } else { b'a' };
-        let tampered_sig = String::from_utf8(tampered).expect("tampered signature utf8");
-
-        let err = verify_token::<SessionPayload>(
-            &config.session_secret,
-            &format!("{body}.{tampered_sig}"),
-        )
-        .expect_err("tampered signature must fail");
-        assert!(err.to_string().contains("invalid token signature"));
     }
 }

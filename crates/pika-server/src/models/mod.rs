@@ -17,25 +17,21 @@ mod test {
     };
     use crate::models::group_subscription::GroupSubscription;
     use crate::models::subscription_info::SubscriptionInfo;
+    use crate::test_support::serial_test_guard;
     use diesel::prelude::*;
     use diesel::r2d2::{ConnectionManager, Pool};
     use diesel_migrations::MigrationHarness;
-    use std::sync::{Mutex, OnceLock};
 
     const DEVICE_TOKEN: &str = "abc123devicetoken";
     const PLATFORM: &str = "ios";
 
-    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        match GUARD.get_or_init(|| Mutex::new(())).lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
-
-    fn init_db_pool() -> Pool<ConnectionManager<PgConnection>> {
+    fn init_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
         dotenv::dotenv().ok();
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        if let Err(err) = PgConnection::establish(&url) {
+            eprintln!("SKIP: postgres unavailable for models db tests: {err}");
+            return None;
+        }
         let manager = ConnectionManager::<PgConnection>::new(url);
         let db_pool = Pool::builder()
             .build(manager)
@@ -47,7 +43,7 @@ mod test {
             .run_pending_migrations(MIGRATIONS)
             .expect("migrations could not run");
 
-        db_pool
+        Some(db_pool)
     }
 
     fn clear_database(db_pool: &Pool<ConnectionManager<PgConnection>>) {
@@ -66,8 +62,10 @@ mod test {
 
     #[tokio::test]
     async fn test_register() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
 
         let mut conn = db_pool.get().unwrap();
@@ -82,8 +80,10 @@ mod test {
 
     #[tokio::test]
     async fn test_register_update() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
 
         let mut conn = db_pool.get().unwrap();
@@ -105,8 +105,10 @@ mod test {
 
     #[tokio::test]
     async fn test_subscribe_groups() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
 
         let mut conn = db_pool.get().unwrap();
@@ -146,8 +148,10 @@ mod test {
 
     #[tokio::test]
     async fn test_agent_instance_active_owner_constraint() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
         let mut conn = db_pool.get().unwrap();
         let owner_npub = "npub1ownerconstrainttest";
@@ -203,8 +207,10 @@ mod test {
 
     #[tokio::test]
     async fn test_agent_instance_latest_owner_row_surfaces_error_without_active_row() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
         let mut conn = db_pool.get().unwrap();
         let owner_npub = "npub1ownererrortest";
@@ -233,8 +239,10 @@ mod test {
 
     #[tokio::test]
     async fn test_agent_allowlist_upsert_and_active_lookup() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
         let mut conn = db_pool.get().unwrap();
         let npub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
@@ -258,8 +266,10 @@ mod test {
 
     #[tokio::test]
     async fn test_agent_allowlist_transaction_rolls_back_when_audit_insert_fails() {
-        let _guard = test_guard();
-        let db_pool = init_db_pool();
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
         clear_database(&db_pool);
         let mut conn = db_pool.get().unwrap();
         let npub = "npub1rollbacktestuser";

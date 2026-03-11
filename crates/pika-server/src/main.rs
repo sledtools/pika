@@ -1,10 +1,14 @@
 mod admin;
 mod agent_api;
 mod agent_api_v1_contract;
+mod browser_auth;
+mod customer;
 mod listener;
 mod models;
 mod nostr_auth;
 mod routes;
+#[cfg(test)]
+mod test_support;
 
 use crate::admin::{
     challenge as admin_challenge, dashboard as admin_dashboard, dev_login as admin_dev_login,
@@ -15,6 +19,11 @@ use crate::admin::{
 use crate::agent_api::{ensure_agent, get_my_agent, recover_my_agent};
 use crate::agent_api_v1_contract::{
     V1_AGENTS_ENSURE_PATH, V1_AGENTS_ME_PATH, V1_AGENTS_RECOVER_PATH,
+};
+use crate::customer::{
+    challenge as customer_challenge, dashboard as customer_dashboard, home as customer_home,
+    login_page as customer_login_page, logout as customer_logout, provision as customer_provision,
+    recover as customer_recover, reset as customer_reset, verify as customer_verify,
 };
 use crate::models::group_subscription::{GroupFilterInfo, GroupSubscription};
 use crate::models::MIGRATIONS;
@@ -252,6 +261,15 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to parse bind/port for webserver");
 
     let server_router = Router::new()
+        .route("/", get(customer_home))
+        .route("/login", get(customer_login_page))
+        .route("/login/challenge", post(customer_challenge))
+        .route("/login/verify", post(customer_verify))
+        .route("/dashboard", get(customer_dashboard))
+        .route("/dashboard/provision", post(customer_provision))
+        .route("/dashboard/recover", post(customer_recover))
+        .route("/dashboard/reset", post(customer_reset))
+        .route("/logout", post(customer_logout))
         .route("/health-check", get(health_check))
         .route("/min-version", get(min_version))
         .route("/register", post(register))

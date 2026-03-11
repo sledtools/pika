@@ -1085,24 +1085,40 @@ We have at least one important Linux Rust lane where:
       | `check-pikachat` | `just pre-merge-pikachat` | none | deterministic CLI/OpenClaw coverage still depends on a broader mixed lane shape | choose a narrower Linux-first sublane before attempting full migration |
       | `check-pikachat-openclaw-e2e` | dedicated workflow job in `.github/workflows/pre-merge.yml` | none | depends on external OpenClaw repo checkout and broader integration shape | defer until simpler Linux lanes are under `pikaci` |
       | `check-agent-contracts` | `just pre-merge-agent-contracts` | partial | extra deterministic `pikahut` tests still run outside the staged Rust/Linux sublane | keep shadowing the migrated Rust sublane; decide later whether the remainder belongs in `pikaci` |
-      | `check-rmp` | `just pre-merge-rmp` | none | current lane shape is not yet staged-Linux/microVM-backed | defer until a clearer Linux-only slice exists |
+      | `check-rmp` | `just pre-merge-rmp` | none | current lane shape is not yet staged-Linux/microVM-backed, but the underlying `rmp-cli` package closure is much narrower than fixture or pikachat | take this next if fixture remains broad after real closure diagnosis |
       | `check-notifications` | `just pre-merge-notifications` | full | shadow evidence, not plumbing, is now the only blocker | keep gathering PR shadow data toward promotion |
-      | `check-fixture` | `just pre-merge-fixture` | none | the obvious Rust-only sublane (`pre-merge-fixture-rust`) currently explodes the staged deps closure under the existing template | either split a much narrower fixture slice or keep fixture legacy until a lighter-weight Linux path exists |
+      | `check-fixture` | `just pre-merge-fixture` | none | the obvious Rust-only sublane (`pre-merge-fixture-rust`) is package-bound to `pikahut`, which pulls essentially the full desktop/media/runtime stack | deprioritize this until we either split a much narrower fixture sublane or accept a much heavier staged lane |
 
     - by required Linux job-family count, staged Linux shadow coverage is still `3 / 7`:
       - `check-pika` partial via `pre-merge-pika-rust`
       - `check-agent-contracts` partial via `pre-merge-agent-contracts`
       - `check-notifications` full via `pre-merge-notifications`
-    - this slice chose `pre-merge-fixture-rust` as the best next target because it closes a real required-Linux gap with the least new architecture:
-      - it is smaller and more template-friendly than `pre-merge-pikachat` or `pre-merge-rmp`,
-      - it reuses the existing staged Rust prepare plus remote microVM execute model,
-      - and it shrinks the remaining 100%-coverage gap without weakening the strict remote-authoritative path,
-    - but the first real implementation attempt exposed a concrete blocker before the lane was landable:
-      - the staged `fixtureWorkspaceDeps` derivation immediately expanded to roughly `1724` remote derivations on a dry run,
-      - and the first live remote-authoritative attempt (`20260311T224857Z-5fc10438`) failed before execute because the new fixture branch in `nix/ci/linux-rust.nix` had a malformed nested conditional,
-      - after fixing that syntax error, the direct `nix build --dry-run --no-link .#ci.x86_64-linux.fixtureWorkspaceDeps` still showed the same huge closure fan-in, which is large enough to make `pre-merge-fixture-rust` a poor “next easiest” staged-Linux slice under the current template,
-      - so this slice stops short of landing fixture on the remote-authoritative path or adding a fixture shadow job; the right next move is to narrow the fixture sublane itself before retrying the migration, not to pretend the current shape is ready,
+    - this slice re-opened `pre-merge-fixture-rust` and treated the earlier `~1724`-derivation warning as a diagnosis problem, not a decision by itself:
+      - the first live remote-authoritative attempt (`20260311T224857Z-5fc10438`) still failed before execute because the experimental fixture branch in `nix/ci/linux-rust.nix` had a malformed nested conditional,
+      - but the more important follow-up evidence came from the package graph rather than that syntax bug:
+        - `pikahut` resolves to roughly `895` Cargo packages,
+        - which is effectively the same breadth as `pika_core` (`895`),
+        - and much broader than the already-migrated `pika-server` notifications lane (`409`) or the likely next `rmp-cli` target (`105`),
+      - the biggest chunks of the fixture closure are therefore intrinsic to `pikahut` itself rather than obviously accidental staging over-capture:
+        - `pika-desktop`,
+        - `iced` / `iced_wgpu` / `wgpu`,
+        - `pika-media`,
+        - `pika-agent-control-plane`,
+        - `pika-marmot-runtime`,
+        - `pika-relay-profiles`,
+        - and the broader async/network stack under `nostr-sdk`, `reqwest`, and `tokio`,
+      - trusted public cache availability does not rescue that shape under the current CI trust model:
+        - the only configured trusted public substituter today is `https://cache.nixos.org/`,
+        - representative nixpkgs system/UI dependencies such as `vulkan-loader` and `wayland` are available there,
+        - but representative staged-Rust vendor outputs such as `cargo-package-futures-macro-0.3.32` and `vendor-cargo-deps` are not present on `cache.nixos.org`,
+        - so the large uncached Rust/vendor portion still has to be realized by our own builder even if the generic Linux GUI/system stack is substitutable,
+      - that means the fixture blow-up is mostly intrinsic to the current `pikahut` package boundary, not just a coarse staged template,
+    - the decision from that evidence is to explicitly deprioritize fixture as the next migration target:
+      - keep `check-fixture` on the legacy path for now,
+      - only revisit it after splitting a materially narrower fixture-specific sublane out of `pikahut` or accepting a heavier Linux template on purpose,
+      - and switch the next aggressive coverage-closing target to `check-rmp`, whose `rmp-cli` closure is dramatically smaller and should exercise the staged Linux template without dragging the desktop/media stack along,
     - after this slice, what still remains before `pikaci` can own all required Linux pre-merge coverage is explicit:
-      - finish or intentionally split the remaining non-`pikaci` portions of `check-pika`, `check-agent-contracts`, and `check-fixture`,
+      - finish or intentionally split the remaining non-`pikaci` portions of `check-pika` and `check-agent-contracts`,
+      - take `check-rmp` next unless a sharper blocker appears during real migration,
       - choose the first sensible Linux-only slice inside `check-pikachat`,
-      - and leave `check-pikachat-openclaw-e2e` / `check-rmp` for later only if they still resist the current template.
+      - and leave `check-fixture` / `check-pikachat-openclaw-e2e` for later only if they still resist a narrower, more explicit lane boundary.

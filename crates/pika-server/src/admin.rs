@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::agent_api::{
     load_managed_environment_backup_status, load_managed_environment_status,
-    ManagedEnvironmentBackupFreshness,
+    restore_managed_environment_from_backup, AgentApiError, ManagedEnvironmentBackupFreshness,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
@@ -29,6 +29,8 @@ const ADMIN_SESSION_COOKIE: &str = "pika_admin_session";
 const ADMIN_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const ADMIN_CHALLENGE_KIND: &str = "admin_challenge";
 const ADMIN_SESSION_KIND: &str = "admin_session";
+const ADMIN_RESTORE_CONFIRMATION_KIND: &str = "admin_restore_confirmation";
+const ADMIN_RESTORE_CONFIRMATION_TTL_SECS: i64 = 15 * 60;
 const MAX_SUPPORTED_AGENTS: i32 = 1;
 
 #[derive(Clone, Debug)]
@@ -55,6 +57,18 @@ pub struct AllowlistToggleForm {
     active: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RestoreActionForm {
+    csrf_token: String,
+    confirmation_token: String,
+}
+
+#[derive(Clone, Debug)]
+struct AuthenticatedAdmin {
+    npub: String,
+    csrf_token: String,
+}
+
 #[derive(Clone, Debug)]
 struct AdminAllowlistRow {
     npub: String,
@@ -79,6 +93,18 @@ struct AdminManagedEnvironmentRow {
     backup_host: String,
     has_backup_host: bool,
     backup_status_copy: String,
+    can_restore_from_backup: bool,
+    restore_blocked_reason: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct RestoreConfirmationTicket {
+    kind: String,
+    admin_npub: String,
+    owner_npub: String,
+    agent_id: String,
+    vm_id: String,
+    exp: i64,
 }
 
 #[derive(Template)]
@@ -94,6 +120,24 @@ struct DashboardTemplate<'a> {
     rows: &'a [AdminAllowlistRow],
     environment_rows: &'a [AdminManagedEnvironmentRow],
     has_environment_rows: bool,
+}
+
+#[derive(Template)]
+#[template(path = "admin/restore_confirm.html")]
+struct RestoreConfirmTemplate {
+    current_admin_npub: String,
+    owner_npub: String,
+    agent_id: String,
+    vm_id: String,
+    app_state: String,
+    startup_phase: String,
+    backup_freshness: String,
+    backup_status_copy: String,
+    backup_last_successful_at: String,
+    backup_host: String,
+    has_backup_host: bool,
+    csrf_token: String,
+    confirmation_token: String,
 }
 
 impl AdminConfig {
@@ -259,6 +303,109 @@ fn admin_backup_freshness_label(freshness: ManagedEnvironmentBackupFreshness) ->
     }
 }
 
+fn authenticated_admin_from_headers(
+    state: &State,
+    headers: &HeaderMap,
+) -> Option<AuthenticatedAdmin> {
+    let session = admin_config(state).browser_auth.session_from_headers(
+        headers,
+        ADMIN_SESSION_COOKIE,
+        ADMIN_SESSION_KIND,
+    )?;
+    admin_config(state)
+        .is_bootstrap_admin(&session.npub)
+        .then_some(AuthenticatedAdmin {
+            npub: session.npub,
+            csrf_token: session.csrf_token,
+        })
+}
+
+fn verify_action_csrf(
+    authenticated: &AuthenticatedAdmin,
+    form: &RestoreActionForm,
+) -> Result<(), (StatusCode, String)> {
+    if authenticated.csrf_token == form.csrf_token {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "invalid csrf token".to_string()))
+    }
+}
+
+fn map_agent_api_error(err: AgentApiError) -> (StatusCode, String) {
+    let request_id_suffix = err
+        .request_id()
+        .map(|request_id| format!(" (request_id={request_id})"))
+        .unwrap_or_default();
+    (
+        err.status_code(),
+        format!("{}{}", err.error_code(), request_id_suffix),
+    )
+}
+
+fn issue_restore_confirmation_ticket(
+    state: &State,
+    admin_npub: &str,
+    owner_npub: &str,
+    agent_id: &str,
+    vm_id: &str,
+) -> Result<String, (StatusCode, String)> {
+    admin_config(state)
+        .browser_auth
+        .sign_payload(&RestoreConfirmationTicket {
+            kind: ADMIN_RESTORE_CONFIRMATION_KIND.to_string(),
+            admin_npub: admin_npub.to_string(),
+            owner_npub: owner_npub.to_string(),
+            agent_id: agent_id.to_string(),
+            vm_id: vm_id.to_string(),
+            exp: chrono::Utc::now().timestamp() + ADMIN_RESTORE_CONFIRMATION_TTL_SECS,
+        })
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn verify_restore_confirmation_ticket(
+    state: &State,
+    admin_npub: &str,
+    owner_npub: &str,
+    agent_id: &str,
+    vm_id: &str,
+    token: &str,
+) -> Result<(), (StatusCode, String)> {
+    let ticket: RestoreConfirmationTicket = admin_config(state)
+        .browser_auth
+        .verify_payload(token)
+        .map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "invalid restore confirmation".to_string(),
+            )
+        })?;
+    if ticket.kind != ADMIN_RESTORE_CONFIRMATION_KIND {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid restore confirmation".to_string(),
+        ));
+    }
+    if ticket.exp < chrono::Utc::now().timestamp() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "restore confirmation expired".to_string(),
+        ));
+    }
+    if ticket.admin_npub != admin_npub {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "restore confirmation admin mismatch".to_string(),
+        ));
+    }
+    if ticket.owner_npub != owner_npub || ticket.agent_id != agent_id || ticket.vm_id != vm_id {
+        return Err((
+            StatusCode::CONFLICT,
+            "restore confirmation no longer matches the current managed environment".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn login_page(
     Extension(state): Extension<State>,
     headers: HeaderMap,
@@ -339,7 +486,7 @@ pub async fn dashboard(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(admin_npub) = admin_config(&state).session_npub_from_headers(&headers) else {
+    let Some(authenticated) = authenticated_admin_from_headers(&state, &headers) else {
         return Ok(Redirect::to("/admin/login").into_response());
     };
 
@@ -406,15 +553,120 @@ pub async fn dashboard(
                 .unwrap_or_else(|| "not_available".to_string()),
             has_backup_host: backup.backup_host.is_some(),
             backup_status_copy: backup.status_copy,
+            can_restore_from_backup: row.vm_id.is_some(),
+            restore_blocked_reason: if row.vm_id.is_some() {
+                String::new()
+            } else {
+                "Restore from backup requires a current VM assignment.".to_string()
+            },
         });
     }
 
     render_template(&DashboardTemplate {
-        current_admin_npub: &admin_npub,
+        current_admin_npub: &authenticated.npub,
         rows: &rows,
         environment_rows: &managed_environment_rows,
         has_environment_rows: !managed_environment_rows.is_empty(),
     })
+}
+
+pub async fn restore_confirm_page(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(owner_npub): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(authenticated) = authenticated_admin_from_headers(&state, &headers) else {
+        return Ok(Redirect::to("/admin/login").into_response());
+    };
+    let owner_npub = normalize_npub(&owner_npub)
+        .map_err(|err| (StatusCode::BAD_REQUEST, format!("invalid npub: {err}")))?;
+    let status = load_managed_environment_status(&state, &owner_npub, &request_context.request_id)
+        .await
+        .map_err(map_agent_api_error)?;
+    let Some(row) = status.row.as_ref() else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "managed environment not found".to_string(),
+        ));
+    };
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return Err((
+            StatusCode::CONFLICT,
+            "restore from backup requires a current VM assignment".to_string(),
+        ));
+    };
+    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
+    let confirmation_token = issue_restore_confirmation_ticket(
+        &state,
+        &authenticated.npub,
+        &owner_npub,
+        &row.agent_id,
+        vm_id,
+    )?;
+
+    render_template(&RestoreConfirmTemplate {
+        current_admin_npub: authenticated.npub,
+        owner_npub,
+        agent_id: row.agent_id.clone(),
+        vm_id: vm_id.to_string(),
+        app_state: admin_app_state_label(status.app_state).to_string(),
+        startup_phase: admin_startup_phase_label(status.startup_phase).to_string(),
+        backup_freshness: admin_backup_freshness_label(backup.freshness).to_string(),
+        backup_status_copy: backup.status_copy,
+        backup_last_successful_at: format_rfc3339_timestamp(
+            backup.latest_successful_backup_at.as_deref(),
+        ),
+        backup_host: backup
+            .backup_host
+            .clone()
+            .unwrap_or_else(|| "not_available".to_string()),
+        has_backup_host: backup.backup_host.is_some(),
+        csrf_token: authenticated.csrf_token,
+        confirmation_token,
+    })
+}
+
+pub async fn restore_from_backup(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Path(owner_npub): Path<String>,
+    Form(form): Form<RestoreActionForm>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(authenticated) = authenticated_admin_from_headers(&state, &headers) else {
+        return Ok(Redirect::to("/admin/login").into_response());
+    };
+    verify_action_csrf(&authenticated, &form)?;
+    let owner_npub = normalize_npub(&owner_npub)
+        .map_err(|err| (StatusCode::BAD_REQUEST, format!("invalid npub: {err}")))?;
+    let status = load_managed_environment_status(&state, &owner_npub, &request_context.request_id)
+        .await
+        .map_err(map_agent_api_error)?;
+    let Some(row) = status.row.as_ref() else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "managed environment not found".to_string(),
+        ));
+    };
+    let Some(vm_id) = row.vm_id.as_deref() else {
+        return Err((
+            StatusCode::CONFLICT,
+            "restore from backup requires a current VM assignment".to_string(),
+        ));
+    };
+    verify_restore_confirmation_ticket(
+        &state,
+        &authenticated.npub,
+        &owner_npub,
+        &row.agent_id,
+        vm_id,
+        &form.confirmation_token,
+    )?;
+    restore_managed_environment_from_backup(&state, &owner_npub, &request_context.request_id, None)
+        .await
+        .map_err(map_agent_api_error)?;
+    Ok(Redirect::to("/admin").into_response())
 }
 
 pub async fn upsert_allowlist(
@@ -579,8 +831,9 @@ mod tests {
     use nostr_sdk::ToBech32;
     use pika_test_utils::CapturedRequest;
 
-    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_READY};
+    use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_ERROR, AGENT_PHASE_READY};
     use crate::models::group_subscription::GroupFilterInfo;
+    use crate::models::managed_environment_event::ManagedEnvironmentEvent;
     use crate::models::MIGRATIONS;
     use crate::test_support::serial_test_guard;
 
@@ -657,6 +910,31 @@ mod tests {
                 .expect("cookie header"),
         );
         headers
+    }
+
+    fn admin_restore_form(
+        state: &State,
+        headers: &HeaderMap,
+        confirmation_token: String,
+    ) -> RestoreActionForm {
+        let session = state
+            .admin_config
+            .browser_auth
+            .session_from_headers(headers, ADMIN_SESSION_COOKIE, ADMIN_SESSION_KIND)
+            .expect("admin session in headers");
+        RestoreActionForm {
+            csrf_token: session.csrf_token,
+            confirmation_token,
+        }
+    }
+
+    fn recent_activity(
+        db_pool: &Pool<ConnectionManager<PgConnection>>,
+        owner_npub: &str,
+    ) -> Vec<ManagedEnvironmentEvent> {
+        let mut conn = db_pool.get().expect("get recent activity connection");
+        ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, 20)
+            .expect("list recent activity")
     }
 
     fn generate_npub() -> String {
@@ -890,6 +1168,224 @@ mod tests {
         assert!(body.contains("vm-admin-backup"));
         assert!(body.contains("healthy"));
         assert!(body.contains("pika-build"));
+        assert!(body.contains("Review Restore From Backup"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn restore_confirm_page_renders_for_current_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let admin_npub = generate_npub();
+        let owner_npub = generate_npub();
+        let state = test_state(db_pool.clone(), &admin_npub);
+        let headers = admin_cookie_header(&state, &admin_npub);
+
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentAllowlistEntry::upsert(
+            &mut conn,
+            &owner_npub,
+            true,
+            Some("restore test"),
+            &admin_npub,
+            Some(1),
+        )
+        .expect("seed allowlist");
+        AgentInstance::create(
+            &mut conn,
+            &owner_npub,
+            "agent-admin-restore",
+            Some("vm-admin-restore"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+
+        let (base_url, _rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-admin-restore","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-admin-restore","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-admin-restore/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-10T00:00:00Z","observed_at":"2026-03-10T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = restore_confirm_page(
+            Extension(state),
+            request_context(),
+            headers,
+            Path(owner_npub.clone()),
+        )
+        .await
+        .expect("restore confirm response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Confirm Restore From Backup"));
+        assert!(body.contains("agent-admin-restore"));
+        assert!(body.contains("vm-admin-restore"));
+        assert!(body.contains("stale"));
+        assert!(body.contains("pika-build"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn restore_action_calls_spawner_restore_and_records_events() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let admin_npub = generate_npub();
+        let owner_npub = generate_npub();
+        let state = test_state(db_pool.clone(), &admin_npub);
+        let headers = admin_cookie_header(&state, &admin_npub);
+
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentAllowlistEntry::upsert(
+            &mut conn,
+            &owner_npub,
+            true,
+            Some("restore action"),
+            &admin_npub,
+            Some(1),
+        )
+        .expect("seed allowlist");
+        AgentInstance::create(
+            &mut conn,
+            &owner_npub,
+            "agent-admin-restore-action",
+            Some("vm-admin-restore-action"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let confirmation_token = issue_restore_confirmation_ticket(
+            &state,
+            &admin_npub,
+            &owner_npub,
+            "agent-admin-restore-action",
+            "vm-admin-restore-action",
+        )
+        .expect("issue confirmation ticket");
+        let form = admin_restore_form(&state, &headers, confirmation_token);
+
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-admin-restore-action","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"id":"vm-admin-restore-action","status":"starting"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = restore_from_backup(
+            Extension(state),
+            request_context(),
+            headers,
+            Path(owner_npub.clone()),
+            Form(form),
+        )
+        .await
+        .expect("restore action response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let status_request = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.path, "/vms/vm-admin-restore-action");
+        let restore_request = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("captured restore request");
+        assert_eq!(restore_request.method, "POST");
+        assert_eq!(restore_request.path, "/vms/vm-admin-restore-action/restore");
+
+        let events = recent_activity(&db_pool, &owner_npub);
+        assert_eq!(events[0].event_kind, "restore_succeeded");
+        assert_eq!(events[1].event_kind, "restore_requested");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_confirmation_ticket_for_changed_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let admin_npub = generate_npub();
+        let owner_npub = generate_npub();
+        let state = test_state(db_pool.clone(), &admin_npub);
+        let headers = admin_cookie_header(&state, &admin_npub);
+
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentAllowlistEntry::upsert(
+            &mut conn,
+            &owner_npub,
+            true,
+            Some("restore mismatch"),
+            &admin_npub,
+            Some(1),
+        )
+        .expect("seed allowlist");
+        let original = AgentInstance::create(
+            &mut conn,
+            &owner_npub,
+            "agent-admin-restore-original",
+            Some("vm-admin-restore-original"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed original agent");
+        let confirmation_token = issue_restore_confirmation_ticket(
+            &state,
+            &admin_npub,
+            &owner_npub,
+            &original.agent_id,
+            original.vm_id.as_deref().expect("vm id"),
+        )
+        .expect("issue confirmation ticket");
+        AgentInstance::update_phase(&mut conn, &original.agent_id, AGENT_PHASE_ERROR, None)
+            .expect("retire original agent");
+        AgentInstance::create(
+            &mut conn,
+            &owner_npub,
+            "agent-admin-restore-replacement",
+            Some("vm-admin-restore-replacement"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed replacement agent");
+        let form = admin_restore_form(&state, &headers, confirmation_token);
+
+        let (base_url, rx) = spawn_scripted_server(vec![(
+            "200 OK",
+            r#"{"id":"vm-admin-restore-replacement","status":"running","guest_ready":true}"#,
+        )]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let err = restore_from_backup(
+            Extension(state),
+            request_context(),
+            headers,
+            Path(owner_npub.clone()),
+            Form(form),
+        )
+        .await
+        .expect_err("stale confirmation should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("no longer matches"));
+
+        let status_request = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.path, "/vms/vm-admin-restore-replacement");
 
         clear_test_database(&db_pool);
     }

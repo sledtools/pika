@@ -13,8 +13,9 @@ mod test_support;
 use crate::admin::{
     challenge as admin_challenge, dashboard as admin_dashboard, dev_login as admin_dev_login,
     login_page as admin_login_page, logout as admin_logout,
-    toggle_allowlist as admin_toggle_allowlist, upsert_allowlist as admin_upsert_allowlist,
-    verify as admin_verify,
+    restore_confirm_page as admin_restore_confirm_page,
+    restore_from_backup as admin_restore_from_backup, toggle_allowlist as admin_toggle_allowlist,
+    upsert_allowlist as admin_upsert_allowlist, verify as admin_verify,
 };
 use crate::agent_api::{ensure_agent, get_my_agent, recover_my_agent};
 use crate::agent_api_v1_contract::{
@@ -332,6 +333,14 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/admin/allowlist/:npub/toggle",
             post(admin_toggle_allowlist),
+        )
+        .route(
+            "/admin/environments/:npub/restore/confirm",
+            get(admin_restore_confirm_page),
+        )
+        .route(
+            "/admin/environments/:npub/restore",
+            post(admin_restore_from_backup),
         )
         .route("/admin/logout", post(admin_logout))
         .route("/admin/dev-login", post(admin_dev_login))

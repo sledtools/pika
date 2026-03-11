@@ -16,7 +16,7 @@ Actions tab.
 
 ## Setup
 
-You need four GitHub Actions secrets. All four go in **Settings > Secrets and variables > Actions > Repository secrets**.
+You need six GitHub Actions secrets. All six go in **Settings > Secrets and variables > Actions > Repository secrets**.
 
 ### 1. `APPLE_TEAM_ID`
 
@@ -46,13 +46,37 @@ These come from an App Store Connect API key.
 - **Issuer ID** — shown at the top of the page (a UUID like `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Copy it into the `ASC_ISSUER_ID` secret.
 - **Download the .p8 file** — you can only download this once. Open it in a text editor, copy the entire contents (including the `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines), and paste into the `ASC_KEY_P8` secret.
 
+### 3. `IOS_DIST_CERT_P12` and `IOS_DIST_CERT_PASSWORD`
+
+These are the iOS distribution certificate inputs used by the workflow's
+`Install distribution certificate` step.
+
+**What the workflow expects:**
+
+- `IOS_DIST_CERT_P12` — the `.p12` certificate file, base64-encoded onto one line
+- `IOS_DIST_CERT_PASSWORD` — the password used when exporting that `.p12`
+
+**How to create them:**
+
+1. Open **Keychain Access** on a Mac that has the iOS distribution certificate installed
+2. Find the distribution certificate for the Pika app's Apple team
+3. Export it as a `.p12` file and choose an export password
+4. Base64-encode the exported file and paste the result into `IOS_DIST_CERT_P12`
+5. Paste the export password into `IOS_DIST_CERT_PASSWORD`
+
+Example base64 command:
+
+```sh
+base64 -i Certificates.p12 | tr -d '\n'
+```
+
 ### Adding secrets in GitHub
 
 1. Go to your repository on GitHub
 2. **Settings** > **Secrets and variables** > **Actions**
 3. Click **New repository secret**
 4. Enter the name (e.g. `APPLE_TEAM_ID`) and paste the value
-5. Repeat for all four secrets
+5. Repeat for all six secrets
 
 ## How it works
 

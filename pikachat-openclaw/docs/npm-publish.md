@@ -13,7 +13,7 @@ Package:
 ## Standard publish flow
 
 ```sh
-cd pikachat-openclaw/openclaw/extensions/pikachat
+cd pikachat-openclaw/openclaw/extensions/pikachat-openclaw
 npm login
 npm publish --access public
 ```

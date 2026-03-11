@@ -623,7 +623,7 @@ async fn refresh_agent_from_spawner(
             let errored = conn
                 .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
                     let errored =
-                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, None)?;
+                        AgentInstance::update_phase(conn, &row.agent_id, AGENT_PHASE_ERROR, Some(vm_id))?;
                     let message = format!(
                         "A readiness check found that VM {vm_id} was missing. Managed OpenClaw was marked failed and now needs recovery."
                     );

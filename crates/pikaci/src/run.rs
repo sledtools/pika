@@ -738,7 +738,10 @@ struct RemotePreparedOutputRealization {
 fn is_strict_remote_staged_linux_rust_output(output_name: &str) -> bool {
     matches!(
         output_name,
-        "ci.x86_64-linux.workspaceDeps" | "ci.x86_64-linux.workspaceBuild"
+        "ci.x86_64-linux.workspaceDeps"
+            | "ci.x86_64-linux.workspaceBuild"
+            | "ci.x86_64-linux.agentContractsWorkspaceDeps"
+            | "ci.x86_64-linux.agentContractsWorkspaceBuild"
     )
 }
 
@@ -3064,10 +3067,7 @@ fn staged_linux_rust_remote_realization(
     output_name: &str,
     invocation: PreparedOutputInvocationConfig<'_>,
 ) -> anyhow::Result<Option<RemotePreparedOutputRealization>> {
-    if !matches!(
-        output_name,
-        "ci.x86_64-linux.workspaceDeps" | "ci.x86_64-linux.workspaceBuild"
-    ) {
+    if !is_strict_remote_staged_linux_rust_output(output_name) {
         return Ok(None);
     }
     if invocation.launcher_transport_mode
@@ -3279,7 +3279,7 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
     recorded_mode: Option<&str>,
     subprocess_mode_enabled: bool,
     jobs: &[JobSpec],
-    metadata: &RunMetadata,
+    _metadata: &RunMetadata,
     configured_kind: PreparedOutputConsumerKind,
 ) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
     let requested_mode = match recorded_mode {
@@ -3300,11 +3300,6 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
     if configured_kind != PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 {
         return Err(anyhow!(
             "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER"
-        ));
-    }
-    if metadata.target_id.as_deref() != Some("pre-merge-pika-rust") {
-        return Err(anyhow!(
-            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} only supports target `pre-merge-pika-rust`"
         ));
     }
     if jobs.is_empty()
@@ -3837,6 +3832,7 @@ mod tests {
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
         PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
         PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
+        StagedLinuxRustLane,
     };
 
     #[test]
@@ -3886,6 +3882,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -3895,6 +3892,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
 
@@ -4151,6 +4149,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -4160,6 +4159,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
 
@@ -4848,6 +4848,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -4868,34 +4869,33 @@ mod tests {
     }
 
     #[test]
-    fn resolve_run_prepared_output_consumer_kind_rejects_non_pre_merge_target() {
+    fn resolve_run_prepared_output_consumer_kind_accepts_other_staged_linux_targets() {
         let jobs = vec![JobSpec {
-            id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            id: "agent-control-plane-unit",
+            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
             timeout_secs: 1800,
             writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            guest_command: GuestCommand::PackageUnitTests {
+                package: "pika-agent-control-plane",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         }];
         let metadata = RunMetadata {
-            target_id: Some("beachhead".to_string()),
+            target_id: Some("pre-merge-agent-contracts".to_string()),
             ..RunMetadata::default()
         };
 
-        let err = resolve_run_prepared_output_consumer_kind_for_mode(
+        let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
             None,
             true,
             &jobs,
             &metadata,
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
         )
-        .expect_err("reject non pre-merge target");
+        .expect("accept staged Linux Rust target");
 
-        assert!(
-            err.to_string()
-                .contains("only supports target `pre-merge-pika-rust`")
-        );
+        assert_eq!(kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
+        assert_eq!(mode, Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME));
     }
 
     #[test]
@@ -4908,6 +4908,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -4939,6 +4940,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -5031,6 +5033,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
 
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
@@ -6568,6 +6571,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -6577,18 +6581,20 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
         let mixed_jobs = vec![
             staged_jobs[0].clone(),
             JobSpec {
-                id: "agent-control-plane-unit",
+                id: "agent-control-plane-unit-local",
                 description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::PackageUnitTests {
                     package: "pika-agent-control-plane",
                 },
+                staged_linux_rust_lane: None,
             },
         ];
 
@@ -6621,6 +6627,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -6630,6 +6637,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())

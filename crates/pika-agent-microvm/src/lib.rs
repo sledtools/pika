@@ -1293,6 +1293,15 @@ mod tests {
 
     #[test]
     fn openclaw_extension_file_list_matches_source_tree() {
+        fn openclaw_extension_source_root() -> PathBuf {
+            std::env::var_os("PIKACI_OPENCLAW_EXTENSION_SOURCE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../pikachat-openclaw/openclaw/extensions/pikachat-openclaw")
+                })
+        }
+
         fn collect_relative_files(root: &Path) -> BTreeSet<String> {
             fn visit(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
                 for entry in fs::read_dir(dir).expect("read dir") {
@@ -1316,13 +1325,11 @@ mod tests {
             files
         }
 
-        let extension_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../pikachat-openclaw/openclaw/extensions/pikachat-openclaw");
         let expected: BTreeSet<String> = expected_openclaw_extension_paths()
             .iter()
             .map(|path| path.to_string())
             .collect();
-        let actual = collect_relative_files(&extension_root)
+        let actual = collect_relative_files(&openclaw_extension_source_root())
             .into_iter()
             .filter(|path| path != "CHANGELOG.md" && !path.ends_with(".test.ts"))
             .collect::<BTreeSet<_>>();

@@ -322,6 +322,8 @@ Current status:
 - app chat-list refresh and daemon list-groups both consume that shared snapshot query while keeping UI/protocol presentation local
 - fifth durable-state/query slice landed: shared runtime message-history page queries now surface joined-chat messages plus pagination metadata from MDK/runtime state
 - app current-chat/load-older flows and daemon get-messages now consume that shared page query while keeping chat-view and protocol formatting local
+- sixth durable-state/query slice landed: shared pending-welcome snapshot and lookup queries now surface staged welcome metadata plus canonical wrapper-id vs welcome-id matching from MDK/runtime state
+- app eager-accept lookup and daemon list/accept flows now consume that shared welcome query path while keeping UI/protocol presentation and accept policy local
 
 Important caution:
 this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction

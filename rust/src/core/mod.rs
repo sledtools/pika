@@ -73,7 +73,7 @@ use pika_marmot_runtime::runtime::{
     temporary_client_from_session_signer, RuntimeApplicationMessageInterpretation,
     RuntimeConversationEventInterpretation, RuntimeRelayRolePlan,
 };
-use pika_marmot_runtime::welcome::{accept_welcome_and_catch_up, find_pending_welcome};
+use pika_marmot_runtime::welcome::accept_welcome_and_catch_up;
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
 pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowListEntry> {
@@ -3986,15 +3986,14 @@ impl AppCore {
             "welcome_accepted"
         );
 
-        let staged_welcome = match sess.mdk.get_pending_welcomes(None) {
-            Ok(pending) => find_pending_welcome(&pending, &wrapper.id)
-                .cloned()
-                .unwrap_or(welcome),
+        let staged_welcome = match sess.host_context().lookup_pending_welcome(&wrapper.id) {
+            Ok(Some(staged)) => staged,
+            Ok(None) => welcome,
             Err(e) => {
                 tracing::warn!(
                     %e,
                     nostr_group_id = %nostr_group_hex,
-                    "get_pending_welcomes failed after process_welcome; falling back to direct welcome"
+                    "pending welcome lookup failed after process_welcome; falling back to direct welcome"
                 );
                 welcome
             }
@@ -8838,6 +8837,79 @@ mod tests {
                     .is_empty(),
                 "re-delivered welcomes should stay skipped once the group is active"
             );
+        }
+
+        #[test]
+        fn app_pending_welcome_queries_use_shared_runtime_helper() {
+            let (mut core, inviter_dir, invitee_keys) = make_logged_in_core();
+            let inviter_keys = Keys::generate();
+            let inviter_mdk = crate::mdk_support::open_mdk(
+                &inviter_dir.path().join("inviter").to_string_lossy(),
+                &inviter_keys.public_key(),
+                "",
+            )
+            .expect("open inviter mdk");
+            let invitee_kp = {
+                let invitee_mdk = &core.session.as_ref().expect("session").mdk;
+                make_key_package_event(invitee_mdk, &invitee_keys)
+            };
+            let config = NostrGroupConfigData::new(
+                "App pending welcome query".to_string(),
+                "Shared pending welcome snapshot".to_string(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                vec![inviter_keys.public_key(), invitee_keys.public_key()],
+            );
+            let group_result = inviter_mdk
+                .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+                .expect("create group");
+            let mut welcome_rumor = group_result
+                .welcome_rumors
+                .into_iter()
+                .next()
+                .expect("welcome rumor");
+            let welcome_event_id = welcome_rumor.id();
+            let wrapper = tokio::runtime::Runtime::new()
+                .expect("tokio runtime")
+                .block_on(async {
+                    EventBuilder::gift_wrap(
+                        &inviter_keys,
+                        &invitee_keys.public_key(),
+                        welcome_rumor.clone(),
+                        Vec::<Tag>::new(),
+                    )
+                    .await
+                    .expect("gift wrap")
+                });
+
+            core.session
+                .as_mut()
+                .expect("session")
+                .mdk
+                .process_welcome(&wrapper.id, &welcome_rumor)
+                .expect("process welcome");
+
+            let host = core.host_context().expect("host context");
+            let snapshots = host
+                .list_pending_welcome_snapshots()
+                .expect("list pending welcome snapshots");
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(snapshots[0].wrapper_event_id, wrapper.id);
+            assert_eq!(snapshots[0].welcome_event_id, welcome_event_id);
+            assert_eq!(
+                snapshots[0].nostr_group_id_hex,
+                hex::encode(group_result.group.nostr_group_id)
+            );
+            assert_eq!(snapshots[0].group_name, "App pending welcome query");
+
+            let looked_up = host
+                .lookup_pending_welcome(&welcome_event_id)
+                .expect("lookup pending welcome")
+                .expect("pending welcome should exist");
+            assert_eq!(looked_up.wrapper_event_id, wrapper.id);
+            assert_eq!(looked_up.id, welcome_event_id);
         }
 
         #[test]

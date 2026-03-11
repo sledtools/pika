@@ -28,6 +28,9 @@ use crate::outbound::{
     PublishedConversationAction, ResolvedConversationTarget,
 };
 use crate::relay::subscribe_group_msgs;
+use crate::welcome::{
+    PendingWelcomeSnapshot, list_pending_welcome_snapshots, lookup_pending_welcome,
+};
 
 pub const DEFAULT_INBOUND_RELAY_SEEN_CAP: usize = 2048;
 
@@ -541,6 +544,17 @@ impl<'a> MarmotRuntime<'a> {
     ) -> Result<RuntimeMessagePage> {
         self.conversation()
             .load_message_page(nostr_group_id_hex, query)
+    }
+
+    pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
+        list_pending_welcome_snapshots(self.mdk)
+    }
+
+    pub fn lookup_pending_welcome(
+        &self,
+        target: &EventId,
+    ) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+        lookup_pending_welcome(self.mdk, target)
     }
 
     pub fn get_messages(

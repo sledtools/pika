@@ -3,7 +3,8 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 use nostr_sdk::prelude::{
-    Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, Tag, UnsignedEvent,
+    Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, RelayUrl, Tag, Timestamp,
+    UnsignedEvent,
 };
 
 use crate::{PikaMdk, ingest_group_backlog};
@@ -36,14 +37,51 @@ pub struct PublishedWelcome {
     pub rumor: UnsignedEvent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingWelcomeSnapshot {
+    pub wrapper_event_id: EventId,
+    pub welcome_event_id: EventId,
+    pub welcomer: PublicKey,
+    pub created_at: Timestamp,
+    pub nostr_group_id_hex: String,
+    pub mls_group_id: mdk_storage_traits::GroupId,
+    pub group_name: String,
+    pub group_description: String,
+    pub member_count: u32,
+    pub group_relays: Vec<RelayUrl>,
+}
+
+impl PendingWelcomeSnapshot {
+    fn from_welcome(welcome: &mdk_storage_traits::welcomes::types::Welcome) -> Self {
+        Self {
+            wrapper_event_id: welcome.wrapper_event_id,
+            welcome_event_id: welcome.id,
+            welcomer: welcome.welcomer,
+            created_at: welcome.event.created_at,
+            nostr_group_id_hex: hex::encode(welcome.nostr_group_id),
+            mls_group_id: welcome.mls_group_id.clone(),
+            group_name: welcome.group_name.clone(),
+            group_description: welcome.group_description.clone(),
+            member_count: welcome.member_count,
+            group_relays: welcome.group_relays.iter().cloned().collect(),
+        }
+    }
+}
+
+fn pending_welcome_matches_event_id(
+    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    target: &EventId,
+) -> bool {
+    welcome.wrapper_event_id == *target || welcome.id == *target
+}
+
 pub fn find_pending_welcome<'a>(
     welcomes: &'a [mdk_storage_traits::welcomes::types::Welcome],
     target: &EventId,
 ) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
     welcomes
         .iter()
-        .find(|welcome| welcome.wrapper_event_id == *target)
-        .or_else(|| welcomes.iter().find(|welcome| welcome.id == *target))
+        .find(|welcome| pending_welcome_matches_event_id(welcome, target))
 }
 
 pub fn find_pending_welcome_index(
@@ -52,8 +90,7 @@ pub fn find_pending_welcome_index(
 ) -> Option<usize> {
     welcomes
         .iter()
-        .position(|welcome| welcome.wrapper_event_id == *target)
-        .or_else(|| welcomes.iter().position(|welcome| welcome.id == *target))
+        .position(|welcome| pending_welcome_matches_event_id(welcome, target))
 }
 
 pub fn take_pending_welcome(
@@ -61,6 +98,25 @@ pub fn take_pending_welcome(
     target: &EventId,
 ) -> Option<mdk_storage_traits::welcomes::types::Welcome> {
     find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
+}
+
+pub fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcomeSnapshot>> {
+    Ok(mdk
+        .get_pending_welcomes(None)
+        .context("get pending welcomes")?
+        .iter()
+        .map(PendingWelcomeSnapshot::from_welcome)
+        .collect())
+}
+
+pub fn lookup_pending_welcome(
+    mdk: &PikaMdk,
+    target: &EventId,
+) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+    let pending = mdk
+        .get_pending_welcomes(None)
+        .context("get pending welcomes")?;
+    Ok(find_pending_welcome(&pending, target).cloned())
 }
 
 pub fn ingest_unwrapped_welcome<F>(
@@ -309,6 +365,10 @@ mod tests {
         let by_welcome =
             find_pending_welcome(&pending, &welcome_event_id).expect("match welcome id");
         assert_eq!(by_welcome.id, welcome_event_id);
+        let looked_up = lookup_pending_welcome(&invitee_mdk, &welcome_event_id)
+            .expect("lookup pending welcome")
+            .expect("pending welcome should exist");
+        assert_eq!(looked_up.id, welcome_event_id);
 
         let taken = take_pending_welcome(&mut pending, &welcome_event_id).expect("take welcome");
         assert_eq!(taken.id, welcome_event_id);
@@ -317,6 +377,76 @@ mod tests {
         let missing = EventId::from_hex(&"e".repeat(64)).expect("missing event id");
         assert!(find_pending_welcome(&pending, &missing).is_none());
         assert!(find_pending_welcome_index(&pending, &missing).is_none());
+    }
+
+    #[test]
+    fn list_pending_welcome_snapshots_surface_shared_metadata() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Runtime pending welcome snapshot".to_string(),
+            "Shared pending welcome query".to_string(),
+            None,
+            None,
+            None,
+            vec![relay.clone()],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let group_result = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let mut welcome_rumor = group_result
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let welcome_event_id = welcome_rumor.id();
+        let welcome_created_at = welcome_rumor.created_at;
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor,
+                    [],
+                )
+                .await
+                .expect("build giftwrap")
+            });
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest");
+            });
+
+        let snapshots =
+            list_pending_welcome_snapshots(&invitee_mdk).expect("list pending welcome snapshots");
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.wrapper_event_id, wrapper.id);
+        assert_eq!(snapshot.welcome_event_id, welcome_event_id);
+        assert_eq!(snapshot.welcomer, inviter_keys.public_key());
+        assert_eq!(
+            snapshot.nostr_group_id_hex,
+            hex::encode(group_result.group.nostr_group_id)
+        );
+        assert_eq!(snapshot.group_name, "Runtime pending welcome snapshot");
+        assert_eq!(snapshot.group_description, "Shared pending welcome query");
+        assert_eq!(snapshot.member_count, 2);
+        assert_eq!(snapshot.group_relays, vec![relay]);
+        assert_eq!(snapshot.created_at, welcome_created_at);
+        assert_eq!(snapshot.mls_group_id, group_result.group.mls_group_id);
     }
 
     #[test]

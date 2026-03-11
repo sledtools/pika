@@ -61,6 +61,19 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().load_message_page(nostr_group_id, query)
     }
 
+    pub(super) fn list_pending_welcome_snapshots(
+        &self,
+    ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
+        self.runtime().list_pending_welcome_snapshots()
+    }
+
+    pub(super) fn lookup_pending_welcome(
+        &self,
+        target: &EventId,
+    ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+        self.runtime().lookup_pending_welcome(target)
+    }
+
     pub(super) fn parse_message_media_attachments(
         &self,
         message: &mdk_storage_traits::messages::types::Message,

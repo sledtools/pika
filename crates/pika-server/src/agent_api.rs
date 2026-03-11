@@ -2088,11 +2088,7 @@ mod tests {
                 &resolved,
             );
 
-            let startup_plan = request
-                .guest_autostart
-                .startup_plan
-                .clone()
-                .expect("startup plan");
+            let startup_plan = request.guest_autostart.startup_plan.clone();
             assert_eq!(
                 startup_plan.agent_kind,
                 pika_agent_control_plane::MicrovmAgentKind::Openclaw

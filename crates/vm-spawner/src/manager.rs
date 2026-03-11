@@ -1422,7 +1422,7 @@ fn load_guest_autostart_metadata(metadata_dir: &Path) -> anyhow::Result<GuestAut
         command,
         env: read_env_assignments(&metadata_dir.join("autostart.env"))?,
         files: read_autostart_files(&metadata_dir.join("autostart.files"))?,
-        startup_plan: Some(startup_plan),
+        startup_plan,
     })
 }
 
@@ -1627,14 +1627,12 @@ fn write_guest_autostart_metadata(
     )
     .with_context(|| format!("write {}", metadata_dir.join("autostart.command").display()))?;
 
-    let startup_plan = autostart.startup_plan.as_ref().ok_or_else(|| {
-        anyhow!("guest_autostart.startup_plan must be present for current-format metadata")
-    })?;
-    startup_plan
+    autostart
+        .startup_plan
         .validate()
         .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
-    let plan_text =
-        serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
+    let plan_text = serde_json::to_string_pretty(&autostart.startup_plan)
+        .context("serialize guest startup plan")?;
     fs::write(
         metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
         format!("{plan_text}\n"),
@@ -2387,7 +2385,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: Some(GuestStartupPlan {
+            startup_plan: GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
                 service_kind: GuestServiceKind::OpenclawGateway,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
@@ -2406,7 +2404,7 @@ mod tests {
                 },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "openclaw_gateway_exited".to_string(),
-            }),
+            },
         };
         write_runtime_metadata(
             &cfg.state_dir.join(vm_id),
@@ -2756,10 +2754,7 @@ mod tests {
         .unwrap();
         let persisted_plan: pika_agent_control_plane::GuestStartupPlan =
             serde_json::from_str(&startup_plan_text).unwrap();
-        assert_eq!(
-            persisted_plan,
-            request.guest_autostart.startup_plan.unwrap()
-        );
+        assert_eq!(persisted_plan, request.guest_autostart.startup_plan);
 
         for (rel_path, expected) in &request.guest_autostart.files {
             let persisted = fs::read_to_string(
@@ -3162,11 +3157,7 @@ mod tests {
             &bot_keys.public_key().to_hex(),
             &resolved,
         );
-        let startup_plan = request
-            .guest_autostart
-            .startup_plan
-            .clone()
-            .expect("startup plan");
+        let startup_plan = request.guest_autostart.startup_plan.clone();
         startup_plan.validate().unwrap();
         assert_eq!(
             startup_plan.agent_kind,
@@ -3541,14 +3532,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
         let manager = VmManager::new(cfg.clone()).await.unwrap();
-        let req = CreateVmRequest {
-            guest_autostart: GuestAutostartRequest {
-                command: "".to_string(),
-                env: BTreeMap::new(),
-                files: BTreeMap::new(),
-                startup_plan: None,
-            },
-        };
+        let mut guest_autostart = test_guest_autostart_request();
+        guest_autostart.command.clear();
+        let req = CreateVmRequest { guest_autostart };
 
         let _err = manager.create(req).await.unwrap_err();
         let entries = fs::read_dir(&cfg.state_dir)
@@ -3649,7 +3635,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3669,7 +3655,7 @@ mod tests {
                     },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            }),
+            },
         };
 
         write_runtime_metadata(
@@ -3726,7 +3712,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3746,7 +3732,7 @@ mod tests {
                     },
                 artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            }),
+            },
         };
 
         write_runtime_metadata(
@@ -3785,7 +3771,7 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+            startup_plan: pika_agent_control_plane::GuestStartupPlan {
                 agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
@@ -3808,7 +3794,7 @@ mod tests {
                     ..pika_agent_control_plane::GuestStartupArtifacts::default()
                 },
                 exit_failure_reason: "pi_agent_exited".to_string(),
-            }),
+            },
         };
 
         let err = write_runtime_metadata(

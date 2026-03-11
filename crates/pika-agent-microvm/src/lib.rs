@@ -471,7 +471,7 @@ pub fn build_create_vm_request(
             command: AUTOSTART_COMMAND.to_string(),
             env,
             files,
-            startup_plan: Some(startup_plan),
+            startup_plan,
         },
     }
 }
@@ -897,14 +897,38 @@ wait_for_keypackage_publish() {{
   local timeout_sec="${{PIKA_AGENT_READY_TIMEOUT_SECS:-120}}"
   local deadline=$((SECONDS + timeout_sec))
   local publish_failure_reason
+  local readiness_kind
+  local readiness_path=""
+  local readiness_pattern=""
+  local readiness_url=""
   publish_failure_reason="$(keypackage_publish_timeout_failure_reason)"
+  readiness_kind="$(plan_value '.readiness_check.kind')"
+
+  case "$readiness_kind" in
+    log_contains)
+      readiness_path="$(workspace_path "$(plan_value '.readiness_check.path')")"
+      readiness_pattern="$(plan_value '.readiness_check.pattern')"
+      ;;
+    http_get_ok)
+      readiness_url="$(plan_value '.readiness_check.url')"
+      ;;
+    *)
+      echo "[microvm-agent] unsupported readiness check kind: $readiness_kind" >&2
+      exit 1
+      ;;
+  esac
 
   while (( SECONDS < deadline )); do
     if ! kill -0 "$service_pid" 2>/dev/null; then
       wait "$service_pid"
       return $?
     fi
-    if publish_daemon_keypackage; then
+    if service_readiness_probe_succeeds \
+      "$readiness_kind" \
+      "$readiness_path" \
+      "$readiness_pattern" \
+      "$readiness_url" && \
+      publish_daemon_keypackage; then
       write_ready_marker "$ready_probe"
       return 0
     fi
@@ -1201,6 +1225,7 @@ mod tests {
     #[derive(Copy, Clone)]
     enum KeypackagePublishOutcome {
         SucceedsAfterRetry,
+        SucceedsAfterReadinessRecovery,
         TimesOut { expected_reason: &'static str },
     }
 
@@ -1269,6 +1294,7 @@ mod tests {
         let openclaw_extension_root = workspace_dir.join("openclaw/extensions/pikachat-openclaw");
         let publish_count_path = root.path().join("publish-count.txt");
         let publish_log_path = root.path().join("publish.log");
+        let curl_count_path = root.path().join("curl-count.txt");
         let fake_openclaw_path = bin_dir.join("openclaw-fake");
 
         fs::create_dir_all(identity_seed_path.parent().expect("identity parent"))
@@ -1344,7 +1370,7 @@ esac
             r#"#!/usr/bin/env bash
 set -euo pipefail
 cmd="${1:-}"
-if [[ "$cmd" == "daemon" ]]; then
+  if [[ "$cmd" == "daemon" ]]; then
   state_dir=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1413,6 +1439,23 @@ fi
             r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "${*}" >> "${PIKA_TEST_CURL_LOG_FILE}"
+count=0
+if [[ -f "${PIKA_TEST_CURL_COUNT_FILE}" ]]; then
+  count="$(cat "${PIKA_TEST_CURL_COUNT_FILE}")"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "${PIKA_TEST_CURL_COUNT_FILE}"
+IFS=',' read -r -a statuses <<< "${PIKA_TEST_CURL_RESULTS:-}"
+if [[ "${#statuses[@]}" -gt 0 ]]; then
+  index=$((count - 1))
+  if (( index >= ${#statuses[@]} )); then
+    index=$((${#statuses[@]} - 1))
+  fi
+  if [[ "${statuses[$index]}" != "0" ]]; then
+    exit 0
+  fi
+  exit 1
+fi
 exit 0
 "#,
         );
@@ -1470,6 +1513,7 @@ done
             .env("PIKA_TEST_PUBLISH_COUNT_FILE", &publish_count_path)
             .env("PIKA_TEST_PUBLISH_LOG_FILE", &publish_log_path)
             .env("PIKA_TEST_CURL_LOG_FILE", root.path().join("curl.log"))
+            .env("PIKA_TEST_CURL_COUNT_FILE", &curl_count_path)
             .env(
                 "TEST_JQ_READY_MARKER_PATH",
                 root_relative(&ready_marker_path),
@@ -1494,6 +1538,11 @@ done
         match outcome {
             KeypackagePublishOutcome::SucceedsAfterRetry => {
                 command.env("PIKA_TEST_PUBLISH_SUCCEED_AFTER", "2");
+            }
+            KeypackagePublishOutcome::SucceedsAfterReadinessRecovery => {
+                command
+                    .env("PIKA_TEST_PUBLISH_SUCCEED_AFTER", "1")
+                    .env("PIKA_TEST_CURL_RESULTS", "1,0,1");
             }
             KeypackagePublishOutcome::TimesOut { .. } => {
                 command
@@ -1556,16 +1605,15 @@ done
 
         let mut child = command.spawn().expect("spawn autostart script");
 
-        poll_until(StdDuration::from_secs(5), || {
-            read_counter(&publish_count_path) >= 1
-        });
-        assert!(
-            !ready_marker_path.exists(),
-            "ready marker must not exist after a failed first keypackage publish attempt"
-        );
-
         match outcome {
             KeypackagePublishOutcome::SucceedsAfterRetry => {
+                poll_until(StdDuration::from_secs(5), || {
+                    read_counter(&publish_count_path) >= 1
+                });
+                assert!(
+                    !ready_marker_path.exists(),
+                    "ready marker must not exist after a failed first keypackage publish attempt"
+                );
                 poll_until(StdDuration::from_secs(5), || {
                     read_counter(&publish_count_path) >= 2 && ready_marker_path.exists()
                 });
@@ -1587,7 +1635,45 @@ done
                     .expect("terminate autostart script");
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
+            KeypackagePublishOutcome::SucceedsAfterReadinessRecovery => {
+                poll_until(StdDuration::from_secs(5), || {
+                    read_counter(&curl_count_path) >= 2
+                });
+                assert_eq!(
+                    read_counter(&publish_count_path),
+                    0,
+                    "keypackage publish should wait for readiness to recover before retrying"
+                );
+                assert!(
+                    !ready_marker_path.exists(),
+                    "ready marker must not exist while readiness has regressed"
+                );
+
+                poll_until(StdDuration::from_secs(5), || {
+                    read_counter(&publish_count_path) >= 1 && ready_marker_path.exists()
+                });
+
+                let publish_log = fs::read_to_string(&publish_log_path).expect("read publish log");
+                assert!(
+                    publish_log.contains("state_dir="),
+                    "publish log should capture the remote state-dir invocation"
+                );
+
+                Command::new("kill")
+                    .arg("-TERM")
+                    .arg(child.id().to_string())
+                    .status()
+                    .expect("terminate autostart script");
+                let _ = child.wait().expect("wait for autostart script shutdown");
+            }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
+                poll_until(StdDuration::from_secs(5), || {
+                    read_counter(&publish_count_path) >= 1
+                });
+                assert!(
+                    !ready_marker_path.exists(),
+                    "ready marker must not exist after a failed first keypackage publish attempt"
+                );
                 poll_until(StdDuration::from_secs(5), || failed_marker_path.exists());
                 assert!(
                     !ready_marker_path.exists(),
@@ -1606,6 +1692,17 @@ done
                 );
             }
         }
+    }
+
+    fn test_guest_startup_plan() -> GuestStartupPlan {
+        guest_startup_plan(&ResolvedMicrovmParams {
+            spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+            kind: ResolvedMicrovmAgentKind::Pi,
+            backend: ResolvedMicrovmAgentBackend::Acp {
+                exec_command: DEFAULT_ACP_EXEC_COMMAND.to_string(),
+                cwd: DEFAULT_ACP_CWD.to_string(),
+            },
+        })
     }
 
     #[test]
@@ -1803,6 +1900,12 @@ done
             "autostart script must treat keypackage publication as a distinct startup phase"
         );
         assert!(
+            script.contains(
+                "service_readiness_probe_succeeds \\\n      \"$readiness_kind\" \\\n      \"$readiness_path\" \\\n      \"$readiness_pattern\" \\\n      \"$readiness_url\" && \\\n      publish_daemon_keypackage"
+            ),
+            "autostart script must require the readiness probe to still pass before final ready"
+        );
+        assert!(
             script.contains("timeout_waiting_for_openclaw_keypackage_publish"),
             "autostart script must report a dedicated OpenClaw keypackage publish timeout"
         );
@@ -1825,6 +1928,14 @@ done
         run_keypackage_ready_gating_scenario(
             KeypackageReadyScenario::Openclaw,
             KeypackagePublishOutcome::SucceedsAfterRetry,
+        );
+    }
+
+    #[test]
+    fn openclaw_autostart_rechecks_health_before_marking_ready() {
+        run_keypackage_ready_gating_scenario(
+            KeypackageReadyScenario::Openclaw,
+            KeypackagePublishOutcome::SucceedsAfterReadinessRecovery,
         );
     }
 
@@ -1894,7 +2005,7 @@ done
                 },
             },
         );
-        let startup_plan = req.guest_autostart.startup_plan.expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan;
         assert_eq!(startup_plan.service_kind, GuestServiceKind::PikachatDaemon);
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
         assert_eq!(
@@ -1932,11 +2043,7 @@ done
                 backend: ResolvedMicrovmAgentBackend::Native,
             },
         );
-        let startup_plan = req
-            .guest_autostart
-            .startup_plan
-            .clone()
-            .expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan.clone();
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Native);
         assert_eq!(
             startup_plan.service,
@@ -2005,11 +2112,7 @@ done
                 },
             },
         );
-        let startup_plan = req
-            .guest_autostart
-            .startup_plan
-            .clone()
-            .expect("startup plan");
+        let startup_plan = req.guest_autostart.startup_plan.clone();
         assert_eq!(startup_plan.backend_mode, GuestServiceBackendMode::Acp);
         assert_eq!(
             startup_plan.service,
@@ -2108,7 +2211,7 @@ done
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "pubkey123".to_string())]),
                 files: BTreeMap::new(),
-                startup_plan: None,
+                startup_plan: test_guest_startup_plan(),
             },
         };
 
@@ -2277,7 +2380,7 @@ done
                 command: "/workspace/pika-agent/start-agent.sh".to_string(),
                 env: BTreeMap::new(),
                 files: BTreeMap::new(),
-                startup_plan: None,
+                startup_plan: test_guest_startup_plan(),
             },
         };
 

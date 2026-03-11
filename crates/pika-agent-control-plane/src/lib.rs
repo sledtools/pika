@@ -370,8 +370,7 @@ pub struct SpawnerGuestAutostartRequest {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub files: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub startup_plan: Option<GuestStartupPlan>,
+    pub startup_plan: GuestStartupPlan,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -871,7 +870,7 @@ mod tests {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
             files: BTreeMap::from([(GUEST_STARTUP_PLAN_PATH.to_string(), "{}".to_string())]),
-            startup_plan: Some(plan.clone()),
+            startup_plan: plan.clone(),
         };
 
         let encoded = serde_json::to_string(&request).expect("encode request");
@@ -879,7 +878,18 @@ mod tests {
             serde_json::from_str(&encoded).expect("decode request");
 
         assert_eq!(decoded, request);
-        assert_eq!(decoded.startup_plan, Some(plan));
+        assert_eq!(decoded.startup_plan, plan);
+    }
+
+    #[test]
+    fn guest_autostart_request_rejects_missing_startup_plan() {
+        let err = serde_json::from_value::<SpawnerGuestAutostartRequest>(serde_json::json!({
+            "command": GUEST_AUTOSTART_COMMAND,
+            "env": {},
+            "files": {}
+        }))
+        .expect_err("startup_plan should be required");
+        assert!(err.to_string().contains("startup_plan"));
     }
 
     #[test]

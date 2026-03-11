@@ -5743,7 +5743,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_media_parsing_uses_shared_runtime_service() {
+    fn daemon_media_upload_commands_use_shared_command_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -5763,8 +5763,11 @@ mod tests {
         let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = MarmotRuntime::new(&inviter_mdk);
-        let prepared = runtime
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let prepared = host
             .prepare_upload(
                 &created.group.mls_group_id,
                 b"daemon attachment",
@@ -5772,7 +5775,7 @@ mod tests {
                 Some("daemon.txt"),
             )
             .expect("prepare upload");
-        let completed = runtime.finish_upload(
+        let completed = host.finish_upload(
             &created.group.mls_group_id,
             &prepared.upload,
             pika_marmot_runtime::media::UploadedBlob {
@@ -5787,11 +5790,7 @@ mod tests {
             Tags::from_list(vec![completed.imeta_tag]),
         );
 
-        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
-        let client = Client::new(signer);
-        let relay_urls: Vec<RelayUrl> = Vec::new();
-        let attachments = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
-            .parse_message_media_attachments(&message);
+        let attachments = host.parse_message_media_attachments(&message);
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment.filename, "daemon.txt");

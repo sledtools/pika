@@ -2,9 +2,9 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
     GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunRecord, RunStatus,
-    StagedLinuxRustLane, fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs,
-    load_logs, load_run_record, record_skipped_run, rerun_jobs_with_metadata,
-    run_jobs_with_metadata,
+    StagedLinuxRustLane, StagedLinuxRustTarget, fulfill_prepared_output_request, gc_runs,
+    git_changed_files, list_runs, load_logs, load_run_record, record_skipped_run,
+    rerun_jobs_with_metadata, run_jobs_with_metadata,
 };
 
 struct TargetSpec {
@@ -45,6 +45,9 @@ enum Command {
     },
     FulfillPreparedOutputRequest {
         request_path: String,
+    },
+    StagedLinuxTargetInfo {
+        target: String,
     },
     Rerun {
         run_id: String,
@@ -136,6 +139,24 @@ fn main() -> anyhow::Result<()> {
             println!("output={}", request.output_name);
             println!("requested_exposures={}", request.requested_exposures.len());
         }
+        Command::StagedLinuxTargetInfo { target } => {
+            let target = staged_linux_target(&target)?;
+            let config = target.config();
+            println!("target_id={}", config.target_id);
+            println!(
+                "target_description={}",
+                shell_escape(config.target_description)
+            );
+            println!(
+                "workspace_deps_installable={}",
+                config.workspace_deps_installable
+            );
+            println!(
+                "workspace_build_installable={}",
+                config.workspace_build_installable
+            );
+            println!("shadow_recipe={}", shell_escape(config.shadow_recipe));
+        }
         Command::Rerun { run_id } => {
             let previous = load_run_record(&options.state_root, &run_id)?;
             let run = rerun_target(&options, &previous)?;
@@ -160,6 +181,30 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn shell_escape(value: &str) -> String {
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
+fn staged_linux_target(target_id: &str) -> anyhow::Result<StagedLinuxRustTarget> {
+    StagedLinuxRustTarget::from_target_id(target_id)
+        .ok_or_else(|| anyhow::anyhow!("unsupported staged Linux Rust target `{target_id}`"))
+}
+
+fn staged_linux_target_spec(
+    target: StagedLinuxRustTarget,
+    filters: &'static [&'static str],
+    jobs: Vec<JobSpec>,
+) -> TargetSpec {
+    let config = target.config();
+    TargetSpec {
+        id: config.target_id,
+        description: config.target_description,
+        filters,
+        jobs,
+    }
 }
 
 fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
@@ -272,10 +317,9 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             filters: &[],
             jobs: agent_contract_jobs(),
         }),
-        "pre-merge-agent-contracts" => Ok(TargetSpec {
-            id: "pre-merge-agent-contracts",
-            description: "Run the VM-backed pre-merge agent contracts lane",
-            filters: &[
+        "pre-merge-agent-contracts" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergeAgentContracts,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -294,12 +338,11 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-tls/**",
                 "rust/**",
             ],
-            jobs: agent_contract_jobs(),
-        }),
-        "pre-merge-pika-rust" => Ok(TargetSpec {
-            id: "pre-merge-pika-rust",
-            description: "Run the VM-backed Rust tests from the pre-merge pika lane",
-            filters: &[
+            agent_contract_jobs(),
+        )),
+        "pre-merge-pika-rust" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergePikaRust,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -314,12 +357,11 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-relay-profiles/**",
                 "crates/pika-tls/**",
             ],
-            jobs: pika_rust_jobs(),
-        }),
-        "pre-merge-notifications" => Ok(TargetSpec {
-            id: "pre-merge-notifications",
-            description: "Run the VM-backed Rust tests from the notifications lane",
-            filters: &[
+            pika_rust_jobs(),
+        )),
+        "pre-merge-notifications" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergeNotifications,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -334,8 +376,8 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-relay-profiles/**",
                 "crates/pika-tls/**",
             ],
-            jobs: notification_jobs(),
-        }),
+            notification_jobs(),
+        )),
         "pre-merge-pikachat-rust" => Ok(TargetSpec {
             id: "pre-merge-pikachat-rust",
             description: "Run the VM-backed Rust tests from the pikachat lane",

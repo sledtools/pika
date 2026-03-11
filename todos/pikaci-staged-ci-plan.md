@@ -1005,3 +1005,23 @@ We have at least one important Linux Rust lane where:
       - reduce remaining stringly staged-lane metadata in the model,
       - then unify remote path defaults inside `pikaci`,
       - before choosing the next lane to migrate or deciding whether the first shadow lane is ready for promotion.
+  - note that the next cleanup slice removed one of the highest-leverage staged-Linux string tables instead of migrating a fourth lane:
+    - `pre-merge-pika-rust`, `pre-merge-agent-contracts`, and `pre-merge-notifications` now share an explicit `StagedLinuxRustTarget` config table in `pikaci`,
+    - that table is the single Rust-side source of truth for:
+      - target id,
+      - target description,
+      - shared prepare node prefix/description,
+      - staged deps/build output names,
+      - staged deps/build installables,
+      - workspace output system,
+      - and the shadow recipe name,
+    - `main.rs` now builds the three pre-merge target specs from that centralized target config instead of open-coding each target with duplicated filter/job wiring,
+    - `scripts/pikaci-staged-linux-remote.sh` no longer carries its own hard-coded target-to-installable mapping and instead resolves target metadata through `pikaci staged-linux-target-info`,
+    - so adding a fourth staged Linux lane no longer requires updating parallel target/installable tables in both Rust and shell for the canonical remote wrapper path,
+    - fresh sequential reruns on the centralized config path all still passed:
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` -> `20260311T060048Z-76872356`
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260311T060254Z-e2c1cbbe`
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications` -> `20260311T060515Z-dd58c962`,
+    - and the next structural cleanup target is now narrower:
+      - centralize the remaining lane-specific execute-wrapper / helper-command metadata,
+      - then unify remote path defaults so scripts, executor, and transport stop carrying duplicate `/var/tmp/pikaci-prepared-output` assumptions.

@@ -119,6 +119,27 @@ impl JobSpec {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedLinuxRustTarget {
+    PreMergePikaRust,
+    PreMergeAgentContracts,
+    PreMergeNotifications,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedLinuxRustTargetConfig {
+    pub target_id: &'static str,
+    pub target_description: &'static str,
+    pub shared_prepare_node_prefix: &'static str,
+    pub shared_prepare_description: &'static str,
+    pub workspace_deps_output_name: &'static str,
+    pub workspace_build_output_name: &'static str,
+    pub workspace_output_system: &'static str,
+    pub workspace_deps_installable: &'static str,
+    pub workspace_build_installable: &'static str,
+    pub shadow_recipe: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StagedLinuxRustLane {
     PikaCoreLibAppFlows,
     PikaCoreMessagingE2e,
@@ -130,66 +151,37 @@ pub enum StagedLinuxRustLane {
 }
 
 impl StagedLinuxRustLane {
-    pub fn shared_prepare_node_prefix(self) -> &'static str {
+    pub fn target(self) -> StagedLinuxRustTarget {
         match self {
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => "pika-core-linux-rust",
+            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
+                StagedLinuxRustTarget::PreMergePikaRust
+            }
             Self::AgentContractsControlPlaneUnit
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => "agent-contracts-linux-rust",
-            Self::NotificationsServerPackageTests => "notifications-linux-rust",
+            | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
+            Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
         }
+    }
+
+    pub fn shared_prepare_node_prefix(self) -> &'static str {
+        self.target().config().shared_prepare_node_prefix
     }
 
     pub fn shared_prepare_description(self) -> &'static str {
-        match self {
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                "pika_core staged Linux Rust lane"
-            }
-            Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsMicrovmTests
-            | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => "agent contracts staged Linux Rust lane",
-            Self::NotificationsServerPackageTests => "notifications staged Linux Rust lane",
-        }
+        self.target().config().shared_prepare_description
     }
 
     pub fn workspace_deps_output_name(self) -> &'static str {
-        match self {
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                "ci.x86_64-linux.workspaceDeps"
-            }
-            Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsMicrovmTests
-            | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceDeps",
-            Self::NotificationsServerPackageTests => "ci.x86_64-linux.notificationsWorkspaceDeps",
-        }
+        self.target().config().workspace_deps_output_name
     }
 
     pub fn workspace_build_output_name(self) -> &'static str {
-        match self {
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                "ci.x86_64-linux.workspaceBuild"
-            }
-            Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsMicrovmTests
-            | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceBuild",
-            Self::NotificationsServerPackageTests => "ci.x86_64-linux.notificationsWorkspaceBuild",
-        }
+        self.target().config().workspace_build_output_name
     }
 
     pub fn workspace_output_system(self) -> &'static str {
-        match self {
-            Self::PikaCoreLibAppFlows
-            | Self::PikaCoreMessagingE2e
-            | Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsMicrovmTests
-            | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98
-            | Self::NotificationsServerPackageTests => "x86_64-linux",
-        }
+        self.target().config().workspace_output_system
     }
 
     pub fn execute_wrapper_command(self) -> &'static str {
@@ -215,6 +207,58 @@ impl StagedLinuxRustLane {
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
+        }
+    }
+}
+
+impl StagedLinuxRustTarget {
+    pub fn from_target_id(target_id: &str) -> Option<Self> {
+        match target_id {
+            "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
+            "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
+            "pre-merge-notifications" => Some(Self::PreMergeNotifications),
+            _ => None,
+        }
+    }
+
+    pub fn config(self) -> StagedLinuxRustTargetConfig {
+        match self {
+            Self::PreMergePikaRust => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-pika-rust",
+                target_description: "Run the VM-backed Rust tests from the pre-merge pika lane",
+                shared_prepare_node_prefix: "pika-core-linux-rust",
+                shared_prepare_description: "pika_core staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.workspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.workspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.workspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.workspaceBuild",
+                shadow_recipe: "pre-merge-pika-rust-shadow",
+            },
+            Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-agent-contracts",
+                target_description: "Run the VM-backed pre-merge agent contracts lane",
+                shared_prepare_node_prefix: "agent-contracts-linux-rust",
+                shared_prepare_description: "agent contracts staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.agentContractsWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.agentContractsWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
+                shadow_recipe: "",
+            },
+            Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-notifications",
+                target_description: "Run the VM-backed Rust tests from the notifications lane",
+                shared_prepare_node_prefix: "notifications-linux-rust",
+                shared_prepare_description: "notifications staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.notificationsWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.notificationsWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.notificationsWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.notificationsWorkspaceBuild",
+                shadow_recipe: "pre-merge-notifications-shadow",
+            },
         }
     }
 }
@@ -262,7 +306,7 @@ pub enum PreparedOutputInvocationMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuestCommand, JobSpec, StagedLinuxRustLane};
+    use super::{GuestCommand, JobSpec, StagedLinuxRustLane, StagedLinuxRustTarget};
 
     #[test]
     fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
@@ -334,6 +378,28 @@ mod tests {
         assert_eq!(
             lane.execute_wrapper_command(),
             "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
+        );
+    }
+
+    #[test]
+    fn staged_linux_target_config_maps_target_ids_and_installables() {
+        let target = StagedLinuxRustTarget::from_target_id("pre-merge-notifications")
+            .expect("notifications target");
+        let config = target.config();
+
+        assert_eq!(config.target_id, "pre-merge-notifications");
+        assert_eq!(
+            config.workspace_deps_installable,
+            ".#ci.x86_64-linux.notificationsWorkspaceDeps"
+        );
+        assert_eq!(
+            config.workspace_build_installable,
+            ".#ci.x86_64-linux.notificationsWorkspaceBuild"
+        );
+        assert_eq!(config.shadow_recipe, "pre-merge-notifications-shadow");
+        assert_eq!(
+            StagedLinuxRustLane::NotificationsServerPackageTests.target(),
+            StagedLinuxRustTarget::PreMergeNotifications
         );
     }
 }

@@ -1,4 +1,5 @@
 use askama::Template;
+use axum::extract::Form;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
@@ -22,6 +23,17 @@ pub struct VerifyRequest {
     event: serde_json::Value,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ActionForm {
+    csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+struct AuthenticatedCustomer {
+    npub: String,
+    csrf_token: String,
+}
+
 #[derive(Template)]
 #[template(path = "customer/login.html")]
 struct LoginTemplate;
@@ -36,6 +48,7 @@ struct DashboardTemplate {
     startup_phase_label: &'static str,
     status_copy: String,
     state_tone: &'static str,
+    csrf_token: String,
     agent_id: String,
     vm_id: String,
     created_at: String,
@@ -69,8 +82,8 @@ fn redirect_to_login(state: &State, clear_session: bool) -> Result<Response, (St
 async fn allowlisted_customer_from_session(
     state: &State,
     headers: &HeaderMap,
-) -> Result<Option<String>, (StatusCode, String)> {
-    let Some(npub) = browser_auth(state).session_npub_from_headers(
+) -> Result<Option<AuthenticatedCustomer>, (StatusCode, String)> {
+    let Some(session) = browser_auth(state).session_from_headers(
         headers,
         CUSTOMER_SESSION_COOKIE,
         CUSTOMER_SESSION_KIND,
@@ -82,9 +95,12 @@ async fn allowlisted_customer_from_session(
         .db_pool
         .get()
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let is_active = AgentAllowlistEntry::is_active(&mut conn, &npub)
+    let is_active = AgentAllowlistEntry::is_active(&mut conn, &session.npub)
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    Ok(is_active.then_some(npub))
+    Ok(is_active.then_some(AuthenticatedCustomer {
+        npub: session.npub,
+        csrf_token: session.csrf_token,
+    }))
 }
 
 fn map_agent_api_error(err: AgentApiError) -> (StatusCode, String) {
@@ -136,10 +152,24 @@ fn format_timestamp(value: Option<chrono::NaiveDateTime>) -> String {
         .unwrap_or_else(|| "not_available".to_string())
 }
 
-fn dashboard_template(owner_npub: String, status: ManagedEnvironmentStatus) -> DashboardTemplate {
+fn verify_action_csrf(
+    authenticated: &AuthenticatedCustomer,
+    form: &ActionForm,
+) -> Result<(), (StatusCode, String)> {
+    if authenticated.csrf_token == form.csrf_token {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "invalid csrf token".to_string()))
+    }
+}
+
+fn dashboard_template(
+    authenticated: AuthenticatedCustomer,
+    status: ManagedEnvironmentStatus,
+) -> DashboardTemplate {
     let row = status.row;
     DashboardTemplate {
-        owner_npub,
+        owner_npub: authenticated.npub,
         template_name: "OpenClaw",
         environment_exists_label: if status.environment_exists {
             "yes"
@@ -150,6 +180,7 @@ fn dashboard_template(owner_npub: String, status: ManagedEnvironmentStatus) -> D
         startup_phase_label: startup_phase_label(status.startup_phase),
         status_copy: status.status_copy,
         state_tone: state_tone(status.app_state),
+        csrf_token: authenticated.csrf_token,
         agent_id: row
             .as_ref()
             .map(|row| row.agent_id.clone())
@@ -256,28 +287,31 @@ pub async fn dashboard(
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(owner_npub) = allowlisted_customer_from_session(&state, &headers).await? else {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
 
-    let status = load_managed_environment_status(&state, &owner_npub, &request_context.request_id)
-        .await
-        .map_err(map_agent_api_error)?;
-    render_template(&dashboard_template(owner_npub, status))
+    let status =
+        load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
+            .await
+            .map_err(map_agent_api_error)?;
+    render_template(&dashboard_template(authenticated, status))
 }
 
 pub async fn provision(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
+    Form(form): Form<ActionForm>,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(owner_npub) = allowlisted_customer_from_session(&state, &headers).await? else {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
+    verify_action_csrf(&authenticated, &form)?;
 
     provision_managed_environment_if_missing(
         &state,
-        &owner_npub,
+        &authenticated.npub,
         &request_context.request_id,
         None,
     )
@@ -290,14 +324,21 @@ pub async fn recover(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
+    Form(form): Form<ActionForm>,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(owner_npub) = allowlisted_customer_from_session(&state, &headers).await? else {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
+    verify_action_csrf(&authenticated, &form)?;
 
-    recover_agent_for_owner(&state, &owner_npub, &request_context.request_id, None)
-        .await
-        .map_err(map_agent_api_error)?;
+    recover_agent_for_owner(
+        &state,
+        &authenticated.npub,
+        &request_context.request_id,
+        None,
+    )
+    .await
+    .map_err(map_agent_api_error)?;
     Ok(Redirect::to("/dashboard").into_response())
 }
 
@@ -305,18 +346,34 @@ pub async fn reset(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
+    Form(form): Form<ActionForm>,
 ) -> Result<Response, (StatusCode, String)> {
-    let Some(owner_npub) = allowlisted_customer_from_session(&state, &headers).await? else {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
+    verify_action_csrf(&authenticated, &form)?;
 
-    reset_agent_for_owner(&state, &owner_npub, &request_context.request_id, None)
-        .await
-        .map_err(map_agent_api_error)?;
+    reset_agent_for_owner(
+        &state,
+        &authenticated.npub,
+        &request_context.request_id,
+        None,
+    )
+    .await
+    .map_err(map_agent_api_error)?;
     Ok(Redirect::to("/dashboard").into_response())
 }
 
-pub async fn logout(Extension(state): Extension<State>) -> Result<Response, (StatusCode, String)> {
+pub async fn logout(
+    Extension(state): Extension<State>,
+    headers: HeaderMap,
+    Form(form): Form<ActionForm>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
+        return redirect_to_login(&state, true);
+    };
+    verify_action_csrf(&authenticated, &form)?;
+
     let mut response = Redirect::to("/login").into_response();
     browser_auth(&state)
         .clear_session_cookie(&mut response, CUSTOMER_SESSION_COOKIE)
@@ -418,6 +475,17 @@ mod tests {
         headers
     }
 
+    fn customer_action_form(state: &State, headers: &HeaderMap) -> ActionForm {
+        let session = state
+            .admin_config
+            .browser_auth
+            .session_from_headers(headers, CUSTOMER_SESSION_COOKIE, CUSTOMER_SESSION_KIND)
+            .expect("session info from cookie");
+        ActionForm {
+            csrf_token: session.csrf_token,
+        }
+    }
+
     fn verify_headers(host: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, host.parse().expect("host header"));
@@ -462,16 +530,12 @@ mod tests {
             .expect("upsert allowlist");
     }
 
-<<<<<<< HEAD
     fn generate_npub() -> String {
         Keys::generate()
             .public_key()
             .to_bech32()
             .expect("encode generated npub")
     }
-
-=======
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
     fn request_context() -> Extension<RequestContext> {
         Extension(RequestContext {
             request_id: "req-customer-test".to_string(),
@@ -746,6 +810,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_marks_ready_row_failed_when_vm_is_missing() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1deadreadydashboardstate";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-dead",
+            Some("vm-dead"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_one_shot_server("404 Not Found", "vm not found");
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("needs recovery"));
+        assert!(!body.contains("running and ready"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn provision_action_creates_environment_when_missing() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -753,20 +850,15 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
-=======
-        let npub = "npub1provisioncustomerflow";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
+        let form = customer_action_form(&state, &headers);
         let (base_url, rx) =
             spawn_one_shot_server("200 OK", r#"{"id":"vm-new","status":"starting"}"#);
         let _env = MicrovmEnvGuard::set(&base_url);
 
-        let response = provision(Extension(state), request_context(), headers)
+        let response = provision(Extension(state), request_context(), headers, Form(form))
             .await
             .expect("provision response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -778,11 +870,7 @@ mod tests {
         assert_eq!(captured.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
-<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
-=======
-        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
@@ -791,7 +879,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_action_calls_spawner_recover() {
+    async fn provision_rejects_invalid_csrf_token() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1csrfrejectcustomerflow";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+
+        let err = provision(
+            Extension(state),
+            request_context(),
+            headers,
+            Form(ActionForm {
+                csrf_token: "wrong-token".to_string(),
+            }),
+        )
+        .await
+        .expect_err("provision should reject invalid csrf");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn recover_action_calls_spawner_recover_for_ready_row() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
             return;
@@ -801,6 +916,7 @@ mod tests {
         let npub = "npub1recovercustomerflow";
         upsert_allowlist(&db_pool, npub, true);
         let headers = customer_cookie_header(&state, npub);
+        let form = customer_action_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         AgentInstance::create(
             &mut conn,
@@ -816,7 +932,7 @@ mod tests {
         );
         let _env = MicrovmEnvGuard::set(&base_url);
 
-        let response = recover(Extension(state), request_context(), headers)
+        let response = recover(Extension(state), request_context(), headers, Form(form))
             .await
             .expect("recover response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -831,6 +947,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recover_action_calls_spawner_recover_for_error_row_with_vm_id() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1recovererrorcustomerflow";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+        let form = customer_action_form(&state, &headers);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-error",
+            Some("vm-error"),
+            crate::models::agent_instance::AGENT_PHASE_ERROR,
+        )
+        .expect("seed errored agent");
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-error","status":"running","guest_ready":true}"#,
+        );
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = recover(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect("recover response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured recover request");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/vms/vm-error/recover");
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, "agent-error");
+        assert_eq!(latest.phase, AGENT_PHASE_READY);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn reset_action_destroys_old_vm_and_provisions_fresh_environment() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -838,23 +1002,14 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
+        let form = customer_action_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         let existing = AgentInstance::create(
             &mut conn,
             &npub,
-=======
-        let npub = "npub1resetcustomerflow";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
-        let mut conn = db_pool.get().expect("get seed connection");
-        let existing = AgentInstance::create(
-            &mut conn,
-            npub,
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             "agent-old",
             Some("vm-old"),
             AGENT_PHASE_READY,
@@ -866,7 +1021,7 @@ mod tests {
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
 
-        let response = reset(Extension(state), request_context(), headers)
+        let response = reset(Extension(state), request_context(), headers, Form(form))
             .await
             .expect("reset response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -883,11 +1038,7 @@ mod tests {
         assert_eq!(create_request.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
-<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
-=======
-        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-fresh"));

@@ -23,10 +23,17 @@ pub struct BrowserAuthConfig {
     cookie_secure: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionInfo {
+    pub npub: String,
+    pub csrf_token: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionPayload {
     kind: String,
     npub: String,
+    csrf_token: String,
     exp: i64,
 }
 
@@ -120,19 +127,27 @@ impl BrowserAuthConfig {
         let payload = SessionPayload {
             kind: session_kind.to_string(),
             npub: npub.to_string(),
+            csrf_token: hex::encode(rand::thread_rng().gen::<[u8; 16]>()),
             exp: now_unix() + ttl_secs,
         };
         sign_token(&self.session_secret, &payload)
     }
 
-    pub fn verify_session_token(&self, token: &str, expected_kind: &str) -> anyhow::Result<String> {
+    pub fn verify_session_token(
+        &self,
+        token: &str,
+        expected_kind: &str,
+    ) -> anyhow::Result<SessionInfo> {
         let payload: SessionPayload = verify_token(&self.session_secret, token)?;
         anyhow::ensure!(
             payload.kind == expected_kind,
             "invalid session payload kind"
         );
         anyhow::ensure!(payload.exp >= now_unix(), "session expired");
-        Ok(payload.npub)
+        Ok(SessionInfo {
+            npub: payload.npub,
+            csrf_token: payload.csrf_token,
+        })
     }
 
     pub fn set_session_cookie(
@@ -173,14 +188,24 @@ impl BrowserAuthConfig {
         cookie_name: &str,
         session_kind: &str,
     ) -> Option<String> {
+        self.session_from_headers(headers, cookie_name, session_kind)
+            .map(|session| session.npub)
+    }
+
+    pub fn session_from_headers(
+        &self,
+        headers: &HeaderMap,
+        cookie_name: &str,
+        session_kind: &str,
+    ) -> Option<SessionInfo> {
         let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
         for pair in cookie.split(';') {
             let Some((name, value)) = pair.trim().split_once('=') else {
                 continue;
             };
             if name == cookie_name {
-                if let Ok(npub) = self.verify_session_token(value, session_kind) {
-                    return Some(npub);
+                if let Ok(session) = self.verify_session_token(value, session_kind) {
+                    return Some(session);
                 }
             }
         }
@@ -262,6 +287,11 @@ mod tests {
             config.session_npub_from_headers(&headers, "pika_customer_session", "customer_session"),
             Some(npub.to_string())
         );
+        let session = config
+            .session_from_headers(&headers, "pika_customer_session", "customer_session")
+            .expect("session info");
+        assert_eq!(session.npub, npub);
+        assert!(!session.csrf_token.is_empty());
     }
 
     #[test]

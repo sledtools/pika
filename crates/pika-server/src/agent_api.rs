@@ -320,12 +320,8 @@ fn managed_environment_status_copy(
         (Some(_), Some(AgentStartupPhase::Ready)) => {
             "Managed OpenClaw is running and ready.".to_string()
         }
-        (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
-            "Managed OpenClaw needs recovery. Recover preserves the durable home; destructive reset deletes it and starts fresh."
-                .to_string()
-        }
         (Some(_), Some(AgentStartupPhase::Failed)) => {
-            "The last managed OpenClaw environment failed before a durable VM was available."
+            "Managed OpenClaw needs recovery. Recover preserves the durable home when the VM can still be recovered; destructive reset starts fresh."
                 .to_string()
         }
         (Some(_), None) => "Managed OpenClaw status is unavailable.".to_string(),
@@ -414,12 +410,6 @@ async fn refresh_agent_from_spawner(
     row: AgentInstance,
     request_id: &str,
 ) -> Result<RefreshedAgentStatus, AgentApiError> {
-    if row.phase == AGENT_PHASE_READY {
-        return Ok(RefreshedAgentStatus {
-            row,
-            startup_phase: AgentStartupPhase::Ready,
-        });
-    }
     let Some(vm_id) = row.vm_id.as_deref() else {
         return Ok(RefreshedAgentStatus {
             row,
@@ -716,6 +706,30 @@ async fn provision_agent_for_owner(
     Ok(updated)
 }
 
+async fn provision_or_existing_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+    requested: Option<&MicrovmProvisionParams>,
+) -> Result<ManagedEnvironmentAction, AgentApiError> {
+    match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
+        Ok(row) => Ok(ManagedEnvironmentAction {
+            row,
+            startup_phase: AgentStartupPhase::ProvisioningVm,
+        }),
+        Err(err) if err.code == AgentApiErrorCode::AgentExists => {
+            let status = load_managed_environment_status(state, owner_npub, request_id).await?;
+            match (status.row, status.startup_phase) {
+                (Some(row), Some(startup_phase)) => {
+                    Ok(ManagedEnvironmentAction { row, startup_phase })
+                }
+                _ => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub(crate) async fn provision_managed_environment_if_missing(
     state: &State,
     owner_npub: &str,
@@ -727,11 +741,7 @@ pub(crate) async fn provision_managed_environment_if_missing(
         return Ok(ManagedEnvironmentAction { row, startup_phase });
     }
 
-    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-    Ok(ManagedEnvironmentAction {
-        row,
-        startup_phase: AgentStartupPhase::ProvisioningVm,
-    })
+    provision_or_existing_managed_environment(state, owner_npub, request_id, requested).await
 }
 
 pub async fn ensure_agent(
@@ -822,15 +832,12 @@ pub(crate) async fn recover_agent_for_owner(
             AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
         );
     };
-    if active.phase == AGENT_PHASE_ERROR || active.vm_id.is_none() {
+    if active.vm_id.is_none() {
         prepare_agent_for_reprovision(&mut conn, &active)
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
         drop(conn);
-        let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-        return Ok(ManagedEnvironmentAction {
-            row,
-            startup_phase: AgentStartupPhase::ProvisioningVm,
-        });
+        return provision_or_existing_managed_environment(state, owner_npub, request_id, requested)
+            .await;
     }
     let vm_id = active.vm_id.clone().ok_or_else(|| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
@@ -857,11 +864,10 @@ pub(crate) async fn recover_agent_for_owner(
             prepare_agent_for_reprovision(&mut conn, &active)
                 .map_err(|err| err.with_request_id(request_id.to_string()))?;
             drop(conn);
-            let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-            return Ok(ManagedEnvironmentAction {
-                row,
-                startup_phase: AgentStartupPhase::ProvisioningVm,
-            });
+            return provision_or_existing_managed_environment(
+                state, owner_npub, request_id, requested,
+            )
+            .await;
         }
         Err(err) => {
             tracing::error!(
@@ -960,11 +966,7 @@ pub(crate) async fn reset_agent_for_owner(
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
     }
 
-    let row = provision_agent_for_owner(state, owner_npub, request_id, requested).await?;
-    Ok(ManagedEnvironmentAction {
-        row,
-        startup_phase: AgentStartupPhase::ProvisioningVm,
-    })
+    provision_or_existing_managed_environment(state, owner_npub, request_id, requested).await
 }
 
 pub async fn recover_my_agent(
@@ -1007,16 +1009,22 @@ pub fn agent_api_healthcheck() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use crate::admin::AdminConfig;
+    use crate::browser_auth::BrowserAuthConfig;
+    use crate::models::group_subscription::GroupFilterInfo;
     use crate::test_support::serial_test_guard;
     use axum::body::HttpBody;
     use axum::http::header;
     use base64::Engine;
     use chrono::NaiveDate;
     use diesel::prelude::*;
+    use diesel::r2d2::{ConnectionManager, Pool};
     use diesel_migrations::MigrationHarness;
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
+    use std::collections::HashSet;
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -1050,12 +1058,53 @@ mod tests {
         Some(conn)
     }
 
+    fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
+        dotenv::dotenv().ok();
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        if let Err(err) = PgConnection::establish(&url) {
+            eprintln!("SKIP: postgres unavailable for agent_api db test pool: {err}");
+            return None;
+        }
+        let manager = ConnectionManager::<PgConnection>::new(url);
+        let db_pool = Pool::builder()
+            .max_size(4)
+            .build(manager)
+            .expect("build test db pool");
+        let mut conn = db_pool.get().expect("get migration connection");
+        conn.run_pending_migrations(crate::models::MIGRATIONS)
+            .expect("run migrations");
+        Some(db_pool)
+    }
+
     fn clear_test_database(conn: &mut PgConnection) {
         diesel::sql_query(
             "TRUNCATE TABLE agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
         )
         .execute(conn)
         .expect("truncate test tables");
+    }
+
+    fn test_state(db_pool: Pool<ConnectionManager<PgConnection>>) -> State {
+        let (sender, _receiver) = tokio::sync::watch::channel(GroupFilterInfo::default());
+        State {
+            db_pool,
+            apns_client: None,
+            fcm_client: None,
+            apns_topic: String::new(),
+            channel: std::sync::Arc::new(tokio::sync::Mutex::new(sender)),
+            admin_config: std::sync::Arc::new(AdminConfig {
+                bootstrap_admins: HashSet::new(),
+                browser_auth: BrowserAuthConfig::new(
+                    b"0123456789abcdef0123456789abcdef".to_vec(),
+                    true,
+                    false,
+                    None,
+                )
+                .expect("browser auth config"),
+            }),
+            min_app_version: "0.0.0".to_string(),
+            trust_forwarded_host: false,
+        }
     }
 
     fn with_spawner_env<T>(value: &str, f: impl FnOnce() -> T) -> T {
@@ -1576,6 +1625,38 @@ mod tests {
         assert_eq!(response.0.state, AgentAppState::Ready);
         assert_eq!(response.0.startup_phase, AgentStartupPhase::Ready);
 
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn provision_or_existing_managed_environment_returns_active_row_after_agent_exists() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1raceconvergencetest";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-existing",
+            Some("vm-existing"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed active row");
+        drop(conn);
+
+        let action =
+            provision_or_existing_managed_environment(&state, owner_npub, "req-race", None)
+                .await
+                .expect("should converge on existing active row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.vm_id.as_deref(), Some("vm-existing"));
+        assert_eq!(action.startup_phase, AgentStartupPhase::Ready);
+
+        let mut conn = db_pool.get().expect("get clear connection");
         clear_test_database(&mut conn);
     }
 

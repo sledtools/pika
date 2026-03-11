@@ -161,6 +161,7 @@
             <p>This dashboard controls your current managed environment. Today the built-in runtime template is <strong>{{ template_name }}</strong>, with OpenClaw as the only built-in UI surface.</p>
           </div>
           <form method="post" action="/logout">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
             <button class="ghost" type="submit">Logout</button>
           </form>
         </div>
@@ -218,18 +219,21 @@
           <div class="actions">
             {% if can_provision %}
             <form method="post" action="/dashboard/provision">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button type="submit">Provision Managed OpenClaw</button>
             </form>
             {% endif %}
 
             {% if can_recover %}
             <form method="post" action="/dashboard/recover">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button type="submit">Recover Preserving Durable Home</button>
             </form>
             {% endif %}
 
             {% if can_reset %}
             <form method="post" action="/dashboard/reset">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button class="danger" type="submit">Destructive Reset</button>
             </form>
             {% endif %}

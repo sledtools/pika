@@ -4398,7 +4398,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_outbound_prepare_uses_shared_runtime_facade() {
+    fn daemon_outbound_prepare_uses_shared_command_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -4440,6 +4440,66 @@ mod tests {
         );
         assert_eq!(prepared.kind, Kind::Reaction);
         assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
+    }
+
+    #[test]
+    fn daemon_add_members_preparation_and_finalize_use_shared_command_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon membership boundary".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let before_merge = inviter_mdk
+            .get_members(&created.group.mls_group_id)
+            .expect("members before merge")
+            .len();
+
+        let prepared = host
+            .prepare_add_members(&hex::encode(created.group.nostr_group_id), &[peer_kp])
+            .expect("prepare add members");
+        let finalized = host.finalize_published_evolution(prepared);
+
+        let after_merge = inviter_mdk
+            .get_members(&created.group.mls_group_id)
+            .expect("members after merge")
+            .len();
+        assert_eq!(before_merge + 1, after_merge);
+        assert!(finalized.merge_error.is_none());
+        assert_eq!(
+            finalized
+                .welcome_delivery
+                .as_ref()
+                .expect("welcome delivery")
+                .recipients,
+            vec![peer_keys.public_key()]
+        );
     }
 
     #[tokio::test]

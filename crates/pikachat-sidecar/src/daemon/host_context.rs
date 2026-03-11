@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use pika_marmot_runtime::membership::{MembershipUpdateResult, PreparedMembershipEvolution};
 
 #[derive(Debug)]
 pub(super) enum DaemonPrepareError {
@@ -33,6 +35,10 @@ impl<'a> DaemonHostContext<'a> {
 
     fn runtime(&self) -> MarmotRuntime<'a> {
         MarmotRuntime::with_client(self.mdk, self.client)
+    }
+
+    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
+        pika_marmot_runtime::runtime::RuntimeCommands::with_client(self.mdk, self.client)
     }
 
     fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
@@ -182,12 +188,35 @@ impl<'a> DaemonHostContext<'a> {
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction, DaemonPrepareError> {
         let target = self
-            .runtime()
+            .commands()
             .resolve_outbound_target(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.runtime()
+        self.commands()
             .prepare_outbound_action_for_target(self.keys.public_key(), target, action)
             .map_err(DaemonPrepareError::Prepare)
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_add_members(
+        &self,
+        nostr_group_id: &str,
+        key_package_events: &[Event],
+    ) -> Result<PreparedMembershipEvolution, DaemonPrepareError> {
+        let group = self
+            .queries()
+            .lookup_joined_group_snapshot(nostr_group_id)
+            .map_err(DaemonPrepareError::BadGroup)?;
+        self.commands()
+            .prepare_add_members(&group.mls_group_id, key_package_events)
+            .map_err(DaemonPrepareError::Prepare)
+    }
+
+    #[cfg(test)]
+    pub(super) fn finalize_published_evolution(
+        &self,
+        prepared: PreparedMembershipEvolution,
+    ) -> MembershipUpdateResult {
+        self.commands().finalize_published_evolution(prepared)
     }
 
     pub(super) fn derive_relay_auth_token(

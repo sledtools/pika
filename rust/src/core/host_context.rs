@@ -34,6 +34,13 @@ impl<'a> AppHostContext<'a> {
         self.session.runtime()
     }
 
+    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
+        pika_marmot_runtime::runtime::RuntimeCommands::with_client(
+            &self.session.mdk,
+            &self.session.client,
+        )
+    }
+
     fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
         pika_marmot_runtime::runtime::RuntimeQueries::new(&self.session.mdk)
     }
@@ -82,12 +89,8 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        let group = self.lookup_joined_group_snapshot(chat_id)?;
-        self.prepare_outbound_action_for_group_ids(
-            group.mls_group_id,
-            group.nostr_group_id_hex,
-            action,
-        )
+        self.commands()
+            .prepare_outbound_action(self.session.pubkey, chat_id, action)
     }
 
     pub(super) fn prepare_outbound_action_for_group_ids(
@@ -96,7 +99,7 @@ impl<'a> AppHostContext<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        self.runtime().prepare_outbound_action_for_group_ids(
+        self.commands().prepare_outbound_action_for_group_ids(
             self.session.pubkey,
             mls_group_id,
             nostr_group_id_hex,
@@ -110,7 +113,7 @@ impl<'a> AppHostContext<'a> {
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         let group = self.lookup_joined_group_snapshot(chat_id)?;
-        self.runtime()
+        self.commands()
             .prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
@@ -121,7 +124,7 @@ impl<'a> AppHostContext<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        self.runtime().prepare_evolution(
+        self.commands().prepare_evolution(
             mls_group_id,
             evolution_event,
             welcome_rumors,
@@ -133,7 +136,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
-        self.runtime().finalize_published_evolution(prepared)
+        self.commands().finalize_published_evolution(prepared)
     }
 
     pub(super) fn process_group_message_event(

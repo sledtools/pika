@@ -1069,7 +1069,7 @@ mod tests {
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
-        let events = recent_activity(&db_pool, npub);
+        let events = recent_activity(&db_pool, &npub);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");
@@ -1310,7 +1310,7 @@ mod tests {
             retired.phase,
             crate::models::agent_instance::AGENT_PHASE_ERROR
         );
-        let events = recent_activity(&db_pool, npub);
+        let events = recent_activity(&db_pool, &npub);
         assert_eq!(events.len(), 4);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");

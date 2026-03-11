@@ -1044,3 +1044,20 @@ We have at least one important Linux Rust lane where:
       - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260311T062506Z-9385511c`
       - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications` -> `20260311T062836Z-e3a7a4bf`,
     - and the next structural cleanup target is now the remaining lane-specific execute-wrapper/helper-command metadata rather than remote target config or remote path defaults.
+  - note that the next use-pressure slice put the third working lane into shadow CI instead of migrating a fourth lane:
+    - `.github/workflows/pre-merge.yml` now includes the non-gating `shadow-pikaci-pre-merge-agent-contracts` job,
+    - the canonical local/GitHub command is now `just pre-merge-agent-contracts-shadow`,
+    - and that job reuses the same `pikaci-shadow-summary.py` summary/debug-bundle flow as the existing shadow lanes, keyed by `--target-id pre-merge-agent-contracts`,
+    - the local shadow verification also flushed out two rebased staged-source regressions that had to be fixed before the lane could be trusted in CI:
+      - `ciPikaCoreWorkspaceSrc` needed to carry `crates/pika-desktop` and the repo-root `VERSION` file because `pikahut` now pulls `pika-desktop` into the agent-contracts staged workspace,
+      - and the agent-contracts staged Linux Nix lane needed `LIBCLANG_PATH`, Linux headers, libc headers, and the same Linux GUI runtime libraries that `pika-desktop` already expects elsewhere,
+    - after those fixes, the local shadow command passed end-to-end as:
+      - `nix develop .#default -c just pre-merge-agent-contracts-shadow` -> `20260311T071323Z-d4a1b776`,
+    - so all three staged Linux lanes now have real remote-authoritative runs, and three of them have an operator-ready local command path:
+      - `pre-merge-pika-rust`
+      - `pre-merge-agent-contracts`
+      - `pre-merge-notifications`,
+    - the next promotion question is now policy/evidence rather than plumbing:
+      - collect a few real PR shadow runs,
+      - compare parity/runtime/flake rate against the legacy lanes,
+      - then decide whether `pre-merge-pika-rust` is ready to move from shadow toward authoritative.

@@ -31,6 +31,24 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
+    ] ++ pkgs.lib.optionals (lane == "agent-contracts") [
+      pkgs.llvmPackages.libclang
+      pkgs.linuxHeaders
+      pkgs.xorg.libX11
+      pkgs.xorg.libXcursor
+      pkgs.xorg.libXi
+      pkgs.xorg.libXinerama
+      pkgs.xorg.libXrandr
+      pkgs.libxkbcommon
+      pkgs.libglvnd
+      pkgs.mesa
+      pkgs.vulkan-loader
+    ];
+  } // pkgs.lib.optionalAttrs (lane == "agent-contracts") {
+    LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+    BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
+      "-I${pkgs.linuxHeaders}/include"
+      "-I${pkgs.stdenv.cc.libc.dev}/include"
     ];
   };
 

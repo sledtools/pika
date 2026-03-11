@@ -9157,6 +9157,68 @@ mod tests {
             assert_eq!(prepared.incoming.target_id, chat_id);
             assert!(prepared.signal.payload_json.contains("call.accept"));
         }
+
+        #[test]
+        fn app_prepare_call_invite_uses_shared_command_boundary() {
+            let (mut core, _tmp, keys) = make_logged_in_core();
+            let peer = Keys::generate();
+            let pubkey = keys.public_key();
+            let peer_pubkey = peer.public_key();
+            let sess = core.session.as_mut().expect("session");
+            let config = NostrGroupConfigData::new(
+                "App call invite test".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                vec![pubkey],
+            );
+            let created = sess
+                .mdk
+                .create_group(&pubkey, vec![], config)
+                .expect("create group");
+            sess.mdk
+                .merge_pending_commit(&created.group.mls_group_id)
+                .expect("merge pending commit");
+            let chat_id = hex::encode(created.group.nostr_group_id);
+            sess.groups.insert(
+                chat_id.clone(),
+                GroupIndexEntry {
+                    mls_group_id: created.group.mls_group_id.clone(),
+                    is_group: false,
+                    group_name: Some("App call invite test".to_string()),
+                    self_is_admin: false,
+                    members: vec![GroupMember {
+                        pubkey: peer_pubkey,
+                        is_admin: false,
+                        name: None,
+                        picture_url: None,
+                    }],
+                },
+            );
+
+            let call_id = "550e8400-e29b-41d4-a716-446655440099";
+            let session = crate::core::call_control::CallSessionParams {
+                moq_url: "https://moq.example.com/anon".to_string(),
+                broadcast_base: format!("pika/calls/{call_id}"),
+                relay_auth: "capv1_test_token".to_string(),
+                tracks: vec![crate::core::call_control::CallTrackSpec::audio0_opus_default()],
+            };
+
+            let (pending, prepared) = core
+                .session
+                .as_ref()
+                .expect("session")
+                .host_context()
+                .prepare_outgoing_call_invite(&chat_id, &peer_pubkey.to_hex(), call_id, &session)
+                .expect("prepare call invite");
+
+            assert_eq!(pending.call_id, call_id);
+            assert_eq!(pending.target_id, chat_id);
+            assert_eq!(pending.peer_pubkey_hex, peer_pubkey.to_hex());
+            assert!(prepared.payload_json.contains("call.invite"));
+        }
     }
 
     #[test]

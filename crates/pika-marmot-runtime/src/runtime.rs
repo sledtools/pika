@@ -248,6 +248,23 @@ pub struct RuntimeSessionSyncPlan {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RuntimeSessionOpenRequest {
+    pub subscribed_group_ids: Vec<String>,
+    pub long_lived_session_relays: Vec<RelayUrl>,
+    pub temporary_key_package_relays: Vec<RelayUrl>,
+    pub welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeSessionOpenState {
+    pub pubkey: PublicKey,
+    pub pubkey_hex: String,
+    pub joined_group_snapshots: Vec<RuntimeJoinedGroupSnapshot>,
+    pub pending_welcome_snapshots: Vec<PendingWelcomeSnapshot>,
+    pub sync_plan: RuntimeSessionSyncPlan,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeStartupState {
     pub group_subscriptions: RuntimeGroupSubscriptionState,
     pub seen_welcomes: HashSet<EventId>,
@@ -256,6 +273,7 @@ pub struct RuntimeStartupState {
 
 pub struct BootstrappedRuntimeSession {
     pub session: RuntimeSession,
+    pub open: RuntimeSessionOpenState,
     pub startup: RuntimeStartupState,
 }
 
@@ -980,6 +998,7 @@ pub fn bootstrap_runtime_session<F>(
     pubkey: PublicKey,
     signer: Arc<dyn NostrSigner>,
     open_mdk: F,
+    open_request: RuntimeSessionOpenRequest,
 ) -> Result<BootstrappedRuntimeSession>
 where
     F: FnOnce() -> Result<PikaMdk>,
@@ -991,12 +1010,33 @@ where
         client,
         mdk,
     };
+    let runtime = session.runtime();
+    let open = RuntimeSessionOpenState {
+        pubkey,
+        pubkey_hex: pubkey.to_hex(),
+        joined_group_snapshots: runtime.list_joined_group_snapshots()?,
+        pending_welcome_snapshots: runtime.list_pending_welcome_snapshots()?,
+        sync_plan: runtime.plan_session_sync(
+            open_request.subscribed_group_ids,
+            open_request.long_lived_session_relays,
+            open_request.temporary_key_package_relays,
+            open_request.welcome_inbox,
+        )?,
+    };
     let startup = RuntimeStartupState {
-        group_subscriptions: group_subscription_state_from_mdk(&session.mdk)?,
-        seen_welcomes: HashSet::new(),
+        group_subscriptions: open.sync_plan.group_subscriptions.current.clone(),
+        seen_welcomes: open
+            .pending_welcome_snapshots
+            .iter()
+            .map(|welcome| welcome.wrapper_event_id)
+            .collect(),
         seen_group_events: HashSet::new(),
     };
-    Ok(BootstrappedRuntimeSession { session, startup })
+    Ok(BootstrappedRuntimeSession {
+        session,
+        open,
+        startup,
+    })
 }
 
 #[cfg(test)]
@@ -1004,10 +1044,27 @@ mod tests {
     use super::*;
     use crate::call::{CallTrackSpec, OutgoingCallSignal, build_call_signal_json};
     use crate::conversation::RuntimeApplicationMessage;
+    use crate::welcome::ingest_welcome_from_giftwrap;
     use mdk_core::prelude::NostrGroupConfigData;
 
     fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
         crate::open_mdk(dir.path()).expect("open test mdk")
+    }
+
+    fn default_open_request() -> RuntimeSessionOpenRequest {
+        RuntimeSessionOpenRequest {
+            subscribed_group_ids: Vec::new(),
+            long_lived_session_relays: vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+            ],
+            temporary_key_package_relays: vec![
+                RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+            ],
+            welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent {
+                lookback: Some(Duration::from_secs(30)),
+                limit: Some(25),
+            },
+        }
     }
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
@@ -1525,15 +1582,52 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
+        let open_request = default_open_request();
 
         let bootstrapped = bootstrap_runtime_session(
             inviter_keys.public_key(),
             Arc::new(inviter_keys.clone()),
             || Ok(inviter_mdk),
+            open_request.clone(),
         )
         .expect("bootstrap runtime session");
 
         assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
+        assert_eq!(bootstrapped.open.pubkey, inviter_keys.public_key());
+        assert_eq!(
+            bootstrapped.open.pubkey_hex,
+            inviter_keys.public_key().to_hex()
+        );
+        assert_eq!(
+            bootstrapped.open.joined_group_snapshots.len(),
+            1,
+            "open state should surface current joined groups"
+        );
+        assert!(bootstrapped.open.pending_welcome_snapshots.is_empty());
+        assert_eq!(
+            bootstrapped.open.sync_plan.welcome_inbox,
+            open_request.welcome_inbox
+        );
+        assert_eq!(
+            bootstrapped
+                .open
+                .sync_plan
+                .group_subscriptions
+                .current
+                .target_group_ids,
+            vec![expected_group_id.clone()]
+        );
+        assert_eq!(
+            bootstrapped
+                .open
+                .sync_plan
+                .relay_roles
+                .session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://test.relay").expect("relay url"),
+            ]
+        );
         assert_eq!(
             bootstrapped.startup.group_subscriptions.target_group_ids,
             vec![expected_group_id]
@@ -1544,6 +1638,73 @@ mod tests {
         );
         assert!(bootstrapped.startup.seen_welcomes.is_empty());
         assert!(bootstrapped.startup.seen_group_events.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_runtime_session_surfaces_pending_welcome_open_state() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "runtime pending welcome bootstrap".to_string(),
+            "shared bootstrap open state".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let welcome_rumor = created
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(
+                    &inviter_keys,
+                    &invitee_keys.public_key(),
+                    welcome_rumor,
+                    Vec::<Tag>::new(),
+                )
+                .await
+                .expect("build giftwrap")
+            });
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest");
+            });
+
+        let bootstrapped = bootstrap_runtime_session(
+            invitee_keys.public_key(),
+            Arc::new(invitee_keys.clone()),
+            || Ok(invitee_mdk),
+            default_open_request(),
+        )
+        .expect("bootstrap runtime session");
+
+        assert_eq!(bootstrapped.open.pending_welcome_snapshots.len(), 1);
+        assert_eq!(
+            bootstrapped.open.pending_welcome_snapshots[0].group_name,
+            "runtime pending welcome bootstrap"
+        );
+        assert_eq!(
+            bootstrapped.open.pending_welcome_snapshots[0].group_description,
+            "shared bootstrap open state"
+        );
+        assert!(bootstrapped.startup.seen_welcomes.contains(&wrapper.id));
     }
 
     #[test]
@@ -1571,6 +1732,7 @@ mod tests {
             inviter_keys.public_key(),
             Arc::new(inviter_keys.clone()),
             || Ok(inviter_mdk),
+            default_open_request(),
         )
         .expect("bootstrap runtime session");
 

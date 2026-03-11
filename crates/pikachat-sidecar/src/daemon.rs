@@ -30,7 +30,7 @@ use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversa
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session,
+    RuntimeSessionOpenRequest, RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session,
     classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
 };
 use pika_marmot_runtime::welcome::{
@@ -60,6 +60,8 @@ use host_context::{DaemonHostContext, DaemonPrepareError};
 #[cfg(test)]
 use pika_marmot_runtime::call::key_id_for_sender;
 #[cfg(test)]
+use pika_marmot_runtime::runtime::RuntimeSessionSyncPlan;
+#[cfg(test)]
 use pika_marmot_runtime::welcome::find_pending_welcome_index;
 #[cfg(test)]
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
@@ -72,11 +74,21 @@ const DAEMON_WELCOME_SUBSCRIPTION_LIMIT: usize = 200;
 fn bootstrap_runtime_for_daemon(
     state_dir: &Path,
     keys: &Keys,
+    relay_urls: Vec<RelayUrl>,
+    giftwrap_lookback_sec: u64,
 ) -> anyhow::Result<BootstrappedRuntimeSession> {
     let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
-    bootstrap_runtime_session(keys.public_key(), signer, || {
-        crate::new_mdk(state_dir, "daemon")
-    })
+    bootstrap_runtime_session(
+        keys.public_key(),
+        signer,
+        || crate::new_mdk(state_dir, "daemon"),
+        RuntimeSessionOpenRequest {
+            subscribed_group_ids: Vec::new(),
+            long_lived_session_relays: relay_urls,
+            temporary_key_package_relays: Vec::new(),
+            welcome_inbox: daemon_welcome_inbox_intent(giftwrap_lookback_sec),
+        },
+    )
 }
 
 fn plan_daemon_group_subscriptions(
@@ -95,6 +107,7 @@ fn daemon_welcome_inbox_intent(
     }
 }
 
+#[cfg(test)]
 fn plan_daemon_session_sync(
     host: &DaemonHostContext<'_>,
     subscribed_group_ids: Vec<String>,
@@ -1805,16 +1818,13 @@ pub async fn daemon_main(
         }
         None => (None, None),
     };
-    let bootstrapped = bootstrap_runtime_for_daemon(state_dir, &keys)?;
+    let bootstrapped =
+        bootstrap_runtime_for_daemon(state_dir, &keys, relay_urls.clone(), giftwrap_lookback_sec)?;
+    let startup_sync = bootstrapped.open.sync_plan.clone();
+    let startup_seen_welcomes = bootstrapped.startup.seen_welcomes;
+    let startup_seen_group_events = bootstrapped.startup.seen_group_events;
     let client = bootstrapped.session.client.clone();
     let mdk = bootstrapped.session.mdk;
-    let startup_host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-    let startup_sync = plan_daemon_session_sync(
-        &startup_host,
-        Vec::<String>::new(),
-        relay_urls.clone(),
-        giftwrap_lookback_sec,
-    )?;
 
     // Daemon keeps its primary-relay-first connect policy local.
     client
@@ -1844,8 +1854,8 @@ pub async fn daemon_main(
     // Track inbound relay events we've already processed. Seed from bootstrapped
     // startup state so reconnects do not immediately replay known wrappers.
     let mut seen_inbound = InboundRelaySeenCache::unbounded();
-    seen_inbound.extend(bootstrapped.startup.seen_welcomes);
-    let mut seen_group_events = bootstrapped.startup.seen_group_events;
+    seen_inbound.extend(startup_seen_welcomes);
+    let mut seen_group_events = startup_seen_group_events;
     seen_inbound.extend(seen_group_events.iter().copied());
 
     // Track group subscriptions.
@@ -4768,10 +4778,36 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
-        let bootstrapped =
-            bootstrap_runtime_for_daemon(inviter_dir.path(), &inviter_keys).expect("bootstrap");
+        let bootstrapped = bootstrap_runtime_for_daemon(
+            inviter_dir.path(),
+            &inviter_keys,
+            vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
+            90,
+        )
+        .expect("bootstrap");
 
         assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
+        assert_eq!(bootstrapped.open.pubkey, inviter_keys.public_key());
+        assert_eq!(
+            bootstrapped.open.joined_group_snapshots.len(),
+            1,
+            "daemon bootstrap should surface joined groups through shared open state"
+        );
+        assert_eq!(
+            bootstrapped
+                .open
+                .sync_plan
+                .relay_roles
+                .session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://test.relay").expect("relay url"),
+            ]
+        );
+        assert_eq!(
+            bootstrapped.open.sync_plan.welcome_inbox,
+            daemon_welcome_inbox_intent(90)
+        );
         assert_eq!(
             bootstrapped.startup.group_subscriptions.target_group_ids,
             vec![hex::encode(created.group.nostr_group_id)]
@@ -4780,6 +4816,8 @@ mod tests {
             bootstrapped.startup.group_subscriptions.relay_urls,
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")]
         );
+        assert!(bootstrapped.startup.seen_welcomes.is_empty());
+        assert!(bootstrapped.startup.seen_group_events.is_empty());
     }
 
     #[tokio::test]

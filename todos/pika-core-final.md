@@ -361,6 +361,8 @@ Current status:
 - app fresh outbound message publish and daemon `SendMessage` now consume that outbound operation result shape directly, while app retry persistence, daemon protocol formatting, and host retry/publish policy remain local
 - sixth Phase 4 slice landed: shared `RuntimeCommands` now also covers outbound call invite preparation over the already-shared call workflow runtime
 - app outbound call invite preparation and daemon `InviteCall` preparation now consume that command boundary directly, while call acceptance/rejection, relay-auth derivation, protocol mapping, and actual media/runtime ownership remain host-local
+- seventh Phase 4 slice landed: shared `RuntimeCommands` now also covers call acceptance/rejection/end signal preparation over the already-shared call workflow runtime
+- app call accept preparation and daemon `AcceptCall` preparation now consume that command boundary directly, while protocol mapping, call-side effects, and actual media/runtime ownership remain host-local
 
 Recommended event families:
 - `Session`

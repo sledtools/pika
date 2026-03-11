@@ -707,6 +707,30 @@ impl<'a> RuntimeCommands<'a> {
         )
     }
 
+    pub fn prepare_accept_incoming_call(
+        &self,
+        incoming: &PendingIncomingCall,
+        group: GroupCallContext<'_>,
+    ) -> Result<PreparedAcceptedCall, String> {
+        CallWorkflowRuntime::new(self.mdk).prepare_accept_incoming(incoming, group)
+    }
+
+    pub fn prepare_reject_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<PreparedCallSignal, String> {
+        CallWorkflowRuntime::new(self.mdk).prepare_reject_signal(call_id, reason)
+    }
+
+    pub fn prepare_end_call_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<PreparedCallSignal, String> {
+        CallWorkflowRuntime::new(self.mdk).prepare_end_signal(call_id, reason)
+    }
+
     pub fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,
@@ -1178,7 +1202,8 @@ impl<'a> MarmotRuntime<'a> {
         incoming: &PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        self.calls().prepare_accept_incoming(incoming, group)
+        self.commands()
+            .prepare_accept_incoming_call(incoming, group)
     }
 
     pub fn prepare_reject_call_signal(
@@ -1186,7 +1211,7 @@ impl<'a> MarmotRuntime<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
-        self.calls().prepare_reject_signal(call_id, reason)
+        self.commands().prepare_reject_call_signal(call_id, reason)
     }
 
     pub fn prepare_end_call_signal(
@@ -1194,7 +1219,7 @@ impl<'a> MarmotRuntime<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
-        self.calls().prepare_end_signal(call_id, reason)
+        self.commands().prepare_end_call_signal(call_id, reason)
     }
 
     pub fn handle_inbound_call_signal(
@@ -2325,6 +2350,100 @@ mod tests {
         assert_eq!(pending.peer_pubkey_hex, peer.public_key().to_hex());
         assert_eq!(pending.call_id, "550e8400-e29b-41d4-a716-446655440010");
         assert!(prepared.payload_json.contains("call.invite"));
+    }
+
+    #[test]
+    fn runtime_commands_prepare_accept_incoming_call_through_explicit_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+        let local = Keys::generate();
+        let peer = Keys::generate();
+        let created = mdk
+            .create_group(
+                &local.public_key(),
+                vec![],
+                NostrGroupConfigData::new(
+                    "runtime call accept command test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![local.public_key()],
+                ),
+            )
+            .expect("create group");
+        mdk.merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+
+        let call_id = "550e8400-e29b-41d4-a716-446655440011";
+        let local_pubkey_hex = local.public_key().to_hex();
+        let peer_pubkey_hex = peer.public_key().to_hex();
+        let mut session = CallSessionParams {
+            moq_url: "https://moq.local/anon".to_string(),
+            broadcast_base: format!("pika/calls/{call_id}"),
+            relay_auth: String::new(),
+            tracks: vec![crate::call::CallTrackSpec::audio0_opus_default()],
+        };
+        session.relay_auth =
+            crate::call::derive_relay_auth_token(&crate::call::CallCryptoDeriveContext {
+                mdk: &mdk,
+                mls_group_id: &created.group.mls_group_id,
+                group_epoch: 0,
+                call_id,
+                session: &session,
+                local_pubkey_hex: &local_pubkey_hex,
+                peer_pubkey_hex: &peer_pubkey_hex,
+            })
+            .expect("derive relay auth");
+
+        let prepared = RuntimeCommands::new(&mdk)
+            .prepare_accept_incoming_call(
+                &PendingIncomingCall {
+                    call_id: call_id.to_string(),
+                    target_id: hex::encode(created.group.nostr_group_id),
+                    from_pubkey_hex: peer_pubkey_hex,
+                    session,
+                    is_video_call: false,
+                },
+                GroupCallContext {
+                    mls_group_id: &created.group.mls_group_id,
+                    local_pubkey_hex: &local_pubkey_hex,
+                },
+            )
+            .expect("prepare accept incoming call");
+
+        assert_eq!(prepared.incoming.call_id, call_id);
+        assert!(prepared.signal.payload_json.contains("call.accept"));
+        assert!(!prepared.media_crypto.local_participant_label.is_empty());
+    }
+
+    #[test]
+    fn runtime_commands_prepare_reject_call_signal_through_explicit_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+
+        let prepared = RuntimeCommands::new(&mdk)
+            .prepare_reject_call_signal("550e8400-e29b-41d4-a716-446655440012", "busy")
+            .expect("prepare reject call signal");
+
+        assert_eq!(prepared.call_id, "550e8400-e29b-41d4-a716-446655440012");
+        assert!(prepared.payload_json.contains("call.reject"));
+        assert!(prepared.payload_json.contains("\"busy\""));
+    }
+
+    #[test]
+    fn runtime_commands_prepare_end_call_signal_through_explicit_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = open_test_mdk(&dir);
+
+        let prepared = RuntimeCommands::new(&mdk)
+            .prepare_end_call_signal("550e8400-e29b-41d4-a716-446655440013", "user_hangup")
+            .expect("prepare end call signal");
+
+        assert_eq!(prepared.call_id, "550e8400-e29b-41d4-a716-446655440013");
+        assert!(prepared.payload_json.contains("call.end"));
+        assert!(prepared.payload_json.contains("\"user_hangup\""));
     }
 
     #[test]

@@ -265,7 +265,8 @@ impl<'a> AppHostContext<'a> {
         incoming: &pika_marmot_runtime::call_runtime::PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        self.runtime().prepare_accept_incoming_call(incoming, group)
+        self.commands()
+            .prepare_accept_incoming_call(incoming, group)
     }
 
     pub(super) fn prepare_reject_call_signal(
@@ -273,7 +274,7 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        self.runtime().prepare_reject_call_signal(call_id, reason)
+        self.commands().prepare_reject_call_signal(call_id, reason)
     }
 
     pub(super) fn prepare_end_call_signal(
@@ -281,7 +282,7 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        self.runtime().prepare_end_call_signal(call_id, reason)
+        self.commands().prepare_end_call_signal(call_id, reason)
     }
 
     pub(super) fn handle_inbound_call_signal(

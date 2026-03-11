@@ -34,8 +34,11 @@ impl<'a> AppHostContext<'a> {
         self.session.runtime()
     }
 
-    fn group_entry(&self, chat_id: &str) -> anyhow::Result<&'a GroupIndexEntry> {
-        self.session.groups.get(chat_id).context("chat not found")
+    pub(super) fn lookup_joined_group_snapshot(
+        &self,
+        chat_id: &str,
+    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot> {
+        self.runtime().lookup_joined_group_snapshot(chat_id)
     }
 
     pub(super) fn current_pubkey_hex(&self) -> String {
@@ -75,10 +78,10 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        let group = self.group_entry(chat_id)?;
+        let group = self.lookup_joined_group_snapshot(chat_id)?;
         self.prepare_outbound_action_for_group_ids(
-            group.mls_group_id.clone(),
-            chat_id.to_string(),
+            group.mls_group_id,
+            group.nostr_group_id_hex,
             action,
         )
     }
@@ -102,7 +105,7 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        let group = self.group_entry(chat_id)?;
+        let group = self.lookup_joined_group_snapshot(chat_id)?;
         self.runtime()
             .prepare_add_members(&group.mls_group_id, key_package_events)
     }

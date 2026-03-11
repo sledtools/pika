@@ -4240,10 +4240,12 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let resolved = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
-            .resolve_group(&hex::encode(created.group.nostr_group_id))
-            .expect("resolve group");
-        assert_eq!(resolved, created.group.mls_group_id);
+        let snapshot = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+            .lookup_joined_group_snapshot(&hex::encode(created.group.nostr_group_id))
+            .expect("lookup joined group snapshot");
+        assert_eq!(snapshot.mls_group_id, created.group.mls_group_id);
+        assert_eq!(snapshot.relay_urls, relay_urls);
+        assert_eq!(snapshot.member_snapshots.len(), 2);
     }
 
     #[test]

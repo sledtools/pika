@@ -6567,7 +6567,6 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
-        use crate::core::GroupIndexEntry;
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
         use mdk_core::prelude::{
@@ -6941,16 +6940,10 @@ mod tests {
 
         #[test]
         fn app_send_preparation_uses_shared_runtime_facade() {
-            let (mut core, chat_id, keys, group_id) = make_core_with_group();
-            core.session.as_mut().expect("session").groups.insert(
-                chat_id.clone(),
-                GroupIndexEntry {
-                    mls_group_id: group_id,
-                    is_group: false,
-                    group_name: Some("Test".to_string()),
-                    self_is_admin: false,
-                    members: vec![],
-                },
+            let (core, chat_id, keys, _group_id) = make_core_with_group();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "shared runtime lookup should not require cached group entries"
             );
 
             let prepared = core
@@ -6975,16 +6968,10 @@ mod tests {
 
         #[test]
         fn app_host_context_prepares_outbound_action_for_chat() {
-            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
-            core.session.as_mut().expect("session").groups.insert(
-                chat_id.clone(),
-                GroupIndexEntry {
-                    mls_group_id: group_id,
-                    is_group: false,
-                    group_name: Some("Test".to_string()),
-                    self_is_admin: false,
-                    members: vec![],
-                },
+            let (core, chat_id, _keys, _group_id) = make_core_with_group();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "host context should resolve joined-group context from runtime state"
             );
 
             let prepared = core
@@ -7630,9 +7617,14 @@ mod tests {
 
         #[test]
         fn app_add_members_preparation_uses_shared_membership_runtime() {
-            let (core, chat_id, _keys, _gid) = make_core_with_group();
+            let (mut core, chat_id, _keys, _gid) = make_core_with_group();
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
+            core.session.as_mut().expect("session").groups.clear();
+            assert!(
+                core.session.as_ref().expect("session").groups.is_empty(),
+                "membership prep should not require cached group entries"
+            );
 
             let prepared = core
                 .prepare_membership_evolution_for_chat(&chat_id, &[kp_event])

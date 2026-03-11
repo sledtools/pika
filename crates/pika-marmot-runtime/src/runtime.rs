@@ -537,6 +537,14 @@ impl<'a> MarmotRuntime<'a> {
         self.conversation().list_joined_group_snapshots()
     }
 
+    pub fn lookup_joined_group_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<RuntimeJoinedGroupSnapshot> {
+        self.conversation()
+            .lookup_joined_group_snapshot(nostr_group_id_hex)
+    }
+
     pub fn load_message_page(
         &self,
         nostr_group_id_hex: &str,

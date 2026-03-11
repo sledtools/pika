@@ -7,7 +7,7 @@ use nostr_sdk::prelude::{
 };
 
 use crate::PikaMdk;
-use crate::conversation::ConversationRuntime;
+use crate::conversation::{ConversationRuntime, RuntimeJoinedGroupSnapshot};
 use crate::relay::publish_and_confirm;
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,13 @@ impl ResolvedConversationTarget {
         Self {
             mls_group_id: group.mls_group_id,
             nostr_group_id_hex: hex::encode(group.nostr_group_id),
+        }
+    }
+
+    pub fn from_joined_group_snapshot(snapshot: RuntimeJoinedGroupSnapshot) -> Self {
+        Self {
+            mls_group_id: snapshot.mls_group_id,
+            nostr_group_id_hex: snapshot.nostr_group_id_hex,
         }
     }
 }
@@ -76,8 +83,8 @@ impl<'a> OutboundConversationRuntime<'a> {
     }
 
     pub fn resolve_target(&self, nostr_group_id_hex: &str) -> Result<ResolvedConversationTarget> {
-        Ok(ResolvedConversationTarget::from_group(
-            ConversationRuntime::new(self.mdk).find_group(nostr_group_id_hex)?,
+        Ok(ResolvedConversationTarget::from_joined_group_snapshot(
+            ConversationRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?,
         ))
     }
 

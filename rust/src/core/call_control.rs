@@ -134,11 +134,11 @@ impl AppCore {
             .session
             .as_ref()
             .ok_or_else(|| "no active session".to_string())?;
-        let group = sess
-            .groups
-            .get(chat_id)
-            .ok_or_else(|| "chat not found".to_string())?;
-        let local_pubkey_hex = sess.host_context().current_pubkey_hex();
+        let host = sess.host_context();
+        let group = host
+            .lookup_joined_group_snapshot(chat_id)
+            .map_err(|e| format!("chat not found: {e:#}"))?;
+        let local_pubkey_hex = host.current_pubkey_hex();
         let peer_pubkey_hex = PublicKey::parse(&active.peer_npub)
             .map_err(|e| format!("Peer pubkey parse failed: {e}"))?
             .to_hex();
@@ -149,7 +149,7 @@ impl AppCore {
             session: session.clone(),
             is_video_call: active.is_video_call,
         };
-        sess.host_context().prepare_accept_incoming_call(
+        host.prepare_accept_incoming_call(
             &incoming,
             GroupCallContext {
                 mls_group_id: &group.mls_group_id,
@@ -170,13 +170,13 @@ impl AppCore {
             .session
             .as_ref()
             .ok_or_else(|| "no active session".to_string())?;
-        let group_entry = sess
-            .groups
-            .get(chat_id)
-            .ok_or_else(|| "chat group not found".to_string())?;
+        let group = sess
+            .host_context()
+            .lookup_joined_group_snapshot(chat_id)
+            .map_err(|e| format!("chat group not found: {e:#}"))?;
         let derive_ctx = CallCryptoDeriveContext {
             mdk: &sess.mdk,
-            mls_group_id: &group_entry.mls_group_id,
+            mls_group_id: &group.mls_group_id,
             group_epoch: 0,
             call_id,
             session,

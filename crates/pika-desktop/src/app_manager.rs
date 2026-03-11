@@ -427,7 +427,7 @@ pub fn run_local_ping_pong_with_bot(
     Ok(())
 }
 
-pub(crate) fn resolve_data_dir() -> std::io::Result<PathBuf> {
+pub fn resolve_data_dir() -> std::io::Result<PathBuf> {
     let dir = if let Some(raw) = std::env::var_os("PIKA_DESKTOP_DATA_DIR") {
         PathBuf::from(raw)
     } else if let Some(home) = std::env::var_os("HOME") {

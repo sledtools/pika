@@ -15,6 +15,8 @@ use pika_desktop::app_manager::{self, AppManager};
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub use pika_desktop::{app_version, app_version_display};
+
 pub fn main() -> iced::Result {
     // Show core tracing output (errors, upload progress, etc.)
     // Override with RUST_LOG env var, e.g. RUST_LOG=debug

@@ -9,19 +9,37 @@ use pika_marmot_runtime::runtime::{
     bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
     subscribe_group_messages_combined, subscribe_welcome_inbox,
     temporary_client_from_session_signer, BootstrappedRuntimeSession, InboundRelayEvent,
-    InboundRelaySeenCache, RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
+    InboundRelaySeenCache, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
+    RuntimeWelcomeInboxSubscriptionIntent,
 };
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
+
+fn app_open_request(
+    long_lived_session_relays: Vec<RelayUrl>,
+    temporary_key_package_relays: Vec<RelayUrl>,
+) -> RuntimeSessionOpenRequest {
+    RuntimeSessionOpenRequest {
+        subscribed_group_ids: Vec::new(),
+        long_lived_session_relays,
+        temporary_key_package_relays,
+        welcome_inbox: app_welcome_inbox_intent(),
+    }
+}
 
 fn bootstrap_runtime_for_app(
     data_dir: &str,
     keychain_group: &str,
     pubkey: PublicKey,
     signer: Arc<dyn NostrSigner>,
+    long_lived_session_relays: Vec<RelayUrl>,
+    temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<BootstrappedRuntimeSession> {
-    bootstrap_runtime_session(pubkey, signer, || {
-        open_mdk(data_dir, &pubkey, keychain_group)
-    })
+    bootstrap_runtime_session(
+        pubkey,
+        signer,
+        || open_mdk(data_dir, &pubkey, keychain_group),
+        app_open_request(long_lived_session_relays, temporary_key_package_relays),
+    )
 }
 
 async fn classify_app_notification_event(
@@ -48,6 +66,45 @@ fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<RuntimeGroupSu
 
 fn app_welcome_inbox_intent() -> RuntimeWelcomeInboxSubscriptionIntent {
     RuntimeWelcomeInboxSubscriptionIntent::default()
+}
+
+fn seed_app_groups_from_open_state(
+    local_pubkey: &PublicKey,
+    snapshots: &[pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot],
+) -> HashMap<String, GroupIndexEntry> {
+    snapshots
+        .iter()
+        .map(|snapshot| {
+            let other_members = snapshot.other_member_snapshots(local_pubkey);
+            let explicit_name = if snapshot.name != DEFAULT_GROUP_NAME && !snapshot.name.is_empty()
+            {
+                Some(snapshot.name.clone())
+            } else {
+                None
+            };
+            let is_group =
+                other_members.len() > 1 || (explicit_name.is_some() && !other_members.is_empty());
+            let members = other_members
+                .into_iter()
+                .map(|member| GroupMember {
+                    pubkey: member.pubkey,
+                    is_admin: member.is_admin,
+                    name: None,
+                    picture_url: None,
+                })
+                .collect();
+            (
+                snapshot.nostr_group_id_hex.clone(),
+                GroupIndexEntry {
+                    mls_group_id: snapshot.mls_group_id.clone(),
+                    is_group,
+                    group_name: explicit_name,
+                    self_is_admin: snapshot.is_admin(local_pubkey),
+                    members,
+                },
+            )
+        })
+        .collect()
 }
 
 fn plan_app_session_sync(core: &AppCore, sess: &Session) -> anyhow::Result<RuntimeSessionSyncPlan> {
@@ -88,20 +145,25 @@ impl AppCore {
 
         tracing::info!(pubkey = %pubkey_hex, npub = %npub, "start_session");
 
-        let bootstrapped =
-            bootstrap_runtime_for_app(&self.data_dir, &self.keychain_group, pubkey, signer)?;
+        let bootstrapped = bootstrap_runtime_for_app(
+            &self.data_dir,
+            &self.keychain_group,
+            pubkey,
+            signer,
+            self.long_lived_session_relays(),
+            self.temporary_key_package_relays(),
+        )?;
         tracing::info!("mdk opened");
+        let initial_sync_plan = bootstrapped.open.sync_plan.clone();
+        let initial_groups =
+            seed_app_groups_from_open_state(&pubkey, &bootstrapped.open.joined_group_snapshots);
+        let initial_seen_welcomes = bootstrapped.startup.seen_welcomes;
+        let runtime_session = bootstrapped.session;
 
         if self.network_enabled() {
-            let sync_plan = bootstrapped.session.plan_session_sync(
-                Vec::<String>::new(),
-                self.long_lived_session_relays(),
-                self.temporary_key_package_relays(),
-                app_welcome_inbox_intent(),
-            )?;
-            let relays = sync_plan.relay_roles.session_connect_relays;
+            let relays = initial_sync_plan.relay_roles.session_connect_relays.clone();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
-            let client = bootstrapped.session.client.clone();
+            let client = runtime_session.client.clone();
             self.runtime.spawn(async move {
                 connect_runtime_relays(&client, &relays, false, None).await;
             });
@@ -109,14 +171,14 @@ impl AppCore {
         }
 
         let sess = Session {
-            pubkey: bootstrapped.session.pubkey,
+            pubkey: runtime_session.pubkey,
             local_keys,
-            mdk: bootstrapped.session.mdk,
-            client: bootstrapped.session.client,
+            mdk: runtime_session.mdk,
+            client: runtime_session.client,
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
             group_sub: None,
-            groups: HashMap::new(),
+            groups: initial_groups,
         };
 
         self.session = Some(sess);
@@ -135,7 +197,7 @@ impl AppCore {
 
         // Start notifications processing (async -> internal events).
         if self.network_enabled() {
-            self.start_notifications_loop();
+            self.start_notifications_loop(initial_seen_welcomes);
         }
 
         // Build the chat list. Profiles are already in memory, so names and
@@ -203,7 +265,7 @@ impl AppCore {
         }
     }
 
-    pub(super) fn start_notifications_loop(&mut self) {
+    pub(super) fn start_notifications_loop(&mut self, initial_seen_welcomes: HashSet<EventId>) {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
@@ -212,6 +274,7 @@ impl AppCore {
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
             let mut seen = InboundRelaySeenCache::default();
+            seen.extend(initial_seen_welcomes);
 
             loop {
                 match rx.recv().await {
@@ -1054,10 +1117,40 @@ mod tests {
             "test.keychain.group",
             inviter_keys.public_key(),
             Arc::new(inviter_keys.clone()),
+            vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
+            vec![RelayUrl::parse("wss://kp-1.example").expect("kp relay")],
         )
         .expect("bootstrap app runtime");
 
         assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
+        assert_eq!(bootstrapped.open.pubkey, inviter_keys.public_key());
+        assert_eq!(
+            bootstrapped.open.joined_group_snapshots.len(),
+            1,
+            "app bootstrap should surface joined groups through shared open state"
+        );
+        assert_eq!(
+            bootstrapped
+                .open
+                .sync_plan
+                .relay_roles
+                .session_connect_relays,
+            vec![
+                RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                RelayUrl::parse("wss://test.relay").expect("relay url"),
+            ]
+        );
+        let seeded_groups = seed_app_groups_from_open_state(
+            &inviter_keys.public_key(),
+            &bootstrapped.open.joined_group_snapshots,
+        );
+        assert_eq!(seeded_groups.len(), 1);
+        assert!(
+            seeded_groups
+                .get(&hex::encode(created.group.nostr_group_id))
+                .expect("seeded group")
+                .self_is_admin
+        );
         assert_eq!(
             bootstrapped.startup.group_subscriptions.target_group_ids,
             vec![hex::encode(created.group.nostr_group_id)]

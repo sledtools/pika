@@ -364,6 +364,12 @@ impl VmManager {
             );
         }
         let had_existing_home = home_dir.is_dir();
+        let backup_host = self
+            .backup_status(&vm.id)
+            .ok()
+            .map(|status| status.backup_host)
+            .filter(|host| !host.trim().is_empty())
+            .unwrap_or_else(|| self.cfg.host_id.clone());
 
         self.stop_vm_runtime(&vm.id, &vm.tap_name).await?;
 
@@ -372,7 +378,7 @@ impl VmManager {
             .tempdir_in(&vm.microvm_state_dir)
             .context("create restore staging dir")?;
         let restored_home = match self
-            .run_restore_helper(&vm.id, restore_staging.path())
+            .run_restore_helper(&vm.id, &backup_host, restore_staging.path())
             .await
         {
             Ok(restored_home) => restored_home,
@@ -507,12 +513,23 @@ impl VmManager {
             .or_else(|_| Ok(self.unavailable_backup_status(id, &durable_home_path)))
     }
 
-    async fn run_restore_helper(&self, id: &str, target_root: &Path) -> anyhow::Result<PathBuf> {
+    async fn run_restore_helper(
+        &self,
+        id: &str,
+        backup_host: &str,
+        target_root: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        anyhow::ensure!(
+            !backup_host.trim().is_empty(),
+            "restore backup host cannot be empty for vm {id}"
+        );
         let stdout = run_command_capture_stdout(
             Command::new(&self.cfg.restore_cmd)
                 .arg("--json")
                 .arg("--target-root")
                 .arg(target_root)
+                .arg("--host")
+                .arg(backup_host)
                 .arg(id),
             "restore durable home from backup",
         )
@@ -2249,13 +2266,18 @@ mod tests {
         }
     }
 
-    fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
+    fn write_backup_status_with_host(
+        cfg: &Config,
+        vm_id: &str,
+        latest_successful_backup_at: &str,
+        backup_host: &str,
+    ) {
         let metadata_dir = cfg.state_dir.join(vm_id).join("metadata");
         fs::create_dir_all(&metadata_dir).unwrap();
         let record = VmBackupStatusRecord {
             schema_version: VM_BACKUP_STATUS_SCHEMA_V1.to_string(),
             vm_id: vm_id.to_string(),
-            backup_host: cfg.host_id.clone(),
+            backup_host: backup_host.to_string(),
             latest_successful_backup_at: latest_successful_backup_at.to_string(),
             observed_at: latest_successful_backup_at.to_string(),
         };
@@ -2284,6 +2306,10 @@ mod tests {
             &resolved,
         )
         .guest_autostart
+    }
+
+    fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
+        write_backup_status_with_host(cfg, vm_id, latest_successful_backup_at, &cfg.host_id);
     }
 
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
@@ -2822,7 +2848,7 @@ mod tests {
         let restore_script = write_restore_helper_script(
             &root,
             &format!(
-                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nprintf 'restore %s %s\\n' \"$VM_ID\" \"$TARGET_ROOT\" >> \"{}\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nprintf 'restore %s %s %s\\n' \"$VM_ID\" \"$BACKUP_HOST\" \"$TARGET_ROOT\" >> \"{}\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
                 order_log.display(),
                 RESTORE_HELPER_RESULT_SCHEMA_V1,
             ),
@@ -2854,12 +2880,68 @@ mod tests {
         assert_eq!(restored_home, "restored-home\n");
         let order = fs::read_to_string(&order_log).unwrap();
         let stop_entry = format!("systemctl stop microvm@{vm_id}.service");
-        let restore_entry = format!("restore {vm_id} ");
+        let restore_entry = format!("restore {vm_id} {} ", cfg.host_id);
         let stop_index = order.find(&stop_entry).unwrap();
         let restore_index = order.find(&restore_entry).unwrap();
         assert!(stop_index < restore_index);
         assert!(order.contains(&cfg.state_dir.join(vm_id).display().to_string()));
         assert!(order.contains("vm-restore-"));
+    }
+
+    #[tokio::test]
+    async fn restore_prefers_recorded_backup_host_for_latest_snapshot_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let order_log = root.path().join("restore-order.log");
+        let runner_target = root.path().join("runner-output");
+        fs::create_dir_all(&runner_target).unwrap();
+
+        let systemctl_script = write_executable_script(
+            &root,
+            "systemctl",
+            "#!/bin/sh\ncase \"$1\" in\n  show)\n    printf 'active\\n'\n    ;;\n  *)\n    ;;\nesac\nexit 0\n",
+        );
+        let ip_script = write_executable_script(&root, "ip", "#!/bin/sh\nexit 0\n");
+        let nix_script = write_nix_build_script(&root, &runner_target);
+        let chown_script = write_executable_script(&root, "chown", "#!/bin/sh\nexit 0\n");
+        let chmod_script = write_executable_script(&root, "chmod", "#!/bin/sh\nexit 0\n");
+        let restore_script = write_restore_helper_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nprintf 'restore %s %s\\n' \"$VM_ID\" \"$BACKUP_HOST\" >> \"{}\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                order_log.display(),
+                RESTORE_HELPER_RESULT_SCHEMA_V1,
+            ),
+        );
+
+        let mut cfg = test_config(&root);
+        cfg.systemctl_cmd = systemctl_script.display().to_string();
+        cfg.ip_cmd = ip_script.display().to_string();
+        cfg.nix_cmd = nix_script.display().to_string();
+        cfg.chown_cmd = chown_script.display().to_string();
+        cfg.chmod_cmd = chmod_script.display().to_string();
+        cfg.restore_cmd = restore_script.display().to_string();
+        let vm_id = "vm-00000001";
+        let recorded_backup_host = "pika-build-secondary";
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        write_backup_status_with_host(
+            &cfg,
+            vm_id,
+            &chrono::Utc::now().to_rfc3339(),
+            recorded_backup_host,
+        );
+        fs::create_dir_all(cfg.state_dir.join(vm_id).join("home")).unwrap();
+        fs::write(
+            cfg.state_dir.join(vm_id).join("home/state.txt"),
+            "old-home\n",
+        )
+        .unwrap();
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+
+        let restored = manager.restore(vm_id).await.unwrap();
+        assert_eq!(restored.id, vm_id);
+        assert_eq!(restored.status, "running");
+        let order = fs::read_to_string(&order_log).unwrap();
+        assert!(order.contains(&format!("restore {vm_id} {recorded_backup_host}")));
     }
 
     #[tokio::test]
@@ -2879,7 +2961,7 @@ mod tests {
         let restore_script = write_restore_helper_script(
             &root,
             &format!(
-                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
+                "#!/bin/sh\nset -eu\nTARGET_ROOT=\"\"\nBACKUP_HOST=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --json)\n      shift\n      ;;\n    --target-root)\n      TARGET_ROOT=\"$2\"\n      shift 2\n      ;;\n    --host)\n      BACKUP_HOST=\"$2\"\n      shift 2\n      ;;\n    *)\n      break\n      ;;\n  esac\ndone\nVM_ID=\"$1\"\nmkdir -p \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\nprintf 'restored-home\\n' > \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home/state.txt\"\nprintf '{{\"schema_version\":\"{}\",\"vm_id\":\"%s\",\"snapshot\":\"latest\",\"restored_home_path\":\"%s\"}}\\n' \"$VM_ID\" \"$TARGET_ROOT/var/lib/microvms/$VM_ID/home\"\n",
                 RESTORE_HELPER_RESULT_SCHEMA_V1,
             ),
         );

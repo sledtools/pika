@@ -36,7 +36,6 @@ const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
 const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
-const RESTORE_VM_TIMEOUT: Duration = Duration::from_secs(120);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
 const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -202,13 +201,11 @@ impl MicrovmSpawnerClient {
         request_id: Option<&str>,
     ) -> anyhow::Result<VmResponse> {
         let url = format!("{}/vms/{vm_id}/restore", self.base_url);
-        let resp = with_request_id(
-            self.client.post(&url).timeout(RESTORE_VM_TIMEOUT),
-            request_id,
-        )
-        .send()
-        .await
-        .context("send restore vm request")?;
+        // Durable-home restores can legitimately run for several minutes.
+        let resp = with_request_id(self.client.post(&url), request_id)
+            .send()
+            .await
+            .context("send restore vm request")?;
         let status = resp.status();
         if !status.is_success() {
             let upstream_request_id = response_request_id(resp.headers());

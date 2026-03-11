@@ -67,7 +67,6 @@ Working assumptions:
    - checked-in docs now explicitly separate pre-merge CI-owned, nightly CI-owned, manual-only, compatibility-only, and advisory/convenience surfaces
    - platform-hosted selectors are described honestly instead of being inflated into generic “core coverage”
    - current root CI / `pikaci` mismatches are recorded as deferred asks instead of being fixed in hot conflict surfaces
-
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -274,7 +273,6 @@ Updated recommendation after Slice 5:
 1. The checked-in policy docs now say which surfaces are pre-merge, nightly, manual-only, compatibility-only, or advisory.
 2. Future slices should consume those documented deferred asks instead of reopening another docs-only truth pass.
 3. The next best move is a small root CI / `pikaci` alignment slice once the active conflict surface cools.
-
 Acceptance criteria:
 1. One important behavior family has a single obvious owner.
 2. CI selectors still exist, but they no longer hide a confusing wrapper-over-wrapper structure.

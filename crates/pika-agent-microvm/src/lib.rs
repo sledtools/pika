@@ -726,9 +726,6 @@ if [[ -n "${{PIKA_PI_CMD:-}}" ]]; then
     export PATH="$(dirname "$pi_exec"):$PATH"
   fi
 fi
-if [[ -n "${{PIKA_OPENCLAW_CMD:-}}" && -x "${{PIKA_OPENCLAW_CMD}}" ]]; then
-  export PATH="$(dirname "${{PIKA_OPENCLAW_CMD}}"):$PATH"
-fi
 
 write_ready_marker() {{
   local probe="$1"
@@ -777,6 +774,39 @@ publish_daemon_keypackage() {{
   return 1
 }}
 
+keypackage_publish_timeout_failure_reason() {{
+  case "$service_kind" in
+    pikachat_daemon)
+      printf '%s\n' "timeout_waiting_for_daemon_keypackage_publish"
+      ;;
+    openclaw_gateway)
+      printf '%s\n' "timeout_waiting_for_openclaw_keypackage_publish"
+      ;;
+    *)
+      printf '%s\n' "timeout_waiting_for_keypackage_publish"
+      ;;
+  esac
+}}
+
+service_readiness_probe_succeeds() {{
+  local readiness_kind="$1"
+  local readiness_path="$2"
+  local readiness_pattern="$3"
+  local readiness_url="$4"
+
+  case "$readiness_kind" in
+    log_contains)
+      [[ -f "$readiness_path" ]] && grep -q -- "$readiness_pattern" "$readiness_path"
+      ;;
+    http_get_ok)
+      curl -fsS --max-time 2 "$readiness_url" >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}}
+
 wait_for_service_ready() {{
   local service_pid="$1"
   local timeout_sec="${{PIKA_AGENT_READY_TIMEOUT_SECS:-120}}"
@@ -811,28 +841,44 @@ wait_for_service_ready() {{
       wait "$service_pid"
       return $?
     fi
-    case "$readiness_kind" in
-      log_contains)
-        if [[ -f "$readiness_path" ]] && grep -q -- "$readiness_pattern" "$readiness_path"; then
-          if publish_daemon_keypackage; then
-            write_ready_marker "$ready_probe"
-            return 0
-          fi
-        fi
-        ;;
-      http_get_ok)
-        if curl -fsS --max-time 2 "$readiness_url" >/dev/null 2>&1; then
-          if publish_daemon_keypackage; then
-            write_ready_marker "$ready_probe"
-            return 0
-          fi
-        fi
-        ;;
-    esac
+    if service_readiness_probe_succeeds \
+      "$readiness_kind" \
+      "$readiness_path" \
+      "$readiness_pattern" \
+      "$readiness_url"; then
+      printf '%s\n' "$ready_probe"
+      return 0
+    fi
     sleep 1
   done
 
   write_failed_marker "$timeout_failure_reason"
+  kill "$service_pid" 2>/dev/null || true
+  wait "$service_pid" || true
+  return 1
+}}
+
+wait_for_keypackage_publish() {{
+  local service_pid="$1"
+  local ready_probe="$2"
+  local timeout_sec="${{PIKA_AGENT_READY_TIMEOUT_SECS:-120}}"
+  local deadline=$((SECONDS + timeout_sec))
+  local publish_failure_reason
+  publish_failure_reason="$(keypackage_publish_timeout_failure_reason)"
+
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$service_pid" 2>/dev/null; then
+      wait "$service_pid"
+      return $?
+    fi
+    if publish_daemon_keypackage; then
+      write_ready_marker "$ready_probe"
+      return 0
+    fi
+    sleep 1
+  done
+
+  write_failed_marker "$publish_failure_reason"
   kill "$service_pid" 2>/dev/null || true
   wait "$service_pid" || true
   return 1
@@ -882,9 +928,6 @@ start_service() {{
       ;;
     openclaw_gateway)
       openclaw_exec="$(plan_value '.service.exec_command')"
-      if [[ -n "${{PIKA_OPENCLAW_CMD:-}}" && -x "${{PIKA_OPENCLAW_CMD}}" ]]; then
-        openclaw_exec="${{PIKA_OPENCLAW_CMD}}"
-      fi
       openclaw_state_dir="$(plan_value '.service.state_dir')"
       openclaw_config_path="$(workspace_path "$(plan_value '.service.config_path')")"
       openclaw_package_root="${{PIKA_OPENCLAW_PACKAGE_ROOT:-$(dirname "$(dirname "$openclaw_exec")")/lib/openclaw}}"
@@ -936,7 +979,10 @@ start_service() {{
 }}
 
 start_service
-if ! wait_for_service_ready "$agent_pid"; then
+if ! ready_probe="$(wait_for_service_ready "$agent_pid")"; then
+  exit 1
+fi
+if ! wait_for_keypackage_publish "$agent_pid" "$ready_probe"; then
   exit 1
 fi
 wait "$agent_pid"
@@ -1119,6 +1165,12 @@ mod tests {
         Openclaw,
     }
 
+    #[derive(Copy, Clone)]
+    enum KeypackagePublishOutcome {
+        SucceedsAfterRetry,
+        TimesOut { expected_reason: &'static str },
+    }
+
     fn write_executable(path: &Path, body: &str) {
         fs::write(path, body).expect("write script");
         let mut perms = fs::metadata(path).expect("stat script").permissions();
@@ -1151,7 +1203,10 @@ mod tests {
             .replace('\\', "/")
     }
 
-    fn run_keypackage_ready_gating_scenario(scenario: KeypackageReadyScenario) {
+    fn run_keypackage_ready_gating_scenario(
+        scenario: KeypackageReadyScenario,
+        outcome: KeypackagePublishOutcome,
+    ) {
         let root = tempfile::tempdir().expect("tempdir");
         let bin_dir = root.path().join("bin");
         fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -1304,7 +1359,11 @@ elif [[ "$cmd" == "--remote" ]]; then
   count=$((count + 1))
   printf '%s\n' "$count" > "${PIKA_TEST_PUBLISH_COUNT_FILE}"
   printf 'state_dir=%s relays=%s\n' "$state_dir" "${relays[*]:-}" >> "${PIKA_TEST_PUBLISH_LOG_FILE}"
-  if [[ "$count" -lt 2 ]]; then
+  if [[ "${PIKA_TEST_PUBLISH_ALWAYS_FAIL:-0}" == "1" ]]; then
+    exit 1
+  fi
+  succeed_after="${PIKA_TEST_PUBLISH_SUCCEED_AFTER:-2}"
+  if [[ "$count" -lt "$succeed_after" ]]; then
     exit 1
   fi
   printf '%s\n' '{"event_id":"kp-test","kind":443}'
@@ -1397,6 +1456,17 @@ done
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
+        match outcome {
+            KeypackagePublishOutcome::SucceedsAfterRetry => {
+                command.env("PIKA_TEST_PUBLISH_SUCCEED_AFTER", "2");
+            }
+            KeypackagePublishOutcome::TimesOut { .. } => {
+                command
+                    .env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1")
+                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "2");
+            }
+        }
+
         match scenario {
             KeypackageReadyScenario::Pi => {
                 command
@@ -1459,26 +1529,48 @@ done
             "ready marker must not exist after a failed first keypackage publish attempt"
         );
 
-        poll_until(StdDuration::from_secs(5), || {
-            read_counter(&publish_count_path) >= 2 && ready_marker_path.exists()
-        });
+        match outcome {
+            KeypackagePublishOutcome::SucceedsAfterRetry => {
+                poll_until(StdDuration::from_secs(5), || {
+                    read_counter(&publish_count_path) >= 2 && ready_marker_path.exists()
+                });
 
-        let publish_log = fs::read_to_string(&publish_log_path).expect("read publish log");
-        assert!(
-            publish_log.contains("state_dir="),
-            "publish log should capture the remote state-dir invocation"
-        );
-        assert!(
-            publish_log.contains("wss://relay-one.example.com wss://relay-two.example.com"),
-            "publish log should include the full relay list"
-        );
+                let publish_log = fs::read_to_string(&publish_log_path).expect("read publish log");
+                assert!(
+                    publish_log.contains("state_dir="),
+                    "publish log should capture the remote state-dir invocation"
+                );
+                assert!(
+                    publish_log.contains("wss://relay-one.example.com wss://relay-two.example.com"),
+                    "publish log should include the full relay list"
+                );
 
-        Command::new("kill")
-            .arg("-TERM")
-            .arg(child.id().to_string())
-            .status()
-            .expect("terminate autostart script");
-        let _ = child.wait().expect("wait for autostart script shutdown");
+                Command::new("kill")
+                    .arg("-TERM")
+                    .arg(child.id().to_string())
+                    .status()
+                    .expect("terminate autostart script");
+                let _ = child.wait().expect("wait for autostart script shutdown");
+            }
+            KeypackagePublishOutcome::TimesOut { expected_reason } => {
+                poll_until(StdDuration::from_secs(5), || failed_marker_path.exists());
+                assert!(
+                    !ready_marker_path.exists(),
+                    "ready marker must stay absent when keypackage publish never succeeds"
+                );
+                let failed_marker =
+                    fs::read_to_string(&failed_marker_path).expect("read failed marker");
+                assert!(
+                    failed_marker.contains(expected_reason),
+                    "failed marker should report the dedicated keypackage publish timeout reason"
+                );
+                let status = child.wait().expect("wait for autostart script failure");
+                assert!(
+                    !status.success(),
+                    "autostart script should exit non-zero when keypackage publication times out"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1618,8 +1710,8 @@ done
         assert!(script.contains("PIKA_PI_CMD"));
         assert!(script.contains("pi_exec=\"${PIKA_PI_CMD%% *}\""));
         assert!(script.contains("export PATH=\"$(dirname \"$pi_exec\"):$PATH\""));
-        assert!(script.contains("PIKA_OPENCLAW_CMD"));
-        assert!(script.contains("openclaw_exec=\"${PIKA_OPENCLAW_CMD}\""));
+        assert!(script.contains("openclaw_exec=\"$(plan_value '.service.exec_command')\""));
+        assert!(!script.contains("PIKA_OPENCLAW_CMD"));
         assert!(script.contains("openclaw_package_root=\"${PIKA_OPENCLAW_PACKAGE_ROOT:-$(dirname \"$(dirname \"$openclaw_exec\")\")/lib/openclaw}\""));
         assert!(script.contains("OpenClaw package root not found"));
         assert!(script.contains("mkdir -p \"$openclaw_state_dir/node_modules\""));
@@ -1667,21 +1759,58 @@ done
             "autostart script must invoke remote publish-kp before ready"
         );
         assert!(
-            script.contains(
-                "if publish_daemon_keypackage; then\n            write_ready_marker \"$ready_probe\"\n            return 0"
-            ),
-            "autostart script must gate ready marker creation on successful keypackage publication"
+            script.contains("if ! ready_probe=\"$(wait_for_service_ready \"$agent_pid\")\"; then"),
+            "autostart script must wait for service readiness before publishing the keypackage"
+        );
+        assert!(
+            script
+                .contains("if ! wait_for_keypackage_publish \"$agent_pid\" \"$ready_probe\"; then"),
+            "autostart script must treat keypackage publication as a distinct startup phase"
+        );
+        assert!(
+            script.contains("timeout_waiting_for_openclaw_keypackage_publish"),
+            "autostart script must report a dedicated OpenClaw keypackage publish timeout"
+        );
+        assert!(
+            script.contains("timeout_waiting_for_daemon_keypackage_publish"),
+            "autostart script must report a dedicated daemon keypackage publish timeout"
         );
     }
 
     #[test]
     fn pi_autostart_waits_for_keypackage_publish_before_ready_marker() {
-        run_keypackage_ready_gating_scenario(KeypackageReadyScenario::Pi);
+        run_keypackage_ready_gating_scenario(
+            KeypackageReadyScenario::Pi,
+            KeypackagePublishOutcome::SucceedsAfterRetry,
+        );
     }
 
     #[test]
     fn openclaw_autostart_waits_for_keypackage_publish_before_ready_marker() {
-        run_keypackage_ready_gating_scenario(KeypackageReadyScenario::Openclaw);
+        run_keypackage_ready_gating_scenario(
+            KeypackageReadyScenario::Openclaw,
+            KeypackagePublishOutcome::SucceedsAfterRetry,
+        );
+    }
+
+    #[test]
+    fn pi_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout() {
+        run_keypackage_ready_gating_scenario(
+            KeypackageReadyScenario::Pi,
+            KeypackagePublishOutcome::TimesOut {
+                expected_reason: "timeout_waiting_for_daemon_keypackage_publish",
+            },
+        );
+    }
+
+    #[test]
+    fn openclaw_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout() {
+        run_keypackage_ready_gating_scenario(
+            KeypackageReadyScenario::Openclaw,
+            KeypackagePublishOutcome::TimesOut {
+                expected_reason: "timeout_waiting_for_openclaw_keypackage_publish",
+            },
+        );
     }
 
     #[test]

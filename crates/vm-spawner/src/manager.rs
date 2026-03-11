@@ -1214,30 +1214,33 @@ fn load_guest_autostart_metadata(metadata_dir: &Path) -> anyhow::Result<GuestAut
         .to_string();
 
     let startup_plan_path = metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA);
-    let startup_plan = if startup_plan_path.exists() {
-        let plan_text = fs::read_to_string(&startup_plan_path)
-            .with_context(|| format!("read {}", startup_plan_path.display()))?;
-        let plan: pika_agent_control_plane::GuestStartupPlan = serde_json::from_str(&plan_text)
-            .with_context(|| format!("parse {}", startup_plan_path.display()))?;
-        plan.validate()
-            .map_err(|err| anyhow!("validate {}: {err}", startup_plan_path.display()))?;
-        Some(plan)
-    } else {
-        None
-    };
+    require_non_empty_file(&startup_plan_path)?;
+    let plan_text = fs::read_to_string(&startup_plan_path)
+        .with_context(|| format!("read {}", startup_plan_path.display()))?;
+    let startup_plan: pika_agent_control_plane::GuestStartupPlan = serde_json::from_str(&plan_text)
+        .with_context(|| format!("parse {}", startup_plan_path.display()))?;
+    startup_plan
+        .validate()
+        .map_err(|err| anyhow!("validate {}: {err}", startup_plan_path.display()))?;
 
     Ok(GuestAutostartRequest {
         command,
         env: read_env_assignments(&metadata_dir.join("autostart.env"))?,
         files: read_autostart_files(&metadata_dir.join("autostart.files"))?,
-        startup_plan,
+        startup_plan: Some(startup_plan),
     })
 }
 
 fn read_env_assignments(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
     if !path.exists() {
-        return Ok(env);
+        anyhow::bail!("current-format metadata missing {}", path.display());
+    }
+    if !path.is_file() {
+        anyhow::bail!(
+            "current-format metadata expected file at {}",
+            path.display()
+        );
     }
 
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -1269,7 +1272,13 @@ fn read_env_assignments(path: &Path) -> anyhow::Result<BTreeMap<String, String>>
 fn read_autostart_files(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
     let mut files = BTreeMap::new();
     if !path.exists() {
-        return Ok(files);
+        anyhow::bail!("current-format metadata missing {}", path.display());
+    }
+    if !path.is_dir() {
+        anyhow::bail!(
+            "current-format metadata expected directory at {}",
+            path.display()
+        );
     }
     read_autostart_files_recursive(path, path, &mut files)?;
     Ok(files)
@@ -1370,14 +1379,6 @@ fn write_runtime_metadata(
     ));
     let default_pi_cmd = format!("{}/pi/bin/pi -p", runtime_artifacts_guest_mount.display());
     env_file.push_str(&format!("PIKA_PI_CMD={}\n", shell_quote(&default_pi_cmd),));
-    let default_openclaw_cmd = format!(
-        "{}/openclaw/bin/openclaw",
-        runtime_artifacts_guest_mount.display()
-    );
-    env_file.push_str(&format!(
-        "PIKA_OPENCLAW_CMD={}\n",
-        shell_quote(&default_openclaw_cmd),
-    ));
     if let Some(path) = daemon_bin {
         env_file.push_str(&format!(
             "PIKA_PIKACHAT_BIN={}\n",
@@ -1431,60 +1432,56 @@ fn write_guest_autostart_metadata(
     )
     .with_context(|| format!("write {}", metadata_dir.join("autostart.command").display()))?;
 
-    if let Some(startup_plan) = &autostart.startup_plan {
-        startup_plan
-            .validate()
-            .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
-        let plan_text =
-            serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
-        fs::write(
-            metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
-            format!("{plan_text}\n"),
+    let startup_plan = autostart.startup_plan.as_ref().ok_or_else(|| {
+        anyhow!("guest_autostart.startup_plan must be present for current-format metadata")
+    })?;
+    startup_plan
+        .validate()
+        .map_err(|err| anyhow!("guest_autostart.startup_plan invalid: {err}"))?;
+    let plan_text =
+        serde_json::to_string_pretty(startup_plan).context("serialize guest startup plan")?;
+    fs::write(
+        metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA),
+        format!("{plan_text}\n"),
+    )
+    .with_context(|| {
+        format!(
+            "write {}",
+            metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA).display()
         )
-        .with_context(|| {
-            format!(
-                "write {}",
-                metadata_dir.join(AUTOSTART_STARTUP_PLAN_METADATA).display()
-            )
-        })?;
-    }
+    })?;
 
-    if !autostart.env.is_empty() {
-        let mut env_text = String::new();
-        for (key, value) in &autostart.env {
-            if !is_valid_env_key(key) {
-                anyhow::bail!("guest_autostart.env has invalid key `{key}`");
-            }
-            env_text.push_str(&format!("{}={}\n", key, shell_quote(value)));
+    let mut env_text = String::new();
+    for (key, value) in &autostart.env {
+        if !is_valid_env_key(key) {
+            anyhow::bail!("guest_autostart.env has invalid key `{key}`");
         }
-        fs::write(metadata_dir.join("autostart.env"), env_text)
-            .with_context(|| format!("write {}", metadata_dir.join("autostart.env").display()))?;
+        env_text.push_str(&format!("{}={}\n", key, shell_quote(value)));
     }
+    fs::write(metadata_dir.join("autostart.env"), env_text)
+        .with_context(|| format!("write {}", metadata_dir.join("autostart.env").display()))?;
 
-    if !autostart.files.is_empty() {
-        if autostart.files.len() > 32 {
-            anyhow::bail!("guest_autostart.files has too many entries (max 32)");
+    if autostart.files.len() > 32 {
+        anyhow::bail!("guest_autostart.files has too many entries (max 32)");
+    }
+    let files_dir = metadata_dir.join("autostart.files");
+    fs::create_dir_all(&files_dir).with_context(|| format!("create {}", files_dir.display()))?;
+
+    for (rel_path, content) in &autostart.files {
+        let safe_rel = sanitize_autostart_rel_path(rel_path)?;
+        let dst = files_dir.join(&safe_rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent {}", parent.display()))?;
         }
-        let files_dir = metadata_dir.join("autostart.files");
-        fs::create_dir_all(&files_dir)
-            .with_context(|| format!("create {}", files_dir.display()))?;
-
-        for (rel_path, content) in &autostart.files {
-            let safe_rel = sanitize_autostart_rel_path(rel_path)?;
-            let dst = files_dir.join(&safe_rel);
-            if let Some(parent) = dst.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("create parent {}", parent.display()))?;
-            }
-            fs::write(&dst, content).with_context(|| format!("write {}", dst.display()))?;
-            if rel_path.ends_with(".sh") || rel_path.ends_with(".py") {
-                let mut perms = fs::metadata(&dst)
-                    .with_context(|| format!("stat {}", dst.display()))?
-                    .permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&dst, perms)
-                    .with_context(|| format!("chmod 755 {}", dst.display()))?;
-            }
+        fs::write(&dst, content).with_context(|| format!("write {}", dst.display()))?;
+        if rel_path.ends_with(".sh") || rel_path.ends_with(".py") {
+            let mut perms = fs::metadata(&dst)
+                .with_context(|| format!("stat {}", dst.display()))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dst, perms)
+                .with_context(|| format!("chmod 755 {}", dst.display()))?;
         }
     }
 
@@ -2089,19 +2086,31 @@ mod tests {
         .unwrap();
     }
 
+    fn test_guest_autostart_request() -> GuestAutostartRequest {
+        let resolved =
+            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
+                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
+                ..pika_agent_control_plane::MicrovmProvisionParams::default()
+            });
+        pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
+
+        let owner_keys = nostr_sdk::prelude::Keys::generate();
+        let bot_keys = nostr_sdk::prelude::Keys::generate();
+        pika_agent_microvm::build_create_vm_request(
+            &owner_keys.public_key(),
+            &["wss://relay.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &resolved,
+        )
+        .guest_autostart
+    }
+
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);
         let vm_state_dir = cfg.state_dir.join(vm_id);
-        let autostart = GuestAutostartRequest {
-            command: "bash /workspace/start.sh".to_string(),
-            env: BTreeMap::new(),
-            files: BTreeMap::from([(
-                "workspace/start.sh".to_string(),
-                "#!/usr/bin/env bash\nexit 0\n".to_string(),
-            )]),
-            startup_plan: None,
-        };
+        let autostart = test_guest_autostart_request();
         write_runtime_metadata(
             &vm_state_dir,
             vm_id,
@@ -2380,6 +2389,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_startup_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_file(
+            vm_state_dir
+                .join("metadata")
+                .join(AUTOSTART_STARTUP_PLAN_METADATA),
+        )
+        .unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("required current-format boot input"));
+        assert!(message.contains(AUTOSTART_STARTUP_PLAN_METADATA));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_env_file() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_file(vm_state_dir.join("metadata/autostart.env")).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata missing"));
+        assert!(message.contains("autostart.env"));
+    }
+
+    #[tokio::test]
+    async fn load_vm_disk_state_requires_autostart_files_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let vm_id = "vm-00000001";
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_current_metadata(&cfg, vm_id, 2, 4096);
+        fs::remove_dir_all(vm_state_dir.join("metadata/autostart.files")).unwrap();
+
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let err = manager.load_vm_disk_state(vm_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("current-format metadata missing"));
+        assert!(message.contains("autostart.files"));
+    }
+
+    #[tokio::test]
     async fn rewrite_runtime_metadata_for_recreate_rewrites_current_format_metadata() {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
@@ -2403,7 +2465,7 @@ mod tests {
         assert!(env.contains("PIKA_GATEWAY_IP='192.168.83.1'"));
         assert!(env.contains("PIKA_DNS_IP='192.168.83.1'"));
         assert!(env.contains("PIKA_PI_CMD='/opt/runtime-artifacts/pi/bin/pi -p'"));
-        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
+        assert!(!env.contains("PIKA_OPENCLAW_CMD="));
     }
 
     #[tokio::test]
@@ -2529,7 +2591,7 @@ mod tests {
 
         let env = fs::read_to_string(vm_state_dir.join("metadata/env")).unwrap();
         assert!(env.contains("PIKA_DNS_IP='1.1.1.1'"));
-        assert!(env.contains("PIKA_OPENCLAW_CMD='/opt/runtime-artifacts/openclaw/bin/openclaw'"));
+        assert!(!env.contains("PIKA_OPENCLAW_CMD="));
     }
 
     #[tokio::test]
@@ -3112,7 +3174,27 @@ mod tests {
                 "workspace/start.sh".to_string(),
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
-            startup_plan: None,
+            startup_plan: Some(pika_agent_control_plane::GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
+                service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: pika_agent_control_plane::GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(pika_agent_control_plane::GuestAcpBackend {
+                        exec_command: "npx -y pi-acp".to_string(),
+                        cwd: "/root/pika-agent/acp".to_string(),
+                    }),
+                },
+                readiness_check:
+                    pika_agent_control_plane::GuestServiceReadinessCheck::LogContains {
+                        path: GUEST_LOG_PATH.to_string(),
+                        pattern: "\"type\":\"ready\"".to_string(),
+                        ready_probe: "daemon_ready_event".to_string(),
+                        timeout_failure_reason: "timeout_waiting_for_daemon_ready".to_string(),
+                    },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "pi_agent_exited".to_string(),
+            }),
         };
 
         write_runtime_metadata(
@@ -3151,6 +3233,7 @@ mod tests {
                 "autostart.command",
                 "autostart.env",
                 "autostart.files",
+                AUTOSTART_STARTUP_PLAN_METADATA,
                 "env",
                 "runtime.env",
             ]

@@ -1075,7 +1075,6 @@ impl<'a> RuntimeCommands<'a> {
             }
         }
     }
-
     pub async fn publish_prepared_action(
         &self,
         relay_urls: &[RelayUrl],

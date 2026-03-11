@@ -2383,7 +2383,7 @@ pub async fn daemon_main(
                                     let _ = reply_tx.send(out_error(
                                         request_id,
                                         "publish_failed",
-                                        error,
+                                        "unexpected outbound publish result".to_string(),
                                     ));
                                 }
                             },
@@ -5393,6 +5393,56 @@ mod tests {
         assert_eq!(pending.target_id, "deadbeef");
         assert_eq!(pending.peer_pubkey_hex, peer.public_key().to_hex());
         assert!(prepared.payload_json.contains("call.invite"));
+    }
+
+    #[test]
+    fn daemon_prepare_accept_call_uses_shared_command_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let keys = Keys::generate();
+        let peer = Keys::generate();
+        let created = mdk
+            .create_group(
+                &keys.public_key(),
+                vec![],
+                NostrGroupConfigData::new(
+                    "Daemon call accept test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        mdk.merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let chat_id = hex::encode(created.group.nostr_group_id);
+        let call_id = "550e8400-e29b-41d4-a716-446655440011";
+        let peer_pubkey_hex = peer.public_key().to_hex();
+        let mut session = default_audio_call_session(call_id);
+        session.relay_auth = host
+            .derive_relay_auth_token(&chat_id, call_id, &session, &peer_pubkey_hex)
+            .expect("derive relay auth");
+
+        let prepared = host
+            .prepare_accept_call(&PendingIncomingCall {
+                call_id: call_id.to_string(),
+                target_id: chat_id,
+                from_pubkey_hex: peer_pubkey_hex,
+                session,
+                is_video_call: false,
+            })
+            .expect("prepare daemon call accept");
+
+        assert_eq!(prepared.incoming.call_id, call_id);
+        assert!(prepared.signal.payload_json.contains("call.accept"));
     }
 
     #[test]

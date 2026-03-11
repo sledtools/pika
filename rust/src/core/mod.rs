@@ -9083,7 +9083,7 @@ mod tests {
         }
 
         #[test]
-        fn app_prepare_call_accept_uses_shared_runtime_service() {
+        fn app_prepare_call_accept_uses_shared_command_boundary() {
             let (mut core, _tmp, keys) = make_logged_in_core();
             let peer = Keys::generate();
             let pubkey = keys.public_key();

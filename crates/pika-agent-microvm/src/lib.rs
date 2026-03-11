@@ -1463,6 +1463,8 @@ done
                 "PIKA_RELAY_URLS",
                 "wss://relay-one.example.com,wss://relay-two.example.com",
             )
+            // The OpenClaw startup path now always boots the private loopback proxy,
+            // so the self-contained test harness must provide a guest IP.
             .env("PIKA_VM_IP", "127.0.0.1")
             .env("PIKA_TEST_READY_LOG_PATH", &ready_log_path)
             .env("PIKA_TEST_PUBLISH_COUNT_FILE", &publish_count_path)

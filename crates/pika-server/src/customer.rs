@@ -5,11 +5,13 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
 use crate::agent_api::{
-    load_managed_environment_status, provision_managed_environment_if_missing,
-    recover_agent_for_owner, reset_agent_for_owner, AgentApiError, ManagedEnvironmentStatus,
+    list_recent_managed_environment_events, load_managed_environment_status,
+    provision_managed_environment_if_missing, recover_agent_for_owner, reset_agent_for_owner,
+    AgentApiError, ManagedEnvironmentStatus,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
+use crate::models::managed_environment_event::ManagedEnvironmentEvent;
 use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
 use crate::{RequestContext, State};
 
@@ -17,6 +19,7 @@ const CUSTOMER_SESSION_COOKIE: &str = "pika_customer_session";
 const CUSTOMER_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const CUSTOMER_CHALLENGE_KIND: &str = "customer_dashboard_challenge";
 const CUSTOMER_SESSION_KIND: &str = "customer_dashboard_session";
+const RECENT_ACTIVITY_LIMIT: i64 = 20;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct VerifyRequest {
@@ -32,6 +35,12 @@ pub struct ActionForm {
 struct AuthenticatedCustomer {
     npub: String,
     csrf_token: String,
+}
+
+#[derive(Debug, Clone)]
+struct DashboardActivityItem {
+    created_at: String,
+    message: String,
 }
 
 #[derive(Template)]
@@ -56,6 +65,8 @@ struct DashboardTemplate {
     can_provision: bool,
     can_recover: bool,
     can_reset: bool,
+    recent_activity: Vec<DashboardActivityItem>,
+    has_recent_activity: bool,
 }
 
 fn browser_auth(state: &State) -> &BrowserAuthConfig {
@@ -166,6 +177,7 @@ fn verify_action_csrf(
 fn dashboard_template(
     authenticated: AuthenticatedCustomer,
     status: ManagedEnvironmentStatus,
+    recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
     DashboardTemplate {
@@ -194,7 +206,19 @@ fn dashboard_template(
         can_provision: row.is_none(),
         can_recover: row.is_some(),
         can_reset: row.is_some(),
+        has_recent_activity: !recent_activity.is_empty(),
+        recent_activity,
     }
+}
+
+fn recent_activity_items(events: Vec<ManagedEnvironmentEvent>) -> Vec<DashboardActivityItem> {
+    events
+        .into_iter()
+        .map(|event| DashboardActivityItem {
+            created_at: format_timestamp(Some(event.created_at)),
+            message: event.message,
+        })
+        .collect()
 }
 
 pub async fn home() -> Redirect {
@@ -295,7 +319,18 @@ pub async fn dashboard(
         load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
             .await
             .map_err(map_agent_api_error)?;
-    render_template(&dashboard_template(authenticated, status))
+    let activity = list_recent_managed_environment_events(
+        &state,
+        &authenticated.npub,
+        RECENT_ACTIVITY_LIMIT,
+        &request_context.request_id,
+    )
+    .map_err(map_agent_api_error)?;
+    render_template(&dashboard_template(
+        authenticated,
+        status,
+        recent_activity_items(activity),
+    ))
 }
 
 pub async fn provision(
@@ -405,6 +440,7 @@ mod tests {
     use crate::admin::AdminConfig;
     use crate::models::agent_instance::{AgentInstance, AGENT_PHASE_ERROR, AGENT_PHASE_READY};
     use crate::models::group_subscription::GroupFilterInfo;
+    use crate::models::managed_environment_event::ManagedEnvironmentEvent;
     use crate::models::MIGRATIONS;
     use crate::test_support::serial_test_guard;
 
@@ -430,7 +466,7 @@ mod tests {
     fn clear_test_database(db_pool: &Pool<ConnectionManager<PgConnection>>) {
         let conn = &mut db_pool.get().expect("get clear db connection");
         diesel::sql_query(
-            "TRUNCATE TABLE agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
+            "TRUNCATE TABLE managed_environment_events, agent_instances, agent_allowlist_audit, agent_allowlist, group_subscriptions, subscription_info RESTART IDENTITY CASCADE",
         )
         .execute(conn)
         .expect("truncate test tables");
@@ -535,6 +571,15 @@ mod tests {
             .public_key()
             .to_bech32()
             .expect("encode generated npub")
+    }
+
+    fn recent_activity(
+        db_pool: &Pool<ConnectionManager<PgConnection>>,
+        npub: &str,
+    ) -> Vec<ManagedEnvironmentEvent> {
+        let mut conn = db_pool.get().expect("get activity connection");
+        ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, npub, 20)
+            .expect("query recent activity")
     }
     fn request_context() -> Extension<RequestContext> {
         Extension(RequestContext {
@@ -772,6 +817,8 @@ mod tests {
         let body = response_body_string(response).await;
         assert!(body.contains("Managed OpenClaw"));
         assert!(body.contains("No managed OpenClaw environment has been provisioned yet."));
+        assert!(body.contains("Recent Activity"));
+        assert!(body.contains("No recent managed-environment activity yet."));
         assert!(body.contains(npub));
 
         clear_test_database(&db_pool);
@@ -810,6 +857,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_renders_recent_activity_newest_first() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1recentactivitydashboard";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            npub,
+            Some("agent-1"),
+            None,
+            "provision_requested",
+            "Provision requested for a new Managed OpenClaw environment.",
+            Some("req-older"),
+        )
+        .expect("seed older event");
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            npub,
+            Some("agent-1"),
+            Some("vm-1"),
+            "provision_accepted",
+            "Provision accepted. Managed OpenClaw is starting on VM vm-1.",
+            Some("req-newer"),
+        )
+        .expect("seed newer event");
+        let headers = customer_cookie_header(&state, npub);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        let newer_index = body
+            .find("Provision accepted. Managed OpenClaw is starting on VM vm-1.")
+            .expect("newer activity");
+        let older_index = body
+            .find("Provision requested for a new Managed OpenClaw environment.")
+            .expect("older activity");
+        assert!(body.contains("Recent Activity"));
+        assert!(
+            newer_index < older_index,
+            "activity should render newest-first"
+        );
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn dashboard_marks_ready_row_failed_when_vm_is_missing() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -839,6 +938,9 @@ mod tests {
         assert!(body.contains("needs recovery"));
         assert!(body.contains("falls back to provisioning a fresh environment"));
         assert!(!body.contains("running and ready"));
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_kind, "readiness_refresh_missing_vm");
 
         clear_test_database(&db_pool);
     }
@@ -865,6 +967,7 @@ mod tests {
         assert!(body.contains("No recoverable VM is available"));
         assert!(body.contains("Recover provisions a fresh environment"));
         assert!(body.contains("Recover falls back to provisioning a fresh environment"));
+        assert!(body.contains("does not restore missing durable state"));
         assert!(body.contains("Recover Managed Environment"));
         assert!(!body.contains("Recover Preserving Durable Home"));
 
@@ -903,6 +1006,10 @@ mod tests {
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_kind, "provision_accepted");
+        assert_eq!(events[1].event_kind, "provision_requested");
 
         clear_test_database(&db_pool);
     }
@@ -971,6 +1078,10 @@ mod tests {
             .expect("captured recover request");
         assert_eq!(captured.method, "POST");
         assert_eq!(captured.path, "/vms/vm-recover/recover");
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_kind, "recover_succeeded");
+        assert_eq!(events[1].event_kind, "recover_requested");
 
         clear_test_database(&db_pool);
     }
@@ -1019,6 +1130,63 @@ mod tests {
             .expect("latest row");
         assert_eq!(latest.agent_id, "agent-error");
         assert_eq!(latest.phase, AGENT_PHASE_READY);
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_kind, "recover_succeeded");
+        assert_eq!(events[1].event_kind, "recover_requested");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn recover_action_falls_back_to_fresh_when_vm_is_missing() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1recovermissingvmactivity";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+        let form = customer_action_form(&state, &headers);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-missing",
+            Some("vm-missing"),
+            AGENT_PHASE_ERROR,
+        )
+        .expect("seed errored agent");
+        let (base_url, rx) = spawn_scripted_server(vec![
+            ("404 Not Found", r#"{"error":"vm not found: vm-missing"}"#),
+            ("200 OK", r#"{"id":"vm-fresh","status":"starting"}"#),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = recover(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect("recover response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let recover_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured recover request");
+        assert_eq!(recover_request.method, "POST");
+        assert_eq!(recover_request.path, "/vms/vm-missing/recover");
+        let create_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured create request");
+        assert_eq!(create_request.method, "POST");
+        assert_eq!(create_request.path, "/vms");
+
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].event_kind, "provision_accepted");
+        assert_eq!(events[1].event_kind, "provision_requested");
+        assert_eq!(events[2].event_kind, "recover_fell_back_to_fresh");
+        assert_eq!(events[3].event_kind, "recover_requested");
 
         clear_test_database(&db_pool);
     }
@@ -1079,6 +1247,12 @@ mod tests {
             retired.phase,
             crate::models::agent_instance::AGENT_PHASE_ERROR
         );
+        let events = recent_activity(&db_pool, npub);
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].event_kind, "provision_accepted");
+        assert_eq!(events[1].event_kind, "provision_requested");
+        assert_eq!(events[2].event_kind, "reset_destroyed_old_vm");
+        assert_eq!(events[3].event_kind, "reset_requested");
 
         clear_test_database(&db_pool);
     }

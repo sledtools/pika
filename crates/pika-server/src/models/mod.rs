@@ -3,6 +3,7 @@ use diesel_migrations::{embed_migrations, EmbeddedMigrations};
 pub mod agent_allowlist;
 pub mod agent_instance;
 pub mod group_subscription;
+pub mod managed_environment_event;
 mod schema;
 pub mod subscription_info;
 
@@ -16,6 +17,7 @@ mod test {
         AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
     };
     use crate::models::group_subscription::GroupSubscription;
+    use crate::models::managed_environment_event::ManagedEnvironmentEvent;
     use crate::models::subscription_info::SubscriptionInfo;
     use crate::test_support::serial_test_guard;
     use diesel::prelude::*;
@@ -51,6 +53,7 @@ mod test {
 
         conn.transaction::<_, anyhow::Error, _>(|conn| {
             diesel::delete(schema::agent_instances::table).execute(conn)?;
+            diesel::delete(schema::managed_environment_events::table).execute(conn)?;
             diesel::delete(schema::agent_allowlist_audit::table).execute(conn)?;
             diesel::delete(schema::agent_allowlist::table).execute(conn)?;
             diesel::delete(schema::group_subscriptions::table).execute(conn)?;
@@ -234,6 +237,52 @@ mod test {
             .expect("latest row should exist");
         assert_eq!(latest.agent_id, "agent-error");
         assert_eq!(latest.phase, AGENT_PHASE_ERROR);
+        clear_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn test_managed_environment_event_record_and_list_recent() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_db_pool() else {
+            return;
+        };
+        clear_database(&db_pool);
+        let mut conn = db_pool.get().unwrap();
+        let owner_npub = "npub1eventhistorytest";
+
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            owner_npub,
+            Some("agent-1"),
+            None,
+            "provision_requested",
+            "Provision requested for a new Managed OpenClaw environment.",
+            Some("req-1"),
+        )
+        .expect("insert first event");
+        ManagedEnvironmentEvent::record(
+            &mut conn,
+            owner_npub,
+            Some("agent-1"),
+            Some("vm-1"),
+            "provision_accepted",
+            "Provision accepted. Managed OpenClaw is starting on VM vm-1.",
+            Some("req-1"),
+        )
+        .expect("insert second event");
+
+        let recent =
+            ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, 20).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].event_kind, "provision_accepted");
+        assert_eq!(recent[0].vm_id.as_deref(), Some("vm-1"));
+        assert_eq!(recent[1].event_kind, "provision_requested");
+
+        let limited =
+            ManagedEnvironmentEvent::list_recent_by_owner(&mut conn, owner_npub, 1).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].event_kind, "provision_accepted");
+
         clear_database(&db_pool);
     }
 

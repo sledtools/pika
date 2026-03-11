@@ -149,6 +149,30 @@
     .hero-row form {
       width: auto;
     }
+    .activity-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 12px;
+    }
+    .activity-item {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .activity-time {
+      margin: 0 0 6px;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .activity-message {
+      margin: 0;
+      color: var(--ink);
+    }
   </style>
 </head>
 <body>
@@ -245,8 +269,24 @@
         <h2>Reset Semantics</h2>
         <div class="callout">
           <p><strong>Recover</strong> first asks the control plane to bring the managed environment back. If a recoverable VM still exists, this path preserves the durable home. If not, Recover falls back to provisioning a fresh environment.</p>
-          <p><strong>Destructive reset</strong> is allowed to delete the durable home and create a fresh managed OpenClaw environment from scratch.</p>
+          <p><strong>Destructive reset</strong> asks the control plane to delete the current VM if one still exists, then provisions a fresh managed OpenClaw environment. If the old VM is already gone, reset still continues fresh and does not restore missing durable state.</p>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent Activity</h2>
+        {% if has_recent_activity %}
+        <ol class="activity-list">
+          {% for event in recent_activity %}
+          <li class="activity-item">
+            <p class="activity-time">{{ event.created_at }}</p>
+            <p class="activity-message">{{ event.message }}</p>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p>No recent managed-environment activity yet.</p>
+        {% endif %}
       </section>
     </section>
   </main>

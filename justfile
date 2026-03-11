@@ -220,6 +220,7 @@ alias pre-commit := checks::pre-commit
 alias pre-merge-pika := checks::pre-merge-pika
 alias pre-merge-pika-rust-shadow := checks::pre-merge-pika-rust-shadow
 alias pre-merge-notifications-shadow := checks::pre-merge-notifications-shadow
+alias pre-merge-agent-contracts-shadow := checks::pre-merge-agent-contracts-shadow
 alias pre-merge-notifications := checks::pre-merge-notifications
 alias pre-merge-pikachat := checks::pre-merge-pikachat
 alias pre-merge-agent-contracts := checks::pre-merge-agent-contracts

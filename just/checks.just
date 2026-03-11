@@ -52,6 +52,11 @@ pre-merge-notifications-shadow:
     just pikaci-remote-fulfill-pre-merge-notifications
     echo "pre-merge-notifications-shadow complete"
 
+# Advisory shadow CI lane for the staged Linux agent-contracts remote microVM path.
+pre-merge-agent-contracts-shadow:
+    just pikaci-remote-fulfill-pre-merge-agent-contracts
+    echo "pre-merge-agent-contracts-shadow complete"
+
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
     #!/usr/bin/env bash

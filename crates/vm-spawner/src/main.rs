@@ -105,7 +105,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/vms", post(create_vm))
         .route("/vms/:id", get(get_vm).delete(delete_vm))
         .route("/vms/:id/recover", post(recover_vm))
-        .route("/vms/:id/backup-status", get(get_vm_backup_status))
         .route("/vms/:id/openclaw", any(proxy_openclaw_root))
         .route("/vms/:id/openclaw/*path", any(proxy_openclaw_path))
         .layer(middleware::from_fn(trace_http_request))
@@ -187,19 +186,6 @@ async fn recover_vm(
         .map_err(map_manager_error_to_api)
         .map_err(|err| err.with_request_id(request_context.request_id))?;
     Ok(Json(vm))
-}
-
-async fn get_vm_backup_status(
-    State(manager): State<Arc<VmManager>>,
-    Extension(request_context): Extension<RequestContext>,
-    Path(id): Path<String>,
-) -> Result<Json<SpawnerVmBackupStatus>, ApiError> {
-    validate_vm_id(&id).map_err(|err| err.with_request_id(request_context.request_id.clone()))?;
-    let status = manager
-        .backup_status(&id)
-        .map_err(map_manager_error_to_api)
-        .map_err(|err| err.with_request_id(request_context.request_id))?;
-    Ok(Json(status))
 }
 
 async fn proxy_openclaw_root(

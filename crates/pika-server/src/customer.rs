@@ -2767,8 +2767,8 @@ mod tests {
                                 {
                                     socket
                                         .send(AxumWsMessage::Text(format!("{id}:{text}")))
-                                        .await
-                                        .expect("send websocket echo");
+                                    .await
+                                    .expect("send websocket echo");
                                 }
                             })
                         }

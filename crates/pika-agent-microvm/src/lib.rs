@@ -1106,6 +1106,7 @@ mod tests {
     use pika_test_utils::spawn_one_shot_server;
     use std::collections::BTreeSet;
     use std::fs;
+    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
@@ -1160,6 +1161,11 @@ mod tests {
         let acp_cwd = root.path().join("runtime/acp");
         let openclaw_state_dir = root.path().join("runtime/openclaw");
         let openclaw_package_root = root.path().join("runtime/openclaw-package");
+        let openclaw_gateway_port = TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind ephemeral openclaw test port")
+            .local_addr()
+            .expect("read openclaw test port")
+            .port();
         fs::create_dir_all(&workspace_dir).expect("create workspace dir");
         fs::create_dir_all(&daemon_state_dir).expect("create daemon state dir");
         fs::create_dir_all(&acp_cwd).expect("create acp cwd");
@@ -1365,6 +1371,7 @@ done
                 "PIKA_RELAY_URLS",
                 "wss://relay-one.example.com,wss://relay-two.example.com",
             )
+            .env("PIKA_VM_IP", "127.0.0.1")
             .env("PIKA_TEST_READY_LOG_PATH", &ready_log_path)
             .env("PIKA_TEST_PUBLISH_COUNT_FILE", &publish_count_path)
             .env("PIKA_TEST_PUBLISH_LOG_FILE", &publish_log_path)
@@ -1418,7 +1425,10 @@ done
                     .env("TEST_JQ_READINESS_KIND", "http_get_ok")
                     .env("TEST_JQ_READINESS_PATH", "")
                     .env("TEST_JQ_READINESS_PATTERN", "")
-                    .env("TEST_JQ_READINESS_URL", "http://127.0.0.1:18789/health")
+                    .env(
+                        "TEST_JQ_READINESS_URL",
+                        format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
+                    )
                     .env("TEST_JQ_SERVICE_ACP_PRESENT", "0")
                     .env("TEST_JQ_ACP_EXEC_COMMAND", "")
                     .env("TEST_JQ_ACP_CWD", "")
@@ -1435,10 +1445,7 @@ done
                         "TEST_JQ_SERVICE_CONFIG_PATH",
                         root_relative(&openclaw_config_path),
                     )
-                    .env(
-                        "TEST_JQ_GATEWAY_PORT",
-                        DEFAULT_OPENCLAW_GATEWAY_PORT.to_string(),
-                    );
+                    .env("TEST_JQ_GATEWAY_PORT", openclaw_gateway_port.to_string());
             }
         }
 

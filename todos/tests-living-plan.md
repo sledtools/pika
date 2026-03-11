@@ -69,7 +69,7 @@ Working assumptions:
    - current root CI / `pikaci` mismatches are recorded as deferred asks instead of being fixed in hot conflict surfaces
 
 5. Slice 6 closed the first documented root CI mismatch:
-   - `.github/workflows/pre-merge.yml` now covers the checked-in Rust-side `pre-merge-pikachat` dependency surface, including `crates/pikahut/**` and `crates/pika-desktop/**`
+   - `.github/workflows/pre-merge.yml` now covers the checked-in `pre-merge-pikachat` dependency surface, including `just/checks.just`, `crates/pikahut/**`, and `crates/pika-desktop/**`
    - `check-pikachat` change detection now matches the current checked-in `pre-merge-pikachat-rust` surface instead of skipping selector/helper changes
    - the remaining next root mismatch is the Apple Silicon `pre-merge-pikachat` split
 ## Progress Update

@@ -62,6 +62,7 @@ jobs:
               - 'flake.lock'
               - 'nix/**'
               - 'justfile'
+              - 'just/checks.just'
               - '.github/workflows/pre-merge.yml'
               - 'cli/**'
               - 'crates/pikaci/**'

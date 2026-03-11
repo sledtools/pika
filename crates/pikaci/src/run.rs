@@ -13,8 +13,10 @@ use uuid::Uuid;
 
 use crate::executor::{
     HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
-    prepare_vfkit_runner_link, run_job_on_runner, ssh_nix_binary, staged_linux_remote_snapshot_dir,
-    sync_snapshot_to_remote,
+    prepare_vfkit_runner_link, prepared_output_remote_helper_binary,
+    prepared_output_remote_launcher_binary, prepared_output_remote_work_dir,
+    prepared_output_ssh_host, run_job_on_runner, ssh_nix_binary, staged_linux_remote_defaults,
+    staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -88,11 +90,15 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
+#[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+#[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY";
+#[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY";
+#[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
 
@@ -1538,7 +1544,7 @@ fn resolve_run_prepared_output_launcher_transport_program(
                 .map(str::to_string)
                 .unwrap_or_else(|| {
                     std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
-                        .unwrap_or_else(|_| "ssh".to_string())
+                        .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_binary.to_string())
                 }),
         )),
         _ => Ok(None),
@@ -1553,10 +1559,7 @@ fn resolve_run_prepared_output_launcher_transport_host(
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
             recorded_transport_host
                 .map(str::to_string)
-                .unwrap_or_else(|| {
-                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV)
-                        .unwrap_or_else(|_| "pika-build".to_string())
-                }),
+                .unwrap_or_else(prepared_output_ssh_host),
         )),
         _ => Ok(None),
     }
@@ -1571,14 +1574,7 @@ fn resolve_run_prepared_output_launcher_transport_remote_launcher_program(
             if let Some(recorded_remote_launcher_program) = recorded_remote_launcher_program {
                 return Ok(Some(recorded_remote_launcher_program.to_string()));
             }
-            Ok(Some(
-                std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV)
-                    .map_err(|_| {
-                        anyhow!(
-                            "{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV}=ssh_launcher_transport_v1 requires {PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV}"
-                        )
-                    })?,
-            ))
+            Ok(Some(prepared_output_remote_launcher_binary()))
         }
         _ => Ok(None),
     }
@@ -1593,14 +1589,7 @@ fn resolve_run_prepared_output_launcher_transport_remote_helper_program(
             if let Some(recorded_remote_helper_program) = recorded_remote_helper_program {
                 return Ok(Some(recorded_remote_helper_program.to_string()));
             }
-            Ok(Some(
-                std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV)
-                    .map_err(|_| {
-                        anyhow!(
-                            "{PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV}=ssh_launcher_transport_v1 requires {PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV}"
-                        )
-                    })?,
-            ))
+            Ok(Some(prepared_output_remote_helper_binary()))
         }
         _ => Ok(None),
     }
@@ -1614,10 +1603,7 @@ fn resolve_run_prepared_output_launcher_transport_remote_work_dir(
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
             recorded_remote_work_dir
                 .map(str::to_string)
-                .unwrap_or_else(|| {
-                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV)
-                        .unwrap_or_else(|_| "/tmp/pikaci-prepared-output".to_string())
-                }),
+                .unwrap_or_else(|| prepared_output_remote_work_dir().display().to_string()),
         )),
         _ => Ok(None),
     }
@@ -4767,6 +4753,63 @@ mod tests {
             )
             .expect("ssh remote work dir"),
             Some("/var/tmp/pikaci-remote".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_launcher_transport_ssh_details_use_central_defaults() {
+        let _ssh_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV, None);
+        let _host_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, None);
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV,
+            None,
+        );
+        let _helper_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV,
+            None,
+        );
+        let _work_dir_guard =
+            EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV, None);
+
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh transport program"),
+            Some("/usr/bin/ssh".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_host(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh transport host"),
+            Some("pika-build".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote launcher"),
+            Some("/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_helper_program(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote helper"),
+            Some("/run/current-system/sw/bin/pikaci-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_work_dir(
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                None,
+            )
+            .expect("ssh remote work dir"),
+            Some("/var/tmp/pikaci-prepared-output".to_string())
         );
     }
 

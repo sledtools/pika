@@ -530,8 +530,7 @@ fn build_websocket_proxy_request(
     let mut request = upstream_url.into_client_request()?;
     for (name, value) in downstream_headers {
         if websocket_proxy_header_should_forward(name.as_str()) {
-            let request_name =
-                reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())?;
+            let request_name = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())?;
             let request_value = reqwest::header::HeaderValue::from_bytes(value.as_bytes())?;
             request.headers_mut().insert(request_name, request_value);
         }

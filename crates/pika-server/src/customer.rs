@@ -669,17 +669,15 @@ fn build_websocket_proxy_request(
     })?;
     for (name, value) in downstream_headers {
         if websocket_proxy_header_should_forward(name.as_str()) {
-            let request_name =
-                reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()).map_err(
-                    |err| {
-                        (
-                            StatusCode::BAD_GATEWAY,
-                            format!("invalid openclaw websocket upstream header name: {err}"),
-                        )
-                    },
-                )?;
-            let request_value =
-                reqwest::header::HeaderValue::from_bytes(value.as_bytes()).map_err(|err| {
+            let request_name = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())
+                .map_err(|err| {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("invalid openclaw websocket upstream header name: {err}"),
+                    )
+                })?;
+            let request_value = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
+                .map_err(|err| {
                     (
                         StatusCode::BAD_GATEWAY,
                         format!("invalid openclaw websocket upstream header value: {err}"),

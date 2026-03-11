@@ -68,26 +68,41 @@ fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String
     entries
 }
 
-fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Option<String> {
-    let mut lines = text.lines().peekable();
-    let header = format!("{recipe_name}:");
+fn extract_pikaci_target_filters(text: &str, target_name: &str) -> Vec<String> {
+    let marker = format!("\"{target_name}\" => Ok(TargetSpec {{");
+    let mut in_target = false;
+    let mut in_filters = false;
+    let mut filters = Vec::new();
 
-    while let Some(line) = lines.next() {
-        if line == header {
-            let mut body = String::new();
-            while let Some(next) = lines.peek().copied() {
-                if !next.is_empty() && !next.starts_with(' ') && !next.starts_with('\t') {
-                    break;
-                }
-                body.push_str(next);
-                body.push('\n');
-                lines.next();
+    for line in text.lines() {
+        if !in_target {
+            if line.contains(&marker) {
+                in_target = true;
             }
-            return Some(body);
+            continue;
+        }
+
+        if !in_filters {
+            if line.contains("filters: &[") {
+                in_filters = true;
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed == "]," {
+            break;
+        }
+
+        if let Some(filter) = trimmed
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix("\","))
+        {
+            filters.push(filter.to_string());
         }
     }
 
-    None
+    filters
 }
 
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
@@ -403,24 +418,27 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
 }
 
 #[test]
-fn pre_merge_pikachat_filter_covers_pikahut_selector_surface() -> Result<()> {
+fn pre_merge_pikachat_filter_tracks_checked_in_rust_lane_surface() -> Result<()> {
     let root = workspace_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
     let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
+    let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
 
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust");
     assert!(
-        pikachat_filter
-            .iter()
-            .any(|entry| entry == "crates/pikahut/**"),
-        "pikachat path filter must include crates/pikahut/** because pre-merge-pikachat depends on pikahut selectors"
+        !rust_lane_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-pikachat-rust filters discoverable"
     );
 
-    let checks = fs::read_to_string(root.join("just/checks.just"))?;
-    let pre_merge_recipe = extract_just_recipe_body(&checks, "pre-merge-pikachat")
-        .expect("just/checks.just must define pre-merge-pikachat");
+    let missing_from_workflow: Vec<_> = rust_lane_filters
+        .into_iter()
+        .filter(|entry| !pikachat_filter.contains(entry))
+        .collect();
     assert!(
-        pre_merge_recipe.contains("cargo test -p pikahut --test integration_deterministic"),
-        "pre-merge-pikachat must continue to exercise pikahut selectors if the workflow filter tracks crates/pikahut/**"
+        missing_from_workflow.is_empty(),
+        "pikachat workflow filter must cover the checked-in pre-merge-pikachat-rust dependency surface; missing: {:?}",
+        missing_from_workflow
     );
 
     Ok(())

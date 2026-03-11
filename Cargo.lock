@@ -9198,6 +9198,7 @@ dependencies = [
  "nostr-sdk",
  "pika-agent-control-plane",
  "pika-agent-microvm",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

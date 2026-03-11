@@ -538,8 +538,13 @@ set -euo pipefail
 
 STARTUP_PLAN_PATH="/{startup_plan_path}"
 agent_pid=""
+gateway_proxy_pid=""
 
 cleanup_agent() {{
+  if [[ -n "${{gateway_proxy_pid:-}}" ]]; then
+    kill "$gateway_proxy_pid" 2>/dev/null || true
+    wait "$gateway_proxy_pid" 2>/dev/null || true
+  fi
   if [[ -n "${{agent_pid:-}}" ]]; then
     kill "$agent_pid" 2>/dev/null || true
     wait "$agent_pid" 2>/dev/null || true
@@ -552,6 +557,65 @@ plan_value() {{
 
 workspace_path() {{
   printf '/%s' "$1"
+}}
+
+start_openclaw_private_proxy() {{
+  local listen_host="$1"
+  local listen_port="$2"
+  python3 - "$listen_host" "$listen_port" <<'PY' &
+import asyncio
+import sys
+
+listen_host = sys.argv[1]
+listen_port = int(sys.argv[2])
+target_host = "127.0.0.1"
+target_port = listen_port
+
+async def pump(reader, writer):
+    try:
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            target_host, target_port
+        )
+    except Exception:
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    async def forward(src, dst):
+        try:
+            while True:
+                chunk = await src.read(65536)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                await dst.drain()
+        except Exception:
+            pass
+        finally:
+            dst.close()
+            try:
+                await dst.wait_closed()
+            except Exception:
+                pass
+
+    await asyncio.gather(
+        forward(reader, upstream_writer),
+        forward(upstream_reader, writer),
+    )
+
+async def main():
+    server = await asyncio.start_server(pump, listen_host, listen_port)
+    async with server:
+        await server.serve_forever()
+
+asyncio.run(main())
+PY
+  gateway_proxy_pid=$!
+  sleep 1
+  if ! kill -0 "$gateway_proxy_pid" 2>/dev/null; then
+    echo "[microvm-agent] failed to start OpenClaw private gateway proxy on $listen_host:$listen_port" >&2
+    exit 1
+  fi
 }}
 
 trap cleanup_agent EXIT TERM INT
@@ -766,9 +830,11 @@ start_service() {{
       export OPENCLAW_SKIP_CANVAS_HOST=1
       export OPENCLAW_SKIP_CRON=1
       export PIKA_OPENCLAW_GATEWAY_PORT="$gateway_port"
+      : "${{PIKA_VM_IP:?missing PIKA_VM_IP}}"
       echo "[microvm-agent] starting OpenClaw gateway via $openclaw_exec" >&2
       bash -lc "$openclaw_exec gateway --allow-unconfigured" &
       agent_pid=$!
+      start_openclaw_private_proxy "$PIKA_VM_IP" "$gateway_port"
       ;;
     *)
       echo "[microvm-agent] unsupported startup service kind: $service_kind" >&2
@@ -1090,6 +1156,8 @@ mod tests {
             script.contains("invalid startup plan: backend_mode=acp but ACP payload is missing")
         );
         assert!(script.contains("plan_value '.service.exec_command'"));
+        assert!(script.contains("start_openclaw_private_proxy"));
+        assert!(script.contains(": \"${PIKA_VM_IP:?missing PIKA_VM_IP}\""));
         assert!(
             !script.contains("marmotd"),
             "autostart script must only resolve pikachat daemon binary"

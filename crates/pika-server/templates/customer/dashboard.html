@@ -266,6 +266,17 @@
             {% endif %}
           </div>
         </section>
+
+        <section class="card">
+          <h2>Built-In UI</h2>
+          <p>{{ launch_status_copy }}</p>
+          {% if can_launch_openclaw %}
+          <form method="post" action="/dashboard/openclaw/launch">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" formtarget="_blank">Open OpenClaw</button>
+          </form>
+          {% endif %}
+        </section>
       </section>
 
       <section class="card">

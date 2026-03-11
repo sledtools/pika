@@ -1,13 +1,16 @@
 use askama::Template;
+use axum::body::Bytes;
 use axum::extract::Form;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::Query;
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
 use crate::agent_api::{
-    list_recent_managed_environment_events, load_managed_environment_status,
+    list_recent_managed_environment_events, load_current_ready_managed_environment,
+    load_launchable_managed_environment, load_managed_environment_status,
     provision_managed_environment_if_missing, recover_agent_for_owner, reset_agent_for_owner,
-    AgentApiError, ManagedEnvironmentStatus,
+    spawner_base_url, AgentApiError, ManagedEnvironmentStatus,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
@@ -20,6 +23,15 @@ const CUSTOMER_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
 const CUSTOMER_CHALLENGE_KIND: &str = "customer_dashboard_challenge";
 const CUSTOMER_SESSION_KIND: &str = "customer_dashboard_session";
 const RECENT_ACTIVITY_LIMIT: i64 = 20;
+const OPENCLAW_UI_HOST_PREFIX: &str = "openclaw.";
+const OPENCLAW_LAUNCH_TICKET_KIND: &str = "openclaw_ui_launch_ticket";
+const OPENCLAW_UI_SESSION_KIND: &str = "openclaw_ui_session";
+const OPENCLAW_UI_SESSION_COOKIE: &str = "pika_openclaw_ui_session";
+const OPENCLAW_LAUNCH_TTL_SECS: i64 = 60;
+const OPENCLAW_UI_SESSION_TTL_SECS: i64 = 15 * 60;
+pub(crate) const OPENCLAW_INTERNAL_LAUNCH_PATH: &str = "/_openclaw_launch";
+pub(crate) const OPENCLAW_INTERNAL_PROXY_PREFIX: &str = "/_openclaw_proxy";
+pub(crate) const OPENCLAW_INTERNAL_PROXY_PATH: &str = "/_openclaw_proxy/*path";
 
 #[derive(Debug, serde::Deserialize)]
 pub struct VerifyRequest {
@@ -29,6 +41,11 @@ pub struct VerifyRequest {
 #[derive(Debug, serde::Deserialize)]
 pub struct ActionForm {
     csrf_token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LaunchTicketQuery {
+    ticket: String,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +58,26 @@ struct AuthenticatedCustomer {
 struct DashboardActivityItem {
     created_at: String,
     message: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct OpenClawLaunchTicket {
+    kind: String,
+    npub: String,
+    agent_id: String,
+    vm_id: String,
+    ui_host: String,
+    exp: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct OpenClawUiSession {
+    kind: String,
+    npub: String,
+    agent_id: String,
+    vm_id: String,
+    ui_host: String,
+    exp: i64,
 }
 
 #[derive(Template)]
@@ -69,6 +106,8 @@ struct DashboardTemplate {
     has_control_loop_notice: bool,
     recover_action_label: &'static str,
     recover_semantics_copy: &'static str,
+    can_launch_openclaw: bool,
+    launch_status_copy: &'static str,
     recent_activity: Vec<DashboardActivityItem>,
     has_recent_activity: bool,
 }
@@ -178,12 +217,252 @@ fn verify_action_csrf(
     }
 }
 
+fn request_host(state: &State, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    expected_host_from_headers(headers, state.trust_forwarded_host)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "missing host header".to_string()))
+}
+
+fn external_request_scheme(state: &State, headers: &HeaderMap) -> &'static str {
+    if state.trust_forwarded_host {
+        if let Some(proto) = headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+        {
+            if proto.eq_ignore_ascii_case("http") {
+                return "http";
+            }
+            if proto.eq_ignore_ascii_case("https") {
+                return "https";
+            }
+        }
+    }
+    match headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+    {
+        Some(host)
+            if host.starts_with("localhost")
+                || host.starts_with("127.0.0.1")
+                || host.starts_with("[::1]") =>
+        {
+            "http"
+        }
+        _ => "https",
+    }
+}
+
+fn openclaw_ui_host_for_dashboard_host(host: &str) -> String {
+    if host.starts_with(OPENCLAW_UI_HOST_PREFIX) {
+        host.to_string()
+    } else {
+        format!("{OPENCLAW_UI_HOST_PREFIX}{host}")
+    }
+}
+
+fn cookie_value_from_headers(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    for pair in cookie.split(';') {
+        let (name, value) = pair.trim().split_once('=')?;
+        if name == cookie_name {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn issue_openclaw_launch_ticket(
+    state: &State,
+    npub: &str,
+    agent_id: &str,
+    vm_id: &str,
+    ui_host: &str,
+) -> Result<String, (StatusCode, String)> {
+    browser_auth(state)
+        .sign_payload(&OpenClawLaunchTicket {
+            kind: OPENCLAW_LAUNCH_TICKET_KIND.to_string(),
+            npub: npub.to_string(),
+            agent_id: agent_id.to_string(),
+            vm_id: vm_id.to_string(),
+            ui_host: ui_host.to_string(),
+            exp: chrono::Utc::now().timestamp() + OPENCLAW_LAUNCH_TTL_SECS,
+        })
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn verify_openclaw_launch_ticket(
+    state: &State,
+    token: &str,
+    actual_host: &str,
+) -> Result<OpenClawLaunchTicket, (StatusCode, String)> {
+    let ticket: OpenClawLaunchTicket = browser_auth(state).verify_payload(token).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "invalid launch ticket".to_string(),
+        )
+    })?;
+    if ticket.kind != OPENCLAW_LAUNCH_TICKET_KIND {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid launch ticket".to_string(),
+        ));
+    }
+    if ticket.exp < chrono::Utc::now().timestamp() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "launch ticket expired".to_string(),
+        ));
+    }
+    if ticket.ui_host != actual_host {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "launch ticket host mismatch".to_string(),
+        ));
+    }
+    Ok(ticket)
+}
+
+fn issue_openclaw_ui_session(
+    state: &State,
+    ticket: &OpenClawLaunchTicket,
+) -> Result<String, (StatusCode, String)> {
+    browser_auth(state)
+        .sign_payload(&OpenClawUiSession {
+            kind: OPENCLAW_UI_SESSION_KIND.to_string(),
+            npub: ticket.npub.clone(),
+            agent_id: ticket.agent_id.clone(),
+            vm_id: ticket.vm_id.clone(),
+            ui_host: ticket.ui_host.clone(),
+            exp: chrono::Utc::now().timestamp() + OPENCLAW_UI_SESSION_TTL_SECS,
+        })
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn openclaw_ui_session_from_headers(
+    state: &State,
+    headers: &HeaderMap,
+    actual_host: &str,
+) -> Result<Option<OpenClawUiSession>, (StatusCode, String)> {
+    let Some(token) = cookie_value_from_headers(headers, OPENCLAW_UI_SESSION_COOKIE) else {
+        return Ok(None);
+    };
+    let session: OpenClawUiSession = browser_auth(state).verify_payload(&token).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "invalid openclaw ui session".to_string(),
+        )
+    })?;
+    if session.kind != OPENCLAW_UI_SESSION_KIND {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid openclaw ui session".to_string(),
+        ));
+    }
+    if session.exp < chrono::Utc::now().timestamp() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "openclaw ui session expired".to_string(),
+        ));
+    }
+    if session.ui_host != actual_host {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "openclaw ui session host mismatch".to_string(),
+        ));
+    }
+    Ok(Some(session))
+}
+
+fn origin_matches_host(origin: &str, actual_host: &str) -> bool {
+    let Ok(origin_url) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+    let Some(origin_host) = origin_url.host_str() else {
+        return false;
+    };
+    let origin_authority = match origin_url.port() {
+        Some(port) => format!("{origin_host}:{port}"),
+        None => origin_host.to_string(),
+    };
+    origin_authority.eq_ignore_ascii_case(actual_host)
+}
+
+fn require_same_origin_ui_request(
+    headers: &HeaderMap,
+    method: &Method,
+    actual_host: &str,
+) -> Result<(), (StatusCode, String)> {
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return Ok(());
+    }
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    {
+        return origin_matches_host(origin, actual_host)
+            .then_some(())
+            .ok_or_else(|| {
+                (
+                    StatusCode::FORBIDDEN,
+                    "cross-origin OpenClaw UI mutation is not allowed".to_string(),
+                )
+            });
+    }
+    let same_origin_fetch = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .map(|value| value.eq_ignore_ascii_case("same-origin") || value == "none")
+        .unwrap_or(false);
+    if same_origin_fetch {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            "missing same-origin proof for OpenClaw UI mutation".to_string(),
+        ))
+    }
+}
+
+fn header_is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn copy_proxy_response_headers(target: &mut HeaderMap, source: &reqwest::header::HeaderMap) {
+    for (name, value) in source {
+        let name_str = name.as_str();
+        if header_is_hop_by_hop(name_str) || name_str == "set-cookie" {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) else {
+            continue;
+        };
+        target.append(header_name, header_value);
+    }
+}
+
 fn dashboard_template(
     authenticated: AuthenticatedCustomer,
     status: ManagedEnvironmentStatus,
     recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
+    let app_state = status.app_state;
+    let startup_phase = status.startup_phase;
     let inflight_without_vm = row
         .as_ref()
         .map(|row| {
@@ -191,6 +470,9 @@ fn dashboard_template(
         })
         .unwrap_or(false);
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
+    let can_launch_openclaw = app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
+        && startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
+        && recoverable_vm_exists;
     DashboardTemplate {
         owner_npub: authenticated.npub,
         template_name: "OpenClaw",
@@ -234,6 +516,18 @@ fn dashboard_template(
             "asks the control plane to bring the managed environment back. If that VM is still recoverable, this path preserves the durable home. If the VM is already gone, Recover falls back to provisioning a fresh environment."
         } else {
             "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
+        },
+        can_launch_openclaw,
+        launch_status_copy: if can_launch_openclaw {
+            "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
+        } else if row.is_none() {
+            "Provision Managed OpenClaw before launching the built-in UI."
+        } else if inflight_without_vm {
+            "OpenClaw launch unlocks after the current VM assignment finishes."
+        } else if app_state == Some(crate::agent_api_v1_contract::AgentAppState::Error) {
+            "Recover or reprovision the managed environment before opening OpenClaw."
+        } else {
+            "OpenClaw launch becomes available once the managed environment is fully ready."
         },
         has_recent_activity: !recent_activity.is_empty(),
         recent_activity,
@@ -428,6 +722,214 @@ pub async fn reset(
     Ok(Redirect::to("/dashboard").into_response())
 }
 
+pub async fn openclaw_launch(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Form(form): Form<ActionForm>,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
+        return redirect_to_login(&state, true);
+    };
+    verify_action_csrf(&authenticated, &form)?;
+
+    let launch_target = load_launchable_managed_environment(
+        &state,
+        &authenticated.npub,
+        &request_context.request_id,
+    )
+    .await
+    .map_err(map_agent_api_error)?;
+    let dashboard_host = request_host(&state, &headers)?;
+    let ui_host = openclaw_ui_host_for_dashboard_host(&dashboard_host);
+    let origin = format!(
+        "{}://{}",
+        external_request_scheme(&state, &headers),
+        ui_host
+    );
+    let ticket = issue_openclaw_launch_ticket(
+        &state,
+        &launch_target.owner_npub,
+        &launch_target.agent_id,
+        &launch_target.vm_id,
+        &ui_host,
+    )?;
+    let mut launch_url =
+        reqwest::Url::parse(&format!("{origin}/launch")).expect("openclaw launch url");
+    launch_url.query_pairs_mut().append_pair("ticket", &ticket);
+    Ok(Redirect::to(launch_url.as_str()).into_response())
+}
+
+pub async fn openclaw_launch_exchange(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    headers: HeaderMap,
+    Query(query): Query<LaunchTicketQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let actual_host = request_host(&state, &headers)?;
+    let ticket = verify_openclaw_launch_ticket(&state, &query.ticket, &actual_host)?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if !AgentAllowlistEntry::is_active(&mut conn, &ticket.npub)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    {
+        return Err((StatusCode::FORBIDDEN, "npub is not allowlisted".to_string()));
+    }
+    drop(conn);
+
+    let launch_target =
+        load_launchable_managed_environment(&state, &ticket.npub, &request_context.request_id)
+            .await
+            .map_err(map_agent_api_error)?;
+    if launch_target.agent_id != ticket.agent_id || launch_target.vm_id != ticket.vm_id {
+        return Err((
+            StatusCode::CONFLICT,
+            "managed openclaw environment changed before launch".to_string(),
+        ));
+    }
+
+    let ui_session = issue_openclaw_ui_session(&state, &ticket)?;
+    let mut response = Redirect::to("/").into_response();
+    browser_auth(&state)
+        .set_session_cookie_with_path(
+            &mut response,
+            OPENCLAW_UI_SESSION_COOKIE,
+            &ui_session,
+            OPENCLAW_UI_SESSION_TTL_SECS,
+            "/",
+        )
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(response)
+}
+
+pub async fn openclaw_proxy(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, (StatusCode, String)> {
+    let actual_host = request_host(&state, &headers)?;
+    let Some(ui_session) = openclaw_ui_session_from_headers(&state, &headers, &actual_host)? else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "missing openclaw ui session".to_string(),
+        ));
+    };
+    require_same_origin_ui_request(&headers, &method, &actual_host)?;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if !AgentAllowlistEntry::is_active(&mut conn, &ui_session.npub)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    {
+        return Err((StatusCode::FORBIDDEN, "npub is not allowlisted".to_string()));
+    }
+    drop(conn);
+
+    let Some(current) = load_current_ready_managed_environment(
+        &state,
+        &ui_session.npub,
+        &request_context.request_id,
+    )
+    .map_err(map_agent_api_error)?
+    else {
+        return Err((
+            StatusCode::CONFLICT,
+            "managed openclaw environment is not launchable".to_string(),
+        ));
+    };
+    if current.agent_id != ui_session.agent_id || current.vm_id != ui_session.vm_id {
+        return Err((
+            StatusCode::CONFLICT,
+            "managed openclaw environment changed; relaunch from the dashboard".to_string(),
+        ));
+    }
+
+    let internal_path = uri.path();
+    let upstream_path = internal_path
+        .strip_prefix(OPENCLAW_INTERNAL_PROXY_PREFIX)
+        .unwrap_or("/");
+    let upstream_path = if upstream_path.is_empty() {
+        "/"
+    } else {
+        upstream_path
+    };
+    let spawner_url = spawner_base_url(&request_context.request_id).map_err(map_agent_api_error)?;
+    let upstream_url = if let Some(query) = uri.query() {
+        format!(
+            "{spawner_url}/vms/{}/openclaw{upstream_path}?{query}",
+            current.vm_id
+        )
+    } else {
+        format!(
+            "{spawner_url}/vms/{}/openclaw{upstream_path}",
+            current.vm_id
+        )
+    };
+
+    let client = reqwest::Client::new();
+    let upstream_method =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid proxied method: {err}"),
+            )
+        })?;
+    let mut upstream = client.request(upstream_method, &upstream_url);
+    for (name, value) in &headers {
+        let name_str = name.as_str();
+        if header_is_hop_by_hop(name_str)
+            || matches!(name_str, "host" | "cookie" | "content-length")
+        {
+            continue;
+        }
+        let reqwest_name = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())
+            .map_err(|err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid proxied header name: {err}"),
+                )
+            })?;
+        let reqwest_value =
+            reqwest::header::HeaderValue::from_bytes(value.as_bytes()).map_err(|err| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid proxied header value: {err}"),
+                )
+            })?;
+        upstream = upstream.header(reqwest_name, reqwest_value);
+    }
+    if !body.is_empty() {
+        upstream = upstream.body(body.to_vec());
+    }
+    let upstream = upstream.send().await.map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("openclaw proxy upstream failed: {err}"),
+        )
+    })?;
+
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let upstream_headers = upstream.headers().clone();
+    let upstream_body = upstream.bytes().await.map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("openclaw proxy upstream body failed: {err}"),
+        )
+    })?;
+    let mut response = (status, upstream_body).into_response();
+    copy_proxy_response_headers(response.headers_mut(), &upstream_headers);
+    Ok(response)
+}
+
 pub async fn logout(
     Extension(state): Extension<State>,
     headers: HeaderMap,
@@ -552,6 +1054,64 @@ mod tests {
         ActionForm {
             csrf_token: session.csrf_token,
         }
+    }
+
+    fn customer_headers_for_host(state: &State, npub: &str, host: &str) -> HeaderMap {
+        let mut headers = customer_cookie_header(state, npub);
+        headers.insert(header::HOST, host.parse().expect("host header"));
+        headers
+    }
+
+    fn openclaw_launch_ticket_for_test(
+        state: &State,
+        npub: &str,
+        agent_id: &str,
+        vm_id: &str,
+        ui_host: &str,
+        exp: i64,
+    ) -> String {
+        state
+            .admin_config
+            .browser_auth
+            .sign_payload(&OpenClawLaunchTicket {
+                kind: OPENCLAW_LAUNCH_TICKET_KIND.to_string(),
+                npub: npub.to_string(),
+                agent_id: agent_id.to_string(),
+                vm_id: vm_id.to_string(),
+                ui_host: ui_host.to_string(),
+                exp,
+            })
+            .expect("sign launch ticket")
+    }
+
+    fn openclaw_ui_headers_for_host(
+        state: &State,
+        npub: &str,
+        agent_id: &str,
+        vm_id: &str,
+        host: &str,
+    ) -> HeaderMap {
+        let token = state
+            .admin_config
+            .browser_auth
+            .sign_payload(&OpenClawUiSession {
+                kind: OPENCLAW_UI_SESSION_KIND.to_string(),
+                npub: npub.to_string(),
+                agent_id: agent_id.to_string(),
+                vm_id: vm_id.to_string(),
+                ui_host: host.to_string(),
+                exp: chrono::Utc::now().timestamp() + 600,
+            })
+            .expect("sign ui session");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, host.parse().expect("host header"));
+        headers.insert(
+            header::COOKIE,
+            format!("{OPENCLAW_UI_SESSION_COOKIE}={token}")
+                .parse()
+                .expect("cookie header"),
+        );
+        headers
     }
 
     fn verify_headers(host: &str) -> HeaderMap {
@@ -851,6 +1411,7 @@ mod tests {
         assert!(body.contains("No managed OpenClaw environment has been provisioned yet."));
         assert!(body.contains("Recent Activity"));
         assert!(body.contains("No recent managed-environment activity yet."));
+        assert!(!body.contains("Open OpenClaw"));
         assert!(body.contains(npub));
 
         clear_test_database(&db_pool);
@@ -884,6 +1445,8 @@ mod tests {
         assert!(body.contains("vm-existing"));
         assert!(body.contains("agent-existing"));
         assert!(body.contains("Managed OpenClaw is running and ready."));
+        assert!(body.contains("Open OpenClaw"));
+        assert!(body.contains("short-lived platform ticket"));
 
         clear_test_database(&db_pool);
     }
@@ -911,6 +1474,7 @@ mod tests {
         assert!(body.contains("agent-inflight"));
         assert!(body.contains("Provisioning is already in flight."));
         assert!(body.contains("stays locked while the initial VM assignment is still in flight"));
+        assert!(!body.contains("Open OpenClaw"));
         assert!(!body.contains("Recover Managed Environment"));
         assert!(!body.contains("Provision Fresh Managed Environment"));
         assert!(!body.contains("needs recovery"));
@@ -1033,6 +1597,293 @@ mod tests {
         assert!(body.contains("instead of restoring prior durable state"));
         assert!(body.contains("does not restore missing durable state"));
         assert!(!body.contains("Recover Managed Environment"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_redirects_to_separate_ui_host_when_ready() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawlaunchready";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-openclaw",
+            Some("vm-openclaw"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        drop(conn);
+
+        let headers = customer_headers_for_host(&state, npub, "agents.example.com");
+        let form = customer_action_form(&state, &headers);
+        let (base_url, _rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-openclaw","status":"running","guest_ready":true}"#,
+        );
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = openclaw_launch(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect("launch response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("location");
+        assert!(location.starts_with("https://openclaw.agents.example.com/launch?ticket="));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_rejects_when_environment_is_not_ready() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawlaunchcreating";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-openclaw",
+            Some("vm-openclaw"),
+            crate::models::agent_instance::AGENT_PHASE_CREATING,
+        )
+        .expect("seed creating agent");
+
+        let headers = customer_headers_for_host(&state, npub, "agents.example.com");
+        let form = customer_action_form(&state, &headers);
+
+        let err = openclaw_launch(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("launch should reject non-ready environment");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_exchange_rejects_expired_ticket() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawlaunchexpired";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = verify_headers("openclaw.agents.example.com");
+        let ticket = openclaw_launch_ticket_for_test(
+            &state,
+            npub,
+            "agent-openclaw",
+            "vm-openclaw",
+            "openclaw.agents.example.com",
+            chrono::Utc::now().timestamp() - 5,
+        );
+
+        let err = openclaw_launch_exchange(
+            Extension(state),
+            request_context(),
+            headers,
+            Query(LaunchTicketQuery { ticket }),
+        )
+        .await
+        .expect_err("expired ticket should fail");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_exchange_sets_ui_cookie_for_ready_environment() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawexchangeok";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-openclaw",
+            Some("vm-openclaw"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = verify_headers("openclaw.agents.example.com");
+        let ticket = openclaw_launch_ticket_for_test(
+            &state,
+            npub,
+            "agent-openclaw",
+            "vm-openclaw",
+            "openclaw.agents.example.com",
+            chrono::Utc::now().timestamp() + 60,
+        );
+        let (base_url, _rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-openclaw","status":"running","guest_ready":true}"#,
+        );
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = openclaw_launch_exchange(
+            Extension(state),
+            request_context(),
+            headers,
+            Query(LaunchTicketQuery { ticket }),
+        )
+        .await
+        .expect("launch exchange");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/")
+        );
+        let set_cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("set-cookie");
+        assert!(set_cookie.contains(OPENCLAW_UI_SESSION_COOKIE));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_proxy_rejects_missing_ui_session() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+
+        let err = openclaw_proxy(
+            Extension(state),
+            request_context(),
+            Method::GET,
+            Uri::from_static("/_openclaw_proxy/"),
+            verify_headers("openclaw.agents.example.com"),
+            Bytes::new(),
+        )
+        .await
+        .expect_err("missing ui session should fail");
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_proxy_forwards_request_to_private_spawner_path() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawproxyforward";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-openclaw",
+            Some("vm-openclaw"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = openclaw_ui_headers_for_host(
+            &state,
+            npub,
+            "agent-openclaw",
+            "vm-openclaw",
+            "openclaw.agents.example.com",
+        );
+        let (base_url, rx) = spawn_one_shot_server("200 OK", r#"{"ok":true}"#);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = openclaw_proxy(
+            Extension(state),
+            request_context(),
+            Method::GET,
+            "/_openclaw_proxy/api/me?view=full"
+                .parse()
+                .expect("proxy uri"),
+            headers,
+            Bytes::new(),
+        )
+        .await
+        .expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_string(response).await;
+        assert!(body.contains("\"ok\":true"));
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured proxy request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-openclaw/openclaw/api/me?view=full");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn openclaw_proxy_rejects_stale_ui_session_after_vm_change() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1openclawproxystale";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-openclaw",
+            Some("vm-current"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = openclaw_ui_headers_for_host(
+            &state,
+            npub,
+            "agent-openclaw",
+            "vm-stale",
+            "openclaw.agents.example.com",
+        );
+
+        let err = openclaw_proxy(
+            Extension(state),
+            request_context(),
+            Method::GET,
+            "/_openclaw_proxy/".parse().expect("proxy uri"),
+            headers,
+            Bytes::new(),
+        )
+        .await
+        .expect_err("stale ui session should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
 
         clear_test_database(&db_pool);
     }

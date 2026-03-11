@@ -4,6 +4,7 @@
 
 let
   serverPort = 8080;
+  openclawUiDomain = "openclaw.${domain}";
   dbName = "pika_server";
   serviceUser = dbName;
   serviceGroup = dbName;
@@ -55,6 +56,13 @@ in
         handle /health-check {
           reverse_proxy 127.0.0.1:${toString serverPort}
         }
+        handle {
+          reverse_proxy 127.0.0.1:${toString serverPort}
+        }
+      '';
+    };
+    virtualHosts.${openclawUiDomain} = {
+      extraConfig = ''
         handle {
           reverse_proxy 127.0.0.1:${toString serverPort}
         }

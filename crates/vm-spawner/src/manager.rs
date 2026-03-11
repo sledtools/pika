@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{from_u32, to_u32, Config, RuntimeArtifactSpec};
 use anyhow::{anyhow, Context};
 use pika_agent_control_plane::{
+    GuestServiceKind, GuestServiceLaunch, GuestStartupPlan,
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmResponse as VmResponse,
     GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH,
@@ -339,6 +340,19 @@ impl VmManager {
             status: status.to_string(),
             guest_ready: false,
         })
+    }
+
+    pub fn openclaw_proxy_target(&self, id: &str) -> anyhow::Result<String> {
+        let vm = self.load_vm_disk_state(id)?;
+        let startup_plan = self.load_guest_startup_plan(&vm.microvm_state_dir, id)?;
+        anyhow::ensure!(
+            startup_plan.service_kind == GuestServiceKind::OpenclawGateway,
+            "vm {id} is not running the managed OpenClaw gateway"
+        );
+        let GuestServiceLaunch::OpenclawGateway { gateway_port, .. } = startup_plan.service else {
+            anyhow::bail!("vm {id} startup plan is missing OpenClaw gateway details");
+        };
+        Ok(format!("http://{}:{gateway_port}", vm.ip))
     }
 
     async fn ensure_prebuilt_runner(&self, cpu: u32, memory_mb: u32) -> anyhow::Result<PathBuf> {
@@ -865,6 +879,28 @@ impl VmManager {
         require_non_empty_file(&paths.microvm_state_dir.join("metadata/autostart.command"))?;
 
         Ok(CurrentVmMetadata { cpu, memory_mb })
+    }
+
+    fn load_guest_startup_plan(
+        &self,
+        microvm_state_dir: &Path,
+        id: &str,
+    ) -> anyhow::Result<GuestStartupPlan> {
+        let metadata_path = microvm_state_dir
+            .join("metadata")
+            .join(AUTOSTART_STARTUP_PLAN_METADATA);
+        let text = fs::read_to_string(&metadata_path).with_context(|| {
+            format!(
+                "read guest startup plan metadata for vm {id} at {}",
+                metadata_path.display()
+            )
+        })?;
+        serde_json::from_str(&text).with_context(|| {
+            format!(
+                "parse guest startup plan metadata for vm {id} at {}",
+                metadata_path.display()
+            )
+        })
     }
 
     fn rewrite_runtime_metadata_for_recreate(&self, vm: &VmDiskState) -> anyhow::Result<()> {
@@ -1805,6 +1841,59 @@ mod tests {
         assert_eq!(vm.ip, Ipv4Addr::new(192, 168, 83, 12));
         assert_eq!(vm.cpu, 3);
         assert_eq!(vm.memory_mb, 8192);
+    }
+
+    #[tokio::test]
+    async fn openclaw_proxy_target_uses_vm_ip_and_gateway_port_from_startup_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000000";
+        let autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: Some(GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
+                service_kind: GuestServiceKind::OpenclawGateway,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: GuestServiceLaunch::OpenclawGateway {
+                    exec_command: "npx -y openclaw".to_string(),
+                    state_dir: "/root/pika-agent/openclaw".to_string(),
+                    config_path: pika_agent_control_plane::GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                    gateway_port: 18789,
+                    daemon_backend: pika_agent_control_plane::GuestOpenclawDaemonBackend::Native,
+                },
+                readiness_check: pika_agent_control_plane::GuestServiceReadinessCheck::HttpGetOk {
+                    url: "http://127.0.0.1:18789/health".to_string(),
+                    ready_probe: "openclaw_gateway_health".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+                },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "openclaw_gateway_exited".to_string(),
+            }),
+        };
+        write_runtime_metadata(
+            &cfg.state_dir.join(vm_id),
+            vm_id,
+            &mac_for_guest_ip(Ipv4Addr::new(192, 168, 83, 10)),
+            Ipv4Addr::new(192, 168, 83, 10),
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&autostart),
+        )
+        .unwrap();
+
+        let target = manager.openclaw_proxy_target(vm_id).unwrap();
+        assert_eq!(target, "http://192.168.83.10:18789");
     }
 
     #[tokio::test]

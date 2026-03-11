@@ -137,6 +137,13 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub status_copy: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct ManagedEnvironmentHandle {
+    pub owner_npub: String,
+    pub agent_id: String,
+    pub vm_id: String,
+}
+
 fn record_managed_environment_event(
     conn: &mut PgConnection,
     owner_npub: &str,
@@ -638,6 +645,71 @@ pub(crate) async fn load_managed_environment_status(
         app_state,
         startup_phase: Some(refreshed.startup_phase),
     })
+}
+
+pub(crate) async fn load_launchable_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<ManagedEnvironmentHandle, AgentApiError> {
+    let status = load_managed_environment_status(state, owner_npub, request_id).await?;
+    let Some(row) = status.row else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
+        );
+    };
+    let Some(vm_id) = row.vm_id.clone() else {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    };
+    if status.app_state != Some(AgentAppState::Ready)
+        || status.startup_phase != Some(AgentStartupPhase::Ready)
+    {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    }
+    Ok(ManagedEnvironmentHandle {
+        owner_npub: row.owner_npub,
+        agent_id: row.agent_id,
+        vm_id,
+    })
+}
+
+pub(crate) fn load_current_ready_managed_environment(
+    state: &State,
+    owner_npub: &str,
+    request_id: &str,
+) -> Result<Option<ManagedEnvironmentHandle>, AgentApiError> {
+    let mut conn = state.db_pool.get().map_err(|_| {
+        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+    })?;
+    let row = load_visible_agent_row(&mut conn, owner_npub)
+        .map_err(|err| err.with_request_id(request_id.to_string()))?;
+    Ok(row.and_then(|row| {
+        (row.phase == AGENT_PHASE_READY)
+            .then_some(row)
+            .and_then(|row| row.vm_id.clone().map(|vm_id| (row, vm_id)))
+            .map(|(row, vm_id)| ManagedEnvironmentHandle {
+                owner_npub: row.owner_npub,
+                agent_id: row.agent_id,
+                vm_id,
+            })
+    }))
+}
+
+pub(crate) fn spawner_base_url(request_id: &str) -> Result<String, AgentApiError> {
+    resolved_spawner_params(None)
+        .map(|resolved| resolved.spawner_url)
+        .map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                error = %err,
+                "failed to resolve spawner url for managed environment ui access"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })
 }
 
 fn is_vm_not_found_error(err: &anyhow::Error) -> bool {

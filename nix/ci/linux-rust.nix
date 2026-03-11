@@ -320,7 +320,7 @@ let
           manifest_from_targets "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" pika-server
         ''
       else
-      ''
+        ''
         export PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES="$TMPDIR/agent-contracts-test-executables.tsv"
         export PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST="$TMPDIR/agent-control-plane-unit.manifest"
         export PIKACI_AGENT_MICROVM_TESTS_MANIFEST="$TMPDIR/agent-microvm-tests.manifest"
@@ -619,7 +619,7 @@ let
           chmod +x "$out/bin/run-pika-server-package-tests"
         ''
       else
-      ''
+        ''
         target_root="''${CARGO_TARGET_DIR:-target}"
         mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
         cp "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" "$out/share/pikaci/agent-control-plane-unit.manifest"

@@ -607,7 +607,7 @@ jobs:
               run_id="none"
             fi
 
-            printf "| \`%s\` | \`%s\` | \`%s\` | \`%s\` | \`%s\` | \`%s\` |\n" \
+            printf "| <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> |\n" \
               "$label" "$job_state" "$advisory_result" "$run_status" "$duration" "$run_id"
           }
 
@@ -640,9 +640,9 @@ jobs:
             echo
             echo "### Promotion Readiness"
             echo
-            echo "- Keep these lanes advisory until we have at least 10 real PR shadow runs for the candidate lane."
-            echo "- Promotion requires zero pass/fail parity mismatches against the legacy lane across that sample."
-            echo "- Promotion also requires no shadow-only infra flakes needing manual intervention and runtime staying at or below the current legacy lane envelope."
+            echo "- Promote lane-by-lane only after at least 10 real PR shadow runs with zero pass/fail parity mismatches versus the matching legacy Linux job family."
+            echo "- Promotion also requires zero shadow-only infra flakes needing manual intervention and runtime at or below the current legacy lane envelope."
+            echo "- <code>pre-merge-pika-rust</code> remains the first promotion candidate, but the broader Linux coverage gap is now the larger migration problem."
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat:

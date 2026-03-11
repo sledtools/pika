@@ -2311,7 +2311,6 @@ mod tests {
     fn write_backup_status(cfg: &Config, vm_id: &str, latest_successful_backup_at: &str) {
         write_backup_status_with_host(cfg, vm_id, latest_successful_backup_at, &cfg.host_id);
     }
-
     fn write_current_metadata(cfg: &Config, vm_id: &str, cpu: u32, memory_mb: u32) {
         let slot = parse_vm_id_slot(vm_id).expect("test vm_id must be deterministic");
         let ip = from_u32(to_u32(cfg.ip_start) + slot);

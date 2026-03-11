@@ -4398,7 +4398,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_outbound_prepare_uses_shared_runtime_facade() {
+    fn daemon_outbound_prepare_uses_shared_command_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();

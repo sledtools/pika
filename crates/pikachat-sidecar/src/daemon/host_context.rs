@@ -35,6 +35,10 @@ impl<'a> DaemonHostContext<'a> {
         MarmotRuntime::with_client(self.mdk, self.client)
     }
 
+    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
+        pika_marmot_runtime::runtime::RuntimeCommands::with_client(self.mdk, self.client)
+    }
+
     fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
         pika_marmot_runtime::runtime::RuntimeQueries::new(self.mdk)
     }
@@ -182,10 +186,10 @@ impl<'a> DaemonHostContext<'a> {
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction, DaemonPrepareError> {
         let target = self
-            .runtime()
+            .commands()
             .resolve_outbound_target(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.runtime()
+        self.commands()
             .prepare_outbound_action_for_target(self.keys.public_key(), target, action)
             .map_err(DaemonPrepareError::Prepare)
     }

@@ -351,6 +351,8 @@ What should happen here:
 Current status:
 - first Phase 4 slice landed: shared `RuntimeQueries` now exposes an explicit query-only boundary over session open state plus already-shared durable runtime reads
 - app runtime refresh/recompute and daemon pending-welcome query handling now consume that explicit read boundary while commands, events, and execution policy remain host-local
+- second Phase 4 slice landed: shared `RuntimeCommands` now exposes an explicit command-only boundary for outbound conversation action resolution/preparation over the already-shared outbound workflow
+- app outbound send preparation and daemon outbound action preparation now consume that explicit command boundary while publish policy, protocol mapping, and event/projection behavior remain host-local
 
 Recommended event families:
 - `Session`

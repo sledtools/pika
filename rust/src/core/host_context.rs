@@ -34,6 +34,13 @@ impl<'a> AppHostContext<'a> {
         self.session.runtime()
     }
 
+    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
+        pika_marmot_runtime::runtime::RuntimeCommands::with_client(
+            &self.session.mdk,
+            &self.session.client,
+        )
+    }
+
     fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
         pika_marmot_runtime::runtime::RuntimeQueries::new(&self.session.mdk)
     }
@@ -82,12 +89,8 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        let group = self.lookup_joined_group_snapshot(chat_id)?;
-        self.prepare_outbound_action_for_group_ids(
-            group.mls_group_id,
-            group.nostr_group_id_hex,
-            action,
-        )
+        self.commands()
+            .prepare_outbound_action(self.session.pubkey, chat_id, action)
     }
 
     pub(super) fn prepare_outbound_action_for_group_ids(
@@ -96,7 +99,7 @@ impl<'a> AppHostContext<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        self.runtime().prepare_outbound_action_for_group_ids(
+        self.commands().prepare_outbound_action_for_group_ids(
             self.session.pubkey,
             mls_group_id,
             nostr_group_id_hex,

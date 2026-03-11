@@ -208,7 +208,7 @@ struct MyNpubQrSheet: View {
         if developerModeEnabled {
             Section {
                 Toggle("Show Agent Marketplace", isOn: $showAgentMarketplace)
-                    .onChange(of: showAgentMarketplace) { _, enabled in
+                    .onChangeCompat(of: showAgentMarketplace) { enabled in
                         onSetShowAgentMarketplace(enabled)
                     }
                 developerButton("Wipe Profile Cache") {

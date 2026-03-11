@@ -322,6 +322,7 @@ enum PreviewAppState {
             callTimeline: callTimeline,
             toast: toast,
             developerMode: false,
+            showAgentMarketplace: false,
             updateRequired: false,
             agentButton: nil,
             agentProvisioning: nil,

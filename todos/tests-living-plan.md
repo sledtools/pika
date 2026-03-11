@@ -116,7 +116,7 @@ Verified in the repo today:
    - iOS unit tests: `29` tests across `ios/Tests/*.swift`
    - iOS UI tests: `5` tests in `ios/UITests/PikaUITests.swift` after deleting the public-network/device call probe
    - Android instrumentation tests: `16` tests across `android/app/src/androidTest/java/com/pika/app/*.kt`
-   - desktop: inline Rust tests plus one ignored local relay+bot E2E in `crates/pika-desktop/src/app_manager.rs`
+   - desktop: inline Rust tests plus selector-owned local ping/pong coverage under `integration_deterministic::ui_e2e_local_desktop`
 
 8. Public-network/prod-like call coverage has already been pruned from the checked-in suite:
    - `rust/tests/e2e_calls.rs::call_deployed_bot` removed

@@ -379,15 +379,15 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "pika-desktop-e2e-compile" => Ok(TargetSpec {
             id: "pika-desktop-e2e-compile",
-            description: "Compile the pika-desktop E2E test target in a vfkit guest without running it",
+            description: "Compile the selector-owned desktop local UI E2E path in a vfkit guest without running it",
             filters: &[],
             jobs: vec![JobSpec {
                 id: "pika-desktop-e2e-compile",
-                description: "Compile the pika-desktop E2E test target in a vfkit guest without running it",
+                description: "Compile the selector-owned desktop local UI E2E path in a vfkit guest without running it",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
-                    command: "cargo test -p pika-desktop desktop_e2e_local_ping_pong_with_bot --no-run",
+                    command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop --no-run",
                 },
                 staged_linux_rust_lane: None,
             }],

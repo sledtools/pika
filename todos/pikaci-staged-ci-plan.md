@@ -1085,11 +1085,7 @@ We have at least one important Linux Rust lane where:
       | `check-pikachat` | `just pre-merge-pikachat` | none | deterministic CLI/OpenClaw coverage still depends on a broader mixed lane shape | choose a narrower Linux-first sublane before attempting full migration |
       | `check-pikachat-openclaw-e2e` | dedicated workflow job in `.github/workflows/pre-merge.yml` | none | depends on external OpenClaw repo checkout and broader integration shape | defer until simpler Linux lanes are under `pikaci` |
       | `check-agent-contracts` | `just pre-merge-agent-contracts` | partial | extra deterministic `pikahut` tests still run outside the staged Rust/Linux sublane | keep shadowing the migrated Rust sublane; decide later whether the remainder belongs in `pikaci` |
-<<<<<<< HEAD
       | `check-rmp` | `just pre-merge-rmp` | full | shadow evidence, not plumbing, is now the blocker after the generated template checks were made offline/self-contained | gather shadow CI parity/runtime data toward promotion |
-=======
-      | `check-rmp` | `just pre-merge-rmp` | none | current lane shape is not yet staged-Linux/microVM-backed, but the underlying `rmp-cli` package closure is much narrower than fixture or pikachat | take this next if fixture remains broad after real closure diagnosis |
->>>>>>> b913d541 (Diagnose fixture staged closure shape)
       | `check-notifications` | `just pre-merge-notifications` | full | shadow evidence, not plumbing, is now the only blocker | keep gathering PR shadow data toward promotion |
       | `check-fixture` | `just pre-merge-fixture` | none | the obvious Rust-only sublane (`pre-merge-fixture-rust`) is package-bound to `pikahut`, which pulls essentially the full desktop/media/runtime stack | deprioritize this until we either split a much narrower fixture sublane or accept a much heavier staged lane |
 

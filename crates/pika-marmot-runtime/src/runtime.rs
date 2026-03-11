@@ -290,6 +290,11 @@ pub struct RuntimeQueries<'a> {
     mdk: &'a PikaMdk,
 }
 
+pub struct RuntimeCommands<'a> {
+    mdk: &'a PikaMdk,
+    client: Option<&'a Client>,
+}
+
 pub struct MarmotRuntime<'a> {
     mdk: &'a PikaMdk,
     client: Option<&'a Client>,
@@ -298,6 +303,10 @@ pub struct MarmotRuntime<'a> {
 impl RuntimeSession {
     pub fn queries(&self) -> RuntimeQueries<'_> {
         RuntimeQueries::new(&self.mdk)
+    }
+
+    pub fn commands(&self) -> RuntimeCommands<'_> {
+        RuntimeCommands::with_client(&self.mdk, &self.client)
     }
 
     pub fn runtime(&self) -> MarmotRuntime<'_> {
@@ -381,6 +390,15 @@ impl RuntimeSession {
         self.queries()
             .refresh_session_open_state(self.pubkey, open_request)
     }
+
+    pub fn prepare_outbound_action(
+        &self,
+        nostr_group_id_hex: &str,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction> {
+        self.commands()
+            .prepare_outbound_action(self.pubkey, nostr_group_id_hex, action)
+    }
 }
 
 impl BootstrappedRuntimeSession {
@@ -433,6 +451,86 @@ impl<'a> RuntimeQueries<'a> {
     }
 }
 
+impl<'a> RuntimeCommands<'a> {
+    pub fn new(mdk: &'a PikaMdk) -> Self {
+        Self { mdk, client: None }
+    }
+
+    pub fn with_client(mdk: &'a PikaMdk, client: &'a Client) -> Self {
+        Self {
+            mdk,
+            client: Some(client),
+        }
+    }
+
+    pub fn resolve_outbound_target(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<ResolvedConversationTarget> {
+        OutboundConversationRuntime::new(self.mdk).resolve_target(nostr_group_id_hex)
+    }
+
+    pub fn prepare_outbound_action(
+        &self,
+        sender: PublicKey,
+        nostr_group_id_hex: &str,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction> {
+        OutboundConversationRuntime::new(self.mdk).prepare_action(
+            sender,
+            nostr_group_id_hex,
+            action,
+        )
+    }
+
+    pub fn prepare_outbound_action_for_group(
+        &self,
+        sender: PublicKey,
+        group: Group,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction> {
+        OutboundConversationRuntime::new(self.mdk).prepare_action_for_group(sender, group, action)
+    }
+
+    pub fn prepare_outbound_action_for_group_ids(
+        &self,
+        sender: PublicKey,
+        mls_group_id: GroupId,
+        nostr_group_id_hex: String,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction> {
+        OutboundConversationRuntime::new(self.mdk).prepare_action_for_group_ids(
+            sender,
+            mls_group_id,
+            nostr_group_id_hex,
+            action,
+        )
+    }
+
+    pub fn prepare_outbound_action_for_target(
+        &self,
+        sender: PublicKey,
+        target: ResolvedConversationTarget,
+        action: OutboundConversationAction,
+    ) -> Result<PreparedConversationAction> {
+        OutboundConversationRuntime::new(self.mdk).prepare_action_for_target(sender, target, action)
+    }
+
+    pub async fn publish_prepared_action(
+        &self,
+        relay_urls: &[RelayUrl],
+        prepared: &PreparedConversationAction,
+        label: &str,
+    ) -> Result<PublishedConversationAction> {
+        let client = self
+            .client
+            .context("runtime client not configured for publish")?;
+        OutboundConversationRuntime::new(self.mdk)
+            .publish_prepared_with_confirm(client, relay_urls, prepared, label)
+            .await
+    }
+}
+
 impl<'a> MarmotRuntime<'a> {
     pub fn new(mdk: &'a PikaMdk) -> Self {
         Self { mdk, client: None }
@@ -459,6 +557,13 @@ impl<'a> MarmotRuntime<'a> {
 
     pub fn queries(&self) -> RuntimeQueries<'_> {
         RuntimeQueries::new(self.mdk)
+    }
+
+    pub fn commands(&self) -> RuntimeCommands<'_> {
+        RuntimeCommands {
+            mdk: self.mdk,
+            client: self.client,
+        }
     }
 
     pub fn refresh_session_open_state(
@@ -692,7 +797,7 @@ impl<'a> MarmotRuntime<'a> {
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<ResolvedConversationTarget> {
-        self.outbound().resolve_target(nostr_group_id_hex)
+        self.commands().resolve_outbound_target(nostr_group_id_hex)
     }
 
     pub fn prepare_outbound_action(
@@ -701,8 +806,8 @@ impl<'a> MarmotRuntime<'a> {
         nostr_group_id_hex: &str,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.outbound()
-            .prepare_action(sender, nostr_group_id_hex, action)
+        self.commands()
+            .prepare_outbound_action(sender, nostr_group_id_hex, action)
     }
 
     pub fn prepare_outbound_action_for_group(
@@ -711,8 +816,8 @@ impl<'a> MarmotRuntime<'a> {
         group: Group,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.outbound()
-            .prepare_action_for_group(sender, group, action)
+        self.commands()
+            .prepare_outbound_action_for_group(sender, group, action)
     }
 
     pub fn prepare_outbound_action_for_group_ids(
@@ -722,7 +827,7 @@ impl<'a> MarmotRuntime<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.outbound().prepare_action_for_group_ids(
+        self.commands().prepare_outbound_action_for_group_ids(
             sender,
             mls_group_id,
             nostr_group_id_hex,
@@ -736,8 +841,8 @@ impl<'a> MarmotRuntime<'a> {
         target: ResolvedConversationTarget,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.outbound()
-            .prepare_action_for_target(sender, target, action)
+        self.commands()
+            .prepare_outbound_action_for_target(sender, target, action)
     }
 
     pub async fn publish_prepared_action(
@@ -746,11 +851,8 @@ impl<'a> MarmotRuntime<'a> {
         prepared: &PreparedConversationAction,
         label: &str,
     ) -> Result<PublishedConversationAction> {
-        let client = self
-            .client
-            .context("runtime client not configured for publish")?;
-        self.outbound()
-            .publish_prepared_with_confirm(client, relay_urls, prepared, label)
+        self.commands()
+            .publish_prepared_action(relay_urls, prepared, label)
             .await
     }
 
@@ -1819,6 +1921,48 @@ mod tests {
                 .expect("list pending welcome snapshots")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn runtime_commands_prepare_outbound_action_through_explicit_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime commands test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let chat_id = hex::encode(created.group.nostr_group_id);
+
+        let prepared = RuntimeCommands::new(&inviter_mdk)
+            .prepare_outbound_action(
+                inviter_keys.public_key(),
+                &chat_id,
+                OutboundConversationAction::Typing {
+                    created_at: Timestamp::from(123_u64),
+                    expires_at: Timestamp::from(133_u64),
+                },
+            )
+            .expect("prepare outbound action");
+
+        assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
+        assert_eq!(prepared.kind, crate::message::TYPING_INDICATOR_KIND);
+        assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
     }
 
     #[test]

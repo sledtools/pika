@@ -6939,7 +6939,7 @@ mod tests {
         }
 
         #[test]
-        fn app_send_preparation_uses_shared_runtime_facade() {
+        fn app_send_preparation_uses_shared_command_boundary() {
             let (core, chat_id, keys, _group_id) = make_core_with_group();
             assert!(
                 core.session.as_ref().expect("session").groups.is_empty(),
@@ -6967,7 +6967,7 @@ mod tests {
         }
 
         #[test]
-        fn app_host_context_prepares_outbound_action_for_chat() {
+        fn app_host_context_prepares_outbound_action_via_shared_command_boundary() {
             let (core, chat_id, _keys, _group_id) = make_core_with_group();
             assert!(
                 core.session.as_ref().expect("session").groups.is_empty(),

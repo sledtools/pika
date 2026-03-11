@@ -363,6 +363,8 @@ Current status:
 - app outbound call invite preparation and daemon `InviteCall` preparation now consume that command boundary directly, while call acceptance/rejection, relay-auth derivation, protocol mapping, and actual media/runtime ownership remain host-local
 - seventh Phase 4 slice landed: shared `RuntimeCommands` now also covers call acceptance/rejection/end signal preparation over the already-shared call workflow runtime
 - app call accept preparation and daemon `AcceptCall` preparation now consume that command boundary directly, while protocol mapping, call-side effects, and actual media/runtime ownership remain host-local
+- eighth Phase 4 slice landed: shared runtime now exposes an explicit call signal publish operation result, keyed by the published wrapper event ID and scoped to completed/failed signal publication instead of a broader call event system
+- app call signal publishing now routes invite/accept/reject/end failure handling through that operation result family, and the daemon `InviteCall` production publish path now consumes the same boundary while media runtime ownership, protocol mapping, and broader call state orchestration remain host-local
 
 Recommended event families:
 - `Session`

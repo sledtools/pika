@@ -151,6 +151,21 @@ impl<'a> DaemonHostContext<'a> {
             .complete_outbound_publish_operation(prepared, publish_status)
     }
 
+    pub(super) fn complete_call_signal_publish_operation(
+        &self,
+        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+        publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands().complete_call_signal_publish_operation(
+            kind,
+            nostr_group_id_hex,
+            prepared,
+            publish_status,
+        )
+    }
+
     pub(super) async fn sign_and_publish_rumor(
         &self,
         mls_group_id: &GroupId,
@@ -167,6 +182,33 @@ impl<'a> DaemonHostContext<'a> {
         }
         publish_and_confirm_multi(self.client, self.relay_urls, &signed, label).await?;
         Ok(signed)
+    }
+
+    pub(super) fn sign_call_payload(
+        &self,
+        nostr_group_id: &str,
+        payload_json: String,
+    ) -> anyhow::Result<Event> {
+        let mls_group_id = self.resolve_group(nostr_group_id)?;
+        let rumor = EventBuilder::new(CALL_SIGNAL_KIND, payload_json).build(self.keys.public_key());
+        let msg_event = self
+            .mdk
+            .create_message(&mls_group_id, rumor)
+            .context("create_message")?;
+        resign_wrapper_without_protected_tags(self.keys, &msg_event)
+    }
+
+    pub(super) async fn publish_signed_call_payload(
+        &self,
+        signed: &Event,
+        label: &str,
+    ) -> anyhow::Result<()> {
+        if self.relay_urls.is_empty() {
+            anyhow::bail!("no relays configured");
+        }
+        publish_and_confirm_multi(self.client, self.relay_urls, signed, label)
+            .await
+            .map(|_| ())
     }
 
     async fn publish_group_event(

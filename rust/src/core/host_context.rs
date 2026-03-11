@@ -230,7 +230,7 @@ impl<'a> AppHostContext<'a> {
         mime_type: Option<&str>,
         filename: Option<&str>,
     ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-        self.runtime()
+        self.commands()
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
 
@@ -240,8 +240,23 @@ impl<'a> AppHostContext<'a> {
         upload: &EncryptedMediaUpload,
         uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
     ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
-        self.runtime()
+        self.commands()
             .finish_upload(mls_group_id, upload, uploaded_blob)
+    }
+
+    pub(super) fn complete_media_upload_operation(
+        &self,
+        mls_group_id: &GroupId,
+        nostr_group_id_hex: String,
+        upload: &EncryptedMediaUpload,
+        status: pika_marmot_runtime::runtime::MediaUploadStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands().complete_media_upload_operation(
+            mls_group_id,
+            nostr_group_id_hex,
+            upload,
+            status,
+        )
     }
 
     pub(super) fn decrypt_downloaded_media(

@@ -1410,6 +1410,31 @@ impl AppCore {
             };
             let chat_id = pending.chat_id.clone();
             let temp_rumor_id = pending.temp_rumor_id.clone();
+            let operation = match self
+                .session
+                .as_ref()
+                .and_then(|sess| sess.groups.get(&chat_id).map(|group| (sess, group)))
+            {
+                Some((sess, group)) => sess.host_context().complete_media_upload_operation(
+                    &group.mls_group_id,
+                    chat_id.clone(),
+                    &pending.upload,
+                    pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e.clone()),
+                ),
+                None => pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+                    chat_id.clone(),
+                    &pending.upload,
+                    e.clone(),
+                ),
+            };
+            let upload_error = match operation {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
+                        error, ..
+                    },
+                ) => error,
+                other => format!("unexpected media upload result: {other:?}"),
+            };
 
             // Remove progress spinner from attachment.
             if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
@@ -1421,7 +1446,7 @@ impl AppCore {
             }
 
             let delivery = MessageDeliveryState::Failed {
-                reason: format!("Upload failed: {e}"),
+                reason: format!("Upload failed: {upload_error}"),
             };
             self.delivery_overrides
                 .entry(chat_id.clone())
@@ -1450,19 +1475,58 @@ impl AppCore {
 
         let Some(uploaded_url) = uploaded_url else {
             cleanup_optimistic(self);
-            self.toast("Media upload failed: missing upload URL");
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+                    pending.chat_id.clone(),
+                    &pending.upload,
+                    "missing upload URL".to_string(),
+                );
+            match operation {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
+                        error, ..
+                    },
+                ) => self.toast(format!("Media upload failed: {error}")),
+                other => self.toast(format!("unexpected media upload result: {other:?}")),
+            }
             return;
         };
         let Some(descriptor_hash) = descriptor_sha256_hex else {
             cleanup_optimistic(self);
-            self.toast("Media upload failed: missing uploaded hash");
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+                    pending.chat_id.clone(),
+                    &pending.upload,
+                    "missing uploaded hash".to_string(),
+                );
+            match operation {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
+                        error, ..
+                    },
+                ) => self.toast(format!("Media upload failed: {error}")),
+                other => self.toast(format!("unexpected media upload result: {other:?}")),
+            }
             return;
         };
 
         let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
         if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
             cleanup_optimistic(self);
-            self.toast("Media upload failed: uploaded hash mismatch");
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+                    pending.chat_id.clone(),
+                    &pending.upload,
+                    "uploaded hash mismatch".to_string(),
+                );
+            match operation {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
+                        error, ..
+                    },
+                ) => self.toast(format!("Media upload failed: {error}")),
+                other => self.toast(format!("unexpected media upload result: {other:?}")),
+            }
             return;
         }
 
@@ -1477,15 +1541,33 @@ impl AppCore {
             return;
         };
 
-        let completed = sess.host_context().finish_upload(
+        let operation = sess.host_context().complete_media_upload_operation(
             &group.mls_group_id,
+            pending.chat_id.clone(),
             &pending.upload,
-            UploadedBlob {
+            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(UploadedBlob {
                 blossom_server: "app-local".to_string(),
                 uploaded_url,
                 descriptor_sha256_hex: descriptor_hash,
-            },
+            }),
         );
+        let completed = match operation {
+            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
+                    result, ..
+                },
+            ) => result.result,
+            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed { error, .. },
+            ) => {
+                self.toast(format!("Media upload failed: {error}"));
+                return;
+            }
+            other => {
+                self.toast(format!("unexpected media upload result: {other:?}"));
+                return;
+            }
+        };
 
         if let Some(conn) = self.chat_media_db.as_ref() {
             let record = ChatMediaRecord {

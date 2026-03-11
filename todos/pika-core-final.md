@@ -365,6 +365,10 @@ Current status:
 - app call accept preparation and daemon `AcceptCall` preparation now consume that command boundary directly, while protocol mapping, call-side effects, and actual media/runtime ownership remain host-local
 - eighth Phase 4 slice landed: shared runtime now exposes an explicit call signal publish operation result, keyed by the published wrapper event ID and scoped to completed/failed signal publication instead of a broader call event system
 - app call signal publishing now routes invite/accept/reject/end failure handling through that operation result family, and the daemon `InviteCall` production publish path now consumes the same boundary while media runtime ownership, protocol mapping, and broader call state orchestration remain host-local
+- ninth Phase 4 slice landed: shared `RuntimeCommands` now also covers media upload preparation/finalization over the already-shared media runtime
+- app media upload prep/finalize and daemon media upload prep/finalize now consume that command boundary directly, while upload execution policy, retry policy, local file staging, protocol formatting, and download/decrypt flows remain host-local
+- tenth Phase 4 slice landed: shared runtime now exposes an explicit media upload operation result, keyed by the encrypted upload hash and scoped to completed/failed upload completion instead of a broader media event system
+- app single-item media upload completion/failure and daemon single-item media upload completion now consume that operation result family, while batch upload orchestration, upload/download execution policy, local file staging, and protocol formatting remain host-local
 
 Recommended event families:
 - `Session`

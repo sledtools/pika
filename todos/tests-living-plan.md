@@ -72,6 +72,11 @@ Working assumptions:
    - `.github/workflows/pre-merge.yml` now covers the checked-in `pre-merge-pikachat` dependency surface, including `just/checks.just`, `crates/pikahut/**`, and `crates/pika-desktop/**`
    - `check-pikachat` change detection now matches the current checked-in `pre-merge-pikachat-rust` surface instead of skipping selector/helper changes
    - the remaining next root mismatch is the Apple Silicon `pre-merge-pikachat` split
+
+6. Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit:
+   - the Apple Silicon branch of `just pre-merge-pikachat` now composes staged Linux `pre-merge-pikachat-rust` plus the private `pre-merge-pikachat-apple-followup` helper
+   - the checked-in host follow-up keeps the desktop selector and TypeScript channel-behavior test in the lane without changing coverage
+   - the next concrete ask there is Apple-host execution ownership/provisioning, not more split clarification
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -177,7 +182,7 @@ Verified in the repo today:
 
 5. Workflow change-detection and recipe ownership still do not line up cleanly everywhere.
    - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
-   - The next obvious root mismatch is the Apple Silicon `pre-merge-pikachat` split between staged Linux Rust work via `pikaci` and host-side desktop/TypeScript checks.
+   - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, so the next ask there is Apple-host execution ownership/provisioning rather than another shape clarification.
 
 6. “E2E” means too many different things.
    - deterministic local fixture-backed behavior
@@ -288,6 +293,11 @@ Acceptance criteria:
 2. CI selectors still exist, but they no longer hide a confusing wrapper-over-wrapper structure.
 3. The change is small enough to land without reshaping the whole suite.
 
+Updated recommendation after Slice 7:
+1. The Apple Silicon `pre-merge-pikachat` split is now a checked-in contract instead of inline shell shape.
+2. The next best slice is the Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup`, not another docs or lane-coverage pass.
+3. Keep lane coverage stable while deciding whether that host follow-up remains on the Apple runner or moves under a more owned Apple target.
+
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
 2. Do not preserve wrapper-over-opaque-legacy-test shapes when the behavior can be owned more directly.
@@ -295,7 +305,7 @@ Default bias:
 Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
-3. Explicit CI tier clarification is now done in checked-in docs, and the `check-pikachat` path-filter gap is fixed; the next best target is the Apple Silicon `pre-merge-pikachat` split.
+3. Explicit CI tier clarification is now done in checked-in docs, the `check-pikachat` path-filter gap is fixed, and the Apple Silicon `pre-merge-pikachat` split is now explicit; the next best target is Apple-host execution/ownership for that checked-in follow-up.
 4. Keep avoiding root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
@@ -374,7 +384,7 @@ The next implementation slice should target one documented root CI / `pikaci` al
 Shape:
 1. Pick exactly one documented mismatch and align it with the now-explicit policy truth.
 2. Stay conflict-aware around `.github/workflows`, `just`, `nix/ci`, and `crates/pikaci`.
-3. The current best candidate is the Apple Silicon `pre-merge-pikachat` host-side split.
+3. The current best candidate is the Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup`.
 4. Keep scope tight: do not combine this with iOS/Android ownership rewrites or another broad docs sweep.
 
 Why this is next:

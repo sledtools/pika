@@ -113,6 +113,33 @@ fn extract_just_alias_target(text: &str, alias_name: &str) -> Option<String> {
     })
 }
 
+fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Vec<String> {
+    let mut in_recipe = false;
+    let mut body = Vec::new();
+
+    for line in text.lines() {
+        if !in_recipe {
+            if line.starts_with(&format!("{recipe_name}:")) {
+                in_recipe = true;
+            }
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            body.push(String::new());
+            continue;
+        }
+
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            break;
+        }
+
+        body.push(line.trim_start().to_string());
+    }
+
+    body
+}
+
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
     let mut selectors = HashSet::new();
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -503,6 +530,50 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         missing_from_workflow.is_empty(),
         "pikachat workflow filter must cover the checked-in pre-merge-pikachat-rust dependency surface; missing: {:?}",
         missing_from_workflow
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
+    let root = workspace_root();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+
+    let pre_merge_recipe = extract_just_recipe_body(&checks, "pre-merge-pikachat");
+    assert!(
+        !pre_merge_recipe.is_empty(),
+        "checks.just must keep a concrete pre-merge-pikachat recipe body"
+    );
+    assert!(
+        pre_merge_recipe
+            .iter()
+            .any(|line| line.contains("pre-merge-pikachat-rust")),
+        "pre-merge-pikachat must keep the staged Linux Rust segment explicit"
+    );
+    assert!(
+        pre_merge_recipe
+            .iter()
+            .any(|line| line.contains("pre-merge-pikachat-apple-followup")),
+        "pre-merge-pikachat must keep the Apple host follow-up explicit"
+    );
+
+    let apple_followup = extract_just_recipe_body(&checks, "pre-merge-pikachat-apple-followup");
+    assert!(
+        !apple_followup.is_empty(),
+        "checks.just must keep a checked-in Apple host follow-up recipe"
+    );
+    assert!(
+        apple_followup
+            .iter()
+            .any(|line| line.contains("ui_e2e_local_desktop")),
+        "Apple host follow-up must keep the desktop selector"
+    );
+    assert!(
+        apple_followup
+            .iter()
+            .any(|line| line.contains("channel-behavior.test.ts")),
+        "Apple host follow-up must keep the TypeScript channel behavior test"
     );
 
     Ok(())

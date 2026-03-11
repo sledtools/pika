@@ -67,6 +67,11 @@ Working assumptions:
    - checked-in docs now explicitly separate pre-merge CI-owned, nightly CI-owned, manual-only, compatibility-only, and advisory/convenience surfaces
    - platform-hosted selectors are described honestly instead of being inflated into generic “core coverage”
    - current root CI / `pikaci` mismatches are recorded as deferred asks instead of being fixed in hot conflict surfaces
+
+5. Slice 6 closed the first documented root CI mismatch:
+   - `.github/workflows/pre-merge.yml` now includes `crates/pikahut/**` in the `pikachat` path filter
+   - `check-pikachat` change detection now matches the actual `pre-merge-pikachat` dependency on `pikahut` selectors/scenarios
+   - the remaining next root mismatch is the Apple Silicon `pre-merge-pikachat` split
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -170,9 +175,9 @@ Verified in the repo today:
    - `nightly-pika-ui-ios` still runs the full `Pika` XCTest scheme via `just ios-ui-test`, while `ios-ui-e2e-local` remains manual-only
    - Android and iOS local UI selector lanes are still intentionally hand-picked subsets rather than obviously intentional “full suite” contracts
 
-5. Workflow change-detection and recipe ownership do not line up cleanly.
-   - The clearest example is `check-pikachat`: it runs deterministic `pikahut` selectors, but its path filter largely omits `crates/pikahut/**`.
-   - That means selector/scenario changes can miss the lane that actually depends on them.
+5. Workflow change-detection and recipe ownership still do not line up cleanly everywhere.
+   - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
+   - The next obvious root mismatch is the Apple Silicon `pre-merge-pikachat` split between staged Linux Rust work via `pikaci` and host-side desktop/TypeScript checks.
 
 6. “E2E” means too many different things.
    - deterministic local fixture-backed behavior
@@ -273,6 +278,11 @@ Updated recommendation after Slice 5:
 1. The checked-in policy docs now say which surfaces are pre-merge, nightly, manual-only, compatibility-only, or advisory.
 2. Future slices should consume those documented deferred asks instead of reopening another docs-only truth pass.
 3. The next best move is a small root CI / `pikaci` alignment slice once the active conflict surface cools.
+
+Updated recommendation after Slice 6:
+1. The `check-pikachat` path-filter gap is now fixed and should stay closed.
+2. The next best root-CI slice is the Apple Silicon `pre-merge-pikachat` split, not another docs pass.
+3. Keep the lane contents stable while tightening that remaining lane-boundary mismatch.
 Acceptance criteria:
 1. One important behavior family has a single obvious owner.
 2. CI selectors still exist, but they no longer hide a confusing wrapper-over-wrapper structure.
@@ -285,7 +295,7 @@ Default bias:
 Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
-3. Explicit CI tier clarification is now done in checked-in docs; the next best target is one documented root CI / `pikaci` alignment mismatch after the active conflict surface cools.
+3. Explicit CI tier clarification is now done in checked-in docs, and the `check-pikachat` path-filter gap is fixed; the next best target is the Apple Silicon `pre-merge-pikachat` split.
 4. Keep avoiding root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
@@ -364,7 +374,7 @@ The next implementation slice should target one documented root CI / `pikaci` al
 Shape:
 1. Pick exactly one documented mismatch and align it with the now-explicit policy truth.
 2. Stay conflict-aware around `.github/workflows`, `just`, `nix/ci`, and `crates/pikaci`.
-3. Good candidates are the `check-pikachat` path-filter gap or the Apple Silicon `pre-merge-pikachat` host-side split.
+3. The current best candidate is the Apple Silicon `pre-merge-pikachat` host-side split.
 4. Keep scope tight: do not combine this with iOS/Android ownership rewrites or another broad docs sweep.
 
 Why this is next:

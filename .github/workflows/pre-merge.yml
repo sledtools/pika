@@ -64,6 +64,7 @@ jobs:
               - 'justfile'
               - '.github/workflows/pre-merge.yml'
               - 'cli/**'
+              - 'crates/pikahut/**'
               - 'crates/pikachat-sidecar/**'
               - 'crates/pika-marmot-runtime/**'
               - 'crates/pika-relay-profiles/**'

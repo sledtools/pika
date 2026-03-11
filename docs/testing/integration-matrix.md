@@ -124,7 +124,6 @@ Current policy note:
 
 ## Deferred Root CI / `pikaci` Asks
 
-- `check-pikachat` in `.github/workflows/pre-merge.yml` still omits `crates/pikahut/**` from the `pikachat` path filter even though `pre-merge-pikachat` depends on `pikahut` selectors and scenarios.
 - On Apple Silicon, `just pre-merge-pikachat` still mixes staged Linux Rust work via `pikaci` with host-side desktop selector execution and the TypeScript channel behavior test.
 - `nightly-pika-ui-ios` is intentionally CI-owned only through `just ios-ui-test`; promoting `ios-ui-e2e-local` into CI would be a separate policy change, not a wording cleanup.
 

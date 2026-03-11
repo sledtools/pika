@@ -17,6 +17,79 @@ fn clean_token(token: &str) -> String {
         .to_string()
 }
 
+fn indent_width(line: &str) -> usize {
+    line.chars().take_while(|ch| *ch == ' ').count()
+}
+
+fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut in_filters = false;
+    let mut filters_indent = 0usize;
+    let mut current_filter: Option<&str> = None;
+
+    for line in workflow.lines() {
+        if !in_filters {
+            if line.trim() == "filters: |" {
+                in_filters = true;
+                filters_indent = indent_width(line);
+            }
+            continue;
+        }
+
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+
+        if !trimmed.is_empty() && indent <= filters_indent {
+            break;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if indent == filters_indent + 2 && trimmed.ends_with(':') {
+            current_filter = Some(trimmed.trim_end_matches(':'));
+            continue;
+        }
+
+        if current_filter == Some(filter_name)
+            && indent >= filters_indent + 4
+            && trimmed.starts_with("- ")
+        {
+            entries.push(
+                trimmed
+                    .trim_start_matches("- ")
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        }
+    }
+
+    entries
+}
+
+fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Option<String> {
+    let mut lines = text.lines().peekable();
+    let header = format!("{recipe_name}:");
+
+    while let Some(line) = lines.next() {
+        if line == header {
+            let mut body = String::new();
+            while let Some(next) = lines.peek().copied() {
+                if !next.is_empty() && !next.starts_with(' ') && !next.starts_with('\t') {
+                    break;
+                }
+                body.push_str(next);
+                body.push('\n');
+                lines.next();
+            }
+            return Some(body);
+        }
+    }
+
+    None
+}
+
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
     let mut selectors = HashSet::new();
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -324,6 +397,30 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
             "Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`."
         ),
         "integration-matrix.md must keep the retained non-selector exception explicit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_pikachat_filter_covers_pikahut_selector_surface() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
+
+    assert!(
+        pikachat_filter
+            .iter()
+            .any(|entry| entry == "crates/pikahut/**"),
+        "pikachat path filter must include crates/pikahut/** because pre-merge-pikachat depends on pikahut selectors"
+    );
+
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let pre_merge_recipe = extract_just_recipe_body(&checks, "pre-merge-pikachat")
+        .expect("just/checks.just must define pre-merge-pikachat");
+    assert!(
+        pre_merge_recipe.contains("cargo test -p pikahut --test integration_deterministic"),
+        "pre-merge-pikachat must continue to exercise pikahut selectors if the workflow filter tracks crates/pikahut/**"
     );
 
     Ok(())

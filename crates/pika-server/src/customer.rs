@@ -1924,7 +1924,9 @@ mod tests {
             .expect("dashboard response");
         let body = response_body_string(response).await;
         assert!(body.contains("needs recovery"));
-        assert!(body.contains("falls back to provisioning a fresh environment"));
+        assert!(body.contains(
+            "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
+        ));
         assert!(!body.contains("running and ready"));
         let events = recent_activity(&db_pool, npub);
         assert_eq!(events.len(), 1);
@@ -1953,8 +1955,9 @@ mod tests {
             .expect("dashboard response");
         let body = response_body_string(response).await;
         assert!(body.contains("No recoverable VM is available"));
-        assert!(body.contains("Recover provisions a fresh environment"));
-        assert!(body.contains("Recover falls back to provisioning a fresh environment"));
+        assert!(body.contains(
+            "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
+        ));
         assert!(body.contains("Provision Fresh Managed Environment"));
         assert!(body.contains("instead of restoring prior durable state"));
         assert!(body.contains("does not restore missing durable state"));
@@ -2422,14 +2425,14 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-        let npub = "npub1recovermissingvmactivity";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let headers = customer_cookie_header(&state, &npub);
         let form = customer_action_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         AgentInstance::create(
             &mut conn,
-            npub,
+            &npub,
             "agent-missing",
             Some("vm-missing"),
             AGENT_PHASE_ERROR,
@@ -2457,7 +2460,7 @@ mod tests {
         assert_eq!(create_request.method, "POST");
         assert_eq!(create_request.path, "/vms");
 
-        let events = recent_activity(&db_pool, npub);
+        let events = recent_activity(&db_pool, &npub);
         assert_eq!(events.len(), 4);
         assert_eq!(events[0].event_kind, "provision_accepted");
         assert_eq!(events[1].event_kind, "provision_requested");

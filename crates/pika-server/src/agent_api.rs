@@ -1655,6 +1655,7 @@ mod tests {
     use nostr_sdk::prelude::{EventBuilder, Kind, Tag, TagKind};
     use pika_test_utils::spawn_one_shot_server;
     use std::collections::HashSet;
+    use std::future::Future;
 
     fn test_agent_instance(agent_id: &str, phase: &str, vm_id: Option<&str>) -> AgentInstance {
         AgentInstance {
@@ -1767,39 +1768,69 @@ mod tests {
         f: impl FnOnce() -> T,
     ) -> T {
         let _guard = serial_test_guard();
-        let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
-        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
-        unsafe {
-            std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
-        }
-        match kind {
-            Some(kind) => unsafe {
-                std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
-            },
-            None => unsafe {
-                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
-            },
-        }
+        let _env = ServerMicrovmEnvGuard::set(spawner_url, kind);
+        f()
+    }
 
-        let result = f();
+    async fn with_server_microvm_env_async<T, F, Fut>(
+        spawner_url: &str,
+        kind: Option<&str>,
+        f: F,
+    ) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _env = ServerMicrovmEnvGuard::set(spawner_url, kind);
+        f().await
+    }
 
-        match prior_spawner {
-            Some(prior) => unsafe {
-                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
-            },
-            None => unsafe {
-                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
-            },
+    struct ServerMicrovmEnvGuard {
+        prior_spawner: Option<String>,
+        prior_kind: Option<String>,
+    }
+
+    impl ServerMicrovmEnvGuard {
+        fn set(spawner_url: &str, kind: Option<&str>) -> Self {
+            let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+            let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+            unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
+            }
+            match kind {
+                Some(kind) => unsafe {
+                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
+                },
+                None => unsafe {
+                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                },
+            }
+            Self {
+                prior_spawner,
+                prior_kind,
+            }
         }
-        match prior_kind {
-            Some(prior) => unsafe {
-                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
-            },
-            None => unsafe {
-                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
-            },
+    }
+
+    impl Drop for ServerMicrovmEnvGuard {
+        fn drop(&mut self) {
+            match self.prior_spawner.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+                },
+            }
+            match self.prior_kind.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+                },
+                None => unsafe {
+                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                },
+            }
         }
-        result
     }
 
     #[test]
@@ -2084,6 +2115,56 @@ mod tests {
                 serde_json::from_str(startup_plan_file).expect("parse startup plan file");
             assert_eq!(serialized_plan, startup_plan);
         });
+    }
+
+    #[tokio::test]
+    async fn with_server_microvm_env_async_keeps_env_set_until_future_completes() {
+        let _guard = serial_test_guard();
+        let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
+        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+        unsafe {
+            std::env::set_var(MICROVM_SPAWNER_URL_ENV, "http://prior-spawner:1234");
+            std::env::set_var("PIKA_AGENT_MICROVM_KIND", "pi");
+        }
+
+        with_server_microvm_env_async("http://test-spawner:8080", Some("openclaw"), || async {
+            tokio::task::yield_now().await;
+            assert_eq!(
+                std::env::var(MICROVM_SPAWNER_URL_ENV).ok().as_deref(),
+                Some("http://test-spawner:8080")
+            );
+            assert_eq!(
+                std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
+                Some("openclaw")
+            );
+        })
+        .await;
+
+        assert_eq!(
+            std::env::var(MICROVM_SPAWNER_URL_ENV).ok().as_deref(),
+            Some("http://prior-spawner:1234")
+        );
+        assert_eq!(
+            std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
+            Some("pi")
+        );
+
+        match prior_spawner {
+            Some(prior) => unsafe {
+                std::env::set_var(MICROVM_SPAWNER_URL_ENV, prior);
+            },
+            None => unsafe {
+                std::env::remove_var(MICROVM_SPAWNER_URL_ENV);
+            },
+        }
+        match prior_kind {
+            Some(prior) => unsafe {
+                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+            },
+            None => unsafe {
+                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+            },
+        }
     }
 
     #[test]
@@ -2458,7 +2539,7 @@ mod tests {
             "200 OK",
             r#"{"id":"vm-restore-success","status":"starting"}"#,
         );
-        with_server_microvm_env(&base_url, Some("openclaw"), || async {
+        with_server_microvm_env_async(&base_url, Some("openclaw"), || async {
             let action = restore_managed_environment_from_backup(
                 &state,
                 owner_npub,
@@ -2514,7 +2595,7 @@ mod tests {
 
         let (base_url, rx) =
             spawn_one_shot_server("500 Internal Server Error", r#"{"error":"restore failed"}"#);
-        with_server_microvm_env(&base_url, Some("openclaw"), || async {
+        with_server_microvm_env_async(&base_url, Some("openclaw"), || async {
             let err = restore_managed_environment_from_backup(
                 &state,
                 owner_npub,

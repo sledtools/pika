@@ -969,7 +969,6 @@ impl<'a> RuntimeCommands<'a> {
     ) -> Result<PreparedCallSignal, String> {
         CallWorkflowRuntime::new(self.mdk).prepare_end_signal(call_id, reason)
     }
-
     pub fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,

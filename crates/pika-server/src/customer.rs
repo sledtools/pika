@@ -1,8 +1,6 @@
 use askama::Template;
-use axum::body::Bytes;
 use axum::extract::Form;
-use axum::extract::Query;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
@@ -46,56 +44,10 @@ pub struct ActionForm {
     csrf_token: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct ResetActionForm {
-    csrf_token: String,
-    confirmation_token: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct LaunchTicketQuery {
-    ticket: String,
-}
-
 #[derive(Debug, Clone)]
 struct AuthenticatedCustomer {
     npub: String,
     csrf_token: String,
-}
-
-#[derive(Debug, Clone)]
-struct DashboardActivityItem {
-    created_at: String,
-    message: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct ResetConfirmationTicket {
-    kind: String,
-    npub: String,
-    agent_id: String,
-    vm_id: Option<String>,
-    exp: i64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct OpenClawLaunchTicket {
-    kind: String,
-    npub: String,
-    agent_id: String,
-    vm_id: String,
-    ui_host: String,
-    exp: i64,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct OpenClawUiSession {
-    kind: String,
-    npub: String,
-    agent_id: String,
-    vm_id: String,
-    ui_host: String,
-    exp: i64,
 }
 
 #[derive(Template)]
@@ -246,34 +198,6 @@ fn format_timestamp(value: Option<chrono::NaiveDateTime>) -> String {
         .unwrap_or_else(|| "not_available".to_string())
 }
 
-fn format_rfc3339_timestamp(value: Option<&str>) -> String {
-    value
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&chrono::Utc))
-        .map(|value| format!("{}", value.format("%Y-%m-%d %H:%M:%S UTC")))
-        .unwrap_or_else(|| "not_available".to_string())
-}
-
-fn backup_state_label(freshness: ManagedEnvironmentBackupFreshness) -> &'static str {
-    match freshness {
-        ManagedEnvironmentBackupFreshness::NotProvisioned => "not_provisioned",
-        ManagedEnvironmentBackupFreshness::Healthy => "healthy",
-        ManagedEnvironmentBackupFreshness::Stale => "stale",
-        ManagedEnvironmentBackupFreshness::Missing => "missing",
-        ManagedEnvironmentBackupFreshness::Unavailable => "unavailable",
-    }
-}
-
-fn backup_state_tone(freshness: ManagedEnvironmentBackupFreshness) -> &'static str {
-    match freshness {
-        ManagedEnvironmentBackupFreshness::Healthy => "ok",
-        ManagedEnvironmentBackupFreshness::Stale => "warm",
-        ManagedEnvironmentBackupFreshness::Missing
-        | ManagedEnvironmentBackupFreshness::Unavailable => "error",
-        ManagedEnvironmentBackupFreshness::NotProvisioned => "idle",
-    }
-}
-
 fn verify_action_csrf(
     authenticated: &AuthenticatedCustomer,
     form: &ActionForm,
@@ -285,325 +209,9 @@ fn verify_action_csrf(
     }
 }
 
-fn verify_reset_action_csrf(
-    authenticated: &AuthenticatedCustomer,
-    form: &ResetActionForm,
-) -> Result<(), (StatusCode, String)> {
-    if authenticated.csrf_token == form.csrf_token {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "invalid csrf token".to_string()))
-    }
-}
-
-fn request_host(state: &State, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
-    expected_host_from_headers(headers, state.trust_forwarded_host)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "missing host header".to_string()))
-}
-
-fn external_request_scheme(state: &State, headers: &HeaderMap) -> &'static str {
-    if state.trust_forwarded_host {
-        if let Some(proto) = headers
-            .get("x-forwarded-proto")
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-        {
-            if proto.eq_ignore_ascii_case("http") {
-                return "http";
-            }
-            if proto.eq_ignore_ascii_case("https") {
-                return "https";
-            }
-        }
-    }
-    match headers
-        .get("host")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-    {
-        Some(host)
-            if host.starts_with("localhost")
-                || host.starts_with("127.0.0.1")
-                || host.starts_with("[::1]") =>
-        {
-            "http"
-        }
-        _ => "https",
-    }
-}
-
-fn openclaw_ui_host_for_dashboard_host(host: &str) -> String {
-    if host.starts_with(OPENCLAW_UI_HOST_PREFIX) {
-        host.to_string()
-    } else {
-        format!("{OPENCLAW_UI_HOST_PREFIX}{host}")
-    }
-}
-
-fn cookie_value_from_headers(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
-    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    for pair in cookie.split(';') {
-        let (name, value) = pair.trim().split_once('=')?;
-        if name == cookie_name {
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-fn issue_reset_confirmation_ticket(
-    state: &State,
-    npub: &str,
-    agent_id: &str,
-    vm_id: Option<&str>,
-) -> Result<String, (StatusCode, String)> {
-    browser_auth(state)
-        .sign_payload(&ResetConfirmationTicket {
-            kind: RESET_CONFIRMATION_KIND.to_string(),
-            npub: npub.to_string(),
-            agent_id: agent_id.to_string(),
-            vm_id: vm_id.map(ToOwned::to_owned),
-            exp: chrono::Utc::now().timestamp() + RESET_CONFIRMATION_TTL_SECS,
-        })
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
-}
-
-fn verify_reset_confirmation_ticket(
-    state: &State,
-    npub: &str,
-    agent_id: &str,
-    vm_id: Option<&str>,
-    token: Option<&str>,
-) -> Result<(), (StatusCode, String)> {
-    let token = token.ok_or_else(|| {
-        (
-            StatusCode::CONFLICT,
-            "destructive reset requires confirmation because backup protection is not healthy"
-                .to_string(),
-        )
-    })?;
-    let ticket: ResetConfirmationTicket =
-        browser_auth(state).verify_payload(token).map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "invalid reset confirmation".to_string(),
-            )
-        })?;
-    if ticket.kind != RESET_CONFIRMATION_KIND {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "invalid reset confirmation".to_string(),
-        ));
-    }
-    if ticket.exp < chrono::Utc::now().timestamp() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "reset confirmation expired".to_string(),
-        ));
-    }
-    if ticket.npub != npub {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "reset confirmation owner mismatch".to_string(),
-        ));
-    }
-    if ticket.agent_id != agent_id || ticket.vm_id.as_deref() != vm_id {
-        return Err((
-            StatusCode::CONFLICT,
-            "reset confirmation no longer matches the current managed environment".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn issue_openclaw_launch_ticket(
-    state: &State,
-    npub: &str,
-    agent_id: &str,
-    vm_id: &str,
-    ui_host: &str,
-) -> Result<String, (StatusCode, String)> {
-    browser_auth(state)
-        .sign_payload(&OpenClawLaunchTicket {
-            kind: OPENCLAW_LAUNCH_TICKET_KIND.to_string(),
-            npub: npub.to_string(),
-            agent_id: agent_id.to_string(),
-            vm_id: vm_id.to_string(),
-            ui_host: ui_host.to_string(),
-            exp: chrono::Utc::now().timestamp() + OPENCLAW_LAUNCH_TTL_SECS,
-        })
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
-}
-
-fn verify_openclaw_launch_ticket(
-    state: &State,
-    token: &str,
-    actual_host: &str,
-) -> Result<OpenClawLaunchTicket, (StatusCode, String)> {
-    let ticket: OpenClawLaunchTicket = browser_auth(state).verify_payload(token).map_err(|_| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "invalid launch ticket".to_string(),
-        )
-    })?;
-    if ticket.kind != OPENCLAW_LAUNCH_TICKET_KIND {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "invalid launch ticket".to_string(),
-        ));
-    }
-    if ticket.exp < chrono::Utc::now().timestamp() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "launch ticket expired".to_string(),
-        ));
-    }
-    if ticket.ui_host != actual_host {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "launch ticket host mismatch".to_string(),
-        ));
-    }
-    Ok(ticket)
-}
-
-fn issue_openclaw_ui_session(
-    state: &State,
-    ticket: &OpenClawLaunchTicket,
-) -> Result<String, (StatusCode, String)> {
-    browser_auth(state)
-        .sign_payload(&OpenClawUiSession {
-            kind: OPENCLAW_UI_SESSION_KIND.to_string(),
-            npub: ticket.npub.clone(),
-            agent_id: ticket.agent_id.clone(),
-            vm_id: ticket.vm_id.clone(),
-            ui_host: ticket.ui_host.clone(),
-            exp: chrono::Utc::now().timestamp() + OPENCLAW_UI_SESSION_TTL_SECS,
-        })
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
-}
-
-fn openclaw_ui_session_from_headers(
-    state: &State,
-    headers: &HeaderMap,
-    actual_host: &str,
-) -> Result<Option<OpenClawUiSession>, (StatusCode, String)> {
-    let Some(token) = cookie_value_from_headers(headers, OPENCLAW_UI_SESSION_COOKIE) else {
-        return Ok(None);
-    };
-    let session: OpenClawUiSession = browser_auth(state).verify_payload(&token).map_err(|_| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "invalid openclaw ui session".to_string(),
-        )
-    })?;
-    if session.kind != OPENCLAW_UI_SESSION_KIND {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "invalid openclaw ui session".to_string(),
-        ));
-    }
-    if session.exp < chrono::Utc::now().timestamp() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "openclaw ui session expired".to_string(),
-        ));
-    }
-    if session.ui_host != actual_host {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "openclaw ui session host mismatch".to_string(),
-        ));
-    }
-    Ok(Some(session))
-}
-
-fn origin_matches_host(origin: &str, actual_host: &str) -> bool {
-    let Ok(origin_url) = reqwest::Url::parse(origin) else {
-        return false;
-    };
-    let Some(origin_host) = origin_url.host_str() else {
-        return false;
-    };
-    let origin_authority = match origin_url.port() {
-        Some(port) => format!("{origin_host}:{port}"),
-        None => origin_host.to_string(),
-    };
-    origin_authority.eq_ignore_ascii_case(actual_host)
-}
-
-fn require_same_origin_ui_request(
-    headers: &HeaderMap,
-    method: &Method,
-    actual_host: &str,
-) -> Result<(), (StatusCode, String)> {
-    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
-        return Ok(());
-    }
-    if let Some(origin) = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    {
-        return origin_matches_host(origin, actual_host)
-            .then_some(())
-            .ok_or_else(|| {
-                (
-                    StatusCode::FORBIDDEN,
-                    "cross-origin OpenClaw UI mutation is not allowed".to_string(),
-                )
-            });
-    }
-    let same_origin_fetch = headers
-        .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .map(|value| value.eq_ignore_ascii_case("same-origin") || value == "none")
-        .unwrap_or(false);
-    if same_origin_fetch {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            "missing same-origin proof for OpenClaw UI mutation".to_string(),
-        ))
-    }
-}
-
-fn header_is_hop_by_hop(name: &str) -> bool {
-    matches!(
-        name,
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
-fn copy_proxy_response_headers(target: &mut HeaderMap, source: &reqwest::header::HeaderMap) {
-    for (name, value) in source {
-        let name_str = name.as_str();
-        if header_is_hop_by_hop(name_str) || name_str == "set-cookie" {
-            continue;
-        }
-        let Ok(header_name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
-            continue;
-        };
-        let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) else {
-            continue;
-        };
-        target.append(header_name, header_value);
-    }
-}
-
 fn dashboard_template(
     authenticated: AuthenticatedCustomer,
     status: ManagedEnvironmentStatus,
-    backup: ManagedEnvironmentBackupStatus,
-    recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
     let app_state = status.app_state;
@@ -831,58 +439,7 @@ pub async fn dashboard(
         load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
             .await
             .map_err(map_agent_api_error)?;
-    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
-    let activity = list_recent_managed_environment_events(
-        &state,
-        &authenticated.npub,
-        RECENT_ACTIVITY_LIMIT,
-        &request_context.request_id,
-    )
-    .map_err(map_agent_api_error)?;
-    render_template(&dashboard_template(
-        authenticated,
-        status,
-        backup,
-        recent_activity_items(activity),
-    ))
-}
-
-pub async fn reset_confirm_page(
-    Extension(state): Extension<State>,
-    Extension(request_context): Extension<RequestContext>,
-    headers: HeaderMap,
-) -> Result<Response, (StatusCode, String)> {
-    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
-        return redirect_to_login(&state, true);
-    };
-
-    let status =
-        load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
-            .await
-            .map_err(map_agent_api_error)?;
-    let Some(row) = status.row.as_ref() else {
-        return Ok(Redirect::to("/dashboard").into_response());
-    };
-    let inflight_without_vm =
-        row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none();
-    if inflight_without_vm {
-        return Ok(Redirect::to("/dashboard").into_response());
-    }
-    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
-    if !backup.reset_requires_confirmation {
-        return Ok(Redirect::to("/dashboard").into_response());
-    }
-    let confirmation_token = issue_reset_confirmation_ticket(
-        &state,
-        &authenticated.npub,
-        &row.agent_id,
-        row.vm_id.as_deref(),
-    )?;
-    render_template(&reset_confirm_template(
-        &authenticated,
-        backup,
-        confirmation_token,
-    ))
+    render_template(&dashboard_template(authenticated, status))
 }
 
 pub async fn provision(
@@ -933,41 +490,12 @@ pub async fn reset(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
-    Form(form): Form<ResetActionForm>,
+    Form(form): Form<ActionForm>,
 ) -> Result<Response, (StatusCode, String)> {
     let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
-    verify_reset_action_csrf(&authenticated, &form)?;
-    let status =
-        load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
-            .await
-            .map_err(map_agent_api_error)?;
-    let Some(row) = status.row.as_ref() else {
-        return Err((
-            StatusCode::CONFLICT,
-            "destructive reset requires a current managed environment".to_string(),
-        ));
-    };
-    let inflight_without_vm =
-        row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none();
-    if inflight_without_vm {
-        return Err((
-            StatusCode::CONFLICT,
-            "destructive reset stays locked while the current VM assignment is still in flight"
-                .to_string(),
-        ));
-    }
-    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
-    if backup.reset_requires_confirmation {
-        verify_reset_confirmation_ticket(
-            &state,
-            &authenticated.npub,
-            &row.agent_id,
-            row.vm_id.as_deref(),
-            form.confirmation_token.as_deref(),
-        )?;
-    }
+    verify_action_csrf(&authenticated, &form)?;
 
     reset_agent_for_owner(
         &state,
@@ -978,214 +506,6 @@ pub async fn reset(
     .await
     .map_err(map_agent_api_error)?;
     Ok(Redirect::to("/dashboard").into_response())
-}
-
-pub async fn openclaw_launch(
-    Extension(state): Extension<State>,
-    Extension(request_context): Extension<RequestContext>,
-    headers: HeaderMap,
-    Form(form): Form<ActionForm>,
-) -> Result<Response, (StatusCode, String)> {
-    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
-        return redirect_to_login(&state, true);
-    };
-    verify_action_csrf(&authenticated, &form)?;
-
-    let launch_target = load_launchable_managed_environment(
-        &state,
-        &authenticated.npub,
-        &request_context.request_id,
-    )
-    .await
-    .map_err(map_agent_api_error)?;
-    let dashboard_host = request_host(&state, &headers)?;
-    let ui_host = openclaw_ui_host_for_dashboard_host(&dashboard_host);
-    let origin = format!(
-        "{}://{}",
-        external_request_scheme(&state, &headers),
-        ui_host
-    );
-    let ticket = issue_openclaw_launch_ticket(
-        &state,
-        &launch_target.owner_npub,
-        &launch_target.agent_id,
-        &launch_target.vm_id,
-        &ui_host,
-    )?;
-    let mut launch_url =
-        reqwest::Url::parse(&format!("{origin}/launch")).expect("openclaw launch url");
-    launch_url.query_pairs_mut().append_pair("ticket", &ticket);
-    Ok(Redirect::to(launch_url.as_str()).into_response())
-}
-
-pub async fn openclaw_launch_exchange(
-    Extension(state): Extension<State>,
-    Extension(request_context): Extension<RequestContext>,
-    headers: HeaderMap,
-    Query(query): Query<LaunchTicketQuery>,
-) -> Result<Response, (StatusCode, String)> {
-    let actual_host = request_host(&state, &headers)?;
-    let ticket = verify_openclaw_launch_ticket(&state, &query.ticket, &actual_host)?;
-
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    if !AgentAllowlistEntry::is_active(&mut conn, &ticket.npub)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
-    {
-        return Err((StatusCode::FORBIDDEN, "npub is not allowlisted".to_string()));
-    }
-    drop(conn);
-
-    let launch_target =
-        load_launchable_managed_environment(&state, &ticket.npub, &request_context.request_id)
-            .await
-            .map_err(map_agent_api_error)?;
-    if launch_target.agent_id != ticket.agent_id || launch_target.vm_id != ticket.vm_id {
-        return Err((
-            StatusCode::CONFLICT,
-            "managed openclaw environment changed before launch".to_string(),
-        ));
-    }
-
-    let ui_session = issue_openclaw_ui_session(&state, &ticket)?;
-    let mut response = Redirect::to("/").into_response();
-    browser_auth(&state)
-        .set_session_cookie_with_path(
-            &mut response,
-            OPENCLAW_UI_SESSION_COOKIE,
-            &ui_session,
-            OPENCLAW_UI_SESSION_TTL_SECS,
-            "/",
-        )
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    Ok(response)
-}
-
-pub async fn openclaw_proxy(
-    Extension(state): Extension<State>,
-    Extension(request_context): Extension<RequestContext>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, (StatusCode, String)> {
-    let actual_host = request_host(&state, &headers)?;
-    let Some(ui_session) = openclaw_ui_session_from_headers(&state, &headers, &actual_host)? else {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "missing openclaw ui session".to_string(),
-        ));
-    };
-    require_same_origin_ui_request(&headers, &method, &actual_host)?;
-
-    let mut conn = state
-        .db_pool
-        .get()
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    if !AgentAllowlistEntry::is_active(&mut conn, &ui_session.npub)
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
-    {
-        return Err((StatusCode::FORBIDDEN, "npub is not allowlisted".to_string()));
-    }
-    drop(conn);
-
-    let Some(current) = load_current_ready_managed_environment(
-        &state,
-        &ui_session.npub,
-        &request_context.request_id,
-    )
-    .map_err(map_agent_api_error)?
-    else {
-        return Err((
-            StatusCode::CONFLICT,
-            "managed openclaw environment is not launchable".to_string(),
-        ));
-    };
-    if current.agent_id != ui_session.agent_id || current.vm_id != ui_session.vm_id {
-        return Err((
-            StatusCode::CONFLICT,
-            "managed openclaw environment changed; relaunch from the dashboard".to_string(),
-        ));
-    }
-
-    let internal_path = uri.path();
-    let upstream_path = internal_path
-        .strip_prefix(OPENCLAW_INTERNAL_PROXY_PREFIX)
-        .unwrap_or("/");
-    let upstream_path = if upstream_path.is_empty() {
-        "/"
-    } else {
-        upstream_path
-    };
-    let spawner_url = spawner_base_url(&request_context.request_id).map_err(map_agent_api_error)?;
-    let upstream_url = if let Some(query) = uri.query() {
-        format!(
-            "{spawner_url}/vms/{}/openclaw{upstream_path}?{query}",
-            current.vm_id
-        )
-    } else {
-        format!(
-            "{spawner_url}/vms/{}/openclaw{upstream_path}",
-            current.vm_id
-        )
-    };
-
-    let client = reqwest::Client::new();
-    let upstream_method =
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("invalid proxied method: {err}"),
-            )
-        })?;
-    let mut upstream = client.request(upstream_method, &upstream_url);
-    for (name, value) in &headers {
-        let name_str = name.as_str();
-        if header_is_hop_by_hop(name_str)
-            || matches!(name_str, "host" | "cookie" | "content-length")
-        {
-            continue;
-        }
-        let reqwest_name = reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())
-            .map_err(|err| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid proxied header name: {err}"),
-                )
-            })?;
-        let reqwest_value =
-            reqwest::header::HeaderValue::from_bytes(value.as_bytes()).map_err(|err| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("invalid proxied header value: {err}"),
-                )
-            })?;
-        upstream = upstream.header(reqwest_name, reqwest_value);
-    }
-    if !body.is_empty() {
-        upstream = upstream.body(body.to_vec());
-    }
-    let upstream = upstream.send().await.map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("openclaw proxy upstream failed: {err}"),
-        )
-    })?;
-
-    let status =
-        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let upstream_headers = upstream.headers().clone();
-    let upstream_body = upstream.bytes().await.map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("openclaw proxy upstream body failed: {err}"),
-        )
-    })?;
-    let mut response = (status, upstream_body).into_response();
-    copy_proxy_response_headers(response.headers_mut(), &upstream_headers);
-    Ok(response)
 }
 
 pub async fn logout(
@@ -1316,76 +636,6 @@ mod tests {
         }
     }
 
-    fn customer_reset_form(state: &State, headers: &HeaderMap) -> ResetActionForm {
-        let session = state
-            .admin_config
-            .browser_auth
-            .session_from_headers(headers, CUSTOMER_SESSION_COOKIE, CUSTOMER_SESSION_KIND)
-            .expect("session info from cookie");
-        ResetActionForm {
-            csrf_token: session.csrf_token,
-            confirmation_token: None,
-        }
-    }
-
-    fn customer_headers_for_host(state: &State, npub: &str, host: &str) -> HeaderMap {
-        let mut headers = customer_cookie_header(state, npub);
-        headers.insert(header::HOST, host.parse().expect("host header"));
-        headers
-    }
-
-    fn openclaw_launch_ticket_for_test(
-        state: &State,
-        npub: &str,
-        agent_id: &str,
-        vm_id: &str,
-        ui_host: &str,
-        exp: i64,
-    ) -> String {
-        state
-            .admin_config
-            .browser_auth
-            .sign_payload(&OpenClawLaunchTicket {
-                kind: OPENCLAW_LAUNCH_TICKET_KIND.to_string(),
-                npub: npub.to_string(),
-                agent_id: agent_id.to_string(),
-                vm_id: vm_id.to_string(),
-                ui_host: ui_host.to_string(),
-                exp,
-            })
-            .expect("sign launch ticket")
-    }
-
-    fn openclaw_ui_headers_for_host(
-        state: &State,
-        npub: &str,
-        agent_id: &str,
-        vm_id: &str,
-        host: &str,
-    ) -> HeaderMap {
-        let token = state
-            .admin_config
-            .browser_auth
-            .sign_payload(&OpenClawUiSession {
-                kind: OPENCLAW_UI_SESSION_KIND.to_string(),
-                npub: npub.to_string(),
-                agent_id: agent_id.to_string(),
-                vm_id: vm_id.to_string(),
-                ui_host: host.to_string(),
-                exp: chrono::Utc::now().timestamp() + 600,
-            })
-            .expect("sign ui session");
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, host.parse().expect("host header"));
-        headers.insert(
-            header::COOKIE,
-            format!("{OPENCLAW_UI_SESSION_COOKIE}={token}")
-                .parse()
-                .expect("cookie header"),
-        );
-        headers
-    }
-
     fn verify_headers(host: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, host.parse().expect("host header"));
@@ -1430,16 +680,12 @@ mod tests {
             .expect("upsert allowlist");
     }
 
-<<<<<<< HEAD
     fn generate_npub() -> String {
         Keys::generate()
             .public_key()
             .to_bech32()
             .expect("encode generated npub")
     }
-
-=======
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
     fn request_context() -> Extension<RequestContext> {
         Extension(RequestContext {
             request_id: "req-customer-test".to_string(),
@@ -2245,6 +1491,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_marks_ready_row_failed_when_vm_is_missing() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1deadreadydashboardstate";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-dead",
+            Some("vm-dead"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_one_shot_server("404 Not Found", "vm not found");
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("needs recovery"));
+        assert!(!body.contains("running and ready"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn provision_action_creates_environment_when_missing() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -2252,15 +1531,10 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
-=======
-        let npub = "npub1provisioncustomerflow";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
+        let form = customer_action_form(&state, &headers);
         let (base_url, rx) =
             spawn_one_shot_server("200 OK", r#"{"id":"vm-new","status":"starting"}"#);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -2277,11 +1551,7 @@ mod tests {
         assert_eq!(captured.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
-<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
-=======
-        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-new"));
@@ -2471,6 +1741,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recover_action_calls_spawner_recover_for_error_row_with_vm_id() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1recovererrorcustomerflow";
+        upsert_allowlist(&db_pool, npub, true);
+        let headers = customer_cookie_header(&state, npub);
+        let form = customer_action_form(&state, &headers);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-error",
+            Some("vm-error"),
+            crate::models::agent_instance::AGENT_PHASE_ERROR,
+        )
+        .expect("seed errored agent");
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"id":"vm-error","status":"running","guest_ready":true}"#,
+        );
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = recover(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect("recover response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let captured = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured recover request");
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/vms/vm-error/recover");
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, "agent-error");
+        assert_eq!(latest.phase, AGENT_PHASE_READY);
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
     async fn reset_action_destroys_old_vm_and_provisions_fresh_environment() {
         let _guard = serial_test_guard();
         let Some(db_pool) = init_test_db_pool() else {
@@ -2478,24 +1796,14 @@ mod tests {
         };
         clear_test_database(&db_pool);
         let state = test_state(db_pool.clone());
-<<<<<<< HEAD
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
-        let form = customer_reset_form(&state, &headers);
+        let form = customer_action_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         let existing = AgentInstance::create(
             &mut conn,
             &npub,
-=======
-        let npub = "npub1resetcustomerflow";
-        upsert_allowlist(&db_pool, npub, true);
-        let headers = customer_cookie_header(&state, npub);
-        let mut conn = db_pool.get().expect("get seed connection");
-        let existing = AgentInstance::create(
-            &mut conn,
-            npub,
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             "agent-old",
             Some("vm-old"),
             AGENT_PHASE_READY,
@@ -2542,11 +1850,7 @@ mod tests {
         assert_eq!(create_request.path, "/vms");
 
         let mut conn = db_pool.get().expect("get verify connection");
-<<<<<<< HEAD
         let active = AgentInstance::find_active_by_owner(&mut conn, &npub)
-=======
-        let active = AgentInstance::find_active_by_owner(&mut conn, npub)
->>>>>>> 7237a9fd (Add customer managed OpenClaw dashboard)
             .expect("query active row")
             .expect("active row");
         assert_eq!(active.vm_id.as_deref(), Some("vm-fresh"));

@@ -3832,6 +3832,7 @@ mod tests {
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
         PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
         PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
+        StagedLinuxRustLane,
     };
 
     #[test]
@@ -3881,6 +3882,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -3890,6 +3892,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
 
@@ -4146,6 +4149,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -4155,6 +4159,7 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
 
@@ -4843,6 +4848,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -4872,6 +4878,7 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-agent-contracts".to_string()),
@@ -4901,6 +4908,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -4932,6 +4940,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -5024,6 +5033,7 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
         }];
 
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
@@ -6561,6 +6571,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -6570,6 +6581,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
         let mixed_jobs = vec![
@@ -6582,6 +6594,7 @@ EOF
                 guest_command: GuestCommand::PackageUnitTests {
                     package: "pika-agent-control-plane",
                 },
+                staged_linux_rust_lane: None,
             },
         ];
 
@@ -6614,6 +6627,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -6623,6 +6637,7 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
             },
         ];
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())

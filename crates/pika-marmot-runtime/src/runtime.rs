@@ -2960,7 +2960,6 @@ mod tests {
             other => panic!("expected failed media upload event, got {other:?}"),
         }
     }
-
     #[test]
     fn runtime_commands_finalize_membership_evolution_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");

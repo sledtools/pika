@@ -126,6 +126,8 @@ in
       ''}
       # The customer managed-environment dashboard is OpenClaw-only for now.
       PIKA_AGENT_MICROVM_KIND=openclaw
+      # Allow the built-in OpenClaw UI origin to control the guest gateway.
+      PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=https://${openclawUiDomain}
       PIKA_ADMIN_BOOTSTRAP_NPUBS=${lib.concatStringsSep "," adminIdentities.prodAdminNpubs}
       RUST_LOG=info
     '';

@@ -31,6 +31,7 @@ pub const DEFAULT_OPENCLAW_EXEC_COMMAND: &str = "/opt/runtime-artifacts/openclaw
 pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DEFAULT_DAEMON_STATE_DIR: &str = "/root/pika-agent/state";
 pub const DEFAULT_OPENCLAW_STATE_DIR: &str = "/root/pika-agent/openclaw";
+pub const DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN: &str = "http://openclaw.localhost:19401";
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -1083,11 +1084,15 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     // Keep the plugin entry config and channel config identical so either OpenClaw
     // surface sees the same daemon launch settings.
     let entry_config = channel_config.clone();
+    let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
     serde_json::to_string_pretty(&json!({
         "gateway": {
             "mode": "local",
             "bind": "loopback",
             "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
+            "controlUi": {
+                "allowedOrigins": control_ui_allowed_origins,
+            },
         },
         "plugins": {
             "enabled": true,
@@ -1110,6 +1115,22 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
         }
     }))
     .expect("serialize openclaw config")
+}
+
+fn openclaw_control_ui_allowed_origins() -> Vec<String> {
+    let mut origins = vec![DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN.to_string()];
+    if let Ok(raw) = std::env::var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS") {
+        for origin in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+        {
+            if !origins.iter().any(|existing| existing == origin) {
+                origins.push(origin.to_string());
+            }
+        }
+    }
+    origins
 }
 
 fn openclaw_extension_files() -> BTreeMap<String, String> {
@@ -1213,6 +1234,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration as StdDuration;
     use std::time::Instant;
 
@@ -1227,6 +1249,36 @@ mod tests {
         SucceedsAfterRetry,
         SucceedsAfterReadinessRecovery,
         TimesOut { expected_reason: &'static str },
+    }
+
+    fn openclaw_origin_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct OpenClawOriginEnvGuard {
+        prior: Option<String>,
+    }
+
+    impl OpenClawOriginEnvGuard {
+        fn set(value: &str) -> Self {
+            let prior = std::env::var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS").ok();
+            unsafe {
+                std::env::set_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS", value);
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for OpenClawOriginEnvGuard {
+        fn drop(&mut self) {
+            match self.prior.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS", prior)
+                },
+                None => unsafe { std::env::remove_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS") },
+            }
+        }
     }
 
     fn write_executable(path: &Path, body: &str) {
@@ -2074,6 +2126,10 @@ done
             serde_json::Value::Number(DEFAULT_OPENCLAW_GATEWAY_PORT.into())
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
         );
@@ -2134,6 +2190,10 @@ done
         let openclaw_json: serde_json::Value =
             serde_json::from_str(openclaw_config).expect("parse openclaw config");
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "acp"
         );
@@ -2144,6 +2204,38 @@ done
         assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonAcpCwd"],
             "/root/pika-agent/acp"
+        );
+    }
+
+    #[test]
+    fn openclaw_gateway_config_includes_env_control_ui_origin_overrides() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("https://openclaw.api.pikachat.org");
+        let keys = Keys::generate();
+        let bot_keys = Keys::generate();
+        let req = build_create_vm_request(
+            &keys.public_key(),
+            &["wss://relay-a.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &ResolvedMicrovmParams {
+                spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+                kind: ResolvedMicrovmAgentKind::Openclaw,
+                backend: ResolvedMicrovmAgentBackend::Native,
+            },
+        );
+
+        let openclaw_config = req.guest_autostart.files[OPENCLAW_CONFIG_PATH].as_str();
+        let openclaw_json: serde_json::Value =
+            serde_json::from_str(openclaw_config).expect("parse openclaw config");
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                "https://openclaw.api.pikachat.org"
+            ])
         );
     }
 

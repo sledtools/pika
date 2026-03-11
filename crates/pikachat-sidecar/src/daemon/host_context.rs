@@ -1,5 +1,7 @@
 use super::*;
 #[cfg(test)]
+use pika_marmot_runtime::membership::EvolutionPublishStatus;
+#[cfg(test)]
 use pika_marmot_runtime::membership::{MembershipUpdateResult, PreparedMembershipEvolution};
 
 #[derive(Debug)]
@@ -217,6 +219,16 @@ impl<'a> DaemonHostContext<'a> {
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
         self.commands().finalize_published_evolution(prepared)
+    }
+
+    #[cfg(test)]
+    pub(super) fn complete_membership_evolution_operation(
+        &self,
+        prepared: PreparedMembershipEvolution,
+        publish_status: EvolutionPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands()
+            .complete_membership_evolution_operation(prepared, publish_status)
     }
 
     pub(super) fn derive_relay_auth_token(

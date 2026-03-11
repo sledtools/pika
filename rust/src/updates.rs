@@ -144,10 +144,8 @@ pub enum InternalEvent {
 
     // Result of publishing a group evolution event (add/remove/leave/rename commit).
     GroupEvolutionPublished {
-        chat_id: String,
         prepared: pika_marmot_runtime::membership::PreparedMembershipEvolution,
-        ok: bool,
-        error: Option<String>,
+        publish_status: pika_marmot_runtime::membership::EvolutionPublishStatus,
     },
 
     // Subscription recompute result.

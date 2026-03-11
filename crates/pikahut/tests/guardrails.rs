@@ -640,14 +640,32 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
     );
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
-        .into_iter()
-        .filter(|entry| !agent_filter.contains(entry))
+        .iter()
+        .filter(|entry| !agent_filter.contains(entry.as_str()))
+        .cloned()
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
         "agent_contracts workflow filter must cover the checked-in pre-merge-agent-contracts dependency surface; missing: {:?}",
         missing_from_workflow
     );
+
+    let microvm_manifest = fs::read_to_string(root.join("crates/pika-agent-microvm/Cargo.toml"))?;
+    let server_manifest = fs::read_to_string(root.join("crates/pika-server/Cargo.toml"))?;
+    let staged_agent_tests_use_shared_test_utils =
+        microvm_manifest.contains("pika-test-utils") || server_manifest.contains("pika-test-utils");
+    if staged_agent_tests_use_shared_test_utils {
+        assert!(
+            rust_lane_filters
+                .iter()
+                .any(|entry| entry == "crates/pika-test-utils/**"),
+            "pre-merge-agent-contracts pikaci target filters must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
+        );
+        assert!(
+            agent_filter.contains("crates/pika-test-utils/**"),
+            "agent_contracts workflow filter must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
+        );
+    }
 
     let selector_refs = parse_cli_selector_refs(&recipe.join("\n"));
     let expected_host_selectors = [
@@ -674,6 +692,13 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         agent_filter.contains("crates/pikahut/Cargo.toml"),
         "agent_contracts workflow filter must include crates/pikahut/Cargo.toml while the lane keeps host-side agent selectors"
     );
+    let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
+    if pikahut_manifest.contains("pika-desktop") {
+        assert!(
+            agent_filter.contains("crates/pika-desktop/**"),
+            "agent_contracts workflow filter must include crates/pika-desktop/** while host-side pikahut selectors depend on pika-desktop"
+        );
+    }
     assert!(
         agent_filter.contains("cli/**"),
         "agent_contracts workflow filter must include cli/** while the lane keeps agent_http_cli_new selectors"

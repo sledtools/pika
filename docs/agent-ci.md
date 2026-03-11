@@ -61,6 +61,10 @@ Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:
   - expected: `check-agent-contracts` runs.
 - Touch `crates/pika-server/src/agent_api.rs`:
   - expected: `check-agent-contracts` runs.
+- Touch `crates/pika-test-utils/src/lib.rs`:
+  - expected: `check-agent-contracts` runs.
+- Touch `crates/pika-desktop/src/lib.rs`:
+  - expected: `check-agent-contracts` runs.
 - Touch `scripts/pikaci-staged-linux-remote.sh`:
   - expected: `check-agent-contracts` runs.
 - Touch `crates/pikahut/Cargo.toml`:

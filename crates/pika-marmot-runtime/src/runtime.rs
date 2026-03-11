@@ -253,6 +253,15 @@ impl RuntimeOperationEvent {
             other => Err(format!("unexpected media upload result: {other:?}")),
         }
     }
+
+    pub fn into_outbound_conversation_publish_result(
+        self,
+    ) -> Result<PublishedConversationAction, String> {
+        match self {
+            Self::OutboundConversationPublish(event) => event.into_result(),
+            other => Err(format!("unexpected outbound publish result: {other:?}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +325,13 @@ impl OutboundConversationPublishOperationEvent {
         match self {
             Self::Completed { result, .. } => &result.target.nostr_group_id_hex,
             Self::Failed { target, .. } => &target.nostr_group_id_hex,
+        }
+    }
+
+    pub fn into_result(self) -> Result<PublishedConversationAction, String> {
+        match self {
+            Self::Completed { result, .. } => Ok(result),
+            Self::Failed { error, .. } => Err(error),
         }
     }
 }
@@ -2502,17 +2518,13 @@ mod tests {
                 wrapper_event_id: EventId::all_zeros(),
             },
         );
+        let result = operation
+            .into_outbound_conversation_publish_result()
+            .expect("completed outbound publish");
 
-        match operation {
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Completed { result, .. },
-            ) => {
-                assert_eq!(result.target.nostr_group_id_hex, chat_id);
-                assert_eq!(result.kind, crate::message::TYPING_INDICATOR_KIND);
-                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
-            }
-            other => panic!("expected completed outbound publish event, got {other:?}"),
-        }
+        assert_eq!(result.target.nostr_group_id_hex, chat_id);
+        assert_eq!(result.kind, crate::message::TYPING_INDICATOR_KIND);
+        assert_eq!(result.wrapper_event_id, EventId::all_zeros());
     }
 
     #[test]
@@ -2551,28 +2563,23 @@ mod tests {
                 },
             )
             .expect("prepare outbound action");
+        let expected_rumor_id = prepared.rumor_id;
         let expected_wrapper_id = prepared.wrapper.id;
 
         let operation = commands.complete_outbound_publish_operation(
             prepared,
             OutboundConversationPublishStatus::PublishFailed("relay down".to_string()),
         );
+        let operation_id = operation.operation_id();
+        let group_id = operation.nostr_group_id_hex().to_string();
+        let error = operation
+            .into_outbound_conversation_publish_result()
+            .expect_err("failed outbound publish");
 
-        match operation {
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Failed {
-                    target,
-                    wrapper_event_id,
-                    error,
-                    ..
-                },
-            ) => {
-                assert_eq!(target.nostr_group_id_hex, chat_id);
-                assert_eq!(wrapper_event_id, expected_wrapper_id);
-                assert_eq!(error, "relay down");
-            }
-            other => panic!("expected failed outbound publish event, got {other:?}"),
-        }
+        assert_eq!(group_id, chat_id);
+        assert_eq!(operation_id, expected_rumor_id);
+        assert_ne!(expected_wrapper_id, EventId::all_zeros());
+        assert_eq!(error, "relay down");
     }
 
     #[test]

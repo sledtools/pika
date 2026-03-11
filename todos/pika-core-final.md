@@ -397,6 +397,7 @@ Daemon host target:
 Current thin-host slice:
 - single-item media send/upload completion in app and daemon now unwraps shared media upload operation results via runtime-owned helpers instead of host-local `match` trees
 - app also drops the dead inline `media_upload_failed(...)/match` ceremony for local validation failures; batch orchestration, upload execution, file staging, and protocol formatting stay host-local
+- fresh outbound message send/publish in app and daemon now unwraps shared outbound publish operation results via runtime-owned helpers instead of host-local tuple or nested-match translation; retry send and other send policies stay host-local
 
 Only later:
 - formalize `pikad`

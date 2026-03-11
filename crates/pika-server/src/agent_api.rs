@@ -422,8 +422,12 @@ fn managed_environment_status_copy(
         (Some(_), Some(AgentStartupPhase::Ready)) => {
             "Managed OpenClaw is running and ready.".to_string()
         }
+        (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
+            "Managed OpenClaw needs recovery. Recover first tries to bring the VM back and preserve the durable home; if that VM is gone, Recover provisions a fresh environment instead."
+                .to_string()
+        }
         (Some(_), Some(AgentStartupPhase::Failed)) => {
-            "Managed OpenClaw needs recovery. Recover preserves the durable home when the VM can still be recovered; destructive reset starts fresh."
+            "Managed OpenClaw needs recovery. No recoverable VM is available, so Recover provisions a fresh environment."
                 .to_string()
         }
         (Some(_), None) => "Managed OpenClaw status is unavailable.".to_string(),

@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TungsteniteCloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungsteniteCloseFrame;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
@@ -643,6 +644,53 @@ fn request_is_websocket_upgrade(method: &Method, headers: &HeaderMap) -> bool {
             .unwrap_or(false)
 }
 
+fn websocket_proxy_header_should_forward(name: &str) -> bool {
+    matches!(
+        name,
+        "origin"
+            | "user-agent"
+            | "sec-websocket-protocol"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-proto"
+            | "x-real-ip"
+    )
+}
+
+fn build_websocket_proxy_request(
+    upstream_url: &str,
+    downstream_headers: &HeaderMap,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, (StatusCode, String)> {
+    let mut request = upstream_url.into_client_request().map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("invalid openclaw websocket upstream request: {err}"),
+        )
+    })?;
+    for (name, value) in downstream_headers {
+        if websocket_proxy_header_should_forward(name.as_str()) {
+            let request_name =
+                reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()).map_err(
+                    |err| {
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            format!("invalid openclaw websocket upstream header name: {err}"),
+                        )
+                    },
+                )?;
+            let request_value =
+                reqwest::header::HeaderValue::from_bytes(value.as_bytes()).map_err(|err| {
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("invalid openclaw websocket upstream header value: {err}"),
+                    )
+                })?;
+            request.headers_mut().insert(request_name, request_value);
+        }
+    }
+    Ok(request)
+}
+
 fn websocket_proxy_url(upstream_url: &str) -> Result<String, (StatusCode, String)> {
     let mut url = reqwest::Url::parse(upstream_url).map_err(|err| {
         (
@@ -716,9 +764,9 @@ fn tungstenite_message_to_axum(message: TungsteniteMessage) -> Option<AxumWsMess
 
 async fn proxy_openclaw_websocket(
     downstream: WebSocket,
-    upstream_url: String,
+    upstream_request: tokio_tungstenite::tungstenite::http::Request<()>,
 ) -> anyhow::Result<()> {
-    let (upstream, _) = connect_async(&upstream_url).await?;
+    let (upstream, _) = connect_async(upstream_request).await?;
     let (mut upstream_sink, mut upstream_stream) = upstream.split();
     let (mut downstream_sink, mut downstream_stream) = downstream.split();
 
@@ -1298,6 +1346,7 @@ pub async fn openclaw_proxy(
 
     if websocket_request {
         let upstream_ws_url = websocket_proxy_url(&upstream_url)?;
+        let upstream_request = build_websocket_proxy_request(&upstream_ws_url, &headers)?;
         let (mut parts, _body) = request.into_parts();
         let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &())
             .await
@@ -1305,7 +1354,7 @@ pub async fn openclaw_proxy(
         let request_id = request_context.request_id.clone();
         let vm_id = current.vm_id.clone();
         return Ok(websocket.on_upgrade(move |socket| async move {
-            if let Err(err) = proxy_openclaw_websocket(socket, upstream_ws_url).await {
+            if let Err(err) = proxy_openclaw_websocket(socket, upstream_request).await {
                 warn!(
                     request_id = %request_id,
                     vm_id = %vm_id,
@@ -2598,6 +2647,7 @@ mod tests {
         .expect("seed ready agent");
         drop(conn);
 
+        let (origin_tx, origin_rx) = mpsc::channel();
         let spawner_app = Router::new()
             .route(
                 "/vms/:id",
@@ -2613,15 +2663,29 @@ mod tests {
             .route(
                 "/vms/:id/openclaw",
                 get(
-                    |Path(id): Path<String>, websocket: WebSocketUpgrade| async move {
-                        websocket.on_upgrade(move |mut socket| async move {
-                            while let Some(Ok(AxumWsMessage::Text(text))) = socket.recv().await {
-                                socket
-                                    .send(AxumWsMessage::Text(format!("{id}:{text}")))
-                                    .await
-                                    .expect("send websocket echo");
-                            }
-                        })
+                    move |Path(id): Path<String>,
+                          headers: HeaderMap,
+                          websocket: WebSocketUpgrade| {
+                        let origin_tx = origin_tx.clone();
+                        async move {
+                            origin_tx
+                                .send(
+                                    headers
+                                        .get(header::ORIGIN)
+                                        .and_then(|value| value.to_str().ok())
+                                        .map(ToOwned::to_owned),
+                                )
+                                .expect("record websocket origin");
+                            websocket.on_upgrade(move |mut socket| async move {
+                                while let Some(Ok(AxumWsMessage::Text(text))) = socket.recv().await
+                                {
+                                    socket
+                                        .send(AxumWsMessage::Text(format!("{id}:{text}")))
+                                        .await
+                                        .expect("send websocket echo");
+                                }
+                            })
+                        }
                     },
                 ),
             );
@@ -2664,6 +2728,12 @@ mod tests {
             reqwest::header::COOKIE,
             cookie.parse().expect("cookie header value"),
         );
+        request.headers_mut().insert(
+            reqwest::header::ORIGIN,
+            "https://openclaw.localhost:19401"
+                .parse()
+                .expect("origin header value"),
+        );
 
         let (mut socket, _response) = connect_async(request)
             .await
@@ -2681,8 +2751,41 @@ mod tests {
             TungsteniteMessage::Text(text) => assert_eq!(text.to_string(), "vm-openclaw-ws:hello"),
             other => panic!("expected websocket text frame, got {other:?}"),
         }
+        let origin = origin_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured websocket origin");
+        assert_eq!(origin.as_deref(), Some("https://openclaw.localhost:19401"));
 
         clear_test_database(&db_pool);
+    }
+
+    #[test]
+    fn build_websocket_proxy_request_preserves_origin_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://openclaw.localhost:19401"),
+        );
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("agent-test"));
+
+        let request =
+            build_websocket_proxy_request("ws://127.0.0.1:8080/vms/vm-1/openclaw", &headers)
+                .expect("build websocket proxy request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://openclaw.localhost:19401")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("agent-test")
+        );
     }
 
     #[test]

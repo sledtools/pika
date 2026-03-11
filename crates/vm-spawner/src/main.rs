@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as TungsteniteCloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungsteniteCloseFrame;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
@@ -297,6 +298,13 @@ async fn proxy_openclaw_request(
             ))
             .with_request_id(request_context.request_id.clone())
         })?;
+        let upstream_request =
+            build_websocket_proxy_request(&upstream_ws_url, &headers).map_err(|err| {
+                ApiError::internal(format!(
+                    "proxy openclaw websocket request for vm {id} failed: {err}"
+                ))
+                .with_request_id(request_context.request_id.clone())
+            })?;
         let (mut parts, _body) = request.into_parts();
         let websocket = WebSocketUpgrade::from_request_parts(&mut parts, &())
             .await
@@ -307,7 +315,7 @@ async fn proxy_openclaw_request(
         let request_id = request_context.request_id.clone();
         let vm_id = id.clone();
         return Ok(websocket.on_upgrade(move |socket| async move {
-            if let Err(err) = proxy_openclaw_websocket(socket, upstream_ws_url).await {
+            if let Err(err) = proxy_openclaw_websocket(socket, upstream_request).await {
                 warn!(
                     request_id = %request_id,
                     vm_id = %vm_id,
@@ -502,6 +510,35 @@ fn request_is_websocket_upgrade(method: &Method, headers: &HeaderMap) -> bool {
             .unwrap_or(false)
 }
 
+fn websocket_proxy_header_should_forward(name: &str) -> bool {
+    matches!(
+        name,
+        "origin"
+            | "user-agent"
+            | "sec-websocket-protocol"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-proto"
+            | "x-real-ip"
+    )
+}
+
+fn build_websocket_proxy_request(
+    upstream_url: &str,
+    downstream_headers: &HeaderMap,
+) -> anyhow::Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+    let mut request = upstream_url.into_client_request()?;
+    for (name, value) in downstream_headers {
+        if websocket_proxy_header_should_forward(name.as_str()) {
+            let request_name =
+                reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes())?;
+            let request_value = reqwest::header::HeaderValue::from_bytes(value.as_bytes())?;
+            request.headers_mut().insert(request_name, request_value);
+        }
+    }
+    Ok(request)
+}
+
 fn websocket_proxy_url(upstream_url: &str) -> anyhow::Result<String> {
     let mut url = reqwest::Url::parse(upstream_url)?;
     match url.scheme() {
@@ -565,9 +602,9 @@ fn tungstenite_message_to_axum(message: TungsteniteMessage) -> Option<AxumWsMess
 
 async fn proxy_openclaw_websocket(
     downstream: WebSocket,
-    upstream_url: String,
+    upstream_request: tokio_tungstenite::tungstenite::http::Request<()>,
 ) -> anyhow::Result<()> {
-    let (upstream, _) = connect_async(&upstream_url).await?;
+    let (upstream, _) = connect_async(upstream_request).await?;
     let (mut upstream_sink, mut upstream_stream) = upstream.split();
     let (mut downstream_sink, mut downstream_stream) = downstream.split();
 
@@ -715,5 +752,36 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], "internal server error");
         assert_eq!(json["request_id"], "req-456");
+    }
+
+    #[test]
+    fn build_websocket_proxy_request_preserves_origin_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            HeaderValue::from_static("https://openclaw.api.pikachat.org"),
+        );
+        headers.insert(
+            axum::http::header::USER_AGENT,
+            HeaderValue::from_static("agent-test"),
+        );
+
+        let request = build_websocket_proxy_request("ws://192.168.83.17:18789/", &headers)
+            .expect("build websocket proxy request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://openclaw.api.pikachat.org")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some("agent-test")
+        );
     }
 }

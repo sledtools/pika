@@ -1427,13 +1427,9 @@ impl AppCore {
                     e.clone(),
                 ),
             };
-            let upload_error = match operation {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
-                        error, ..
-                    },
-                ) => error,
-                other => format!("unexpected media upload result: {other:?}"),
+            let upload_error = match operation.into_media_upload_result() {
+                Ok(_) => "unexpected successful media upload result".to_string(),
+                Err(error) => error,
             };
 
             // Remove progress spinner from attachment.
@@ -1472,61 +1468,23 @@ impl AppCore {
             s.refresh_current_chat_if_open(&pending.chat_id);
             s.refresh_chat_list_from_storage();
         };
+        let fail_media_upload_validation = |s: &mut Self, reason: &str| {
+            cleanup_optimistic(s);
+            s.toast(format!("Media upload failed: {reason}"));
+        };
 
         let Some(uploaded_url) = uploaded_url else {
-            cleanup_optimistic(self);
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
-                    pending.chat_id.clone(),
-                    &pending.upload,
-                    "missing upload URL".to_string(),
-                );
-            match operation {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
-                        error, ..
-                    },
-                ) => self.toast(format!("Media upload failed: {error}")),
-                other => self.toast(format!("unexpected media upload result: {other:?}")),
-            }
+            fail_media_upload_validation(self, "missing upload URL");
             return;
         };
         let Some(descriptor_hash) = descriptor_sha256_hex else {
-            cleanup_optimistic(self);
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
-                    pending.chat_id.clone(),
-                    &pending.upload,
-                    "missing uploaded hash".to_string(),
-                );
-            match operation {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
-                        error, ..
-                    },
-                ) => self.toast(format!("Media upload failed: {error}")),
-                other => self.toast(format!("unexpected media upload result: {other:?}")),
-            }
+            fail_media_upload_validation(self, "missing uploaded hash");
             return;
         };
 
         let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
         if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
-            cleanup_optimistic(self);
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
-                    pending.chat_id.clone(),
-                    &pending.upload,
-                    "uploaded hash mismatch".to_string(),
-                );
-            match operation {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed {
-                        error, ..
-                    },
-                ) => self.toast(format!("Media upload failed: {error}")),
-                other => self.toast(format!("unexpected media upload result: {other:?}")),
-            }
+            fail_media_upload_validation(self, "uploaded hash mismatch");
             return;
         }
 
@@ -1551,20 +1509,10 @@ impl AppCore {
                 descriptor_sha256_hex: descriptor_hash,
             }),
         );
-        let completed = match operation {
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
-                    result, ..
-                },
-            ) => result.result,
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                pika_marmot_runtime::runtime::MediaUploadOperationEvent::Failed { error, .. },
-            ) => {
+        let completed = match operation.into_media_upload_result() {
+            Ok(completed) => completed.result,
+            Err(error) => {
                 self.toast(format!("Media upload failed: {error}"));
-                return;
-            }
-            other => {
-                self.toast(format!("unexpected media upload result: {other:?}"));
                 return;
             }
         };

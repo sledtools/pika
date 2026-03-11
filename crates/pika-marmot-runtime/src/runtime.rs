@@ -246,6 +246,13 @@ impl RuntimeOperationEvent {
             error,
         })
     }
+
+    pub fn into_media_upload_result(self) -> Result<CompletedMediaUpload, String> {
+        match self {
+            Self::MediaUpload(event) => event.into_result(),
+            other => Err(format!("unexpected media upload result: {other:?}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -416,6 +423,13 @@ impl MediaUploadOperationEvent {
             Self::Failed {
                 nostr_group_id_hex, ..
             } => nostr_group_id_hex,
+        }
+    }
+
+    pub fn into_result(self) -> Result<CompletedMediaUpload, String> {
+        match self {
+            Self::Completed { result, .. } => Ok(*result),
+            Self::Failed { error, .. } => Err(error),
         }
     }
 }

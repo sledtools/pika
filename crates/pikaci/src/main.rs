@@ -835,7 +835,7 @@ fn notification_jobs() -> Vec<JobSpec> {
                 "cargo test -p pika-server -- --test-threads=1 --nocapture"
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_rust_lane: Some(StagedLinuxRustLane::NotificationsServerPackageTests),
     }]
 }
 
@@ -1372,6 +1372,18 @@ mod tests {
             Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
         );
         assert_eq!(pre_merge.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn pre_merge_notifications_target_uses_staged_linux_lane() {
+        let target = target_spec("pre-merge-notifications").expect("notifications target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
     }
 
     #[test]

@@ -45,13 +45,18 @@ pre-merge-pika-rust-shadow:
     just pikaci-remote-fulfill-pre-merge-pika-rust
     echo "pre-merge-pika-rust-shadow complete"
 
+# Advisory shadow CI lane for the staged Linux notifications remote microVM path.
+pre-merge-notifications-shadow:
+    just pikaci-remote-fulfill-pre-merge-notifications
+    echo "pre-merge-notifications-shadow complete"
+
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo clippy -p pika-server -- -D warnings
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-notifications
+        just pikaci-remote-fulfill-pre-merge-notifications
     else
         SD="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
         cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }

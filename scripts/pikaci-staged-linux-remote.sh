@@ -11,6 +11,7 @@ pika-build.
 Targets:
   pre-merge-pika-rust
   pre-merge-agent-contracts
+  pre-merge-notifications
 
 Commands:
   prepare      Prewarm workspaceDeps, then realize workspaceDeps and workspaceBuild on pika-build
@@ -41,6 +42,11 @@ resolve_target() {
       target_id="pre-merge-agent-contracts"
       deps_installable=".#ci.x86_64-linux.agentContractsWorkspaceDeps"
       build_installable=".#ci.x86_64-linux.agentContractsWorkspaceBuild"
+      ;;
+    pre-merge-notifications)
+      target_id="pre-merge-notifications"
+      deps_installable=".#ci.x86_64-linux.notificationsWorkspaceDeps"
+      build_installable=".#ci.x86_64-linux.notificationsWorkspaceBuild"
       ;;
     *)
       echo "error: unsupported staged Linux Rust target: $1" >&2

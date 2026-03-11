@@ -985,3 +985,23 @@ We have at least one important Linux Rust lane where:
       - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` -> `20260311T050426Z-86e71d64`
       - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260311T045909Z-7d805dc8`
     - so the next structural cleanup target is no longer remote-authoritative prepare inference; it is the remaining stringly lane-specific runner/output selection and remote path default wiring inside `pikaci`.
+  - note that the next meaningful use-pressure slice migrated a third Linux lane instead of another tiny refactor:
+    - `pre-merge-notifications` was the smallest sensible next target because it is a single Linux-first Rust job, narrower than `pre-merge-pikachat` or `pre-merge-fixture`, and it reuses the same staged build plus remote microVM execute template while still exercising a real fixture contract,
+    - this slice migrated that lane onto the same remote-authoritative `x86_64-linux` path with:
+      - explicit `StagedLinuxRustLane::NotificationsServerPackageTests` metadata,
+      - staged `ci.x86_64-linux.notificationsWorkspaceDeps` and `ci.x86_64-linux.notificationsWorkspaceBuild` outputs,
+      - a staged `run-pika-server-package-tests` wrapper that reuses a staged `pikahut` binary plus a staged `pika-server` binary instead of compiling inside the guest,
+      - and the canonical operator entrypoint `./scripts/pikaci-staged-linux-remote.sh run pre-merge-notifications` / `just pikaci-remote-fulfill-pre-merge-notifications`,
+    - the first real remote rerun passed end-to-end as run `20260311T054041Z-f16573e1`, with `pika-server-package-tests` passing on the remote microVM path after both staged Linux prepares and remote fulfillments,
+    - because that rerun passed cleanly, the lane is now also wired into GitHub in the same advisory style as the first staged Rust lane:
+      - `just pre-merge-notifications-shadow` is the canonical shadow command,
+      - `.github/workflows/pre-merge.yml` now includes the non-gating `shadow-pikaci-pre-merge-notifications` job,
+      - and that shadow job reuses the existing `pikaci-shadow-summary.py` summary/debug-bundle flow keyed by `--target-id pre-merge-notifications`,
+    - the two earlier staged Linux lanes remain intact while this third lane uses the same remote-authoritative template:
+      - `pre-merge-pika-rust`
+      - `pre-merge-agent-contracts`
+      - `pre-merge-notifications`,
+    - and the next structural cleanup is now clearer under three working examples:
+      - reduce remaining stringly staged-lane metadata in the model,
+      - then unify remote path defaults inside `pikaci`,
+      - before choosing the next lane to migrate or deciding whether the first shadow lane is ready for promotion.

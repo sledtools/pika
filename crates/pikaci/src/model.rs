@@ -126,6 +126,7 @@ pub enum StagedLinuxRustLane {
     AgentContractsMicrovmTests,
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
+    NotificationsServerPackageTests,
 }
 
 impl StagedLinuxRustLane {
@@ -136,6 +137,7 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => "agent-contracts-linux-rust",
+            Self::NotificationsServerPackageTests => "notifications-linux-rust",
         }
     }
 
@@ -148,6 +150,7 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => "agent contracts staged Linux Rust lane",
+            Self::NotificationsServerPackageTests => "notifications staged Linux Rust lane",
         }
     }
 
@@ -160,6 +163,7 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceDeps",
+            Self::NotificationsServerPackageTests => "ci.x86_64-linux.notificationsWorkspaceDeps",
         }
     }
 
@@ -172,6 +176,7 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => "ci.x86_64-linux.agentContractsWorkspaceBuild",
+            Self::NotificationsServerPackageTests => "ci.x86_64-linux.notificationsWorkspaceBuild",
         }
     }
 
@@ -182,7 +187,8 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsControlPlaneUnit
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => "x86_64-linux",
+            | Self::AgentContractsCoreNip98
+            | Self::NotificationsServerPackageTests => "x86_64-linux",
         }
     }
 
@@ -205,6 +211,9 @@ impl StagedLinuxRustLane {
             }
             Self::AgentContractsCoreNip98 => {
                 "/staged/linux-rust/workspace-build/bin/run-core-agent-nip98-test"
+            }
+            Self::NotificationsServerPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
         }
     }
@@ -307,6 +316,24 @@ mod tests {
         assert_eq!(
             lane.execute_wrapper_command(),
             "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
+        );
+    }
+
+    #[test]
+    fn notifications_lane_uses_notifications_workspace_outputs() {
+        let lane = StagedLinuxRustLane::NotificationsServerPackageTests;
+
+        assert_eq!(
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.notificationsWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.notificationsWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
         );
     }
 }

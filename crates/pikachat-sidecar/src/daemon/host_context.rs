@@ -35,9 +35,17 @@ impl<'a> DaemonHostContext<'a> {
         MarmotRuntime::with_client(self.mdk, self.client)
     }
 
+    pub(super) fn lookup_joined_group_snapshot(
+        &self,
+        nostr_group_id: &str,
+    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot> {
+        self.runtime().lookup_joined_group_snapshot(nostr_group_id)
+    }
+
     pub(super) fn resolve_group(&self, nostr_group_id: &str) -> anyhow::Result<GroupId> {
-        self.runtime()
-            .mls_group_id_for_nostr_group_id(nostr_group_id)
+        Ok(self
+            .lookup_joined_group_snapshot(nostr_group_id)?
+            .mls_group_id)
     }
 
     pub(super) fn list_groups(
@@ -185,10 +193,10 @@ impl<'a> DaemonHostContext<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> anyhow::Result<String> {
-        let mls_group_id = self.resolve_group(nostr_group_id)?;
+        let group = self.lookup_joined_group_snapshot(nostr_group_id)?;
         let derive_ctx = CallCryptoDeriveContext {
             mdk: self.mdk,
-            mls_group_id: &mls_group_id,
+            mls_group_id: &group.mls_group_id,
             group_epoch: 0,
             call_id,
             session,

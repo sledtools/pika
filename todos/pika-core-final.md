@@ -326,6 +326,8 @@ Current status:
 - app eager-accept lookup and daemon list/accept flows now consume that shared welcome query path while keeping UI/protocol presentation and accept policy local
 - seventh durable-state/query slice landed: shared joined-group snapshots now surface explicit member/admin entries via neutral member snapshots instead of raw pubkey-set reconstruction
 - app chat-list/current-chat state and daemon group-summary output now consume that richer shared membership snapshot data while keeping profile enrichment and protocol/UI presentation local
+- eighth durable-state/query slice landed: shared joined-group snapshots now also act as the canonical workflow-prep context lookup, surfacing direct joined-group lookup plus current relay URLs, IDs, and member/admin context from MDK/runtime state
+- app outbound/add-member/call-prep helpers and daemon resolve/outbound/relay-auth prep now consume that shared joined-group context lookup while keeping UI/protocol presentation and execution local
 
 Important caution:
 this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction

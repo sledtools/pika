@@ -60,6 +60,7 @@ pub struct RuntimeJoinedGroupSnapshot {
     pub mls_group_id_hex: String,
     pub name: String,
     pub description: String,
+    pub relay_urls: Vec<RelayUrl>,
     pub member_snapshots: Vec<RuntimeJoinedGroupMemberSnapshot>,
     pub last_message_at: Option<Timestamp>,
 }
@@ -200,35 +201,19 @@ impl<'a> ConversationRuntime<'a> {
         Ok(self.find_group(nostr_group_id_hex)?.mls_group_id)
     }
 
+    pub fn lookup_joined_group_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<RuntimeJoinedGroupSnapshot> {
+        self.joined_group_snapshot(self.find_group(nostr_group_id_hex)?)
+    }
+
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
         let groups = self.mdk.get_groups().context("get_groups")?;
-        Ok(groups
+        groups
             .into_iter()
-            .map(|group| {
-                let admin_pubkeys = group.admin_pubkeys;
-                let member_snapshots = self
-                    .mdk
-                    .get_members(&group.mls_group_id)
-                    .unwrap_or_default();
-                let member_snapshots = member_snapshots
-                    .into_iter()
-                    .map(|pubkey| RuntimeJoinedGroupMemberSnapshot {
-                        is_admin: admin_pubkeys.contains(&pubkey),
-                        pubkey,
-                    })
-                    .collect();
-                let mls_group_id = group.mls_group_id.clone();
-                RuntimeJoinedGroupSnapshot {
-                    nostr_group_id_hex: hex::encode(group.nostr_group_id),
-                    mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
-                    name: group.name,
-                    description: group.description,
-                    member_snapshots,
-                    last_message_at: group.last_message_at,
-                    mls_group_id,
-                }
-            })
-            .collect())
+            .map(|group| self.joined_group_snapshot(group))
+            .collect()
     }
 
     pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
@@ -333,6 +318,35 @@ impl<'a> ConversationRuntime<'a> {
             .mdk
             .get_group(mls_group_id)?
             .map(|group| hex::encode(group.nostr_group_id)))
+    }
+
+    fn joined_group_snapshot(&self, group: Group) -> Result<RuntimeJoinedGroupSnapshot> {
+        let admin_pubkeys = group.admin_pubkeys.clone();
+        let mls_group_id = group.mls_group_id.clone();
+        let member_snapshots = self.mdk.get_members(&mls_group_id).unwrap_or_default();
+        let relay_urls = self
+            .mdk
+            .get_relays(&mls_group_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let member_snapshots = member_snapshots
+            .into_iter()
+            .map(|pubkey| RuntimeJoinedGroupMemberSnapshot {
+                is_admin: admin_pubkeys.contains(&pubkey),
+                pubkey,
+            })
+            .collect();
+        Ok(RuntimeJoinedGroupSnapshot {
+            nostr_group_id_hex: hex::encode(group.nostr_group_id),
+            mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
+            name: group.name,
+            description: group.description,
+            relay_urls,
+            member_snapshots,
+            last_message_at: group.last_message_at,
+            mls_group_id,
+        })
     }
 }
 
@@ -524,7 +538,53 @@ mod tests {
             invitee_keys.public_key()
         );
         assert_eq!(snapshots[0].member_count(), 2);
+        assert_eq!(
+            snapshots[0].relay_urls,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")]
+        );
         assert_eq!(snapshots[0].last_message_at, None);
+    }
+
+    #[test]
+    fn lookup_joined_group_snapshot_surfaces_current_workflow_context() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let relay_a = RelayUrl::parse("wss://relay-a.test").expect("relay a");
+        let relay_b = RelayUrl::parse("wss://relay-b.test").expect("relay b");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "lookup group context".to_string(),
+            "shared workflow context".to_string(),
+            None,
+            None,
+            None,
+            vec![relay_a.clone(), relay_b.clone()],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+
+        let snapshot = runtime
+            .lookup_joined_group_snapshot(&nostr_group_id_hex)
+            .expect("lookup joined group snapshot");
+
+        assert_eq!(snapshot.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(snapshot.mls_group_id, created.group.mls_group_id);
+        assert_eq!(snapshot.relay_urls, vec![relay_a, relay_b]);
+        assert!(snapshot.is_admin(&inviter_keys.public_key()));
+        assert_eq!(
+            snapshot
+                .other_member_snapshots(&inviter_keys.public_key())
+                .len(),
+            1
+        );
     }
 
     #[test]

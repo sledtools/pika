@@ -4166,7 +4166,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_pending_welcome_queries_use_shared_runtime_helper() {
+    fn daemon_pending_welcome_queries_use_shared_query_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -4766,7 +4766,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_runtime_refresh_uses_shared_session_state() {
+    fn daemon_runtime_refresh_uses_shared_query_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();

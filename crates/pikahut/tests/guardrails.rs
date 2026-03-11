@@ -332,6 +332,33 @@ fn call_boundaries_have_single_owner() -> Result<()> {
 }
 
 #[test]
+fn desktop_ui_e2e_has_single_owner() -> Result<()> {
+    let root = workspace_root();
+    let scenario =
+        fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
+    assert!(
+        scenario.contains("run_local_ping_pong_with_bot("),
+        "desktop UI E2E selector must call the desktop helper directly"
+    );
+    assert!(
+        !scenario.contains("desktop_e2e_local_ping_pong_with_bot"),
+        "desktop UI E2E selector must not shell into the legacy ignored desktop test"
+    );
+
+    let desktop = fs::read_to_string(root.join("crates/pika-desktop/src/app_manager.rs"))?;
+    assert!(
+        desktop.contains("pub fn run_local_ping_pong_with_bot("),
+        "desktop helper must be exposed for direct selector ownership"
+    );
+    assert!(
+        !desktop.contains("fn desktop_e2e_local_ping_pong_with_bot("),
+        "legacy ignored desktop owner must be removed once pikahut owns the seam"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn shared_capable_scenarios_use_tenant_namespace_helpers() -> Result<()> {
     let root = workspace_root();
 

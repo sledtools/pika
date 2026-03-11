@@ -975,3 +975,13 @@ We have at least one important Linux Rust lane where:
     - the rebuilt `workspaceBuild` output is down from about `6.2 GiB` to about `5.4 GiB`, but the fresh `just pikaci-remote-fulfill-pre-merge-pika-rust` rerun is still working through the `workspaceBuild` fulfillment boundary before guest logs exist,
     - so the lane is not yet re-proven from the rebased tree and the hardening slice cannot honestly claim the outbound network noise is gone until that fresh rerun finishes,
   - and treat the next narrow slice as optional cleanup around those residual external-network assumptions or as the first product-focused follow-up now that the staged `x86_64-linux` microVM lane passes end-to-end.
+  - note that the next internal cleanup finally removed one real piece of staged-Linux string matching:
+    - strict remote-authoritative prepared-output behavior used to be gated in `pikaci` by exact output-name matches for `ci.x86_64-linux.workspaceDeps`, `workspaceBuild`, `agentContractsWorkspaceDeps`, and `agentContractsWorkspaceBuild`,
+    - that exact-string list was the thing deciding whether a prepare should be realized remotely, whether local prepared-output metadata could be recorded without a local `/nix/store/...` path, and whether ssh fulfillment was allowed to refuse local `nix copy` fallback,
+    - `PrepareNode::NixBuild`, prepared-output requests, and realized prepared-output records now carry an explicit `residency` field instead, with the two migrated staged Linux lane prepares marked `remote_authoritative_staged_linux` and ordinary prepares left `local_authoritative`,
+    - the strict remote path now keys off that explicit `residency` signal all the way through plan generation, prepare realization, ssh fulfillment, and prepared-output recording instead of reconstructing intent from output-name strings,
+    - current `origin/master` also required a staged `nix/ci/pika-core-workspace/Cargo.lock` refresh so the narrowed staged workspace still builds under `--locked`,
+    - fresh reruns after that cleanup still passed for both migrated lanes:
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` -> `20260311T050426Z-86e71d64`
+      - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260311T045909Z-7d805dc8`
+    - so the next structural cleanup target is no longer remote-authoritative prepare inference; it is the remaining stringly lane-specific runner/output selection and remote path default wiring inside `pikaci`.

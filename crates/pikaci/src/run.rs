@@ -24,8 +24,8 @@ use crate::model::{
     PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
     PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
     PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
-    PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
-    RunnerKind, StagedLinuxRustLane,
+    PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord,
+    RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
 };
 use crate::snapshot::{
     SnapshotProfile, create_snapshot_with_profile, git_dirty, git_head, materialize_workspace,
@@ -692,6 +692,7 @@ enum PrepareAction {
     NixBuildOutput {
         installable: String,
         output_name: &'static str,
+        residency: PreparedOutputResidency,
         handoff: Option<PreparedOutputHandoff>,
         mount_paths: Vec<PathBuf>,
         log_paths: Vec<PathBuf>,
@@ -725,6 +726,7 @@ struct PreparedOutputMaterialization<'a> {
     installable: &'a str,
     output_name: &'a str,
     protocol: PreparedOutputHandoffProtocol,
+    residency: PreparedOutputResidency,
     realized_path: &'a Path,
 }
 
@@ -735,23 +737,13 @@ struct RemotePreparedOutputRealization {
     remote_installable: String,
 }
 
-fn is_strict_remote_staged_linux_rust_output(output_name: &str) -> bool {
-    matches!(
-        output_name,
-        "ci.x86_64-linux.workspaceDeps"
-            | "ci.x86_64-linux.workspaceBuild"
-            | "ci.x86_64-linux.agentContractsWorkspaceDeps"
-            | "ci.x86_64-linux.agentContractsWorkspaceBuild"
-    )
-}
-
 fn can_record_remote_authoritative_local_result(
-    output_name: &str,
+    residency: PreparedOutputResidency,
     launcher_transport_mode: Option<PreparedOutputLauncherTransportMode>,
     realized_path: &Path,
 ) -> bool {
     launcher_transport_mode == Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
-        && is_strict_remote_staged_linux_rust_output(output_name)
+        && residency == PreparedOutputResidency::RemoteAuthoritativeStagedLinux
         && !realized_path.exists()
 }
 
@@ -932,6 +924,7 @@ fn build_run_plan(
                         action: PrepareAction::NixBuildOutput {
                             installable: workspace_deps_installable.clone(),
                             output_name: lane.workspace_deps_output_name(),
+                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
                             handoff: Some(PreparedOutputHandoff {
                                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                                 exposures: Vec::new(),
@@ -951,6 +944,7 @@ fn build_run_plan(
                         prepare: PrepareNode::NixBuild {
                             installable: workspace_deps_installable.clone(),
                             output_name: lane.workspace_deps_output_name().to_string(),
+                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
                             handoff: Some(PreparedOutputHandoff {
                                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                                 exposures: Vec::new(),
@@ -967,6 +961,7 @@ fn build_run_plan(
                         action: PrepareAction::NixBuildOutput {
                             installable: workspace_build_installable.clone(),
                             output_name: lane.workspace_build_output_name(),
+                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
                             handoff: Some(PreparedOutputHandoff {
                                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                                 exposures: Vec::new(),
@@ -986,6 +981,7 @@ fn build_run_plan(
                         prepare: PrepareNode::NixBuild {
                             installable: workspace_build_installable.clone(),
                             output_name: lane.workspace_build_output_name().to_string(),
+                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
                             handoff: Some(PreparedOutputHandoff {
                                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
                                 exposures: Vec::new(),
@@ -1060,6 +1056,7 @@ fn build_run_plan(
                         output_name:
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                                 .to_string(),
+                        residency: PreparedOutputResidency::LocalAuthoritative,
                         handoff: None,
                     },
                 },
@@ -1303,6 +1300,7 @@ fn write_prepared_output_remote_exposure_request(
             installable: materialization.installable.to_string(),
             output_name: materialization.output_name.to_string(),
             protocol: materialization.protocol,
+            residency: materialization.residency,
             realized_path: materialization.realized_path.display().to_string(),
             requested_exposures: handoff.exposures.clone(),
         },
@@ -2187,6 +2185,7 @@ impl PreparedOutputFulfillmentLauncherTransport
             installable: helper_request.installable.clone(),
             output_name: helper_request.output_name.clone(),
             protocol: helper_request.protocol,
+            residency: helper_request.residency,
             realized_path: helper_request.realized_path.clone(),
             requested_exposures: translated_exposures.clone(),
         };
@@ -2203,7 +2202,7 @@ impl PreparedOutputFulfillmentLauncherTransport
         let remote_realized_path_exists =
             remote_path_exists_via_ssh(&ssh_program, &host, &realized_path)?;
         if !remote_realized_path_exists
-            && is_strict_remote_staged_linux_rust_output(&helper_request.output_name)
+            && helper_request.residency == PreparedOutputResidency::RemoteAuthoritativeStagedLinux
         {
             return Err(anyhow!(
                 "prepared output {} is not available on remote host {}; refusing local nix copy fallback for staged Linux Rust output {}",
@@ -2333,7 +2332,7 @@ impl PreparedOutputFulfillmentLauncherTransport
         let local_result = if realized_path.exists() {
             fulfill_prepared_output_request_result(Path::new(&launch_request.helper_request_path))
         } else if can_record_remote_authoritative_local_result(
-            &helper_request.output_name,
+            helper_request.residency,
             Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
             &realized_path,
         ) {
@@ -2657,7 +2656,7 @@ fn fulfill_prepared_output_request_via_subprocess(
     }
     let allow_remote_authoritative_local_metadata = result.fulfilled_exposures.is_empty()
         && can_record_remote_authoritative_local_result(
-            &request.output_name,
+            request.residency,
             subprocess.launcher_transport_mode,
             Path::new(&request.realized_path),
         );
@@ -3041,6 +3040,7 @@ fn record_failed_prepared_output_handoff(
             installable: materialization.installable.to_string(),
             output_name: materialization.output_name.to_string(),
             protocol: handoff.protocol,
+            residency: materialization.residency,
             consumer: failure.kind,
             realized_path: materialization.realized_path.display().to_string(),
             consumer_request_path: failure.consumer_request_path.clone(),
@@ -3064,10 +3064,10 @@ fn prepared_output_consumer_kind_text(kind: PreparedOutputConsumerKind) -> &'sta
 fn staged_linux_rust_remote_realization(
     run_dir: &Path,
     installable: &str,
-    output_name: &str,
+    residency: PreparedOutputResidency,
     invocation: PreparedOutputInvocationConfig<'_>,
 ) -> anyhow::Result<Option<RemotePreparedOutputRealization>> {
-    if !is_strict_remote_staged_linux_rust_output(output_name) {
+    if residency != PreparedOutputResidency::RemoteAuthoritativeStagedLinux {
         return Ok(None);
     }
     if invocation.launcher_transport_mode
@@ -3127,11 +3127,12 @@ fn realize_nix_build_output(
     run_dir: &Path,
     installable: &str,
     output_name: &str,
+    residency: PreparedOutputResidency,
     log_paths: &[PathBuf],
     invocation: PreparedOutputInvocationConfig<'_>,
 ) -> anyhow::Result<PathBuf> {
     if let Some(remote) =
-        staged_linux_rust_remote_realization(run_dir, installable, output_name, invocation)?
+        staged_linux_rust_remote_realization(run_dir, installable, residency, invocation)?
     {
         let first_log_path = log_paths
             .first()
@@ -3403,6 +3404,7 @@ fn run_prepare_nodes(
             PrepareAction::NixBuildOutput {
                 installable,
                 output_name,
+                residency,
                 handoff,
                 mount_paths,
                 log_paths,
@@ -3411,6 +3413,7 @@ fn run_prepare_nodes(
                     run_dir,
                     installable,
                     output_name,
+                    *residency,
                     log_paths,
                     invocation,
                 )
@@ -3436,6 +3439,7 @@ fn run_prepare_nodes(
                         installable,
                         output_name,
                         protocol: handoff.protocol,
+                        residency: *residency,
                         realized_path: &output_path,
                     };
                     let consumer_result = consume_prepared_output_handoff(
@@ -3473,6 +3477,7 @@ fn run_prepare_nodes(
                             installable: installable.clone(),
                             output_name: (*output_name).to_string(),
                             protocol: handoff.protocol,
+                            residency: *residency,
                             consumer: consumer_result.kind,
                             realized_path: output_path.display().to_string(),
                             consumer_request_path: consumer_result.consumer_request_path,
@@ -3807,8 +3812,8 @@ mod tests {
         configured_prepared_output_launcher_transport_mode, consume_prepared_output_handoff,
         fulfill_prepared_output_request, fulfill_prepared_output_request_result, gc_runs,
         load_prepared_output_fulfillment_launch_request, load_prepared_output_fulfillment_result,
-        load_prepared_output_fulfillment_transport_request, mark_prepare_failure,
-        parallel_execute_cap_for_jobs, parse_bool_env_flag,
+        load_prepared_output_fulfillment_transport_request, load_prepared_output_request,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag,
         prepared_output_fulfillment_launcher_program, ready_execute_job_positions,
         record_failed_prepared_output_handoff, resolve_prepared_output_fulfillment_program,
         resolve_run_prepared_output_consumer_kind_for_mode,
@@ -3831,8 +3836,8 @@ mod tests {
         PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
         PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
-        PreparedOutputsRecord, RealizedPreparedOutputRecord, RunPlanRecord, RunRecord, RunStatus,
-        StagedLinuxRustLane,
+        PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
+        RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
     };
 
     #[test]
@@ -3922,6 +3927,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        residency,
                         handoff,
                     } => {
                         assert!(
@@ -3929,6 +3935,10 @@ mod tests {
                                 .contains("runs/run-1/snapshot#ci.x86_64-linux.workspaceDeps")
                         );
                         assert_eq!(output_name, "ci.x86_64-linux.workspaceDeps");
+                        assert_eq!(
+                            *residency,
+                            PreparedOutputResidency::RemoteAuthoritativeStagedLinux
+                        );
                         let handoff = handoff.as_ref().expect("workspace deps handoff");
                         assert_eq!(
                             handoff.protocol,
@@ -3969,6 +3979,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        residency,
                         handoff,
                     } => {
                         assert!(
@@ -3976,6 +3987,10 @@ mod tests {
                                 .contains("runs/run-1/snapshot#ci.x86_64-linux.workspaceBuild")
                         );
                         assert_eq!(output_name, "ci.x86_64-linux.workspaceBuild");
+                        assert_eq!(
+                            *residency,
+                            PreparedOutputResidency::RemoteAuthoritativeStagedLinux
+                        );
                         let handoff = handoff.as_ref().expect("workspace build handoff");
                         assert_eq!(
                             handoff.protocol,
@@ -4005,6 +4020,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        residency,
                         handoff,
                     } => {
                         assert!(installable.contains(
@@ -4014,6 +4030,7 @@ mod tests {
                             output_name,
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         );
+                        assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
                         assert!(handoff.is_none());
                     }
                 }
@@ -4034,6 +4051,7 @@ mod tests {
                     PrepareNode::NixBuild {
                         installable,
                         output_name,
+                        residency,
                         handoff,
                     } => {
                         assert!(installable.contains(
@@ -4043,6 +4061,7 @@ mod tests {
                             output_name,
                             "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
                         );
+                        assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
                         assert!(handoff.is_none());
                     }
                 }
@@ -4249,6 +4268,7 @@ mod tests {
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 consumer: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
                 realized_path: "/nix/store/workspace-build".to_string(),
                 consumer_request_path: None,
@@ -4281,6 +4301,10 @@ mod tests {
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
         );
         assert_eq!(
+            decoded.outputs[0].residency,
+            PreparedOutputResidency::LocalAuthoritative
+        );
+        assert_eq!(
             decoded.outputs[0].exposures[0].path,
             "/tmp/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build"
         );
@@ -4303,6 +4327,7 @@ mod tests {
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let handoff = PreparedOutputHandoff {
@@ -4407,6 +4432,7 @@ mod tests {
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
 
@@ -4463,6 +4489,7 @@ mod tests {
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let consumer = RemoteExposureRequestPreparedOutputConsumer;
@@ -4494,6 +4521,7 @@ mod tests {
         let request_body = fs::read_to_string(request_path).expect("read request");
         assert!(request_body.contains("\"schema_version\": 1"));
         assert!(request_body.contains("\"output_name\": \"ci.x86_64-linux.workspaceBuild\""));
+        assert!(request_body.contains("\"residency\": \"local_authoritative\""));
         assert!(request_body.contains("\"requested_exposures\""));
         assert!(request_body.contains(&mount_path.display().to_string()));
         assert!(fs::read_to_string(&log_path).expect("read log").contains(
@@ -4762,7 +4790,7 @@ mod tests {
         let remote = staged_linux_rust_remote_realization(
             run_dir,
             "path:/tmp/pikaci/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild",
-            "ci.x86_64-linux.workspaceBuild",
+            PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
             PreparedOutputInvocationConfig {
                 launcher_transport_mode: Some(
                     PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
@@ -4811,7 +4839,7 @@ mod tests {
         let remote = staged_linux_rust_remote_realization(
             &root,
             &installable,
-            "ci.x86_64-linux.workspaceBuild",
+            PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
             PreparedOutputInvocationConfig {
                 launcher_transport_mode: Some(
                     PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
@@ -4836,6 +4864,28 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_authoritative_prepares_do_not_use_staged_remote_realization() {
+        let remote = staged_linux_rust_remote_realization(
+            Path::new("/tmp/pikaci/runs/run-123"),
+            "path:/tmp/pikaci/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild",
+            PreparedOutputResidency::LocalAuthoritative,
+            PreparedOutputInvocationConfig {
+                launcher_transport_mode: Some(
+                    PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+                ),
+                launcher_transport_host: Some("pika-build"),
+                launcher_transport_remote_work_dir: Some(Path::new(
+                    "/var/tmp/pikaci-prepared-output",
+                )),
+                ..PreparedOutputInvocationConfig::default()
+            },
+        )
+        .expect("translate local-authoritative realization");
+
+        assert!(remote.is_none());
     }
 
     #[test]
@@ -5102,6 +5152,7 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5224,6 +5275,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5350,6 +5402,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5513,6 +5566,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.generic-linux.workspaceBuild",
             output_name: "ci.generic-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5723,6 +5777,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5780,6 +5835,16 @@ EOF
             .expect("load helper result");
         assert_eq!(helper_result.fulfilled_exposures_count, 0);
         assert!(helper_result.fulfilled_exposures.is_empty());
+        let request_path = result
+            .consumer_request_path
+            .as_deref()
+            .expect("consumer request path");
+        let request =
+            load_prepared_output_request(Path::new(request_path)).expect("load helper request");
+        assert_eq!(
+            request.residency,
+            PreparedOutputResidency::RemoteAuthoritativeStagedLinux
+        );
         let ssh_log = fs::read_to_string(&ssh_log_path).expect("read ssh log");
         assert!(ssh_log.contains(&format!("pika-build test -e {}", realized_path.display())));
         assert!(!nix_log_path.exists());
@@ -5868,6 +5933,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -5980,6 +6046,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -6081,6 +6148,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -6210,6 +6278,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -6299,6 +6368,7 @@ EOF
             installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild",
             output_name: "ci.x86_64-linux.workspaceBuild",
             protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+            residency: PreparedOutputResidency::LocalAuthoritative,
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
@@ -6352,6 +6422,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: vec![PreparedOutputExposure {
                     kind: PreparedOutputExposureKind::HostSymlinkMount,
@@ -6391,6 +6462,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: Path::new("/nix/store/missing-output").display().to_string(),
                 requested_exposures: Vec::new(),
             },
@@ -6421,6 +6493,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: Vec::new(),
             },
@@ -6450,6 +6523,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: Vec::new(),
             },
@@ -6482,6 +6556,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: realized_path.display().to_string(),
                 requested_exposures: vec![PreparedOutputExposure {
                     kind: PreparedOutputExposureKind::HostSymlinkMount,
@@ -6525,6 +6600,7 @@ EOF
                 installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
                 output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
                 protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                residency: PreparedOutputResidency::LocalAuthoritative,
                 realized_path: Path::new("/nix/store/missing-output").display().to_string(),
                 requested_exposures: Vec::new(),
             },

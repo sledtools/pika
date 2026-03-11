@@ -216,6 +216,14 @@ pub enum PreparedOutputHandoffProtocol {
     NixStorePathV1,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedOutputResidency {
+    #[default]
+    LocalAuthoritative,
+    RemoteAuthoritativeStagedLinux,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedOutputExposureKind {
@@ -332,6 +340,8 @@ pub struct PreparedOutputRemoteExposureRequest {
     pub installable: String,
     pub output_name: String,
     pub protocol: PreparedOutputHandoffProtocol,
+    #[serde(default)]
+    pub residency: PreparedOutputResidency,
     pub realized_path: String,
     #[serde(default)]
     pub requested_exposures: Vec<PreparedOutputExposure>,
@@ -419,6 +429,8 @@ pub enum PrepareNode {
         installable: String,
         output_name: String,
         #[serde(default)]
+        residency: PreparedOutputResidency,
+        #[serde(default)]
         handoff: Option<PreparedOutputHandoff>,
     },
 }
@@ -499,6 +511,8 @@ pub struct RealizedPreparedOutputRecord {
     pub installable: String,
     pub output_name: String,
     pub protocol: PreparedOutputHandoffProtocol,
+    #[serde(default)]
+    pub residency: PreparedOutputResidency,
     pub consumer: PreparedOutputConsumerKind,
     pub realized_path: String,
     #[serde(default)]

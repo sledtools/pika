@@ -2277,9 +2277,9 @@ dependencies = [
 
 [[package]]
 name = "image"
-version = "0.25.9"
+version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6506c6c10786659413faa717ceebcb8f70731c0a60cbae39795fdf114519c1a"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
@@ -2986,9 +2986,9 @@ dependencies = [
 
 [[package]]
 name = "moxcms"
-version = "0.7.11"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
@@ -3797,8 +3797,10 @@ dependencies = [
  "nostr-sdk",
  "pika-marmot-runtime",
  "pika-relay-profiles",
+ "pika_core",
  "rand 0.8.5",
  "reqwest",
+ "rustls 0.23.37",
  "serde",
  "serde_json",
  "sha2",
@@ -4589,9 +4591,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.28"
+version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
+checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -5054,9 +5056,9 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.26.0"
+version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
  "getrandom 0.4.2",
@@ -5990,9 +5992,9 @@ dependencies = [
 
 [[package]]
 name = "web-transport-proto"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5afe275c02f899650c5497b946552fcc04f3f378bd2c3bc1e8005ff915772b97"
+checksum = "e95179845e1f87d88761da9aafc6d4cbcd14f11e3537e1ae8a3c5d7432b16cca"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -6004,9 +6006,9 @@ dependencies = [
 
 [[package]]
 name = "web-transport-quinn"
-version = "0.11.6"
+version = "0.11.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d356bedff779480f8d88d94bf50a2eb8dedabb84414442f73c16dfee9db55b8"
+checksum = "050fa7b2f24b822e6267fa1cff6c6a528c7862bcfaf24b9c0f3e07007815bd48"
 dependencies = [
  "bytes",
  "futures",

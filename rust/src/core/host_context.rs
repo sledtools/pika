@@ -163,18 +163,21 @@ impl<'a> AppHostContext<'a> {
             .plan_group_subscriptions(subscribed_group_ids)
     }
 
-    pub(super) fn plan_session_sync(
+    pub(super) fn refresh_session_state(
         &self,
         subscribed_group_ids: Vec<String>,
         long_lived_session_relays: Vec<RelayUrl>,
         temporary_key_package_relays: Vec<RelayUrl>,
         welcome_inbox: pika_marmot_runtime::runtime::RuntimeWelcomeInboxSubscriptionIntent,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionSyncPlan> {
-        self.runtime().plan_session_sync(
-            subscribed_group_ids,
-            long_lived_session_relays,
-            temporary_key_package_relays,
-            welcome_inbox,
+    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
+        self.runtime().refresh_session_open_state(
+            self.session.pubkey,
+            pika_marmot_runtime::runtime::RuntimeSessionOpenRequest {
+                subscribed_group_ids,
+                long_lived_session_relays,
+                temporary_key_package_relays,
+                welcome_inbox,
+            },
         )
     }
 

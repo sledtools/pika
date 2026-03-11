@@ -15,11 +15,12 @@ use pika_marmot_runtime::runtime::{
 use pika_marmot_runtime::welcome::publish_welcome_rumors;
 
 fn app_open_request(
+    subscribed_group_ids: Vec<String>,
     long_lived_session_relays: Vec<RelayUrl>,
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> RuntimeSessionOpenRequest {
     RuntimeSessionOpenRequest {
-        subscribed_group_ids: Vec::new(),
+        subscribed_group_ids,
         long_lived_session_relays,
         temporary_key_package_relays,
         welcome_inbox: app_welcome_inbox_intent(),
@@ -38,7 +39,11 @@ fn bootstrap_runtime_for_app(
         pubkey,
         signer,
         || open_mdk(data_dir, &pubkey, keychain_group),
-        app_open_request(long_lived_session_relays, temporary_key_package_relays),
+        app_open_request(
+            Vec::new(),
+            long_lived_session_relays,
+            temporary_key_package_relays,
+        ),
     )
 }
 
@@ -108,7 +113,14 @@ fn seed_app_groups_from_open_state(
 }
 
 fn plan_app_session_sync(core: &AppCore, sess: &Session) -> anyhow::Result<RuntimeSessionSyncPlan> {
-    sess.host_context().plan_session_sync(
+    Ok(refresh_runtime_for_app(core, sess)?.sync_plan)
+}
+
+fn refresh_runtime_for_app(
+    core: &AppCore,
+    sess: &Session,
+) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
+    sess.host_context().refresh_session_state(
         sess.groups.keys().cloned().collect(),
         core.long_lived_session_relays(),
         core.temporary_key_package_relays(),
@@ -157,7 +169,7 @@ impl AppCore {
         let initial_sync_plan = bootstrapped.open.sync_plan.clone();
         let initial_groups =
             seed_app_groups_from_open_state(&pubkey, &bootstrapped.open.joined_group_snapshots);
-        let initial_seen_welcomes = bootstrapped.startup.seen_welcomes;
+        let initial_seen_welcomes = bootstrapped.open.seed_seen_welcomes();
         let runtime_session = bootstrapped.session;
 
         if self.network_enabled() {
@@ -1152,8 +1164,75 @@ mod tests {
                 .self_is_admin
         );
         assert_eq!(
-            bootstrapped.startup.group_subscriptions.target_group_ids,
+            bootstrapped
+                .open
+                .current_group_subscriptions()
+                .target_group_ids,
             vec![hex::encode(created.group.nostr_group_id)]
+        );
+    }
+
+    #[test]
+    fn app_runtime_refresh_uses_shared_session_state() {
+        let (core, inviter_dir) = make_core_with_config(crate::core::config::AppConfig {
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..crate::core::config::AppConfig::default()
+        });
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData {
+                    name: "App runtime refresh".to_string(),
+                    description: String::new(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    admins: vec![inviter_keys.public_key()],
+                },
+            )
+            .expect("create group");
+        let mut groups = HashMap::new();
+        groups.insert(
+            "stale-group".to_string(),
+            GroupIndexEntry {
+                mls_group_id: GroupId::from_slice(&[1, 2, 3]),
+                is_group: true,
+                group_name: Some("Stale Group".into()),
+                self_is_admin: false,
+                members: vec![],
+            },
+        );
+        let session = Session {
+            pubkey: inviter_keys.public_key(),
+            local_keys: Some(inviter_keys.clone()),
+            mdk: inviter_mdk,
+            client: Client::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups,
+        };
+
+        let refreshed = refresh_runtime_for_app(&core, &session).expect("refresh app runtime");
+
+        assert_eq!(refreshed.joined_group_snapshots.len(), 1);
+        assert!(refreshed.pending_welcome_snapshots.is_empty());
+        assert_eq!(
+            refreshed.current_group_subscriptions().target_group_ids,
+            vec![hex::encode(created.group.nostr_group_id)]
+        );
+        assert_eq!(
+            refreshed.sync_plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group".to_string()]
         );
     }
 

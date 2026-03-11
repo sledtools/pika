@@ -276,27 +276,18 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().interpret_conversation_event(event)
     }
 
-    pub(super) fn plan_group_subscriptions(
+    pub(super) fn refresh_session_state(
         &self,
         subscribed_group_ids: Vec<String>,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
-        self.runtime()
-            .plan_group_subscriptions(subscribed_group_ids)
-    }
-
-    #[cfg(test)]
-    pub(super) fn plan_session_sync(
-        &self,
-        subscribed_group_ids: Vec<String>,
-        long_lived_session_relays: Vec<RelayUrl>,
-        temporary_key_package_relays: Vec<RelayUrl>,
-        welcome_inbox: pika_marmot_runtime::runtime::RuntimeWelcomeInboxSubscriptionIntent,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionSyncPlan> {
-        self.runtime().plan_session_sync(
-            subscribed_group_ids,
-            long_lived_session_relays,
-            temporary_key_package_relays,
-            welcome_inbox,
+        giftwrap_lookback_sec: u64,
+    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
+        self.runtime().refresh_session_open_state(
+            self.keys.public_key(),
+            super::daemon_open_request(
+                subscribed_group_ids,
+                self.relay_urls.to_vec(),
+                giftwrap_lookback_sec,
+            ),
         )
     }
 

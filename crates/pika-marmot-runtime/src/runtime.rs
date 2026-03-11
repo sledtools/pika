@@ -264,17 +264,26 @@ pub struct RuntimeSessionOpenState {
     pub sync_plan: RuntimeSessionSyncPlan,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RuntimeStartupState {
-    pub group_subscriptions: RuntimeGroupSubscriptionState,
-    pub seen_welcomes: HashSet<EventId>,
-    pub seen_group_events: HashSet<EventId>,
+impl RuntimeSessionOpenState {
+    pub fn current_group_subscriptions(&self) -> &RuntimeGroupSubscriptionState {
+        &self.sync_plan.group_subscriptions.current
+    }
+
+    pub fn seed_seen_welcomes(&self) -> HashSet<EventId> {
+        self.pending_welcome_snapshots
+            .iter()
+            .map(|welcome| welcome.wrapper_event_id)
+            .collect()
+    }
+
+    pub fn seed_seen_group_events(&self) -> HashSet<EventId> {
+        HashSet::new()
+    }
 }
 
 pub struct BootstrappedRuntimeSession {
     pub session: RuntimeSession,
     pub open: RuntimeSessionOpenState,
-    pub startup: RuntimeStartupState,
 }
 
 pub struct MarmotRuntime<'a> {
@@ -356,6 +365,13 @@ impl RuntimeSession {
             welcome_inbox,
         )
     }
+
+    pub fn refresh_open_state(
+        &self,
+        open_request: RuntimeSessionOpenRequest,
+    ) -> Result<RuntimeSessionOpenState> {
+        refresh_runtime_session_open_state(&self.mdk, self.pubkey, open_request)
+    }
 }
 
 impl BootstrappedRuntimeSession {
@@ -386,6 +402,14 @@ impl<'a> MarmotRuntime<'a> {
 
     pub fn client(&self) -> Option<&'a Client> {
         self.client
+    }
+
+    pub fn refresh_session_open_state(
+        &self,
+        pubkey: PublicKey,
+        open_request: RuntimeSessionOpenRequest,
+    ) -> Result<RuntimeSessionOpenState> {
+        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
     }
 
     pub fn conversation(&self) -> ConversationRuntime<'a> {
@@ -994,6 +1018,26 @@ where
     })
 }
 
+pub fn refresh_runtime_session_open_state(
+    mdk: &PikaMdk,
+    pubkey: PublicKey,
+    open_request: RuntimeSessionOpenRequest,
+) -> Result<RuntimeSessionOpenState> {
+    Ok(RuntimeSessionOpenState {
+        pubkey,
+        pubkey_hex: pubkey.to_hex(),
+        joined_group_snapshots: ConversationRuntime::new(mdk).list_joined_group_snapshots()?,
+        pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
+        sync_plan: plan_runtime_session_sync_from_mdk(
+            mdk,
+            open_request.subscribed_group_ids,
+            open_request.long_lived_session_relays,
+            open_request.temporary_key_package_relays,
+            open_request.welcome_inbox,
+        )?,
+    })
+}
+
 pub fn bootstrap_runtime_session<F>(
     pubkey: PublicKey,
     signer: Arc<dyn NostrSigner>,
@@ -1010,33 +1054,8 @@ where
         client,
         mdk,
     };
-    let runtime = session.runtime();
-    let open = RuntimeSessionOpenState {
-        pubkey,
-        pubkey_hex: pubkey.to_hex(),
-        joined_group_snapshots: runtime.list_joined_group_snapshots()?,
-        pending_welcome_snapshots: runtime.list_pending_welcome_snapshots()?,
-        sync_plan: runtime.plan_session_sync(
-            open_request.subscribed_group_ids,
-            open_request.long_lived_session_relays,
-            open_request.temporary_key_package_relays,
-            open_request.welcome_inbox,
-        )?,
-    };
-    let startup = RuntimeStartupState {
-        group_subscriptions: open.sync_plan.group_subscriptions.current.clone(),
-        seen_welcomes: open
-            .pending_welcome_snapshots
-            .iter()
-            .map(|welcome| welcome.wrapper_event_id)
-            .collect(),
-        seen_group_events: HashSet::new(),
-    };
-    Ok(BootstrappedRuntimeSession {
-        session,
-        open,
-        startup,
-    })
+    let open = session.refresh_open_state(open_request)?;
+    Ok(BootstrappedRuntimeSession { session, open })
 }
 
 #[cfg(test)]
@@ -1611,9 +1630,7 @@ mod tests {
         assert_eq!(
             bootstrapped
                 .open
-                .sync_plan
-                .group_subscriptions
-                .current
+                .current_group_subscriptions()
                 .target_group_ids,
             vec![expected_group_id.clone()]
         );
@@ -1629,15 +1646,71 @@ mod tests {
             ]
         );
         assert_eq!(
-            bootstrapped.startup.group_subscriptions.target_group_ids,
+            bootstrapped
+                .open
+                .current_group_subscriptions()
+                .target_group_ids,
             vec![expected_group_id]
         );
         assert_eq!(
-            bootstrapped.startup.group_subscriptions.relay_urls,
+            bootstrapped.open.current_group_subscriptions().relay_urls,
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")]
         );
-        assert!(bootstrapped.startup.seen_welcomes.is_empty());
-        assert!(bootstrapped.startup.seen_group_events.is_empty());
+        assert!(bootstrapped.open.seed_seen_welcomes().is_empty());
+        assert!(bootstrapped.open.seed_seen_group_events().is_empty());
+    }
+
+    #[test]
+    fn refresh_runtime_session_open_state_rebuilds_current_sync_view() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime recompute test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        let refreshed = refresh_runtime_session_open_state(
+            &inviter_mdk,
+            inviter_keys.public_key(),
+            RuntimeSessionOpenRequest {
+                subscribed_group_ids: vec!["stale-group".to_string()],
+                long_lived_session_relays: vec![
+                    RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                ],
+                temporary_key_package_relays: vec![
+                    RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
+                ],
+                welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent::default(),
+            },
+        )
+        .expect("refresh runtime session open state");
+
+        assert_eq!(refreshed.pubkey, inviter_keys.public_key());
+        assert_eq!(refreshed.joined_group_snapshots.len(), 1);
+        assert_eq!(
+            refreshed.current_group_subscriptions().target_group_ids,
+            vec![hex::encode(created.group.nostr_group_id)]
+        );
+        assert_eq!(
+            refreshed.sync_plan.group_subscriptions.removed_group_ids,
+            vec!["stale-group"]
+        );
+        assert!(refreshed.pending_welcome_snapshots.is_empty());
     }
 
     #[test]
@@ -1704,7 +1777,7 @@ mod tests {
             bootstrapped.open.pending_welcome_snapshots[0].group_description,
             "shared bootstrap open state"
         );
-        assert!(bootstrapped.startup.seen_welcomes.contains(&wrapper.id));
+        assert!(bootstrapped.open.seed_seen_welcomes().contains(&wrapper.id));
     }
 
     #[test]

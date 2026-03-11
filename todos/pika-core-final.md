@@ -330,6 +330,8 @@ Current status:
 - app outbound/add-member/call-prep helpers and daemon resolve/outbound/relay-auth prep now consume that shared joined-group context lookup while keeping UI/protocol presentation and execution local
 - ninth session-facing slice landed: shared runtime bootstrap/open state now packages local identity, current joined-group snapshots, current pending-welcome snapshots, and the initial session-sync plan from MDK/runtime state
 - app startup and daemon init now consume that shared open-state while keeping actual client ownership, notification-loop ownership, connect/subscription execution, and UI/protocol projection local
+- tenth session-facing slice landed: the shared runtime open-state can now be recomputed from current MDK/runtime state after changes, and it owns canonical group-subscription plus welcome-seen seeding instead of duplicating that data in a separate startup struct
+- app subscription recompute and daemon post-init-group refresh now consume that shared recompute path while keeping actual client ownership, loop ownership, connect/subscription execution, and host side effects local
 
 Important caution:
 this is probably harder than the earlier slices. Do not make session bootstrap/storage abstraction

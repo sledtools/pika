@@ -3843,6 +3843,16 @@ impl AppCore {
         }
     }
 
+    fn handle_call_signal_publish_operation(&mut self, operation: CallSignalPublishOperationEvent) {
+        let kind = operation.kind();
+        if let Err(error) = operation.into_result() {
+            self.toast(format!(
+                "{}: {error}",
+                call_signal_publish_failure_context(kind)
+            ));
+        }
+    }
+
     fn handle_peer_key_package_fetched(
         &mut self,
         token: u64,
@@ -4320,18 +4330,8 @@ impl AppCore {
             RuntimeOperationEvent::OutboundConversationPublish(operation) => {
                 self.handle_outbound_publish_operation(operation);
             }
-            RuntimeOperationEvent::CallSignalPublish(
-                CallSignalPublishOperationEvent::Completed { .. },
-            ) => {}
-            RuntimeOperationEvent::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
-                kind,
-                error,
-                ..
-            }) => {
-                self.toast(format!(
-                    "{}: {error}",
-                    call_signal_publish_failure_context(kind)
-                ));
+            RuntimeOperationEvent::CallSignalPublish(operation) => {
+                self.handle_call_signal_publish_operation(operation);
             }
             RuntimeOperationEvent::MediaUpload(_) => {}
         }

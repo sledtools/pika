@@ -4502,6 +4502,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn daemon_membership_operation_result_uses_shared_runtime_event_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon membership operation".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let prepared = host
+            .prepare_add_members(&hex::encode(created.group.nostr_group_id), &[peer_kp])
+            .expect("prepare add members");
+        let operation_id = prepared.evolution_event.id;
+
+        let operation = host.complete_membership_evolution_operation(
+            prepared,
+            pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+        );
+
+        match operation {
+            pika_marmot_runtime::runtime::RuntimeOperationEvent::MembershipEvolution(
+                pika_marmot_runtime::runtime::MembershipEvolutionOperationEvent::Completed {
+                    operation_id: completed_id,
+                    result,
+                },
+            ) => {
+                assert_eq!(completed_id, operation_id);
+                assert_eq!(
+                    result.nostr_group_id_hex,
+                    hex::encode(created.group.nostr_group_id)
+                );
+                assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
+                assert!(result.merge_error.is_none());
+            }
+            other => panic!("expected completed membership operation event, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn accept_welcome_with_backfill_uses_shared_runtime_helper() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");

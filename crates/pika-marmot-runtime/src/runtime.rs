@@ -22,7 +22,9 @@ use crate::media::{
     MediaRuntime, ParsedMediaAttachment, PreparedMediaUpload, RuntimeDownloadedMedia,
     RuntimeMediaUploadResult,
 };
-use crate::membership::{MembershipRuntime, MembershipUpdateResult, PreparedMembershipEvolution};
+use crate::membership::{
+    EvolutionPublishStatus, MembershipRuntime, MembershipUpdateResult, PreparedMembershipEvolution,
+};
 use crate::outbound::{
     OutboundConversationAction, OutboundConversationRuntime, PreparedConversationAction,
     PublishedConversationAction, ResolvedConversationTarget,
@@ -120,6 +122,76 @@ pub enum RuntimeConversationEventInterpretation {
     NeedsFullRefresh {
         reason: RuntimeConversationRefreshReason,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeOperationEvent {
+    MembershipEvolution(MembershipEvolutionOperationEvent),
+}
+
+impl RuntimeOperationEvent {
+    pub fn operation_id(&self) -> EventId {
+        match self {
+            Self::MembershipEvolution(event) => event.operation_id(),
+        }
+    }
+
+    pub fn nostr_group_id_hex(&self) -> &str {
+        match self {
+            Self::MembershipEvolution(event) => event.nostr_group_id_hex(),
+        }
+    }
+
+    pub fn membership_evolution_failed(
+        prepared: PreparedMembershipEvolution,
+        error: String,
+    ) -> Self {
+        let operation_id = prepared.evolution_event.id;
+        let PreparedMembershipEvolution {
+            mls_group_id,
+            nostr_group_id_hex,
+            ..
+        } = prepared;
+        Self::MembershipEvolution(MembershipEvolutionOperationEvent::Failed {
+            operation_id,
+            mls_group_id,
+            nostr_group_id_hex,
+            error,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MembershipEvolutionOperationEvent {
+    Completed {
+        operation_id: EventId,
+        result: MembershipUpdateResult,
+    },
+    Failed {
+        operation_id: EventId,
+        mls_group_id: GroupId,
+        nostr_group_id_hex: String,
+        error: String,
+    },
+}
+
+impl MembershipEvolutionOperationEvent {
+    pub fn operation_id(&self) -> EventId {
+        match self {
+            Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
+                *operation_id
+            }
+        }
+    }
+
+    pub fn nostr_group_id_hex(&self) -> &str {
+        match self {
+            Self::Completed { result, .. } => &result.nostr_group_id_hex,
+            Self::Failed {
+                nostr_group_id_hex, ..
+            } => nostr_group_id_hex,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -544,6 +616,25 @@ impl<'a> RuntimeCommands<'a> {
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
         MembershipRuntime::new(self.mdk).finalize_published_evolution(prepared)
+    }
+
+    pub fn complete_membership_evolution_operation(
+        &self,
+        prepared: PreparedMembershipEvolution,
+        publish_status: EvolutionPublishStatus,
+    ) -> RuntimeOperationEvent {
+        let operation_id = prepared.evolution_event.id;
+        match publish_status {
+            EvolutionPublishStatus::Published => RuntimeOperationEvent::MembershipEvolution(
+                MembershipEvolutionOperationEvent::Completed {
+                    operation_id,
+                    result: self.finalize_published_evolution(prepared),
+                },
+            ),
+            EvolutionPublishStatus::PublishFailed(error) => {
+                RuntimeOperationEvent::membership_evolution_failed(prepared, error)
+            }
+        }
     }
 
     pub async fn publish_prepared_action(
@@ -2052,6 +2143,127 @@ mod tests {
                 .recipients,
             vec![peer_keys.public_key()]
         );
+    }
+
+    #[test]
+    fn runtime_commands_complete_membership_operation_returns_completed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let peer_mdk = open_test_mdk(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime membership op test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
+            .expect("prepare add members");
+        let operation_id = prepared.evolution_event.id;
+
+        let event = commands
+            .complete_membership_evolution_operation(prepared, EvolutionPublishStatus::Published);
+
+        match event {
+            RuntimeOperationEvent::MembershipEvolution(
+                MembershipEvolutionOperationEvent::Completed {
+                    operation_id: completed_id,
+                    result,
+                },
+            ) => {
+                assert_eq!(completed_id, operation_id);
+                assert_eq!(
+                    result.nostr_group_id_hex,
+                    hex::encode(created.group.nostr_group_id)
+                );
+                assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
+                assert!(result.merge_error.is_none());
+            }
+            other => panic!("expected completed membership operation event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_commands_complete_membership_operation_returns_failed_event() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let peer_mdk = open_test_mdk(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime membership op fail test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+        let prepared = commands
+            .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
+            .expect("prepare add members");
+        let operation_id = prepared.evolution_event.id;
+
+        let event = commands.complete_membership_evolution_operation(
+            prepared,
+            EvolutionPublishStatus::PublishFailed("relay down".to_string()),
+        );
+
+        match event {
+            RuntimeOperationEvent::MembershipEvolution(
+                MembershipEvolutionOperationEvent::Failed {
+                    operation_id: failed_id,
+                    nostr_group_id_hex,
+                    error,
+                    ..
+                },
+            ) => {
+                assert_eq!(failed_id, operation_id);
+                assert_eq!(
+                    nostr_group_id_hex,
+                    hex::encode(created.group.nostr_group_id)
+                );
+                assert_eq!(error, "relay down");
+            }
+            other => panic!("expected failed membership operation event, got {other:?}"),
+        }
     }
 
     #[test]

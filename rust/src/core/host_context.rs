@@ -132,11 +132,13 @@ impl<'a> AppHostContext<'a> {
         )
     }
 
-    pub(super) fn finalize_published_evolution(
+    pub(super) fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,
-    ) -> MembershipUpdateResult {
-        self.commands().finalize_published_evolution(prepared)
+        publish_status: EvolutionPublishStatus,
+    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        self.commands()
+            .complete_membership_evolution_operation(prepared, publish_status)
     }
 
     pub(super) fn process_group_message_event(

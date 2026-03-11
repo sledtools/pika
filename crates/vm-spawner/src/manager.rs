@@ -1428,7 +1428,6 @@ fn guest_workspace_regular_file_path_on_host(
     );
     Ok(host_path)
 }
-
 fn parse_staging_vm_id(name: &str) -> Option<&str> {
     let rest = name.strip_prefix(CREATE_STAGING_PREFIX)?;
     let (vm_id, _) = rest.split_once("__")?;

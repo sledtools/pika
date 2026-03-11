@@ -105,6 +105,14 @@ fn extract_pikaci_target_filters(text: &str, target_name: &str) -> Vec<String> {
     filters
 }
 
+fn extract_just_alias_target(text: &str, alias_name: &str) -> Option<String> {
+    let prefix = format!("alias {alias_name} := ");
+    text.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(|value| value.trim().to_string())
+    })
+}
+
 fn parse_cli_selector_refs(text: &str) -> HashSet<String> {
     let mut selectors = HashSet::new();
     let tokens: Vec<&str> = text.split_whitespace().collect();
@@ -418,11 +426,23 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
 }
 
 #[test]
-fn pre_merge_pikachat_filter_tracks_checked_in_rust_lane_surface() -> Result<()> {
+fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
     let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
     let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
+
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let alias_target = extract_just_alias_target(&justfile, "pre-merge-pikachat");
+    assert_eq!(
+        alias_target.as_deref(),
+        Some("checks::pre-merge-pikachat"),
+        "justfile must keep pre-merge-pikachat routed through checks::pre-merge-pikachat for this workflow guardrail"
+    );
+    assert!(
+        pikachat_filter.contains("just/checks.just"),
+        "pikachat workflow filter must include just/checks.just because pre-merge-pikachat is defined there"
+    );
 
     let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
     let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust");

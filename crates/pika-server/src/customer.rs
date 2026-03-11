@@ -8,9 +8,10 @@ use axum::{Extension, Json};
 
 use crate::agent_api::{
     list_recent_managed_environment_events, load_current_ready_managed_environment,
-    load_launchable_managed_environment, load_managed_environment_status,
-    provision_managed_environment_if_missing, recover_agent_for_owner, reset_agent_for_owner,
-    spawner_base_url, AgentApiError, ManagedEnvironmentStatus,
+    load_launchable_managed_environment, load_managed_environment_backup_status,
+    load_managed_environment_status, provision_managed_environment_if_missing,
+    recover_agent_for_owner, reset_agent_for_owner, spawner_base_url, AgentApiError,
+    ManagedEnvironmentBackupFreshness, ManagedEnvironmentBackupStatus, ManagedEnvironmentStatus,
 };
 use crate::browser_auth::BrowserAuthConfig;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
@@ -29,6 +30,8 @@ const OPENCLAW_UI_SESSION_KIND: &str = "openclaw_ui_session";
 const OPENCLAW_UI_SESSION_COOKIE: &str = "pika_openclaw_ui_session";
 const OPENCLAW_LAUNCH_TTL_SECS: i64 = 60;
 const OPENCLAW_UI_SESSION_TTL_SECS: i64 = 15 * 60;
+const RESET_CONFIRMATION_KIND: &str = "customer_reset_confirmation";
+const RESET_CONFIRMATION_TTL_SECS: i64 = 15 * 60;
 pub(crate) const OPENCLAW_INTERNAL_LAUNCH_PATH: &str = "/_openclaw_launch";
 pub(crate) const OPENCLAW_INTERNAL_PROXY_PREFIX: &str = "/_openclaw_proxy";
 pub(crate) const OPENCLAW_INTERNAL_PROXY_PATH: &str = "/_openclaw_proxy/*path";
@@ -41,6 +44,12 @@ pub struct VerifyRequest {
 #[derive(Debug, serde::Deserialize)]
 pub struct ActionForm {
     csrf_token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ResetActionForm {
+    csrf_token: String,
+    confirmation_token: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -58,6 +67,13 @@ struct AuthenticatedCustomer {
 struct DashboardActivityItem {
     created_at: String,
     message: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct ResetConfirmationTicket {
+    kind: String,
+    npub: String,
+    exp: i64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -106,10 +122,32 @@ struct DashboardTemplate {
     has_control_loop_notice: bool,
     recover_action_label: &'static str,
     recover_semantics_copy: &'static str,
+    backup_state_label: &'static str,
+    backup_state_tone: &'static str,
+    backup_status_copy: String,
+    backup_last_successful_at: String,
+    backup_host: String,
+    has_backup_host: bool,
+    reset_requires_confirmation: bool,
+    reset_safety_copy: String,
     can_launch_openclaw: bool,
     launch_status_copy: &'static str,
     recent_activity: Vec<DashboardActivityItem>,
     has_recent_activity: bool,
+}
+
+#[derive(Template)]
+#[template(path = "customer/reset_confirm.html")]
+struct ResetConfirmTemplate {
+    owner_npub: String,
+    csrf_token: String,
+    confirmation_token: String,
+    backup_state_label: &'static str,
+    backup_state_tone: &'static str,
+    backup_status_copy: String,
+    backup_last_successful_at: String,
+    backup_host: String,
+    has_backup_host: bool,
 }
 
 fn browser_auth(state: &State) -> &BrowserAuthConfig {
@@ -206,9 +244,48 @@ fn format_timestamp(value: Option<chrono::NaiveDateTime>) -> String {
         .unwrap_or_else(|| "not_available".to_string())
 }
 
+fn format_rfc3339_timestamp(value: Option<&str>) -> String {
+    value
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .map(|value| format!("{}", value.format("%Y-%m-%d %H:%M:%S UTC")))
+        .unwrap_or_else(|| "not_available".to_string())
+}
+
+fn backup_state_label(freshness: ManagedEnvironmentBackupFreshness) -> &'static str {
+    match freshness {
+        ManagedEnvironmentBackupFreshness::NotProvisioned => "not_provisioned",
+        ManagedEnvironmentBackupFreshness::Healthy => "healthy",
+        ManagedEnvironmentBackupFreshness::Stale => "stale",
+        ManagedEnvironmentBackupFreshness::Missing => "missing",
+        ManagedEnvironmentBackupFreshness::Unavailable => "unavailable",
+    }
+}
+
+fn backup_state_tone(freshness: ManagedEnvironmentBackupFreshness) -> &'static str {
+    match freshness {
+        ManagedEnvironmentBackupFreshness::Healthy => "ok",
+        ManagedEnvironmentBackupFreshness::Stale => "warm",
+        ManagedEnvironmentBackupFreshness::Missing
+        | ManagedEnvironmentBackupFreshness::Unavailable => "error",
+        ManagedEnvironmentBackupFreshness::NotProvisioned => "idle",
+    }
+}
+
 fn verify_action_csrf(
     authenticated: &AuthenticatedCustomer,
     form: &ActionForm,
+) -> Result<(), (StatusCode, String)> {
+    if authenticated.csrf_token == form.csrf_token {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "invalid csrf token".to_string()))
+    }
+}
+
+fn verify_reset_action_csrf(
+    authenticated: &AuthenticatedCustomer,
+    form: &ResetActionForm,
 ) -> Result<(), (StatusCode, String)> {
     if authenticated.csrf_token == form.csrf_token {
         Ok(())
@@ -270,6 +347,59 @@ fn cookie_value_from_headers(headers: &HeaderMap, cookie_name: &str) -> Option<S
         }
     }
     None
+}
+
+fn issue_reset_confirmation_ticket(
+    state: &State,
+    npub: &str,
+) -> Result<String, (StatusCode, String)> {
+    browser_auth(state)
+        .sign_payload(&ResetConfirmationTicket {
+            kind: RESET_CONFIRMATION_KIND.to_string(),
+            npub: npub.to_string(),
+            exp: chrono::Utc::now().timestamp() + RESET_CONFIRMATION_TTL_SECS,
+        })
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn verify_reset_confirmation_ticket(
+    state: &State,
+    npub: &str,
+    token: Option<&str>,
+) -> Result<(), (StatusCode, String)> {
+    let token = token.ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            "destructive reset requires confirmation because backup protection is not healthy"
+                .to_string(),
+        )
+    })?;
+    let ticket: ResetConfirmationTicket =
+        browser_auth(state).verify_payload(token).map_err(|_| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "invalid reset confirmation".to_string(),
+            )
+        })?;
+    if ticket.kind != RESET_CONFIRMATION_KIND {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid reset confirmation".to_string(),
+        ));
+    }
+    if ticket.exp < chrono::Utc::now().timestamp() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "reset confirmation expired".to_string(),
+        ));
+    }
+    if ticket.npub != npub {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "reset confirmation owner mismatch".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn issue_openclaw_launch_ticket(
@@ -458,6 +588,7 @@ fn copy_proxy_response_headers(target: &mut HeaderMap, source: &reqwest::header:
 fn dashboard_template(
     authenticated: AuthenticatedCustomer,
     status: ManagedEnvironmentStatus,
+    backup: ManagedEnvironmentBackupStatus,
     recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
     let row = status.row;
@@ -473,6 +604,10 @@ fn dashboard_template(
     let can_launch_openclaw = app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
         && startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
         && recoverable_vm_exists;
+    let has_backup_host = backup.backup_host.is_some();
+    let backup_host = backup
+        .backup_host
+        .unwrap_or_else(|| "not_available".to_string());
     DashboardTemplate {
         owner_npub: authenticated.npub,
         template_name: "OpenClaw",
@@ -517,6 +652,22 @@ fn dashboard_template(
         } else {
             "will provision a fresh Managed OpenClaw environment instead of restoring prior durable state because no recoverable VM is available."
         },
+        backup_state_label: backup_state_label(backup.freshness),
+        backup_state_tone: backup_state_tone(backup.freshness),
+        backup_status_copy: backup.status_copy,
+        backup_last_successful_at: format_rfc3339_timestamp(
+            backup.latest_successful_backup_at.as_deref(),
+        ),
+        backup_host,
+        has_backup_host,
+        reset_requires_confirmation: backup.reset_requires_confirmation,
+        reset_safety_copy: if backup.reset_requires_confirmation {
+            "Because backup protection is stale, missing, or unavailable, destructive reset now requires an explicit confirmation step."
+                .to_string()
+        } else {
+            "Recent backup protection is healthy, so destructive reset remains available directly from the dashboard."
+                .to_string()
+        },
         can_launch_openclaw,
         launch_status_copy: if can_launch_openclaw {
             "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
@@ -531,6 +682,30 @@ fn dashboard_template(
         },
         has_recent_activity: !recent_activity.is_empty(),
         recent_activity,
+    }
+}
+
+fn reset_confirm_template(
+    authenticated: &AuthenticatedCustomer,
+    backup: ManagedEnvironmentBackupStatus,
+    confirmation_token: String,
+) -> ResetConfirmTemplate {
+    let has_backup_host = backup.backup_host.is_some();
+    let backup_host = backup
+        .backup_host
+        .unwrap_or_else(|| "not_available".to_string());
+    ResetConfirmTemplate {
+        owner_npub: authenticated.npub.clone(),
+        csrf_token: authenticated.csrf_token.clone(),
+        confirmation_token,
+        backup_state_label: backup_state_label(backup.freshness),
+        backup_state_tone: backup_state_tone(backup.freshness),
+        backup_status_copy: backup.status_copy,
+        backup_last_successful_at: format_rfc3339_timestamp(
+            backup.latest_successful_backup_at.as_deref(),
+        ),
+        backup_host,
+        has_backup_host,
     }
 }
 
@@ -642,6 +817,7 @@ pub async fn dashboard(
         load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
             .await
             .map_err(map_agent_api_error)?;
+    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
     let activity = list_recent_managed_environment_events(
         &state,
         &authenticated.npub,
@@ -652,7 +828,41 @@ pub async fn dashboard(
     render_template(&dashboard_template(
         authenticated,
         status,
+        backup,
         recent_activity_items(activity),
+    ))
+}
+
+pub async fn reset_confirm_page(
+    Extension(state): Extension<State>,
+    Extension(request_context): Extension<RequestContext>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, String)> {
+    let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
+        return redirect_to_login(&state, true);
+    };
+
+    let status =
+        load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
+            .await
+            .map_err(map_agent_api_error)?;
+    let Some(row) = status.row.as_ref() else {
+        return Ok(Redirect::to("/dashboard").into_response());
+    };
+    let inflight_without_vm =
+        row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING && row.vm_id.is_none();
+    if inflight_without_vm {
+        return Ok(Redirect::to("/dashboard").into_response());
+    }
+    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
+    if !backup.reset_requires_confirmation {
+        return Ok(Redirect::to("/dashboard").into_response());
+    }
+    let confirmation_token = issue_reset_confirmation_ticket(&state, &authenticated.npub)?;
+    render_template(&reset_confirm_template(
+        &authenticated,
+        backup,
+        confirmation_token,
     ))
 }
 
@@ -704,12 +914,24 @@ pub async fn reset(
     Extension(state): Extension<State>,
     Extension(request_context): Extension<RequestContext>,
     headers: HeaderMap,
-    Form(form): Form<ActionForm>,
+    Form(form): Form<ResetActionForm>,
 ) -> Result<Response, (StatusCode, String)> {
     let Some(authenticated) = allowlisted_customer_from_session(&state, &headers).await? else {
         return redirect_to_login(&state, true);
     };
-    verify_action_csrf(&authenticated, &form)?;
+    verify_reset_action_csrf(&authenticated, &form)?;
+    let status =
+        load_managed_environment_status(&state, &authenticated.npub, &request_context.request_id)
+            .await
+            .map_err(map_agent_api_error)?;
+    let backup = load_managed_environment_backup_status(&status, &request_context.request_id).await;
+    if backup.reset_requires_confirmation {
+        verify_reset_confirmation_ticket(
+            &state,
+            &authenticated.npub,
+            form.confirmation_token.as_deref(),
+        )?;
+    }
 
     reset_agent_for_owner(
         &state,
@@ -1053,6 +1275,18 @@ mod tests {
             .expect("session info from cookie");
         ActionForm {
             csrf_token: session.csrf_token,
+        }
+    }
+
+    fn customer_reset_form(state: &State, headers: &HeaderMap) -> ResetActionForm {
+        let session = state
+            .admin_config
+            .browser_auth
+            .session_from_headers(headers, CUSTOMER_SESSION_COOKIE, CUSTOMER_SESSION_KIND)
+            .expect("session info from cookie");
+        ResetActionForm {
+            csrf_token: session.csrf_token,
+            confirmation_token: None,
         }
     }
 
@@ -1447,6 +1681,96 @@ mod tests {
         assert!(body.contains("Managed OpenClaw is running and ready."));
         assert!(body.contains("Open OpenClaw"));
         assert!(body.contains("short-lived platform ticket"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn dashboard_renders_healthy_backup_state() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1healthybackupdashboard";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-backup-healthy",
+            Some("vm-backup-healthy"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-backup-healthy","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-backup-healthy","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-backup-healthy/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Backup Protection"));
+        assert!(body.contains("healthy"));
+        assert!(body.contains("Recent durable-home backup protection is in place"));
+        assert!(body.contains("pika-build"));
+        assert!(body.contains("Destructive Reset"));
+        assert!(!body.contains("Review Destructive Reset"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn dashboard_renders_stale_backup_state_with_reset_review() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = "npub1stalebackupdashboard";
+        upsert_allowlist(&db_pool, npub, true);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            npub,
+            "agent-backup-stale",
+            Some("vm-backup-stale"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let headers = customer_cookie_header(&state, npub);
+        let (base_url, _rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-backup-stale","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-backup-stale","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-backup-stale/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = dashboard(Extension(state), request_context(), headers)
+            .await
+            .expect("dashboard response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("stale"));
+        assert!(body.contains("Backup protection is stale"));
+        assert!(body.contains("Review Destructive Reset"));
+        assert!(body.contains("/dashboard/reset/confirm"));
 
         clear_test_database(&db_pool);
     }
@@ -2116,7 +2440,7 @@ mod tests {
         let npub = generate_npub();
         upsert_allowlist(&db_pool, &npub, true);
         let headers = customer_cookie_header(&state, &npub);
-        let form = customer_action_form(&state, &headers);
+        let form = customer_reset_form(&state, &headers);
         let mut conn = db_pool.get().expect("get seed connection");
         let existing = AgentInstance::create(
             &mut conn,
@@ -2185,6 +2509,164 @@ mod tests {
         assert_eq!(events[1].event_kind, "provision_requested");
         assert_eq!(events[2].event_kind, "reset_destroyed_old_vm");
         assert_eq!(events[3].event_kind, "reset_requested");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_requires_confirmation_when_backup_is_weak() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let headers = customer_cookie_header(&state, &npub);
+        let form = customer_reset_form(&state, &headers);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-weak",
+            Some("vm-reset-weak"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-reset-weak","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-reset-weak","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-weak/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let err = reset(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect_err("reset without confirmation should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        let status_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.path, "/vms/vm-reset-weak");
+        let backup_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured backup request");
+        assert_eq!(backup_request.path, "/vms/vm-reset-weak/backup-status");
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_confirm_page_renders_for_weak_backup() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let headers = customer_cookie_header(&state, &npub);
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-confirm",
+            Some("vm-reset-confirm"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let (base_url, _rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-reset-confirm","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-reset-confirm","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirm/home","successful_backup_known":false,"freshness":"missing","latest_successful_backup_at":null,"observed_at":null}"#,
+            ),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = reset_confirm_page(Extension(state), request_context(), headers)
+            .await
+            .expect("confirm page response");
+        let body = response_body_string(response).await;
+        assert!(body.contains("Confirm Destructive Reset"));
+        assert!(body.contains("Reset Without Recent Backup"));
+        assert!(body.contains("No successful durable-home backup is known yet"));
+
+        clear_test_database(&db_pool);
+    }
+
+    #[tokio::test]
+    async fn reset_accepts_confirmation_ticket_when_backup_is_weak() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        clear_test_database(&db_pool);
+        let state = test_state(db_pool.clone());
+        let npub = generate_npub();
+        upsert_allowlist(&db_pool, &npub, true);
+        let headers = customer_cookie_header(&state, &npub);
+        let confirmation_token =
+            issue_reset_confirmation_ticket(&state, &npub).expect("issue confirmation ticket");
+        let mut conn = db_pool.get().expect("get seed connection");
+        AgentInstance::create(
+            &mut conn,
+            &npub,
+            "agent-reset-confirmed",
+            Some("vm-reset-confirmed"),
+            AGENT_PHASE_READY,
+        )
+        .expect("seed ready agent");
+        let form = ResetActionForm {
+            csrf_token: customer_reset_form(&state, &headers).csrf_token,
+            confirmation_token: Some(confirmation_token),
+        };
+        let (base_url, rx) = spawn_scripted_server(vec![
+            (
+                "200 OK",
+                r#"{"id":"vm-reset-confirmed","status":"running","guest_ready":true}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"vm_id":"vm-reset-confirmed","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirmed/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+            ),
+            ("204 No Content", ""),
+            ("200 OK", r#"{"id":"vm-reset-fresh","status":"starting"}"#),
+        ]);
+        let _env = MicrovmEnvGuard::set(&base_url);
+
+        let response = reset(Extension(state), request_context(), headers, Form(form))
+            .await
+            .expect("confirmed reset response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let status_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured status request");
+        assert_eq!(status_request.path, "/vms/vm-reset-confirmed");
+        let backup_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured backup request");
+        assert_eq!(backup_request.path, "/vms/vm-reset-confirmed/backup-status");
+        let delete_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured delete request");
+        assert_eq!(delete_request.path, "/vms/vm-reset-confirmed");
+        let create_request = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured create request");
+        assert_eq!(create_request.path, "/vms");
 
         clear_test_database(&db_pool);
     }

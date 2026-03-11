@@ -475,7 +475,7 @@ fn normalize_loaded_agent_row(
 ) -> Result<AgentInstance, AgentApiError> {
     match row.vm_id.as_deref() {
         Some(_) => Ok(row),
-        None if row.phase != AGENT_PHASE_ERROR => mark_agent_errored(conn, &row.agent_id)
+        None if row.phase == AGENT_PHASE_READY => mark_agent_errored(conn, &row.agent_id)
             .map_err(|err| err.with_request_id(request_id.to_string())),
         None => Ok(row),
     }
@@ -1302,7 +1302,10 @@ mod tests {
 
     fn init_test_db_connection() -> Option<PgConnection> {
         dotenv::dotenv().ok();
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test");
+            return None;
+        };
         let mut conn = match PgConnection::establish(&url) {
             Ok(conn) => conn,
             Err(err) => {
@@ -1317,7 +1320,10 @@ mod tests {
 
     fn init_test_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
         dotenv::dotenv().ok();
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for agent_api db test pool");
+            return None;
+        };
         if let Err(err) = PgConnection::establish(&url) {
             eprintln!("SKIP: postgres unavailable for agent_api db test pool: {err}");
             return None;
@@ -1934,6 +1940,46 @@ mod tests {
         assert_eq!(action.startup_phase, AgentStartupPhase::Ready);
 
         let mut conn = db_pool.get().expect("get clear connection");
+        clear_test_database(&mut conn);
+    }
+
+    #[tokio::test]
+    async fn provision_or_existing_managed_environment_keeps_inflight_creating_row_active() {
+        let _guard = serial_test_guard();
+        let Some(db_pool) = init_test_db_pool() else {
+            return;
+        };
+        let state = test_state(db_pool.clone());
+        let owner_npub = "npub1inflightconvergencetest";
+        let mut conn = db_pool.get().expect("get test connection");
+        clear_test_database(&mut conn);
+        let existing = AgentInstance::create(
+            &mut conn,
+            owner_npub,
+            "agent-inflight",
+            None,
+            AGENT_PHASE_CREATING,
+        )
+        .expect("seed inflight row");
+        drop(conn);
+
+        let action =
+            provision_or_existing_managed_environment(&state, owner_npub, "req-inflight", None)
+                .await
+                .expect("should converge on existing inflight row");
+        assert_eq!(action.row.agent_id, existing.agent_id);
+        assert_eq!(action.row.phase, AGENT_PHASE_CREATING);
+        assert_eq!(action.row.vm_id, None);
+        assert_eq!(action.startup_phase, AgentStartupPhase::ProvisioningVm);
+
+        let mut conn = db_pool.get().expect("get verify connection");
+        let latest = AgentInstance::find_latest_by_owner(&mut conn, owner_npub)
+            .expect("query latest row")
+            .expect("latest row");
+        assert_eq!(latest.agent_id, existing.agent_id);
+        assert_eq!(latest.phase, AGENT_PHASE_CREATING);
+        assert_eq!(latest.vm_id, None);
+
         clear_test_database(&mut conn);
     }
 

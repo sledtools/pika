@@ -29,7 +29,10 @@ mod test {
 
     fn init_db_pool() -> Option<Pool<ConnectionManager<PgConnection>>> {
         dotenv::dotenv().ok();
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let Some(url) = std::env::var("DATABASE_URL").ok() else {
+            eprintln!("SKIP: DATABASE_URL must be set for models db tests");
+            return None;
+        };
         if let Err(err) = PgConnection::establish(&url) {
             eprintln!("SKIP: postgres unavailable for models db tests: {err}");
             return None;

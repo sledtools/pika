@@ -153,10 +153,10 @@ in
         restic init
       fi
 
-      restic backup "''${homes[@]}" --tag microvm-home --host "$(hostname)"
+      backup_host="${config.networking.hostName}"
+      restic backup "''${homes[@]}" --tag microvm-home --host "$backup_host"
 
       now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      backup_host="$(hostname)"
       for home in "''${homes[@]}"; do
         vm_dir="$(dirname "$home")"
         vm_id="$(basename "$vm_dir")"
@@ -273,11 +273,12 @@ in
       set -euo pipefail
 
       usage() {
-        echo "usage: microvm-home-restore [--json] [--target-root <dir>] <vm-id> [snapshot]" >&2
+        echo "usage: microvm-home-restore [--json] [--target-root <dir>] [--host <backup-host>] <vm-id> [snapshot]" >&2
       }
 
       OUTPUT_JSON=0
       TARGET_ROOT=""
+      BACKUP_HOST="${config.networking.hostName}"
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --json)
@@ -290,6 +291,14 @@ in
               exit 2
             fi
             TARGET_ROOT="$2"
+            shift 2
+            ;;
+          --host)
+            if [ "$#" -lt 2 ]; then
+              usage
+              exit 2
+            fi
+            BACKUP_HOST="$2"
             shift 2
             ;;
           --help)
@@ -320,6 +329,10 @@ in
         echo "invalid vm-id: $VM_ID" >&2
         exit 2
       fi
+      if [ -z "$BACKUP_HOST" ]; then
+        echo "missing backup host" >&2
+        exit 2
+      fi
 
       if [ ! -f "$ENV_FILE" ]; then
         echo "missing backup env file: $ENV_FILE" >&2
@@ -346,7 +359,11 @@ in
       mkdir -p "$TARGET_ROOT"
       TARGET_ROOT="$(cd "$TARGET_ROOT" && pwd)"
 
-      restic restore "$SNAPSHOT" --target "$TARGET_ROOT" --include "$INCLUDE_PATH"
+      restore_args=(restore "$SNAPSHOT" --target "$TARGET_ROOT" --include "$INCLUDE_PATH")
+      if [ "$SNAPSHOT" = "latest" ]; then
+        restore_args+=(--host "$BACKUP_HOST" --tag microvm-home --path "$INCLUDE_PATH")
+      fi
+      restic "''${restore_args[@]}"
 
       RESTORED_HOME="$TARGET_ROOT$INCLUDE_PATH"
       if [ ! -d "$RESTORED_HOME" ]; then

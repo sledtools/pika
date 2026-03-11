@@ -1234,31 +1234,6 @@ pub(crate) async fn recover_agent_for_owner(
         return provision_or_existing_managed_environment(state, owner_npub, request_id, requested)
             .await;
     }
-    record_managed_environment_event(
-        &mut conn,
-        owner_npub,
-        Some(&active.agent_id),
-        active.vm_id.as_deref(),
-        EVENT_RECOVER_REQUESTED,
-        &recover_requested_message,
-        request_id,
-    )?;
-    if active.vm_id.is_none() {
-        prepare_agent_for_reprovision(&mut conn, &active)
-            .map_err(|err| err.with_request_id(request_id.to_string()))?;
-        record_managed_environment_event(
-            &mut conn,
-            owner_npub,
-            Some(&active.agent_id),
-            None,
-            EVENT_RECOVER_FELL_BACK_TO_FRESH,
-            "Recover could not preserve the previous environment because no recoverable VM was available. Provisioning a fresh Managed OpenClaw environment.",
-            request_id,
-        )?;
-        drop(conn);
-        return provision_or_existing_managed_environment(state, owner_npub, request_id, requested)
-            .await;
-    }
     let vm_id = active.vm_id.clone().ok_or_else(|| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
     })?;

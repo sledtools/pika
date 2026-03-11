@@ -879,7 +879,6 @@ jobs:
             fi
 
             printf "| <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> |\n" \
-            printf "| <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> | <code>%s</code> |\n" \
               "$label" "$job_state" "$advisory_result" "$run_status" "$duration" "$run_id"
           }
 

@@ -697,10 +697,9 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 jobs
             },
         }),
-        "pre-merge-rmp" => Ok(TargetSpec {
-            id: "pre-merge-rmp",
-            description: "Run the VM-backed pre-merge RMP lane",
-            filters: &[
+        "pre-merge-rmp" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergeRmp,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -712,8 +711,8 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/rmp-cli/**",
                 "crates/pika-relay-profiles/**",
             ],
-            jobs: rmp_jobs(),
-        }),
+            rmp_jobs(),
+        )),
         other => bail!("unknown job `{other}`"),
     }
 }
@@ -1463,7 +1462,7 @@ mod tests {
     };
     use pikaci::{
         JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus, RunnerKind,
-        StagedLinuxRustLane,
+        StagedLinuxRustLane, StagedLinuxRustTarget,
     };
 
     #[test]
@@ -1527,8 +1526,11 @@ mod tests {
     #[test]
     fn pre_merge_rmp_target_uses_staged_linux_lane() {
         let target = target_spec("pre-merge-rmp").expect("rmp target");
+        let config = StagedLinuxRustTarget::PreMergeRmp.config();
 
         assert_eq!(target.jobs.len(), 1);
+        assert_eq!(target.id, config.target_id);
+        assert_eq!(target.description, config.target_description);
         assert_eq!(
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::RmpInitSmokeCi)

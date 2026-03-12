@@ -111,6 +111,11 @@ Working assumptions:
    - the checked-in blocking `pre-merge-fixture` recipe now routes its Rust test segment through `pre-merge-fixture-rust`, and the workflow filter now covers that staged target plus the checked-in `pikahut` guardrail/doc surfaces the lane actually reads
    - the strict staged remote helper and remote-authoritative entrypoint now treat `pre-merge-fixture-rust` as a first-class staged target instead of an implicit special case
    - that leaves `pre-merge-rmp` normalization and Apple-host execution/ownership follow-up as the next lane-definition cleanups, rather than another bespoke Rust-lane conversion
+12. Slice 13 normalized `pre-merge-rmp` onto the staged Linux target model:
+   - `crates/pikaci/src/main.rs` now defines `pre-merge-rmp` through `staged_linux_target_spec(...)` instead of a bespoke hand-written `TargetSpec`
+   - the existing `PreMergeRmp` / `RmpInitSmokeCi` staged identities in `crates/pikaci/src/model.rs` remain the lane authority, with unchanged coverage and the same `rmpWorkspaceDeps` / `rmpWorkspaceBuild` outputs
+   - that removes the last obvious bespoke pre-merge Rust lane shape from `pikaci` without changing `pre-merge-rmp` coverage
+   - the next lane-definition cleanup is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`; if we pivot away from lane-definition work, fast local smoke / pre-commit is the next developer-signal candidate
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -219,7 +224,8 @@ Verified in the repo today:
   - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, and Slice 8 aligned `agent_contracts` with the same workflow-vs-lane truth standard.
   - Slice 9 aligned `notifications` with the same workflow-vs-lane truth standard and also closed the tiny residual host-side `pikachat` dependency gap in `agent_contracts`.
   - `fixture` filter-alignment work is now done, and `pre-merge-fixture-rust` is now on the staged Linux target model too.
-  - The next root-CI cleanup should consume either `pre-merge-rmp` staged-lane normalization or the Apple-host execution/ownership follow-up instead of another filter-only pass.
+  - The next root-CI cleanup should consume the Apple-host execution/ownership follow-up instead of another filter-only pass.
+  - If we pivot away from lane-definition work after that, fast local smoke / pre-commit is the clearest developer-signal follow-up.
   - Recent staged-Linux rollout work is also creating the same mixed-mode shape in other Apple Silicon lanes such as `pre-merge-pika`, `pre-merge-agent-contracts`, and `pre-merge-fixture`, where remote/staged Rust execution is followed by host-side checks in `just/checks.just`.
   - After `pre-merge-pikachat`, we should decide whether those lane splits also need explicit checked-in contracts instead of accumulating more inline branch logic.
 
@@ -369,6 +375,11 @@ Updated recommendation after Slice 12:
 2. `pre-merge-rmp` is now the clearest remaining staged-lane normalization candidate if we want the same target-model authority across the pre-merge Rust lanes.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` remains queued behind that `rmp` normalization work unless a concrete host-execution blocker overtakes it.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.
+Updated recommendation after Slice 13:
+1. `pre-merge-rmp` now uses the same staged Linux target-model authority as the other normalized pre-merge Rust lanes, so there is no obvious bespoke Rust-lane holdout left in `pikaci`.
+2. The next lane-definition follow-up is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
+3. If we pivot from lane-definition into developer-signal tooling, fast local smoke / pre-commit should be the next tracked slice instead of more workflow/filter gardening.
+4. Keep lane coverage stable and avoid broad root CI/workflow churn.
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
 2. Do not preserve wrapper-over-opaque-legacy-test shapes when the behavior can be owned more directly.
@@ -376,9 +387,9 @@ Default bias:
 Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
-3. Explicit CI tier clarification is now done in checked-in docs, the staged-lane filter-alignment cleanup is done for `pikachat`, `agent_contracts`, and `notifications`, and `pre-merge-pikachat-rust` is now on the staged Linux target model.
-4. The next best root-CI cleanup is staged-lane conversion for `fixture`.
-5. After that, the next best target is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
+3. Explicit CI tier clarification is now done in checked-in docs, the staged-lane filter-alignment cleanup is done for `pikachat`, `agent_contracts`, `notifications`, and `fixture`, and the staged Linux target-model normalization now covers `pre-merge-pika-rust`, `pre-merge-agent-contracts`, `pre-merge-notifications`, `pre-merge-pikachat-rust`, `pre-merge-fixture-rust`, and `pre-merge-rmp`.
+4. The next best lane-definition target is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
+5. If we pivot from lane-definition into developer-signal work instead, the next best target is fast local smoke / pre-commit.
 6. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers

@@ -401,6 +401,7 @@ Current thin-host slice:
 - call signal publish handling in app and daemon now unwraps shared call signal publish operation results via runtime-owned helpers instead of host-local match trees, including all real daemon `InviteCall` / `AcceptCall` / `RejectCall` / `EndCall` publish flows; actual call worker/media ownership, protocol mapping, and retry/orchestration stay host-local
 - add-members publish/finalize handling now unwraps shared membership operation results directly, and membership prep now resolves joined-group context through shared runtime commands instead of duplicated host-side group lookup; welcome delivery execution policy remains host-local
 - app create-group follow-through now operates on the shared `PlannedGroupCreation` result directly instead of re-unpacking group + welcome fields in each host path, while daemon `init_group` now uses the same shared create-plan + welcome-publish seam before applying its stricter confirm/subscription policy
+- shared base session sync execution now owns relay connect plus welcome-inbox subscription from `RuntimeSessionSyncPlan`, with app recompute and daemon startup consuming that helper directly while app startup’s deferred connect-only step, app combined group subscriptions, daemon individual group subscriptions, notification loops, and reconnect policy stay host-local
 
 Only later:
 - formalize `pikad`

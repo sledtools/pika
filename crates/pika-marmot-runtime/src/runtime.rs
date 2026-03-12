@@ -581,6 +581,11 @@ pub struct RuntimeSession {
     pub mdk: PikaMdk,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeBaseSessionSyncExecution {
+    pub welcome_inbox_sub: SubscriptionId,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RuntimeGroupSubscriptionState {
     pub target_group_ids: Vec<String>,
@@ -697,6 +702,22 @@ impl RuntimeSession {
         limit: Option<usize>,
     ) -> Result<SubscriptionId> {
         subscribe_welcome_inbox(&self.client, self.pubkey, lookback, limit).await
+    }
+
+    pub async fn execute_base_session_sync(
+        &self,
+        sync_plan: &RuntimeSessionSyncPlan,
+        reconnect: bool,
+        wait_timeout: Option<Duration>,
+    ) -> Result<RuntimeBaseSessionSyncExecution> {
+        execute_runtime_base_session_sync(
+            &self.client,
+            self.pubkey,
+            sync_plan,
+            reconnect,
+            wait_timeout,
+        )
+        .await
     }
 
     pub async fn subscribe_group_messages_combined(
@@ -1581,6 +1602,30 @@ pub async fn temporary_client_from_session_signer(
     Ok(Client::new(signer))
 }
 
+pub async fn execute_runtime_base_session_sync(
+    client: &Client,
+    pubkey: PublicKey,
+    sync_plan: &RuntimeSessionSyncPlan,
+    reconnect: bool,
+    wait_timeout: Option<Duration>,
+) -> Result<RuntimeBaseSessionSyncExecution> {
+    connect_runtime_relays(
+        client,
+        &sync_plan.relay_roles.session_connect_relays,
+        reconnect,
+        wait_timeout,
+    )
+    .await;
+    let welcome_inbox_sub = subscribe_welcome_inbox(
+        client,
+        pubkey,
+        sync_plan.welcome_inbox.lookback,
+        sync_plan.welcome_inbox.limit,
+    )
+    .await?;
+    Ok(RuntimeBaseSessionSyncExecution { welcome_inbox_sub })
+}
+
 pub async fn subscribe_welcome_inbox(
     client: &Client,
     pubkey: PublicKey,
@@ -2299,6 +2344,39 @@ mod tests {
                 RelayUrl::parse("wss://kp-1.example").expect("kp relay"),
                 RelayUrl::parse("wss://message-1.example").expect("message relay"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_runtime_base_session_sync_connects_relays_and_subscribes_welcome_inbox() {
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let execution = execute_runtime_base_session_sync(
+            &client,
+            keys.public_key(),
+            &RuntimeSessionSyncPlan {
+                relay_roles: RuntimeRelayRolePlan {
+                    session_connect_relays: vec![
+                        RelayUrl::parse("wss://message-1.example").expect("message relay"),
+                    ],
+                    ..RuntimeRelayRolePlan::default()
+                },
+                welcome_inbox: RuntimeWelcomeInboxSubscriptionIntent {
+                    lookback: Some(Duration::from_secs(30)),
+                    limit: Some(25),
+                },
+                group_subscriptions: RuntimeGroupSubscriptionPlan::default(),
+            },
+            false,
+            None,
+        )
+        .await
+        .expect("execute runtime base session sync");
+
+        assert!(
+            !execution.welcome_inbox_sub.as_str().is_empty(),
+            "base session sync should create a welcome inbox subscription"
         );
     }
 

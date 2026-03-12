@@ -7,7 +7,7 @@ use super::*;
 use pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan;
 use pika_marmot_runtime::runtime::{
     bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
-    subscribe_group_messages_combined, subscribe_welcome_inbox,
+    execute_runtime_base_session_sync, subscribe_group_messages_combined,
     temporary_client_from_session_signer, BootstrappedRuntimeSession, InboundRelayEvent,
     InboundRelaySeenCache, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
     RuntimeWelcomeInboxSubscriptionIntent,
@@ -126,6 +126,24 @@ fn refresh_runtime_for_app(
         core.temporary_key_package_relays(),
         app_welcome_inbox_intent(),
     )
+}
+
+async fn execute_app_base_session_sync(
+    client: &Client,
+    pubkey: PublicKey,
+    sync_plan: &RuntimeSessionSyncPlan,
+    force_reconnect: bool,
+) -> Option<SubscriptionId> {
+    execute_runtime_base_session_sync(
+        client,
+        pubkey,
+        sync_plan,
+        force_reconnect,
+        Some(Duration::from_secs(4)),
+    )
+    .await
+    .ok()
+    .map(|execution| execution.welcome_inbox_sub)
 }
 
 impl AppCore {
@@ -469,7 +487,6 @@ impl AppCore {
                 return;
             }
         };
-        let needed_relays = sync_plan.relay_roles.session_connect_relays;
         let Some(sess) = self.session.as_mut() else {
             return;
         };
@@ -485,26 +502,16 @@ impl AppCore {
         let pubkey = sess.pubkey;
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
-        let h_values = sync_plan.group_subscriptions.current.target_group_ids;
-        let welcome_inbox = sync_plan.welcome_inbox;
+        let h_values = sync_plan
+            .group_subscriptions
+            .current
+            .target_group_ids
+            .clone();
         let alive = sess.alive.clone();
 
         self.runtime.spawn(async move {
             // Session lifecycle guard: if the user logs out while this task is in-flight, avoid
             // side effects like reconnecting or re-subscribing for a dead session.
-            if !alive.load(Ordering::SeqCst) {
-                return;
-            }
-            if !alive.load(Ordering::SeqCst) {
-                return;
-            }
-            connect_runtime_relays(
-                &client,
-                &needed_relays,
-                force_reconnect,
-                Some(Duration::from_secs(4)),
-            )
-            .await;
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
@@ -520,20 +527,8 @@ impl AppCore {
                 return;
             }
 
-            // GiftWrap inbox subscription (kind GiftWrap, #p = me).
-            // NOTE: Filter `pubkey` matches the event author; GiftWraps can be authored by anyone,
-            // so we must filter by the recipient `p` tag (spec-v2).
-            if !alive.load(Ordering::SeqCst) {
-                return;
-            }
-            let giftwrap_sub = subscribe_welcome_inbox(
-                &client,
-                pubkey,
-                welcome_inbox.lookback,
-                welcome_inbox.limit,
-            )
-            .await
-            .ok();
+            let giftwrap_sub =
+                execute_app_base_session_sync(&client, pubkey, &sync_plan, force_reconnect).await;
 
             // Group subscription: kind 445 filtered by #h for all joined groups.
             if !alive.load(Ordering::SeqCst) {
@@ -1371,6 +1366,61 @@ mod tests {
             ]
         );
         assert_eq!(sync_plan.welcome_inbox, app_welcome_inbox_intent());
+    }
+
+    #[test]
+    fn app_base_session_sync_uses_shared_runtime_executor() {
+        let (core, inviter_dir) = make_core_with_config(crate::core::config::AppConfig {
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..crate::core::config::AppConfig::default()
+        });
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
+        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData {
+                    name: "App base session sync".to_string(),
+                    description: String::new(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    admins: vec![inviter_keys.public_key()],
+                },
+            )
+            .expect("create group");
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let session = Session {
+            pubkey: inviter_keys.public_key(),
+            local_keys: Some(inviter_keys.clone()),
+            mdk: inviter_mdk,
+            client: Client::new(signer),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: HashMap::new(),
+        };
+        let sync_plan = plan_app_session_sync(&core, &session).expect("plan app session sync");
+
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let giftwrap_sub = runtime.block_on(execute_app_base_session_sync(
+            &session.client,
+            session.pubkey,
+            &sync_plan,
+            false,
+        ));
+
+        assert!(
+            giftwrap_sub.is_some(),
+            "app recompute should use the shared base session sync executor"
+        );
     }
 
     #[test]

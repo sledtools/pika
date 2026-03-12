@@ -674,6 +674,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
     let openclaw =
         fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/openclaw.rs"))?;
+    let support = fs::read_to_string(root.join("crates/pikahut/tests/support.rs"))?;
     let integration_deterministic =
         fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
     let config = fs::read_to_string(root.join("crates/pikahut/src/config.rs"))?;
@@ -699,6 +700,10 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         assert!(
             deterministic.contains("PIKAHUT_TEST_PIKACHAT_BIN"),
             "pikahut deterministic helpers must keep the staged pikachat binary override while relay-backed selectors stay in-lane"
+        );
+        assert!(
+            support.contains("env_path_var(\"PIKAHUT_TEST_PIKACHAT_BIN\")"),
+            "pikahut daemon-boundary support must prefer the staged pikachat binary override while that selector stays in-lane"
         );
         assert!(
             run_scenario_body

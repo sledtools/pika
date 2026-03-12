@@ -345,7 +345,7 @@ Updated recommendation after Slice 9:
 4. Keep lane coverage stable while fixing the remaining workflow-vs-lane drift.
 
 Updated recommendation after Slice 10:
-1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, including the staged desktop `VERSION` input and the OpenClaw peer binary path, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
+1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, including the staged desktop `VERSION` input, the OpenClaw peer binary path, and the daemon-boundary `pikachat` binary override, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
 2. `pre-merge-fixture-rust` is now the obvious next staged-lane cleanup if we want the same authority/runner model for the last bespoke Rust lane.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that `fixture` staged-lane cleanup.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.

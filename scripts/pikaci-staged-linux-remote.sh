@@ -12,6 +12,7 @@ Targets:
   pre-merge-pika-rust
   pre-merge-agent-contracts
   pre-merge-notifications
+  pre-merge-rmp
 
 Commands:
   prepare      Prewarm workspaceDeps, then realize workspaceDeps and workspaceBuild on pika-build

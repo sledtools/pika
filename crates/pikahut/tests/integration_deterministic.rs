@@ -26,10 +26,12 @@ use pikahut::testing::{
 mod support;
 
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    pikahut::config::find_workspace_root().unwrap_or_else(|_| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    })
 }
 
 fn env_opt(name: &str) -> Option<String> {

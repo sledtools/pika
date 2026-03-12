@@ -579,9 +579,22 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust")
             .into_iter()
             .collect();
+    let flake = fs::read_to_string(root.join("flake.nix"))?;
     assert!(
         !rust_lane_filters.is_empty(),
         "pikaci main.rs must keep pre-merge-pikachat-rust filters discoverable"
+    );
+    assert!(
+        flake.contains("pikachatStagedLinuxRustArgs = commonStagedLinuxRustArgs // {"),
+        "flake.nix must keep a dedicated staged source config for the pikachat lane"
+    );
+    assert!(
+        flake.contains("src = ciRustWorkspaceSrc;"),
+        "pikachat staged source must use the full Rust workspace snapshot so cli and sidecar members stay buildable"
+    );
+    assert!(
+        flake.contains("cargoLock = ./Cargo.lock;"),
+        "pikachat staged source must use the full workspace lockfile"
     );
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
@@ -655,6 +668,9 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let linux_rust = fs::read_to_string(root.join("nix/ci/linux-rust.nix"))?;
     let deterministic =
         fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
+    let integration_deterministic =
+        fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
+    let config = fs::read_to_string(root.join("crates/pikahut/src/config.rs"))?;
     if lane_keeps_relay_backed_selectors {
         let run_scenario_body = extract_rust_function_body(&deterministic, "run_scenario");
         assert!(
@@ -682,6 +698,25 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             linux_rust.contains("export PIKA_FIXTURE_RELAY_CMD=\"$root/bin/pika-relay\""),
             "staged pikachat wrapper must export PIKA_FIXTURE_RELAY_CMD while relay-backed selectors stay in-lane"
         );
+        assert!(
+            linux_rust.contains("export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot"),
+            "staged pikachat wrapper must export PIKAHUT_TEST_WORKSPACE_ROOT while prepared selector execution still depends on workspace discovery"
+        );
+        assert!(
+            linux_rust.contains("cd \"$PIKAHUT_TEST_WORKSPACE_ROOT\""),
+            "staged pikachat wrapper must enter the staged workspace root before running deterministic selectors"
+        );
+        assert!(
+            config.contains(
+                "pub const TEST_WORKSPACE_ROOT_ENV: &str = \"PIKAHUT_TEST_WORKSPACE_ROOT\";"
+            ),
+            "pikahut config must keep the staged workspace-root override env while prepared selector execution depends on it"
+        );
+        assert!(
+            integration_deterministic
+                .contains("pikahut::config::find_workspace_root().unwrap_or_else(|_|"),
+            "integration_deterministic must resolve workspace root from runtime config before falling back to compile-time paths"
+        );
     }
 
     let lane_keeps_pika_core_regression_boundaries = [
@@ -691,8 +726,6 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     .iter()
     .any(|selector| pikachat_jobs.contains(selector));
     if lane_keeps_pika_core_regression_boundaries {
-        let integration_deterministic =
-            fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
         assert!(
             integration_deterministic.contains("PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN"),
             "pikahut deterministic regressions must keep the staged pika_core e2e_messaging override while those boundaries stay in-lane"
@@ -714,6 +747,11 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "staged pikachat wrapper must export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN while that boundary stays in-lane"
         );
     }
+
+    assert!(
+        !pikachat_jobs.contains("openclaw_gateway_e2e"),
+        "pre-merge-pikachat-rust must keep OpenClaw coverage on the deterministic selector path, not the heavy integration_openclaw lane"
+    );
 
     Ok(())
 }

@@ -790,8 +790,6 @@ EOF
           commonStagedLinuxRustArgs = {
             pkgs = ciLinuxPkgs;
             crane = crane;
-            src = ciPikaCoreWorkspaceSrc;
-            cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
             pikaRelayPkg = pikaRelayPkg;
             outputHashes = {
               "git+https://github.com/futurepaul/hypernote-mdx?rev=9c73231c980a03e6b149f62ccce2e58c9563744f#9c73231c980a03e6b149f62ccce2e58c9563744f" =
@@ -802,16 +800,26 @@ EOF
                 "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             };
           };
-          pikaCoreLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+          reducedStagedLinuxRustArgs = commonStagedLinuxRustArgs // {
+            src = ciPikaCoreWorkspaceSrc;
+            cargoLock = ./nix/ci/pika-core-workspace/Cargo.lock;
+          };
+          pikachatStagedLinuxRustArgs = commonStagedLinuxRustArgs // {
+            # The staged pikachat lane executes full-workspace packages/selectors,
+            # so it must build from the full workspace snapshot and lockfile.
+            src = ciRustWorkspaceSrc;
+            cargoLock = ./Cargo.lock;
+          };
+          pikaCoreLane = import ./nix/ci/linux-rust.nix (reducedStagedLinuxRustArgs // {
             lane = "pika-core";
           });
-          agentContractsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+          agentContractsLane = import ./nix/ci/linux-rust.nix (reducedStagedLinuxRustArgs // {
             lane = "agent-contracts";
           });
-          pikachatLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+          pikachatLane = import ./nix/ci/linux-rust.nix (pikachatStagedLinuxRustArgs // {
             lane = "pikachat";
           });
-          notificationsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+          notificationsLane = import ./nix/ci/linux-rust.nix (reducedStagedLinuxRustArgs // {
             lane = "notifications";
           });
           rmpLane = import ./nix/ci/linux-rust.nix {

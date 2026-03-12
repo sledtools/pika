@@ -92,7 +92,8 @@ Working assumptions:
 9. Slice 10 moved `pre-merge-pikachat-rust` onto the staged Linux target model:
    - `crates/pikaci/src/model.rs` now defines a real `PreMergePikachatRust` target plus explicit staged-lane identities for every `pikachat_rust_jobs()` job
    - `crates/pikaci/src/main.rs` now defines `pre-merge-pikachat-rust` through `staged_linux_target_spec(...)` instead of a bespoke unstaged `TargetSpec`
-   - the staged Linux workspace config now includes dedicated `pikachatWorkspaceDeps` / `pikachatWorkspaceBuild` outputs with wrapper commands for the `pikachat` package tests and deterministic `pikahut` / OpenClaw selectors, and those wrappers now pass prepared `pikachat`, `pika_core`, and `pika-relay` binaries into the selected `pikahut` coverage instead of relying on guest-time Cargo rebuilds
+   - the staged Linux workspace config now includes dedicated `pikachatWorkspaceDeps` / `pikachatWorkspaceBuild` outputs built from the full Rust workspace snapshot/lockfile, with wrapper commands for the `pikachat` package tests and the deterministic `pikahut` selectors (CLI smoke, post-rebase regressions, and CLI-harness OpenClaw scenarios)
+   - those staged wrappers now pass prepared `pikachat`, `pika_core`, and `pika-relay` binaries into the selected `pikahut` coverage and set an explicit staged workspace root instead of relying on guest-time Cargo rebuilds or cwd-based workspace discovery
    - the tiny `agent_contracts` guardrail blind spot is now keyed off the selected `agent_http_cli_new*` selectors and their `integration_deterministic.rs` bodies instead of the outer recipe shell text
    - `pre-merge-fixture-rust` remains intentionally deferred so the slice stayed focused on `pikachat`
 ## Progress Update
@@ -230,6 +231,11 @@ Verified in the repo today:
    - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been flaking across unrelated PRs.
    - If another branch disables it, we should still come back and either stabilize it or replace it with a more deterministic boundary around the same paging behavior.
 
+11. We need a fast local smoke layer that catches common CI failures before full lanes run.
+   - The main goal is quick high-signal feedback on things like formatting drift, clippy failures, and obvious build/test breakage, not running the whole suite locally.
+   - The exact enforcement surface is still open: pre-commit hooks, agent prompts, or both could be reasonable, but the priority is defining a cheap smoke command that catches most dumb failures early.
+   - This should stay in scope as a lane-definition/supporting-tooling problem for `pikaci`, not just a GitHub Actions convenience.
+
 ## Tradeoffs
 
 1. The repo already has plenty of tests. Adding more tests before cleaning ownership is likely to increase confusion rather than confidence.
@@ -339,7 +345,7 @@ Updated recommendation after Slice 9:
 4. Keep lane coverage stable while fixing the remaining workflow-vs-lane drift.
 
 Updated recommendation after Slice 10:
-1. `pre-merge-pikachat-rust` now uses the staged Linux target model with prepared-output wrappers for the selected `pikahut` coverage, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
+1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
 2. `pre-merge-fixture-rust` is now the obvious next staged-lane cleanup if we want the same authority/runner model for the last bespoke Rust lane.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that `fixture` staged-lane cleanup.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.
